@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<!-- SpectraLab v1.10.0 -->
+<html>
+<head>
+<meta charset="UTF-8">
+<title>SpectraLab</title>
+<style>
+  :root {
+    --bg-primary: #1a1a1a;
+    --bg-secondary: #252525;
+    --bg-tertiary: #2a2a2a;
+    --text-primary: #e0e0e0;
+    --text-secondary: #a0a0a0;
+    --text-tertiary: #707070;
+    --border-primary: #444;
+    --border-secondary: #333;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    margin: 10px;
+    overflow-x: hidden;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 13px;
+  }
+
+  button, select, input {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 3px;
+  }
+
+  button:hover, select:hover {
+    border-color: var(--border-primary);
+  }
+
+  .parent {
+    display: flex;
+    justify-content: left;
+    padding: 1px;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .grouped-controls {
+    border: 1px solid var(--border-secondary);
+    padding: 8px 12px;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .grouped-controls label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin: 0;
+  }
+
+  canvas {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    outline: none;
+  }
+
+  .canvas-section {
+    margin: 10px 0;
+  }
+
+  select {
+    min-width: 80px;
+  }
+
+  .file-info {
+    font-size: 11px;
+    color: var(--text-secondary);
+    min-width: 150px;
+  }
+
+  /* Three-panel layout */
+  .main-layout {
+    display: flex;
+    gap: 10px;
+    margin-top: 10px;
+  }
+
+  .panel {
+    border: 1px solid var(--border-secondary);
+    border-radius: 3px;
+    background: var(--bg-secondary);
+  }
+
+  .panel-header {
+    font-size: 11px;
+    font-weight: bold;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border-secondary);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+  }
+
+  .panel-content {
+    padding: 10px;
+  }
+
+  /* Left Sidebar */
+  .left-sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 225px;
+    max-width: 225px;
+  }
+
+  /* Controls Panel */
+  .controls-panel {
+  }
+
+  .controls-panel .control-group {
+    margin-bottom: 12px;
+  }
+
+  .controls-panel .control-group:last-child {
+    margin-bottom: 0;
+  }
+
+  .controls-panel .control-group-title {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+
+  .controls-panel label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 12px;
+  }
+
+  .controls-panel label:last-child {
+    margin-bottom: 0;
+  }
+
+  .controls-panel select {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .controls-panel .checkbox-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .controls-panel .checkbox-row label {
+    flex: 0 0 auto;
+    margin-bottom: 0;
+  }
+
+  /* Preview Panel */
+  .preview-panel {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .preview-panel .panel-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  /* Info Panel */
+  .info-panel {
+  }
+
+  .info-panel .info-row {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 6px;
+    font-size: 12px;
+  }
+
+  .info-panel .info-row:last-child {
+    margin-bottom: 0;
+  }
+
+  .info-panel .info-label {
+    color: var(--text-tertiary);
+  }
+
+  .info-panel .info-value {
+    color: var(--text-primary);
+    text-align: right;
+  }
+
+  .info-panel .info-section {
+    margin-bottom: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border-secondary);
+  }
+
+  .info-panel .info-section:last-child {
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: none;
+  }
+
+  .info-panel .info-section-title {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+
+  /* SCA Edit Mode */
+  .edit-mode-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: var(--bg-primary);
+    z-index: 900;
+    flex-direction: column;
+  }
+
+  .edit-mode-overlay.active {
+    display: flex;
+  }
+
+  .edit-header {
+    display: flex;
+    align-items: center;
+    padding: 10px 15px;
+    border-bottom: 1px solid var(--border-secondary);
+    gap: 15px;
+  }
+
+  .edit-header-title {
+    flex: 1;
+    font-size: 13px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .filmstrip-container {
+    padding: 10px 15px;
+    border-bottom: 1px solid var(--border-secondary);
+    overflow-x: auto;
+    overflow-y: hidden;
+    background: var(--bg-secondary);
+  }
+
+  .filmstrip {
+    display: flex;
+    gap: 8px;
+    min-width: min-content;
+  }
+
+  .filmstrip-frame {
+    flex-shrink: 0;
+    width: 80px;
+    cursor: pointer;
+    border: 2px solid var(--border-secondary);
+    border-radius: 3px;
+    background: var(--bg-primary);
+    position: relative;
+    transition: border-color 0.15s;
+  }
+
+  .filmstrip-frame:hover {
+    border-color: var(--border-primary);
+  }
+
+  .filmstrip-frame.selected {
+    border-color: #4a9eff;
+  }
+
+  .filmstrip-frame.marked-delete {
+    border-color: #ff4444;
+  }
+
+  .filmstrip-frame.marked-delete::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(255, 0, 0, 0.3);
+    pointer-events: none;
+  }
+
+  .filmstrip-frame.marked-optimized {
+    border-color: #ff9900;
+  }
+
+  .filmstrip-frame.marked-optimized::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(255, 153, 0, 0.3);
+    pointer-events: none;
+  }
+
+  .filmstrip-frame canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .filmstrip-frame-number {
+    position: absolute;
+    bottom: 2px;
+    left: 2px;
+    font-size: 9px;
+    background: rgba(0,0,0,0.7);
+    color: #fff;
+    padding: 1px 4px;
+    border-radius: 2px;
+  }
+
+  .edit-main {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .edit-preview {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    gap: 15px;
+  }
+
+  .edit-preview canvas {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    max-width: 100%;
+    max-height: calc(100vh - 300px);
+  }
+
+  .edit-preview-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .edit-preview-info {
+    font-size: 12px;
+    color: var(--text-secondary);
+    text-align: center;
+  }
+
+  .edit-sidebar {
+    width: 260px;
+    border-right: 1px solid var(--border-secondary);
+    padding: 15px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    overflow-y: auto;
+  }
+
+  .edit-section-title {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+
+  .trim-control {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .trim-control label {
+    flex: 1;
+    font-size: 12px;
+  }
+
+  .trim-control input[type="number"] {
+    width: 50px;
+    padding: 4px 6px;
+    text-align: center;
+  }
+
+  .trim-control button {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    font-size: 14px;
+  }
+
+  .edit-result {
+    padding: 10px;
+    background: var(--bg-secondary);
+    border-radius: 3px;
+    font-size: 12px;
+  }
+
+  .edit-result-row {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 4px;
+  }
+
+  .edit-result-row:last-child {
+    margin-bottom: 0;
+  }
+
+  .preview-mode-toggle {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .preview-mode-toggle label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<!-- Two-Column Layout -->
+<div class="main-layout">
+  <!-- Left Sidebar: Controls + Info -->
+  <div class="left-sidebar">
+    <!-- Controls Panel -->
+    <div class="panel controls-panel">
+      <div class="panel-content">
+        <div class="control-group">
+          <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.ifl,.bmc4,.mlt,.mc,.3,.mem,.specscii,.sca,.zip,application/zip,application/x-zip-compressed" style="width: 100%; font-size: 11px;">
+          <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px;">
+            <a href="../index.html" id="appTitle" style="text-decoration: none; color: var(--text-secondary); font-size: 11px;">SpectraLab v1.10.0</a>
+            <button id="helpBtn" style="padding: 2px 6px; font-size: 10px;" title="Help">?</button>
+          </div>
+        </div>
+        <div class="control-group">
+          <div class="control-group-title">Display</div>
+          <label>
+            Zoom:
+            <select id="zoomSelect" style="width: 80px; min-width: 80px; flex: none;">
+              <option value="1">x1</option>
+              <option value="2" selected>x2</option>
+              <option value="3">x3</option>
+              <option value="4">x4</option>
+              <option value="5">x5</option>
+            </select>
+          </label>
+          <div style="display: flex; align-items: center; gap: 4px;">
+            <label style="margin-bottom: 0;">
+              Border:
+              <select id="borderColorSelect" style="width: 80px; min-width: 80px; flex: none;">
+                <option value="0" selected>Black</option>
+                <option value="1">Blue</option>
+                <option value="2">Red</option>
+                <option value="3">Magenta</option>
+                <option value="4">Green</option>
+                <option value="5">Cyan</option>
+                <option value="6">Yellow</option>
+                <option value="7">White</option>
+              </select>
+            </label>
+            <select id="borderSizeSelect" style="width: 80px; min-width: 80px; flex: none;">
+              <option value="16">Small</option>
+              <option value="32" selected>Medium</option>
+              <option value="0">None</option>
+            </select>
+          </div>
+          <label>
+            Palette:
+            <select id="paletteSelect" style="width: 160px; min-width: 160px; flex: none;">
+              <option value="default" selected>Default</option>
+            </select>
+          </label>
+          <div class="checkbox-row">
+            <label>
+              <input type="checkbox" id="flashCheckbox" checked>
+              Flash
+            </label>
+            <label>
+              <input type="checkbox" id="showGrid">
+              Grid
+            </label>
+          </div>
+        </div>
+        <div class="control-group">
+          <div class="control-group-title">53c Pattern</div>
+          <label>
+            Pattern:
+            <select id="pattern53cSelect">
+              <option value="checker" selected>Checker</option>
+              <option value="stripes">Stripes</option>
+              <option value="dd77">Pattern</option>
+            </select>
+          </label>
+        </div>
+        <div class="control-group">
+          <div class="control-group-title">Font</div>
+          <label style="flex-wrap: wrap;">
+            <button id="fontBrowseBtn" style="padding: 3px 8px; font-size: 11px;">Browse</button>
+            <span id="fontInfo" class="file-info" style="min-width: auto;">ROM</span>
+          </label>
+          <input type="file" id="fontFile" accept=".bin,.SpecCHR" style="display: none;">
+        </div>
+        <div class="control-group" id="scaControls" style="display: none; flex-direction: column;">
+          <div class="control-group-title" style="display: block; width: 100%; margin-bottom: 6px;">Animation</div>
+          <div style="display: flex; gap: 4px; width: 100%;">
+            <button id="scaPrevBtn" style="padding: 3px 8px; font-size: 11px;" title="Previous frame">&lt;</button>
+            <button id="scaPlayBtn" style="padding: 3px 12px; font-size: 11px; flex: 1;">Play</button>
+            <button id="scaNextBtn" style="padding: 3px 8px; font-size: 11px;" title="Next frame">&gt;</button>
+          </div>
+          <div style="margin-top: 8px; width: 100%;">
+            <input type="range" id="scaFrameSlider" min="0" max="0" value="0" style="width: 100%; display: block;">
+          </div>
+          <div id="scaFrameInfo" class="file-info" style="text-align: center; margin-top: 6px; width: 100%;">Frame 1/1</div>
+          <button id="scaEditBtn" style="margin-top: 8px; padding: 5px 12px; font-size: 11px; width: 100%;">Edit / Trim</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Info Panel -->
+    <div class="panel info-panel">
+      <div class="panel-header">File Info</div>
+      <div class="panel-content" id="fileInfoPanel">
+        <div class="info-section">
+          <div class="info-section-title">File</div>
+          <div class="info-row">
+            <span class="info-label">Name:</span>
+            <span class="info-value" id="infoFileName">-</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Size:</span>
+            <span class="info-value" id="infoFileSize">-</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Format:</span>
+            <span class="info-value" id="infoFormat">-</span>
+          </div>
+        </div>
+        <div class="info-section">
+          <div class="info-section-title">Dimensions</div>
+          <div class="info-row">
+            <span class="info-label">Width:</span>
+            <span class="info-value" id="infoDimWidth">-</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Height:</span>
+            <span class="info-value" id="infoDimHeight">-</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Pixels:</span>
+            <span class="info-value" id="infoDimPixels">-</span>
+          </div>
+        </div>
+        <div class="info-section" id="infoAnimSection" style="display: none;">
+          <div class="info-section-title">Animation</div>
+          <div class="info-row">
+            <span class="info-label">Version:</span>
+            <span class="info-value" id="infoScaVersion">-</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Frames:</span>
+            <span class="info-value" id="infoFrameCount">-</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Current:</span>
+            <span class="info-value" id="infoCurrentFrame">-</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Delay:</span>
+            <span class="info-value" id="infoFrameDelay">-</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Preview Panel -->
+  <div class="panel preview-panel">
+    <div class="panel-content">
+      <canvas id="screenCanvas" width="512" height="384" tabindex="0"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- SCA Edit Mode Overlay -->
+<div id="editModeOverlay" class="edit-mode-overlay">
+  <div class="edit-header">
+    <button id="editBackBtn" style="padding: 5px 12px; font-size: 11px;">← Back</button>
+    <span class="edit-header-title" id="editFileName">animation.sca</span>
+    <button id="editSaveBtn" style="padding: 5px 12px; font-size: 11px;">Save As...</button>
+    <button id="exportScrBtn" style="padding: 5px 12px; font-size: 11px;">Export SCR...</button>
+  </div>
+
+  <div class="filmstrip-container">
+    <div class="filmstrip" id="filmstrip">
+      <!-- Frame thumbnails will be generated here -->
+    </div>
+  </div>
+
+  <div class="edit-main">
+    <div class="edit-sidebar">
+      <div>
+        <div class="edit-section-title">Playback</div>
+        <div style="display: flex; gap: 4px; justify-content: center;">
+          <button id="editToStartBtn" style="padding: 5px 8px; font-size: 11px;" title="To start">|◀◀</button>
+          <button id="editPrevBtn" style="padding: 5px 8px; font-size: 11px;" title="Previous frame">|◀</button>
+          <button id="editPlayBtn" style="padding: 5px 12px; font-size: 14px;" title="Play/Pause">▶</button>
+          <button id="editNextBtn" style="padding: 5px 8px; font-size: 11px;" title="Next frame">▶|</button>
+          <button id="editToEndBtn" style="padding: 5px 8px; font-size: 11px;" title="To end">▶▶|</button>
+        </div>
+        <div class="edit-preview-info" id="editPreviewInfo" style="text-align: center; margin-top: 6px; font-size: 11px;">Frame 1 of 10 - 20ms</div>
+      </div>
+
+      <div>
+        <div class="edit-section-title">Preview Zoom</div>
+        <select id="editZoomSelect" style="width: 60px; padding: 4px 6px; font-size: 11px;">
+          <option value="1">x1</option>
+          <option value="2" selected>x2</option>
+          <option value="3">x3</option>
+        </select>
+      </div>
+
+      <div>
+        <div class="edit-section-title">Trim from Start</div>
+        <div class="trim-control">
+          <button id="trimStartDec" title="Decrease">−</button>
+          <input type="text" id="trimStartValue" value="0" readonly style="width: 50px; text-align: center;">
+          <button id="trimStartInc" title="Increase">+</button>
+        </div>
+      </div>
+
+      <div>
+        <div class="edit-section-title">Trim from End</div>
+        <div class="trim-control">
+          <button id="trimEndDec" title="Decrease">−</button>
+          <input type="text" id="trimEndValue" value="0" readonly style="width: 50px; text-align: center;">
+          <button id="trimEndInc" title="Increase">+</button>
+        </div>
+      </div>
+
+      <div>
+        <div class="edit-section-title">Frame Delay</div>
+        <div class="trim-control">
+          <button id="delayDec" title="Decrease delay">−</button>
+          <input type="text" id="delayValue" value="1" style="width: 55px; text-align: center;">
+          <button id="delayInc" title="Increase delay">+</button>
+        </div>
+        <div style="display: flex; gap: 6px; margin-top: 6px;">
+          <button id="delayApplyCurrent" style="flex: 1; padding: 4px 8px; font-size: 11px;">Apply to Current</button>
+          <button id="delayApplyAll" style="flex: 1; padding: 4px 8px; font-size: 11px;">Apply to All</button>
+        </div>
+      </div>
+
+      <div>
+        <div class="edit-section-title">Optimize</div>
+        <button id="optimizeFramesBtn" style="width: 100%; padding: 6px 8px; font-size: 11px;" title="Remove consecutive duplicate frames and combine their delays">Remove Duplicate Frames</button>
+        <div id="loopFrameOption" style="margin-top: 6px; display: none;">
+          <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; cursor: pointer;">
+            <input type="checkbox" id="removeLoopFrameCheckbox">
+            <span>Remove loop frame (last = first)</span>
+          </label>
+        </div>
+        <button id="resetOptimizeBtn" style="width: 100%; padding: 4px 8px; font-size: 10px; margin-top: 4px;" title="Reset optimization and restore original delays">Reset</button>
+      </div>
+
+      <div>
+        <div class="edit-section-title">Result</div>
+        <div class="edit-result">
+          <div class="edit-result-row">
+            <span>Original frames:</span>
+            <span id="editOriginalCount">10</span>
+          </div>
+          <div class="edit-result-row">
+            <span>Trimmed frames:</span>
+            <span id="editTrimmedCount">8</span>
+          </div>
+          <div class="edit-result-row" id="duplicateFramesRow" style="color: #ff9900;">
+            <span>Duplicates:</span>
+            <span id="editDuplicateCount">0</span>
+          </div>
+          <div class="edit-result-row" style="margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border-secondary);">
+            <span>Original duration:</span>
+            <span id="editOriginalDuration">-</span>
+          </div>
+          <div class="edit-result-row">
+            <span>Trimmed duration:</span>
+            <span id="editTrimmedDuration">-</span>
+          </div>
+          <div class="edit-result-row" style="margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border-secondary);">
+            <span>Original size:</span>
+            <span id="editOriginalSize">-</span>
+          </div>
+          <div class="edit-result-row">
+            <span>Trimmed size:</span>
+            <span id="editTrimmedSize">-</span>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="edit-section-title">Preview Mode</div>
+        <div class="preview-mode-toggle">
+          <label>
+            <input type="radio" name="previewMode" value="all">
+            All frames
+          </label>
+          <label>
+            <input type="radio" name="previewMode" value="trimmed" checked>
+            Trimmed only
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <div class="edit-preview">
+      <canvas id="editPreviewCanvas" width="512" height="384"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- ZIP File Selection Modal -->
+<div id="zipModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000;">
+  <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: var(--bg-primary); border: 1px solid var(--border-primary); border-radius: 5px; padding: 15px; min-width: 300px; max-width: 500px; max-height: 80vh; overflow: hidden; display: flex; flex-direction: column;">
+    <div style="font-weight: bold; margin-bottom: 10px;">Select file from archive:</div>
+    <div id="zipFileList" style="overflow-y: auto; max-height: 300px; border: 1px solid var(--border-secondary); border-radius: 3px;"></div>
+    <div style="margin-top: 10px; text-align: right;">
+      <button id="zipCancelBtn" style="padding: 5px 15px;">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- External libraries -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+<!-- Screen Viewer scripts -->
+<script src="js/screen_viewer.js"></script>
+<script src="js/screen_viewer_ui.js"></script>
+<script src="js/sca_editor.js"></script>
+</body>
+</html>

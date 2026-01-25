@@ -1,0 +1,18 @@
+{
+  "alias": "ROM font",
+  "fontFile": "rom_font.bin",
+  "glyphs": 96,
+  "exploded": false,
+  "fontWidth": "8",
+  "mapping": [
+    {
+      "start": 0,
+      "chars": " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~©",
+      "width": "8"
+    }
+  ],
+  "remap": {
+    "from": "",
+    "to": ""
+  }
+}
