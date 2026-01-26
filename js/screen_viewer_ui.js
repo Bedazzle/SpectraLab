@@ -1,4 +1,4 @@
-// SpectraLab v1.8.0 - UI Event Handlers
+// SpectraLab v1.15.0 - UI Event Handlers
 // @ts-check
 "use strict";
 
@@ -122,15 +122,45 @@ function initScreenViewerUI() {
 
   // Help button handler
   helpBtn?.addEventListener('click', function() {
-    const helpText = `SpectraLab v1.10.0
+    const helpText = `SpectraLab v1.15.0
 
 Keyboard Shortcuts (Viewer):
-  1-5   : Set zoom level (x1 to x5)
+  1-5   : Set zoom level (x1 to x5, x6/x8/x10 via menu)
   F     : Toggle flash animation
   G     : Toggle grid overlay
   Space : Play/Pause animation (SCA)
   Left  : Previous frame (SCA)
   Right : Next frame (SCA)
+
+Keyboard Shortcuts (Screen Editor):
+  P     : Pixel tool
+  L     : Line tool
+  R     : Rectangle tool
+  C     : Fill cell tool
+  A     : Recolor tool (attribute only)
+  B     : Toggle bright
+  [     : Decrease brush size
+  ]     : Increase brush size
+  Ctrl+Z : Undo (${MAX_UNDO_LEVELS} levels)
+  Ctrl+Y : Redo
+  Ctrl+S : Save
+
+  Left click  = Draw with ink
+  Right click = Draw with paper (erase)
+  Brush: Size 1-16, shapes: Square, Round, H-line, V-line, Stroke, Back stroke
+  Custom brushes: 4 slots for 16x16 patterns captured from screen
+    Click slot = select (empty slot starts capture)
+    Shift+click = capture/recapture from screen
+  Attrs checkbox = Toggle monochrome view
+
+Attribute Editor (.53c/.atr):
+  Click/drag to paint cell attributes
+  B     : Toggle bright
+  F     : Toggle flash
+  Ctrl+Z : Undo (${MAX_UNDO_LEVELS} levels)
+  Ctrl+Y : Redo
+  Ctrl+S : Save
+  Pattern selector remains visible during editing
 
 Keyboard Shortcuts (SCA Editor):
   Left/Right : Navigate frames (with wrap)
@@ -138,19 +168,12 @@ Keyboard Shortcuts (SCA Editor):
   Del/Backspace : Toggle frame deletion
   Ctrl+Click : Toggle frame deletion
 
-SCA Editor Features:
-  - Trim frames from start/end
-  - Delete individual frames (Ctrl+click)
-  - Adjust frame delays (per-frame or all)
-  - Remove consecutive duplicate frames
-  - Remove loop frame (when last = first)
-
 Supported Formats:
-  .scr      6912 bytes  Standard screen
+  .scr      6912 bytes  Standard screen (editable)
   .scr      6144 bytes  Monochrome full
   .scr      4096 bytes  Monochrome 2/3
   .scr      2048 bytes  Monochrome 1/3
-  .53c/.atr  768 bytes  Attributes only
+  .53c/.atr  768 bytes  Attributes only (editable)
   .bsc     11136 bytes  Border screen
   .ifl      9216 bytes  8x2 multicolor
   .bmc4    11904 bytes  Border + 8x4 multicolor
@@ -234,6 +257,9 @@ Supported Formats:
 
   // Load saved settings
   loadSettings();
+
+  // Hide format-specific controls on startup (no file loaded)
+  toggleFormatControlsVisibility();
 
   // Initial render
   renderScreen();

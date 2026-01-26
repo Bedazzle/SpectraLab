@@ -1,5 +1,62 @@
 # SpectraLab Version History
 
+## v1.15.0
+- Added .53c / .atr attribute editor
+  - Edit 768-byte attribute-only files with click/drag cell painting
+  - Pattern selector remains visible during editing
+  - Tools and brush sections hidden (not applicable to attribute-only editing)
+  - Undo/redo, clear, and save work on 768-byte data
+  - Save exports as .53c file
+
+## v1.14.0
+- Added configurable brush/pen for the screen editor
+  - Brush sizes 1-16 pixels
+  - Six brush shapes: Square, Round, Horizontal line, Vertical line, Stroke (/), Back stroke (\)
+  - Applies to Pixel, Line, and Rectangle tools
+  - Cell-based tools (Fill Cell, Recolor) are unaffected
+  - Keyboard shortcuts: `[` / `]` to decrease/increase brush size
+- Brush UI section in editor panel with size dropdown and shape buttons
+- Added 5 user-defined 16×16 custom brushes
+  - Capture a 16×16 region from the current screen into a brush slot
+  - Click empty slot to capture, Shift+click to recapture
+  - Select a filled slot to paint with its bitmap pattern
+  - Works with Pixel, Line, and Rectangle tools
+  - Custom brushes persist to localStorage
+
+## v1.13.0
+- Added Recolor tool (A) for the screen editor
+  - Changes only the attribute byte (ink/paper/bright/flash) without modifying bitmap data
+  - Works like Fill Cell but preserves existing pixel patterns
+- Added Attributes toggle checkbox in editor
+  - Uncheck to view screen in monochrome (white on black)
+  - Reveals hidden pixels where ink color equals paper color
+
+## v1.12.0
+- Multi-level undo/redo (32 levels, Ctrl+Z / Ctrl+Y)
+- Added Redo button and keyboard shortcut
+- Added Clear screen function
+- Added draggable preview panel
+  - Shows full screen while editing at high zoom
+  - Zoomable preview (x1 to x4)
+  - Scrollable when zoomed
+  - Drag header to reposition
+- Extended zoom levels (x1 to x10)
+- Scrollable canvas area for high zoom levels
+
+## v1.11.0
+- Added SCR Screen Editor
+  - Edit standard 6912-byte .scr files
+  - Works like Art Studio / Artist 2
+  - Left click = ink, Right click = paper
+  - Automatic attribute setting per 8x8 cell
+  - Tools: Pixel (P), Line (L), Rectangle (R), Fill Cell (C)
+  - Ink/Paper color selection (0-7)
+  - Bright toggle (B)
+  - Single-level undo (Ctrl+Z)
+  - Create new blank screen
+  - Save edited screen as .scr file (Ctrl+S)
+- Updated help dialog with editor shortcuts
+
 ## v1.10.0
 - Added manual frame deletion in SCA Editor
   - Ctrl+click on filmstrip to toggle frame deletion

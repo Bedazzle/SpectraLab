@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.10.0 -->
+<!-- SpectraLab v1.15.0 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -443,6 +443,245 @@
     font-size: 12px;
     cursor: pointer;
   }
+
+  /* SCR Editor Styles */
+  .scr-editor-panel {
+    display: none;
+    padding-top: 4px;
+    width: 100%;
+  }
+
+  .scr-editor-panel.active {
+    display: block;
+  }
+
+  .editor-tool-btn {
+    padding: 4px 8px;
+    font-size: 11px;
+    margin-right: 4px;
+    margin-bottom: 4px;
+  }
+
+  .editor-tool-btn.selected {
+    background: #4a9eff;
+    color: #fff;
+    border-color: #4a9eff;
+  }
+
+  .editor-color-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+
+  .editor-color-row label {
+    min-width: 40px;
+    font-size: 11px;
+    margin-bottom: 0;
+  }
+
+  .editor-color-row select {
+    flex: 1;
+    font-size: 11px;
+    padding: 3px;
+  }
+
+  .editor-palette {
+    display: flex;
+    gap: 2px;
+    margin-bottom: 6px;
+  }
+
+  .editor-palette-cell {
+    flex: 1;
+    aspect-ratio: 1;
+    border: 2px solid var(--border-secondary);
+    border-radius: 2px;
+    cursor: pointer;
+    position: relative;
+    min-width: 0;
+  }
+
+  .editor-palette-cell:hover {
+    border-color: var(--border-primary);
+  }
+
+  .editor-palette-cell.ink-selected {
+    border-color: #fff;
+  }
+
+  .editor-palette-cell.paper-selected {
+    border-color: #fff;
+    border-style: dashed;
+  }
+
+  .editor-palette-cell.ink-selected.paper-selected {
+    border-color: #fff;
+    border-style: solid;
+  }
+
+  .editor-palette-marker {
+    position: absolute;
+    font-size: 9px;
+    font-weight: bold;
+    line-height: 1;
+    pointer-events: none;
+    text-shadow: 0 0 2px #000, 0 0 2px #000, 1px 1px 0 #000;
+    color: #fff;
+  }
+
+  .editor-palette-marker.ink-marker {
+    top: 1px;
+    left: 2px;
+  }
+
+  .editor-palette-marker.paper-marker {
+    bottom: 1px;
+    right: 2px;
+  }
+
+  .editor-color-preview {
+    width: 24px;
+    height: 24px;
+    border: 2px solid #fff;
+    margin: 6px 0;
+    display: none;
+  }
+
+  .editor-draw-mode {
+    display: flex;
+    gap: 10px;
+    margin: 6px 0;
+    font-size: 11px;
+  }
+
+  .editor-draw-mode label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    margin-bottom: 0;
+  }
+
+  .editor-position-info {
+    font-size: 10px;
+    color: var(--text-secondary);
+    margin-top: 8px;
+    padding: 6px;
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+    height: 50px;
+    overflow: hidden;
+  }
+
+  .editor-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+  }
+
+  .editor-actions button {
+    padding: 4px 10px;
+    font-size: 11px;
+  }
+
+  /* Scrollable canvas container */
+  .editor-canvas-container {
+    overflow: auto;
+    max-width: calc(100vw - 300px);
+    max-height: calc(100vh - 80px);
+    background: #000;
+  }
+
+  .editor-canvas-container canvas {
+    display: block;
+  }
+
+  /* Editor preview panel */
+  .editor-preview-panel {
+    display: none;
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 4px;
+    padding: 8px;
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  }
+
+  .editor-preview-panel.active {
+    display: block;
+  }
+
+  .editor-preview-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+    font-size: 10px;
+    color: var(--text-secondary);
+    cursor: move;
+    user-select: none;
+  }
+
+  .editor-preview-container {
+    width: 280px;
+    height: 216px;
+    overflow: auto;
+    background: #000;
+    border: 1px solid var(--border-secondary);
+  }
+
+  .editor-preview-container canvas {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    display: block;
+  }
+
+  .editor-preview-zoom {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+
+  .editor-preview-zoom button {
+    padding: 2px 6px;
+    font-size: 10px;
+    min-width: 20px;
+  }
+
+  .editor-preview-zoom span {
+    min-width: 24px;
+    text-align: center;
+  }
+
+  /* Custom brush slots */
+  .custom-brush-slot {
+    border: 2px solid var(--border-secondary);
+    border-radius: 2px;
+    cursor: pointer;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    background: var(--bg-tertiary);
+  }
+  .custom-brush-slot:hover {
+    border-color: var(--border-primary);
+  }
+  .custom-brush-slot.selected {
+    border-color: #4a9eff;
+  }
+
+  /* Viewport indicator on preview */
+  .preview-viewport-indicator {
+    position: absolute;
+    border: 2px solid #ff0;
+    pointer-events: none;
+    box-sizing: border-box;
+  }
 </style>
 </head>
 <body>
@@ -456,7 +695,7 @@
         <div class="control-group">
           <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.ifl,.bmc4,.mlt,.mc,.3,.mem,.specscii,.sca,.zip,application/zip,application/x-zip-compressed" style="width: 100%; font-size: 11px;">
           <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px;">
-            <a href="../index.html" id="appTitle" style="text-decoration: none; color: var(--text-secondary); font-size: 11px;">SpectraLab v1.10.0</a>
+            <a href="../index.html" id="appTitle" style="text-decoration: none; color: var(--text-secondary); font-size: 11px;">SpectraLab v1.15.0</a>
             <button id="helpBtn" style="padding: 2px 6px; font-size: 10px;" title="Help">?</button>
           </div>
         </div>
@@ -470,6 +709,9 @@
               <option value="3">x3</option>
               <option value="4">x4</option>
               <option value="5">x5</option>
+              <option value="6">x6</option>
+              <option value="8">x8</option>
+              <option value="10">x10</option>
             </select>
           </label>
           <div style="display: flex; align-items: center; gap: 4px;">
@@ -509,8 +751,7 @@
             </label>
           </div>
         </div>
-        <div class="control-group">
-          <div class="control-group-title">53c Pattern</div>
+        <div class="control-group" id="pattern53cControls">
           <label>
             Pattern:
             <select id="pattern53cSelect">
@@ -520,13 +761,85 @@
             </select>
           </label>
         </div>
-        <div class="control-group">
+        <div class="control-group" id="fontControls">
           <div class="control-group-title">Font</div>
           <label style="flex-wrap: wrap;">
             <button id="fontBrowseBtn" style="padding: 3px 8px; font-size: 11px;">Browse</button>
             <span id="fontInfo" class="file-info" style="min-width: auto;">ROM</span>
           </label>
           <input type="file" id="fontFile" accept=".bin,.SpecCHR" style="display: none;">
+        </div>
+        <div class="control-group" id="scrEditorControls">
+          <button id="scrEditBtn" style="padding: 5px 12px; font-size: 11px; width: 100%;">Edit Screen</button>
+          <div id="scrEditorOverlay" class="scr-editor-panel">
+            <button id="scrExitBtn" style="padding: 4px 16px; font-size: 11px; width: 100%; margin-bottom: 8px; display: block;">Exit Editor</button>
+            <div id="editorToolsSection" style="margin-bottom: 8px;">
+              <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">TOOLS</div>
+              <button class="editor-tool-btn selected" data-tool="pixel" title="Pixel (P)">Pixel</button>
+              <button class="editor-tool-btn" data-tool="line" title="Line (L)">Line</button>
+              <button class="editor-tool-btn" data-tool="rect" title="Rectangle (R)">Rect</button>
+              <button class="editor-tool-btn" data-tool="fillcell" title="Fill Cell (C)">Cell</button>
+              <button class="editor-tool-btn" data-tool="recolor" title="Recolor (A)">Color</button>
+            </div>
+            <div id="editorBrushSection" style="margin-bottom: 8px;">
+              <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">BRUSH</div>
+              <div class="editor-color-row">
+                <label style="min-width: auto;">Size:</label>
+                <select id="editorBrushSize" style="width: 40px; flex: none; font-size: 11px; padding: 2px;">
+                  <option value="1" selected>1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                  <option value="5">5</option>
+                  <option value="6">6</option>
+                  <option value="7">7</option>
+                  <option value="8">8</option>
+                  <option value="9">9</option>
+                  <option value="10">10</option>
+                  <option value="11">11</option>
+                  <option value="12">12</option>
+                  <option value="13">13</option>
+                  <option value="14">14</option>
+                  <option value="15">15</option>
+                  <option value="16">16</option>
+                </select>
+              </div>
+              <div style="display: flex; gap: 2px; flex-wrap: wrap;">
+                <button class="editor-tool-btn editor-shape-btn selected" data-shape="square" title="Square brush">&#9632;</button>
+                <button class="editor-tool-btn editor-shape-btn" data-shape="round" title="Round brush">&#9679;</button>
+                <button class="editor-tool-btn editor-shape-btn" data-shape="hline" title="Horizontal line brush">&#8212;</button>
+                <button class="editor-tool-btn editor-shape-btn" data-shape="vline" title="Vertical line brush">|</button>
+                <button class="editor-tool-btn editor-shape-btn" data-shape="stroke" title="Stroke brush (/)">/</button>
+                <button class="editor-tool-btn editor-shape-btn" data-shape="bstroke" title="Back stroke brush (\)">\</button>
+              </div>
+              <div style="display: flex; gap: 4px; align-items: center; margin-top: 4px;">
+                <canvas id="customBrush0" class="custom-brush-slot" width="32" height="32" data-slot="0" title="Custom brush 1 (click=select, Shift+click=capture)"></canvas>
+                <canvas id="customBrush1" class="custom-brush-slot" width="32" height="32" data-slot="1" title="Custom brush 2 (click=select, Shift+click=capture)"></canvas>
+                <canvas id="customBrush2" class="custom-brush-slot" width="32" height="32" data-slot="2" title="Custom brush 3 (click=select, Shift+click=capture)"></canvas>
+                <canvas id="customBrush3" class="custom-brush-slot" width="32" height="32" data-slot="3" title="Custom brush 4 (click=select, Shift+click=capture)"></canvas>
+                <canvas id="customBrush4" class="custom-brush-slot" width="32" height="32" data-slot="4" title="Custom brush 5 (click=select, Shift+click=capture)"></canvas>
+              </div>
+            </div>
+            <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">COLORS (LMB=ink, RMB=paper)</div>
+            <div id="editorPalette" class="editor-palette"></div>
+            <div class="editor-color-row">
+              <label style="min-width: auto;"><input type="checkbox" id="editorBrightCheckbox"> Bright (B)</label>
+              <label style="min-width: auto;"><input type="checkbox" id="editorFlashCheckbox"> Flash (F)</label>
+              <label style="min-width: auto;"><input type="checkbox" id="editorShowAttrs" checked> Attrs</label>
+            </div>
+            <div id="editorPositionInfo" class="editor-position-info">
+              Move cursor over screen
+            </div>
+            <div class="editor-actions">
+              <button id="editorUndoBtn" title="Undo (Ctrl+Z)">Undo</button>
+              <button id="editorRedoBtn" title="Redo (Ctrl+Y)">Redo</button>
+              <button id="editorClearBtn" title="Clear screen">Clear</button>
+            </div>
+            <div class="editor-actions">
+              <button id="editorNewBtn" title="New blank screen">New</button>
+              <button id="editorSaveBtn" title="Save (Ctrl+S)">Save</button>
+            </div>
+          </div>
         </div>
         <div class="control-group" id="scaControls" style="display: none; flex-direction: column;">
           <div class="control-group-title" style="display: block; width: 100%; margin-bottom: 6px;">Animation</div>
@@ -604,8 +917,25 @@
   <!-- Preview Panel -->
   <div class="panel preview-panel">
     <div class="panel-content">
-      <canvas id="screenCanvas" width="512" height="384" tabindex="0"></canvas>
+      <div id="canvasContainer" class="editor-canvas-container">
+        <canvas id="screenCanvas" width="512" height="384" tabindex="0"></canvas>
+      </div>
     </div>
+  </div>
+</div>
+
+<!-- Editor Preview Panel -->
+<div id="editorPreviewPanel" class="editor-preview-panel">
+  <div class="editor-preview-header">
+    <span title="Drag to move">&#9776; Preview</span>
+    <div class="editor-preview-zoom">
+      <button id="previewZoomOut" title="Zoom out">-</button>
+      <span id="previewZoomLevel">x1</span>
+      <button id="previewZoomIn" title="Zoom in">+</button>
+    </div>
+  </div>
+  <div id="editorPreviewContainer" class="editor-preview-container">
+    <canvas id="editorPreviewCanvas" width="256" height="192"></canvas>
   </div>
 </div>
 
@@ -760,8 +1090,10 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
 <!-- Screen Viewer scripts -->
+<script src="js/app_config.js"></script>
 <script src="js/screen_viewer.js"></script>
 <script src="js/screen_viewer_ui.js"></script>
 <script src="js/sca_editor.js"></script>
+<script src="js/screen_editor.js"></script>
 </body>
 </html>

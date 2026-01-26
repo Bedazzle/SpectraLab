@@ -1,4 +1,4 @@
-// SpectraLab v1.8.0 - Main application
+// SpectraLab v1.15.0 - Main application
 // @ts-check
 "use strict";
 
@@ -242,7 +242,7 @@ const ZX_PALETTE_RGB = {
 };
 
 // Flash timing (ZX Spectrum flashes at ~1.56 Hz, roughly 320ms per phase)
-const FLASH_INTERVAL = 320;
+const FLASH_INTERVAL = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.FLASH_INTERVAL) || 320;
 
 // ============================================================================
 // Palette Management
@@ -366,13 +366,13 @@ function loadPalettes() {
 let screenData = new Uint8Array(0);
 
 /** @type {number} */
-let zoom = 2;
+let zoom = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.DEFAULT_ZOOM) || 2;
 
 /** @type {number} */
 let borderColor = 0;
 
 /** @type {number} */
-let borderSize = 32;
+let borderSize = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.DEFAULT_BORDER_SIZE) || 24;
 
 /** @type {string} */
 let currentFileName = '';
@@ -388,6 +388,9 @@ let flashTimerId = null;
 
 /** @type {boolean} - Whether flash animation is enabled */
 let flashEnabled = true;
+
+/** @type {boolean} - Whether to show attributes (false = monochrome white on black) */
+let showAttributes = true;
 
 /** @type {Uint8Array} - Current font data (768 bytes = 96 chars × 8 bytes) */
 let fontData = new Uint8Array(SPECSCII.FONT_SIZE);
@@ -648,7 +651,13 @@ function renderScrFast(ctx, borderOffset) {
           // Get attribute for this character cell
           const attrOffset = attrAddr + col + row * 32;
           const attr = screenData[attrOffset];
-          const { inkRgb, paperRgb } = getColorsRgb(attr);
+          let inkRgb, paperRgb;
+          if (showAttributes) {
+            ({ inkRgb, paperRgb } = getColorsRgb(attr));
+          } else {
+            inkRgb = [255, 255, 255];
+            paperRgb = [0, 0, 0];
+          }
 
           // Calculate Y position
           const x = col * 8;
@@ -684,6 +693,14 @@ function renderScrFast(ctx, borderOffset) {
     0, 0, SCREEN.WIDTH, SCREEN.HEIGHT,
     borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom
   );
+}
+
+/**
+ * Toggles attribute display on/off and re-renders
+ */
+function toggleAttributes() {
+  showAttributes = !showAttributes;
+  renderScreen();
 }
 
 /**
@@ -1712,6 +1729,24 @@ function toggleScaControlsVisibility() {
 }
 
 /**
+ * Shows/hides format-specific controls (pattern, font, editor) based on current format
+ */
+function toggleFormatControlsVisibility() {
+  const pattern53cControls = document.getElementById('pattern53cControls');
+  if (pattern53cControls) {
+    pattern53cControls.style.display = (currentFormat === FORMAT.ATTR_53C) ? 'flex' : 'none';
+  }
+  const fontControls = document.getElementById('fontControls');
+  if (fontControls) {
+    fontControls.style.display = (currentFormat === FORMAT.SPECSCII) ? 'flex' : 'none';
+  }
+  const scrEditorControls = document.getElementById('scrEditorControls');
+  if (scrEditorControls) {
+    scrEditorControls.style.display = (currentFormat === FORMAT.SCR || currentFormat === FORMAT.ATTR_53C) ? 'flex' : 'none';
+  }
+}
+
+/**
  * Resets SCA animation state
  */
 function resetScaState() {
@@ -1851,6 +1886,7 @@ async function loadFileFromZip(fileName) {
     }
 
     toggleScaControlsVisibility();
+    toggleFormatControlsVisibility();
     updateScaControls();
     updateFileInfo();
     renderScreen();
@@ -2295,6 +2331,9 @@ function startFlashTimer() {
   flashTimerId = setInterval(() => {
     flashPhase = !flashPhase;
     renderScreen();
+    if (typeof editorActive !== 'undefined' && editorActive && typeof renderPreview === 'function') {
+      renderPreview();
+    }
   }, FLASH_INTERVAL);
 }
 
@@ -2455,6 +2494,7 @@ function loadScreenFile(file) {
       }
 
       toggleScaControlsVisibility();
+      toggleFormatControlsVisibility();
       updateScaControls();
       updateFileInfo();
       renderScreen();
