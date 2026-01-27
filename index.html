@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.16.0 -->
+<!-- SpectraLab v1.17.0 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -723,7 +723,7 @@
         <div class="control-group">
           <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.ifl,.bmc4,.mlt,.mc,.3,.mem,.specscii,.sca,.zip,application/zip,application/x-zip-compressed" style="width: 100%; font-size: 11px;">
           <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px;">
-            <a href="../index.html" id="appTitle" style="text-decoration: none; color: var(--text-secondary); font-size: 11px;">SpectraLab v1.16.0</a>
+            <a href="../index.html" id="appTitle" style="text-decoration: none; color: var(--text-secondary); font-size: 11px;">SpectraLab v1.17.0</a>
             <button id="helpBtn" style="padding: 2px 6px; font-size: 10px;" title="Help">?</button>
           </div>
         </div>
@@ -777,6 +777,10 @@
               <input type="checkbox" id="showGrid">
               Grid
             </label>
+            <label>
+              <input type="checkbox" id="showAttrsCheckbox" checked>
+              Attrs
+            </label>
           </div>
         </div>
         <div class="control-group" id="pattern53cControls">
@@ -818,7 +822,13 @@
                 <button class="editor-tool-btn" data-tool="select" title="Select (S)">Select</button>
                 <button id="editorPasteBtn" class="editor-tool-btn" title="Paste (Ctrl+V)">Paste</button>
                 <label style="font-size: 11px; margin-bottom: 0; margin-left: 4px; display: flex; align-items: center; gap: 3px;">
-                  <input type="checkbox" id="editorSnapCheckbox" checked> Snap to grid
+                  Snap:
+                  <select id="editorSnapMode" style="font-size: 11px; padding: 2px;">
+                    <option value="grid" selected>Grid</option>
+                    <option value="zero">Zero</option>
+                    <option value="brush">Brush</option>
+                    <option value="off">Off</option>
+                  </select>
                 </label>
               </div>
             </div>
@@ -854,11 +864,16 @@
                 <button class="editor-tool-btn editor-shape-btn" data-shape="bstroke" title="Back stroke brush (\)">\</button>
               </div>
               <div style="display: flex; gap: 4px; align-items: center; margin-top: 4px;">
-                <canvas id="customBrush0" class="custom-brush-slot" width="64" height="64" data-slot="0" title="Custom brush 1 (click=select, Shift+click=capture)"></canvas>
-                <canvas id="customBrush1" class="custom-brush-slot" width="64" height="64" data-slot="1" title="Custom brush 2 (click=select, Shift+click=capture)"></canvas>
-                <canvas id="customBrush2" class="custom-brush-slot" width="64" height="64" data-slot="2" title="Custom brush 3 (click=select, Shift+click=capture)"></canvas>
-                <canvas id="customBrush3" class="custom-brush-slot" width="64" height="64" data-slot="3" title="Custom brush 4 (click=select, Shift+click=capture)"></canvas>
-                <canvas id="customBrush4" class="custom-brush-slot" width="64" height="64" data-slot="4" title="Custom brush 5 (click=select, Shift+click=capture)"></canvas>
+                <canvas id="customBrush0" class="custom-brush-slot" width="64" height="64" data-slot="0" title="Custom brush 1 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                <canvas id="customBrush1" class="custom-brush-slot" width="64" height="64" data-slot="1" title="Custom brush 2 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                <canvas id="customBrush2" class="custom-brush-slot" width="64" height="64" data-slot="2" title="Custom brush 3 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                <canvas id="customBrush3" class="custom-brush-slot" width="64" height="64" data-slot="3" title="Custom brush 4 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                <canvas id="customBrush4" class="custom-brush-slot" width="64" height="64" data-slot="4" title="Custom brush 5 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+              </div>
+              <div style="display: flex; gap: 2px; margin-top: 4px;">
+                <button id="brushRotateBtn" class="editor-tool-btn" title="Rotate 90° CW (R)">&#8635;</button>
+                <button id="brushMirrorHBtn" class="editor-tool-btn" title="Mirror horizontal (H)">&#8596;</button>
+                <button id="brushMirrorVBtn" class="editor-tool-btn" title="Mirror vertical (V)">&#8597;</button>
               </div>
               <div class="editor-color-row" style="margin-top: 4px;">
                 <label style="min-width: auto;">Mode:</label>
@@ -874,7 +889,6 @@
             <div class="editor-color-row">
               <label style="min-width: auto;"><input type="checkbox" id="editorBrightCheckbox"> Bright (B)</label>
               <label style="min-width: auto;"><input type="checkbox" id="editorFlashCheckbox"> Flash (F)</label>
-              <label style="min-width: auto;"><input type="checkbox" id="editorShowAttrs" checked> Attrs</label>
             </div>
             <div id="editorPositionInfo" class="editor-position-info">
               Move cursor over screen
@@ -885,7 +899,6 @@
               <button id="editorClearBtn" title="Clear screen">Clear</button>
             </div>
             <div class="editor-actions">
-              <button id="editorNewBtn" title="New blank screen">New</button>
               <button id="editorSaveBtn" title="Save (Ctrl+S)">Save</button>
             </div>
           </div>

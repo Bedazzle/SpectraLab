@@ -1,20 +1,41 @@
 # SpectraLab Version History
 
+## v1.17.0
+- Moved Attrs checkbox to viewer controls (same row as Flash/Grid)
+  - Now available in viewer mode, not just the editor
+  - Toggles monochrome (white on black) display across all formats
+  - Affects: SCR, 53c/ATR, IFL, MLT, BSC, BMC4, SPECSCII, SCA
+  - Setting persisted to localStorage
+- Fixed rectangle/line tool with custom brush in replace mode
+  - Stamps now placed at brush-sized intervals instead of pixel-by-pixel
+  - Prevents overlapping stamps from destroying each other
+- Fixed pixel tool drag with snap active
+  - Stamps only at discrete snapped positions, no intermediate Bresenham stamps
+- Removed redundant "New" button from editor actions (already available near editor exit)
+
 ## v1.16.0
 - Added copy/paste with region selection
   - Select tool (S): drag to select a rectangular region (auto-copies on release)
   - Paste (Ctrl+V or Paste button): enter paste mode, click to place
   - Semi-transparent paste preview follows cursor
   - Cyan dashed rectangle shows selection and paste outline
-  - Snap to grid option (checkbox, on by default) — snaps to 8x8 cell boundaries
+  - Snap modes for paste placement (persisted to localStorage):
+    - Grid: snap to 8x8 cell boundaries (default)
+    - Zero: snap to clipboard-sized grid from (0,0) — for seamless tiling
+    - Brush: snap to clipboard-sized grid from first paste position
+    - Off: pixel-precise placement
   - Works in both .scr and .53c/.atr editors
   - .scr: copies bitmap pixels (linear packed) + attributes
-  - .53c: copies attributes only; snap always active (grid control hidden)
+  - .53c: copies attributes only; snap always Grid (control hidden)
   - Paste respects brush paint mode (Replace/Set/Invert)
   - Preserves original clipboard colors (not current ink/paper)
   - Clipboard preserved after paste — multiple pastes supported
   - Escape cancels selection or paste mode
   - Undo supported for paste operations
+- Custom brush improvements
+  - Ctrl+click slot to clear a custom brush
+  - Rotate 90° CW, Mirror horizontal, Mirror vertical buttons
+  - Transforms update preview and persist to localStorage
 - Changed default brush paint mode from Set to Replace
 - Brush paint mode now persists to localStorage
 

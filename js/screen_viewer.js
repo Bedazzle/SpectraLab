@@ -1,4 +1,4 @@
-// SpectraLab v1.16.0 - Main application
+// SpectraLab v1.17.0 - Main application
 // @ts-check
 "use strict";
 
@@ -700,6 +700,8 @@ function renderScrFast(ctx, borderOffset) {
  */
 function toggleAttributes() {
   showAttributes = !showAttributes;
+  const cb = document.getElementById('showAttrsCheckbox');
+  if (cb) /** @type {HTMLInputElement} */ (cb).checked = showAttributes;
   renderScreen();
 }
 
@@ -721,7 +723,13 @@ function render53cScreen(ctx, borderOffset) {
     for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
       const attrIndex = col + row * 32;
       const attr = screenData[attrIndex];
-      const { ink, paper } = getColors(attr);
+      let ink, paper;
+      if (showAttributes) {
+        ({ ink, paper } = getColors(attr));
+      } else {
+        ink = ZX_PALETTE.REGULAR[7]; // white
+        paper = ZX_PALETTE.REGULAR[0]; // black
+      }
 
       // Draw 8x8 pattern for this cell
       const cellX = col * 8;
@@ -793,7 +801,13 @@ function renderIflScreen(ctx, borderOffset) {
           const attrRow = Math.floor(y / 2);
           const attrOffset = IFL.BITMAP_SIZE + attrRow * 32 + col;
           const attr = screenData[attrOffset];
-          const { ink, paper } = getColors(attr);
+          let ink, paper;
+          if (showAttributes) {
+            ({ ink, paper } = getColors(attr));
+          } else {
+            ink = ZX_PALETTE.REGULAR[7];
+            paper = ZX_PALETTE.REGULAR[0];
+          }
 
           // Draw 8 pixels
           const x = col * 8;
@@ -828,7 +842,13 @@ function renderMltScreen(ctx, borderOffset) {
     for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
       const byte = screenData[bitmapBase + col];
       const attr = screenData[attrBase + col];
-      const { ink, paper } = getColors(attr);
+      let ink, paper;
+      if (showAttributes) {
+        ({ ink, paper } = getColors(attr));
+      } else {
+        ink = ZX_PALETTE.REGULAR[7];
+        paper = ZX_PALETTE.REGULAR[0];
+      }
 
       const x = col * 8;
       for (let bit = 0; bit < 8; bit++) {
@@ -1017,24 +1037,29 @@ function renderSpecsciiScreen(ctx, borderOffset) {
     const charCode = byte;
 
     // Get colors based on bright flag and flash state
-    const palette = bright ? ZX_PALETTE.BRIGHT : ZX_PALETTE.REGULAR;
     let ink, paper;
+    if (showAttributes) {
+      const palette = bright ? ZX_PALETTE.BRIGHT : ZX_PALETTE.REGULAR;
 
-    // Apply inverse mode (swaps ink and paper)
-    let effectiveInk = inkColor;
-    let effectivePaper = paperColor;
-    if (inverse) {
-      effectiveInk = paperColor;
-      effectivePaper = inkColor;
-    }
+      // Apply inverse mode (swaps ink and paper)
+      let effectiveInk = inkColor;
+      let effectivePaper = paperColor;
+      if (inverse) {
+        effectiveInk = paperColor;
+        effectivePaper = inkColor;
+      }
 
-    // Apply flash (swaps colors during flash phase)
-    if (flash && flashPhase && flashEnabled) {
-      ink = palette[effectivePaper];
-      paper = palette[effectiveInk];
+      // Apply flash (swaps colors during flash phase)
+      if (flash && flashPhase && flashEnabled) {
+        ink = palette[effectivePaper];
+        paper = palette[effectiveInk];
+      } else {
+        ink = palette[effectiveInk];
+        paper = palette[effectivePaper];
+      }
     } else {
-      ink = palette[effectiveInk];
-      paper = palette[effectivePaper];
+      ink = ZX_PALETTE.REGULAR[7];
+      paper = ZX_PALETTE.REGULAR[0];
     }
 
     // Calculate screen position
@@ -1263,7 +1288,13 @@ function renderBmc4MainScreen(ctx, offsetX, offsetY) {
     for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
       const byte = screenData[bitmapBase + col];
       const attr = screenData[attrBase + col];
-      const { ink, paper } = getColors(attr);
+      let ink, paper;
+      if (showAttributes) {
+        ({ ink, paper } = getColors(attr));
+      } else {
+        ink = ZX_PALETTE.REGULAR[7];
+        paper = ZX_PALETTE.REGULAR[0];
+      }
 
       const x = col * 8;
       for (let bit = 0; bit < 8; bit++) {
@@ -1452,7 +1483,13 @@ function renderBscMainScreen(ctx, offsetX, offsetY) {
 
           const attrOffset = attrAddr + col + row * 32;
           const attr = screenData[attrOffset];
-          const { ink, paper } = getColors(attr);
+          let ink, paper;
+          if (showAttributes) {
+            ({ ink, paper } = getColors(attr));
+          } else {
+            ink = ZX_PALETTE.REGULAR[7];
+            paper = ZX_PALETTE.REGULAR[0];
+          }
 
           const x = col * 8;
           const y = yOffset + row * 8 + line;
@@ -1573,7 +1610,13 @@ function renderScaFrame(ctx, borderOffset, frameIndex) {
 
           const attrOffset = frameOffset + attrAddr + col + row * 32;
           const attr = screenData[attrOffset];
-          const { inkRgb, paperRgb } = getColorsRgb(attr);
+          let inkRgb, paperRgb;
+          if (showAttributes) {
+            ({ inkRgb, paperRgb } = getColorsRgb(attr));
+          } else {
+            inkRgb = [255, 255, 255];
+            paperRgb = [0, 0, 0];
+          }
 
           const x = col * 8;
           const y = yOffset + row * 8 + line;
@@ -2209,6 +2252,7 @@ function saveSettings() {
     borderSize: borderSize,
     flashEnabled: flashEnabled,
     gridEnabled: showGridCheckbox ? showGridCheckbox.checked : false,
+    showAttributes: showAttributes,
     pattern53c: pattern53cSelect ? pattern53cSelect.value : 'checker',
     palette: document.getElementById('paletteSelect')?.value || 'default',
     editPreviewTrimmedOnly: typeof editPreviewTrimmedOnly !== 'undefined' ? editPreviewTrimmedOnly : true,
@@ -2258,6 +2302,13 @@ function loadSettings() {
     // Apply grid enabled
     if (settings.gridEnabled !== undefined && showGridCheckbox) {
       showGridCheckbox.checked = settings.gridEnabled;
+    }
+
+    // Apply show attributes
+    if (settings.showAttributes !== undefined) {
+      showAttributes = settings.showAttributes;
+      const attrsCb = document.getElementById('showAttrsCheckbox');
+      if (attrsCb) /** @type {HTMLInputElement} */ (attrsCb).checked = showAttributes;
     }
 
     // Apply 53c pattern

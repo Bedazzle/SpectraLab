@@ -1,4 +1,4 @@
-// SpectraLab Screen Editor v1.16.0
+// SpectraLab Screen Editor v1.17.0
 // Tools for editing ZX Spectrum .scr files
 // Works like Art Studio / Artist 2 - simple attribute-per-cell model
 // @ts-check
@@ -102,15 +102,97 @@ let selectionEndPoint = null;
 /** @type {boolean} - Dragging to define selection */
 let isSelecting = false;
 
-/** @type {boolean} - Snap selection to 8x8 cell boundaries */
-let selectionSnapToCell = true;
+/** @type {string} - Snap mode: 'grid', 'zero', 'brush', 'off' */
+let snapMode = localStorage.getItem('spectraLabSnapMode') || 'grid';
+
+/** @type {{x:number, y:number}|null} - Origin for 'brush' snap mode (set on first paste) */
+let brushSnapOrigin = null;
 
 /**
- * Effective snap state — always true for .53c (attribute-only, cell granularity)
+ * Whether selection corners should snap to 8x8 cell boundaries.
+ * Any snap mode (grid/zero/brush) implies selection snapping. Always true for .53c.
  * @returns {boolean}
  */
 function isSnapActive() {
-  return selectionSnapToCell || currentFormat === FORMAT.ATTR_53C;
+  return snapMode !== 'off' || currentFormat === FORMAT.ATTR_53C;
+}
+
+/**
+ * Snaps a paste position according to the current snap mode.
+ * @param {number} x
+ * @param {number} y
+ * @returns {{x:number, y:number}}
+ */
+function snapPastePosition(x, y) {
+  const effectiveMode = currentFormat === FORMAT.ATTR_53C ? 'grid' : snapMode;
+
+  if (effectiveMode === 'grid') {
+    return { x: Math.floor(x / 8) * 8, y: Math.floor(y / 8) * 8 };
+  }
+
+  if (effectiveMode === 'zero' && clipboardData) {
+    const w = clipboardData.format === 'scr' ? clipboardData.width : clipboardData.cellCols * 8;
+    const h = clipboardData.format === 'scr' ? clipboardData.height : clipboardData.cellRows * 8;
+    return { x: Math.floor(x / w) * w, y: Math.floor(y / h) * h };
+  }
+
+  if (effectiveMode === 'brush' && clipboardData) {
+    const w = clipboardData.format === 'scr' ? clipboardData.width : clipboardData.cellCols * 8;
+    const h = clipboardData.format === 'scr' ? clipboardData.height : clipboardData.cellRows * 8;
+    if (brushSnapOrigin) {
+      const ox = brushSnapOrigin.x % w;
+      const oy = brushSnapOrigin.y % h;
+      return {
+        x: Math.floor((x - ox) / w) * w + ox,
+        y: Math.floor((y - oy) / h) * h + oy
+      };
+    }
+    // No origin yet — first paste will set it, no snap for now
+    return { x, y };
+  }
+
+  // 'off'
+  return { x, y };
+}
+
+/**
+ * Snaps draw coordinates when snap is active.
+ * Grid mode: snaps to 8x8 cells.
+ * Zero/Brush modes with custom brush: snaps to brush dimensions.
+ * @param {number} x
+ * @param {number} y
+ * @returns {{x:number, y:number}}
+ */
+function snapDrawCoords(x, y) {
+  if (!isSnapActive()) return { x, y };
+
+  const hasBrush = activeCustomBrush >= 0 && customBrushes[activeCustomBrush];
+
+  if (snapMode === 'grid' || !hasBrush) {
+    return { x: Math.floor(x / 8) * 8, y: Math.floor(y / 8) * 8 };
+  }
+
+  const bw = customBrushes[activeCustomBrush].width;
+  const bh = customBrushes[activeCustomBrush].height;
+
+  if (snapMode === 'zero') {
+    return { x: Math.floor(x / bw) * bw, y: Math.floor(y / bh) * bh };
+  }
+
+  if (snapMode === 'brush') {
+    if (brushSnapOrigin) {
+      const ox = brushSnapOrigin.x % bw;
+      const oy = brushSnapOrigin.y % bh;
+      return {
+        x: Math.floor((x - ox) / bw) * bw + ox,
+        y: Math.floor((y - oy) / bh) * bh + oy
+      };
+    }
+    // No origin yet — snap to brush-sized grid from zero
+    return { x: Math.floor(x / bw) * bw, y: Math.floor(y / bh) * bh };
+  }
+
+  return { x, y };
 }
 
 /** @type {{format:string, width?:number, height?:number, cellCols:number, cellRows:number, bitmap?:Uint8Array, attrs:Uint8Array}|null} */
@@ -353,6 +435,31 @@ function drawPixel(x, y, isInk) {
  * @param {boolean} isInk
  */
 function drawLine(x0, y0, x1, y1, isInk) {
+  const hasCustomBrush = brushShape === 'custom' && activeCustomBrush >= 0 && customBrushes[activeCustomBrush];
+
+  if (hasCustomBrush) {
+    // Step at brush-sized intervals to avoid overlapping stamps destroying each other in replace mode
+    const brush = customBrushes[activeCustomBrush];
+    const ldx = x1 - x0;
+    const ldy = y1 - y0;
+    const dist = Math.sqrt(ldx * ldx + ldy * ldy);
+    if (dist === 0) {
+      drawPixel(x0, y0, isInk);
+      return;
+    }
+    // Use brush width for horizontal-ish lines, brush height for vertical-ish
+    const stepSize = Math.abs(ldx) >= Math.abs(ldy) ? brush.width : brush.height;
+    const steps = Math.max(1, Math.round(dist / stepSize));
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const x = Math.round(x0 + ldx * t);
+      const y = Math.round(y0 + ldy * t);
+      drawPixel(x, y, isInk);
+    }
+    return;
+  }
+
+  // Standard Bresenham pixel-by-pixel for regular brushes
   const dx = Math.abs(x1 - x0);
   const dy = Math.abs(y1 - y0);
   const sx = x0 < x1 ? 1 : -1;
@@ -604,10 +711,14 @@ function startPasteMode() {
 function executePaste(x, y) {
   if (!clipboardData || !screenData) return;
 
-  // Snap paste position if enabled
-  if (isSnapActive()) {
-    x = Math.floor(x / 8) * 8;
-    y = Math.floor(y / 8) * 8;
+  // Snap paste position
+  const snapped = snapPastePosition(x, y);
+  x = snapped.x;
+  y = snapped.y;
+
+  // Record origin for 'brush' snap mode on first paste
+  if (snapMode === 'brush' && !brushSnapOrigin) {
+    brushSnapOrigin = { x, y };
   }
 
   saveUndoState();
@@ -759,10 +870,9 @@ function drawPastePreview(x, y) {
   const ctx = screenCanvas.getContext('2d');
   if (!ctx) return;
 
-  if (isSnapActive()) {
-    x = Math.floor(x / 8) * 8;
-    y = Math.floor(y / 8) * 8;
-  }
+  const snapped = snapPastePosition(x, y);
+  x = snapped.x;
+  y = snapped.y;
 
   const borderPixels = borderSize * zoom;
 
@@ -865,6 +975,7 @@ function cancelSelection() {
   selectionEndPoint = null;
   isSelecting = false;
   isPasting = false;
+  brushSnapOrigin = null;
   editorRender();
 }
 
@@ -948,7 +1059,9 @@ function handleEditorMouseDown(event) {
 
   saveUndoState();
   isDrawing = true;
-  lastDrawnPixel = coords;
+
+  const snapped = snapDrawCoords(coords.x, coords.y);
+  lastDrawnPixel = snapped;
 
   // Left click = ink, Right click = paper
   const isInk = event.button !== 2;
@@ -956,11 +1069,11 @@ function handleEditorMouseDown(event) {
   switch (currentTool) {
     case EDITOR.TOOL_LINE:
     case EDITOR.TOOL_RECT:
-      toolStartPoint = coords;
+      toolStartPoint = snapped;
       break;
 
     case EDITOR.TOOL_PIXEL:
-      drawPixel(coords.x, coords.y, isInk);
+      drawPixel(snapped.x, snapped.y, isInk);
       editorRender();
       break;
 
@@ -1025,17 +1138,28 @@ function handleEditorMouseMove(event) {
   if (!isDrawing) return;
 
   const isInk = (event.buttons & 2) === 0; // Left = ink, Right = paper
+  const snapped = snapDrawCoords(coords.x, coords.y);
 
   switch (currentTool) {
     case EDITOR.TOOL_PIXEL:
-      // Draw continuous line from last point
-      if (lastDrawnPixel) {
-        drawLine(lastDrawnPixel.x, lastDrawnPixel.y, coords.x, coords.y, isInk);
+      // When snap is active, only stamp at discrete snapped positions
+      // (drawLine's Bresenham would stamp at intermediate pixels, overwriting previous stamps in replace mode)
+      if (isSnapActive()) {
+        if (!lastDrawnPixel || lastDrawnPixel.x !== snapped.x || lastDrawnPixel.y !== snapped.y) {
+          drawPixel(snapped.x, snapped.y, isInk);
+          lastDrawnPixel = snapped;
+          editorRender();
+        }
       } else {
-        drawPixel(coords.x, coords.y, isInk);
+        // Draw continuous line from last point
+        if (lastDrawnPixel) {
+          drawLine(lastDrawnPixel.x, lastDrawnPixel.y, snapped.x, snapped.y, isInk);
+        } else {
+          drawPixel(snapped.x, snapped.y, isInk);
+        }
+        lastDrawnPixel = snapped;
+        editorRender();
       }
-      lastDrawnPixel = coords;
-      editorRender();
       break;
 
     case EDITOR.TOOL_LINE:
@@ -1043,7 +1167,7 @@ function handleEditorMouseMove(event) {
       // Preview - restore and draw preview
       editorRender();
       if (toolStartPoint) {
-        drawToolPreview(toolStartPoint.x, toolStartPoint.y, coords.x, coords.y);
+        drawToolPreview(toolStartPoint.x, toolStartPoint.y, snapped.x, snapped.y);
       }
       break;
 
@@ -1089,14 +1213,15 @@ function handleEditorMouseUp(event) {
   const isInk = event.button !== 2;
 
   if (toolStartPoint && coords) {
+    const snapped = snapDrawCoords(coords.x, coords.y);
     switch (currentTool) {
       case EDITOR.TOOL_LINE:
-        drawLine(toolStartPoint.x, toolStartPoint.y, coords.x, coords.y, isInk);
+        drawLine(toolStartPoint.x, toolStartPoint.y, snapped.x, snapped.y, isInk);
         editorRender();
         break;
 
       case EDITOR.TOOL_RECT:
-        drawRect(toolStartPoint.x, toolStartPoint.y, coords.x, coords.y, isInk);
+        drawRect(toolStartPoint.x, toolStartPoint.y, snapped.x, snapped.y, isInk);
         editorRender();
         break;
     }
@@ -1791,7 +1916,6 @@ function toggleEditorMode() {
 
   const toolsSection = document.getElementById('editorToolsSection');
   const brushSection = document.getElementById('editorBrushSection');
-  const attrsCheckbox = document.getElementById('editorShowAttrs');
   const clipboardSection = document.getElementById('editorClipboardSection');
 
   if (editorActive) {
@@ -1804,19 +1928,17 @@ function toggleEditorMode() {
     // Clipboard section: always visible when editor is active
     if (clipboardSection) clipboardSection.style.display = '';
 
-    const snapCheckbox = document.getElementById('editorSnapCheckbox');
+    const snapSelect = document.getElementById('editorSnapMode');
     if (currentFormat === FORMAT.ATTR_53C) {
-      // .53c editor: hide tools, brush, attrs checkbox, snap (always snapped)
+      // .53c editor: hide tools, brush, snap (always grid)
       if (toolsSection) toolsSection.style.display = 'none';
       if (brushSection) brushSection.style.display = 'none';
-      if (attrsCheckbox) attrsCheckbox.parentElement.style.display = 'none';
-      if (snapCheckbox) snapCheckbox.parentElement.style.display = 'none';
+      if (snapSelect) snapSelect.parentElement.style.display = 'none';
     } else {
       // SCR editor: show everything
       if (toolsSection) toolsSection.style.display = '';
       if (brushSection) brushSection.style.display = '';
-      if (attrsCheckbox) attrsCheckbox.parentElement.style.display = '';
-      if (snapCheckbox) snapCheckbox.parentElement.style.display = '';
+      if (snapSelect) snapSelect.parentElement.style.display = '';
     }
     showPreviewPanel();
   } else {
@@ -1835,7 +1957,6 @@ function toggleEditorMode() {
     // Restore all sections visibility
     if (toolsSection) toolsSection.style.display = '';
     if (brushSection) brushSection.style.display = '';
-    if (attrsCheckbox) attrsCheckbox.parentElement.style.display = '';
     if (clipboardSection) clipboardSection.style.display = '';
     hidePreviewPanel();
   }
@@ -1935,6 +2056,285 @@ function drawCapturePreview(x0, y0, x1, y1) {
     h * zoom
   );
   ctx.setLineDash([]);
+}
+
+/**
+ * Rotates the active custom brush 90 degrees clockwise
+ */
+function rotateCustomBrush() {
+  if (activeCustomBrush < 0 || !customBrushes[activeCustomBrush]) return;
+  const brush = customBrushes[activeCustomBrush];
+  const ow = brush.width;
+  const oh = brush.height;
+  const oldBpr = Math.ceil(ow / 8);
+  // Rotated: new width = old height, new height = old width
+  const nw = oh;
+  const nh = ow;
+  const newBpr = Math.ceil(nw / 8);
+  const newData = new Uint8Array(newBpr * nh);
+
+  for (let r = 0; r < oh; r++) {
+    for (let c = 0; c < ow; c++) {
+      const oldIdx = r * oldBpr + Math.floor(c / 8);
+      const oldBit = 7 - (c % 8);
+      if (brush.data[oldIdx] & (1 << oldBit)) {
+        // (r, c) -> (c, oh - 1 - r)
+        const nr = c;
+        const nc = oh - 1 - r;
+        const newIdx = nr * newBpr + Math.floor(nc / 8);
+        const newBit = 7 - (nc % 8);
+        newData[newIdx] |= (1 << newBit);
+      }
+    }
+  }
+
+  brush.width = nw;
+  brush.height = nh;
+  brush.data = newData;
+  renderCustomBrushPreview(activeCustomBrush);
+  saveCustomBrushes();
+}
+
+/**
+ * Mirrors the active custom brush horizontally (left-right flip)
+ */
+function mirrorCustomBrushH() {
+  if (activeCustomBrush < 0 || !customBrushes[activeCustomBrush]) return;
+  const brush = customBrushes[activeCustomBrush];
+  const bw = brush.width;
+  const bh = brush.height;
+  const bpr = Math.ceil(bw / 8);
+  const newData = new Uint8Array(bpr * bh);
+
+  for (let r = 0; r < bh; r++) {
+    for (let c = 0; c < bw; c++) {
+      const oldIdx = r * bpr + Math.floor(c / 8);
+      const oldBit = 7 - (c % 8);
+      if (brush.data[oldIdx] & (1 << oldBit)) {
+        const nc = bw - 1 - c;
+        const newIdx = r * bpr + Math.floor(nc / 8);
+        const newBit = 7 - (nc % 8);
+        newData[newIdx] |= (1 << newBit);
+      }
+    }
+  }
+
+  brush.data = newData;
+  renderCustomBrushPreview(activeCustomBrush);
+  saveCustomBrushes();
+}
+
+/**
+ * Mirrors the active custom brush vertically (top-bottom flip)
+ */
+function mirrorCustomBrushV() {
+  if (activeCustomBrush < 0 || !customBrushes[activeCustomBrush]) return;
+  const brush = customBrushes[activeCustomBrush];
+  const bw = brush.width;
+  const bh = brush.height;
+  const bpr = Math.ceil(bw / 8);
+  const newData = new Uint8Array(bpr * bh);
+
+  for (let r = 0; r < bh; r++) {
+    for (let c = 0; c < bw; c++) {
+      const oldIdx = r * bpr + Math.floor(c / 8);
+      const oldBit = 7 - (c % 8);
+      if (brush.data[oldIdx] & (1 << oldBit)) {
+        const nr = bh - 1 - r;
+        const newIdx = nr * bpr + Math.floor(c / 8);
+        const newBit = 7 - (c % 8);
+        newData[newIdx] |= (1 << newBit);
+      }
+    }
+  }
+
+  brush.data = newData;
+  renderCustomBrushPreview(activeCustomBrush);
+  saveCustomBrushes();
+}
+
+/**
+ * Rotates clipboard data 90 degrees clockwise
+ */
+function rotateClipboard() {
+  if (!clipboardData) return;
+
+  if (clipboardData.format === 'scr' && clipboardData.bitmap && clipboardData.width && clipboardData.height) {
+    const ow = clipboardData.width;
+    const oh = clipboardData.height;
+    const nw = oh;
+    const nh = ow;
+    const oldBpr = Math.ceil(ow / 8);
+    const newBpr = Math.ceil(nw / 8);
+    const newBitmap = new Uint8Array(newBpr * nh);
+
+    for (let r = 0; r < oh; r++) {
+      for (let c = 0; c < ow; c++) {
+        const oldIdx = r * oldBpr + Math.floor(c / 8);
+        const oldBit = 7 - (c % 8);
+        if (clipboardData.bitmap[oldIdx] & (1 << oldBit)) {
+          const nr = c;
+          const nc = oh - 1 - r;
+          const newIdx = nr * newBpr + Math.floor(nc / 8);
+          const newBit = 7 - (nc % 8);
+          newBitmap[newIdx] |= (1 << newBit);
+        }
+      }
+    }
+
+    // Rotate attributes
+    const oCols = clipboardData.cellCols;
+    const oRows = clipboardData.cellRows;
+    const nCols = oRows;
+    const nRows = oCols;
+    const newAttrs = new Uint8Array(nCols * nRows);
+    for (let r = 0; r < oRows; r++) {
+      for (let c = 0; c < oCols; c++) {
+        newAttrs[c * nCols + (oRows - 1 - r)] = clipboardData.attrs[r * oCols + c];
+      }
+    }
+
+    clipboardData.bitmap = newBitmap;
+    clipboardData.width = nw;
+    clipboardData.height = nh;
+    clipboardData.cellCols = nCols;
+    clipboardData.cellRows = nRows;
+    clipboardData.attrs = newAttrs;
+  } else if (clipboardData.format === '53c') {
+    const oCols = clipboardData.cellCols;
+    const oRows = clipboardData.cellRows;
+    const nCols = oRows;
+    const nRows = oCols;
+    const newAttrs = new Uint8Array(nCols * nRows);
+    for (let r = 0; r < oRows; r++) {
+      for (let c = 0; c < oCols; c++) {
+        newAttrs[c * nCols + (oRows - 1 - r)] = clipboardData.attrs[r * oCols + c];
+      }
+    }
+    clipboardData.cellCols = nCols;
+    clipboardData.cellRows = nRows;
+    clipboardData.attrs = newAttrs;
+  }
+  editorRender();
+}
+
+/**
+ * Mirrors clipboard data horizontally
+ */
+function mirrorClipboardH() {
+  if (!clipboardData) return;
+
+  if (clipboardData.format === 'scr' && clipboardData.bitmap && clipboardData.width && clipboardData.height) {
+    const w = clipboardData.width;
+    const h = clipboardData.height;
+    const bpr = Math.ceil(w / 8);
+    const newBitmap = new Uint8Array(bpr * h);
+
+    for (let r = 0; r < h; r++) {
+      for (let c = 0; c < w; c++) {
+        const oldIdx = r * bpr + Math.floor(c / 8);
+        const oldBit = 7 - (c % 8);
+        if (clipboardData.bitmap[oldIdx] & (1 << oldBit)) {
+          const nc = w - 1 - c;
+          const newIdx = r * bpr + Math.floor(nc / 8);
+          const newBit = 7 - (nc % 8);
+          newBitmap[newIdx] |= (1 << newBit);
+        }
+      }
+    }
+    clipboardData.bitmap = newBitmap;
+
+    // Mirror attributes horizontally
+    const cols = clipboardData.cellCols;
+    const rows = clipboardData.cellRows;
+    const newAttrs = new Uint8Array(cols * rows);
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        newAttrs[r * cols + (cols - 1 - c)] = clipboardData.attrs[r * cols + c];
+      }
+    }
+    clipboardData.attrs = newAttrs;
+  } else if (clipboardData.format === '53c') {
+    const cols = clipboardData.cellCols;
+    const rows = clipboardData.cellRows;
+    const newAttrs = new Uint8Array(cols * rows);
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        newAttrs[r * cols + (cols - 1 - c)] = clipboardData.attrs[r * cols + c];
+      }
+    }
+    clipboardData.attrs = newAttrs;
+  }
+  editorRender();
+}
+
+/**
+ * Mirrors clipboard data vertically
+ */
+function mirrorClipboardV() {
+  if (!clipboardData) return;
+
+  if (clipboardData.format === 'scr' && clipboardData.bitmap && clipboardData.width && clipboardData.height) {
+    const w = clipboardData.width;
+    const h = clipboardData.height;
+    const bpr = Math.ceil(w / 8);
+    const newBitmap = new Uint8Array(bpr * h);
+
+    for (let r = 0; r < h; r++) {
+      for (let c = 0; c < w; c++) {
+        const oldIdx = r * bpr + Math.floor(c / 8);
+        const oldBit = 7 - (c % 8);
+        if (clipboardData.bitmap[oldIdx] & (1 << oldBit)) {
+          const nr = h - 1 - r;
+          const newIdx = nr * bpr + Math.floor(c / 8);
+          const newBit = 7 - (c % 8);
+          newBitmap[newIdx] |= (1 << newBit);
+        }
+      }
+    }
+    clipboardData.bitmap = newBitmap;
+
+    // Mirror attributes vertically
+    const cols = clipboardData.cellCols;
+    const rows = clipboardData.cellRows;
+    const newAttrs = new Uint8Array(cols * rows);
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        newAttrs[(rows - 1 - r) * cols + c] = clipboardData.attrs[r * cols + c];
+      }
+    }
+    clipboardData.attrs = newAttrs;
+  } else if (clipboardData.format === '53c') {
+    const cols = clipboardData.cellCols;
+    const rows = clipboardData.cellRows;
+    const newAttrs = new Uint8Array(cols * rows);
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        newAttrs[(rows - 1 - r) * cols + c] = clipboardData.attrs[r * cols + c];
+      }
+    }
+    clipboardData.attrs = newAttrs;
+  }
+  editorRender();
+}
+
+/**
+ * Clears a custom brush slot
+ * @param {number} slot - Slot index (0-4)
+ */
+function clearCustomBrush(slot) {
+  customBrushes[slot] = null;
+  if (brushShape === 'custom' && activeCustomBrush === slot) {
+    brushShape = 'square';
+    activeCustomBrush = -1;
+    document.querySelectorAll('.editor-shape-btn').forEach(btn => {
+      btn.classList.toggle('selected', /** @type {HTMLElement} */(btn).dataset.shape === 'square');
+    });
+  }
+  renderCustomBrushPreview(slot);
+  const el = document.getElementById('customBrush' + slot);
+  if (el) el.classList.remove('selected');
+  saveCustomBrushes();
 }
 
 /**
@@ -2102,13 +2502,20 @@ function initEditor() {
   document.querySelectorAll('.custom-brush-slot').forEach(canvas => {
     canvas.addEventListener('click', (e) => {
       const slot = parseInt(/** @type {HTMLElement} */ (canvas).dataset.slot, 10);
-      if (/** @type {MouseEvent} */ (e).shiftKey) {
+      if (/** @type {MouseEvent} */ (e).ctrlKey) {
+        clearCustomBrush(slot);
+      } else if (/** @type {MouseEvent} */ (e).shiftKey) {
         startBrushCapture(slot);
       } else {
         selectCustomBrush(slot);
       }
     });
   });
+
+  // Brush rotate/mirror buttons
+  document.getElementById('brushRotateBtn')?.addEventListener('click', rotateCustomBrush);
+  document.getElementById('brushMirrorHBtn')?.addEventListener('click', mirrorCustomBrushH);
+  document.getElementById('brushMirrorVBtn')?.addEventListener('click', mirrorCustomBrushV);
 
   // Brush paint mode select
   const paintModeSelect = /** @type {HTMLSelectElement|null} */ (document.getElementById('brushPaintMode'));
@@ -2142,19 +2549,14 @@ function initEditor() {
     });
   }
 
-  const attrsCb = document.getElementById('editorShowAttrs');
-  if (attrsCb) {
-    attrsCb.addEventListener('change', (e) => {
-      showAttributes = /** @type {HTMLInputElement} */ (e.target).checked;
-      editorRender();
-    });
-  }
-
-  // Snap checkbox
-  const snapCb = document.getElementById('editorSnapCheckbox');
-  if (snapCb) {
-    snapCb.addEventListener('change', (e) => {
-      selectionSnapToCell = /** @type {HTMLInputElement} */ (e.target).checked;
+  // Snap mode dropdown
+  const snapSelect = /** @type {HTMLSelectElement|null} */ (document.getElementById('editorSnapMode'));
+  if (snapSelect) {
+    snapSelect.value = snapMode;
+    snapSelect.addEventListener('change', (e) => {
+      snapMode = /** @type {HTMLSelectElement} */ (e.target).value;
+      brushSnapOrigin = null; // reset brush origin on mode change
+      localStorage.setItem('spectraLabSnapMode', snapMode);
     });
   }
 
@@ -2168,9 +2570,6 @@ function initEditor() {
   document.getElementById('editorUndoBtn')?.addEventListener('click', undo);
   document.getElementById('editorRedoBtn')?.addEventListener('click', redo);
   document.getElementById('editorClearBtn')?.addEventListener('click', clearScreen);
-  document.getElementById('editorNewBtn')?.addEventListener('click', () => {
-    createNewScreen(editorInkColor, editorPaperColor, editorBright);
-  });
   document.getElementById('scrEditBtn')?.addEventListener('click', toggleEditorMode);
   document.getElementById('scrExitBtn')?.addEventListener('click', toggleEditorMode);
 
@@ -2201,6 +2600,11 @@ function initEditor() {
     if (e.ctrlKey && e.key === 'c') {
       e.preventDefault();
       copySelection();
+      // Clear selection visuals after manual copy
+      selectionStartPoint = null;
+      selectionEndPoint = null;
+      isSelecting = false;
+      editorRender();
     }
     if (e.ctrlKey && e.key === 'v') {
       e.preventDefault();
@@ -2211,7 +2615,29 @@ function initEditor() {
       switch (e.key.toLowerCase()) {
         case 'p': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_PIXEL); break;
         case 'l': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_LINE); break;
-        case 'r': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_RECT); break;
+        case 'r':
+          if (isPasting && clipboardData) {
+            rotateClipboard();
+          } else if (activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
+            rotateCustomBrush();
+          } else if (!isAttrEditor()) {
+            setEditorTool(EDITOR.TOOL_RECT);
+          }
+          break;
+        case 'h':
+          if (isPasting && clipboardData) {
+            mirrorClipboardH();
+          } else if (activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
+            mirrorCustomBrushH();
+          }
+          break;
+        case 'v':
+          if (isPasting && clipboardData) {
+            mirrorClipboardV();
+          } else if (activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
+            mirrorCustomBrushV();
+          }
+          break;
         case 'c': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_FILL_CELL); break;
         case 'a': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_RECOLOR); break;
         case 's': setEditorTool(EDITOR.TOOL_SELECT); break;

@@ -9,7 +9,7 @@ A pure JavaScript viewer and editor for ZX Spectrum graphics formats. No server 
 - **Edit** .53c/.atr attribute files with cell painting
 - **Play** SCA animations with frame-by-frame control
 - **Edit** SCA animations: trim frames, adjust delays, remove duplicates
-- **Customize** display: zoom (x1-x10), border color/size, palettes, grid overlay
+- **Customize** display: zoom (x1-x10), border color/size, palettes, grid overlay, monochrome mode
 - **Load** files directly from ZIP archives
 - **Custom fonts** for SPECSCII (standard 768-byte ZX Spectrum font format)
 - Dark/light theme support
@@ -21,10 +21,13 @@ Edit standard 6912-byte .scr files with authentic ZX Spectrum color handling:
 - **Tools**: Pixel, Line, Rectangle, Fill Cell, Recolor (attribute only)
 - **Brush**: Sizes 1-16px, shapes: Square, Round, Horizontal, Vertical, Stroke (/), Back stroke (\) (applies to Pixel, Line, Rectangle)
 - **Brush mode**: Replace (default), Set, Invert — persisted to localStorage
-- **Custom Brushes**: 5 user-defined custom brushes (capture from screen, click=select, Shift+click=capture, max 64x64)
+- **Custom Brushes**: 5 user-defined custom brushes (capture from screen, max 64x64)
+  - Click=select, Shift+click=capture, Ctrl+click=clear
+  - Rotate 90° CW, Mirror horizontal, Mirror vertical
 - **Copy/Paste**: Select tool (S) to drag-select a region (auto-copies), Paste (Ctrl+V) to place with preview
+  - Snap modes: Grid (8x8), Zero (tile from origin), Brush (tile from first paste), Off
 - **Drawing**: Left click = ink color, Right click = paper color
-- **Colors**: Select ink (0-7), paper (0-7), toggle Bright, Attrs toggle (monochrome view)
+- **Colors**: Select ink (0-7), paper (0-7), toggle Bright
 - **Undo/Redo**: 32 levels (Ctrl+Z / Ctrl+Y)
 - **Preview panel**: Draggable, zoomable (x1-x4), shows full screen while editing
 - **Save**: Export as .scr file (Ctrl+S)
@@ -76,10 +79,12 @@ Edit 768-byte .53c/.atr attribute-only files:
 |-----|--------|
 | `P` | Pixel tool |
 | `L` | Line tool |
-| `R` | Rectangle tool |
+| `R` | Rectangle tool (or Rotate brush 90° CW when custom brush active) |
 | `C` | Fill cell tool |
 | `A` | Recolor tool (attribute only) |
 | `S` | Select tool (drag to select, auto-copies) |
+| `H` | Mirror custom brush horizontal |
+| `V` | Mirror custom brush vertical |
 | `B` | Toggle Bright |
 | `[` | Decrease brush size |
 | `]` | Increase brush size |

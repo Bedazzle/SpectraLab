@@ -1,4 +1,4 @@
-// SpectraLab v1.16.0 - UI Event Handlers
+// SpectraLab v1.17.0 - UI Event Handlers
 // @ts-check
 "use strict";
 
@@ -64,6 +64,14 @@ function initScreenViewerUI() {
   // Grid checkbox handler
   showGridCheckbox?.addEventListener('change', function() {
     renderScreen();
+    saveSettings();
+  });
+
+  // Attrs checkbox handler
+  document.getElementById('showAttrsCheckbox')?.addEventListener('change', function() {
+    showAttributes = /** @type {HTMLInputElement} */ (this).checked;
+    renderScreen();
+    if (typeof renderPreview === 'function') renderPreview();
     saveSettings();
   });
 
@@ -174,7 +182,7 @@ function initScreenViewerUI() {
 
   // Help button handler
   helpBtn?.addEventListener('click', function() {
-    const helpText = `SpectraLab v1.16.0
+    const helpText = `SpectraLab v1.17.0
 
 Keyboard Shortcuts (Viewer):
   1-5        : Set zoom level (x1 to x5, x6/x8/x10 via menu)
@@ -182,6 +190,7 @@ Keyboard Shortcuts (Viewer):
   Arrows     : Pan canvas when zoomed in
   F          : Toggle flash animation
   G          : Toggle grid overlay
+  Attrs      : Toggle monochrome view (all formats)
   Space      : Play/Pause animation (SCA)
   Left/Right : Previous/Next frame (SCA)
 
@@ -209,14 +218,16 @@ Keyboard Shortcuts (Screen Editor):
   Custom brushes: 5 slots for patterns captured from screen (max 64x64)
     Click slot = select (empty slot starts capture)
     Shift+click = capture/recapture (two clicks to select rectangle)
-  Attrs checkbox = Toggle monochrome view
+    Ctrl+click = clear slot
+    R = Rotate 90° CW (when custom brush active, otherwise Rectangle tool)
+    H = Mirror horizontal, V = Mirror vertical
 
   Copy/Paste:
     Select tool (S) — drag to select region (auto-copies on release)
     Ctrl+V or Paste button — enter paste mode with preview
     Click to place, Escape to cancel
     Paste respects brush mode (Replace/Set/Invert)
-    Snap to grid checkbox — snaps to 8x8 cells (on by default)
+    Snap modes: Grid (8x8), Zero (tile from 0,0), Brush (tile from first paste), Off
 
 Attribute Editor (.53c/.atr):
   Click/drag to paint cell attributes
