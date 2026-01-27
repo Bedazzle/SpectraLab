@@ -1,4 +1,4 @@
-// SpectraLab v1.15.0 - UI Event Handlers
+// SpectraLab v1.16.0 - UI Event Handlers
 // @ts-check
 "use strict";
 
@@ -70,6 +70,7 @@ function initScreenViewerUI() {
   // 53c pattern select handler
   document.getElementById('pattern53cSelect')?.addEventListener('change', function() {
     renderScreen();
+    if (typeof renderPreview === 'function') renderPreview();
     saveSettings();
   });
 
@@ -83,6 +84,57 @@ function initScreenViewerUI() {
   screenCanvas?.addEventListener('click', function() {
     screenCanvas.focus();
   });
+
+  // New Picture button and dialog
+  const newPictureBtn = document.getElementById('newPictureBtn');
+  const newPictureDialog = document.getElementById('newPictureDialog');
+  const newPictureFormat = /** @type {HTMLSelectElement|null} */ (document.getElementById('newPictureFormat'));
+  const newPictureOkBtn = document.getElementById('newPictureOkBtn');
+  const newPictureCancelBtn = document.getElementById('newPictureCancelBtn');
+
+  newPictureBtn?.addEventListener('click', function() {
+    if (newPictureDialog) newPictureDialog.style.display = '';
+  });
+
+  newPictureCancelBtn?.addEventListener('click', function() {
+    if (newPictureDialog) newPictureDialog.style.display = 'none';
+  });
+
+  newPictureDialog?.addEventListener('click', function(e) {
+    if (e.target === newPictureDialog) newPictureDialog.style.display = 'none';
+  });
+
+  newPictureOkBtn?.addEventListener('click', function() {
+    if (newPictureDialog) newPictureDialog.style.display = 'none';
+    const format = newPictureFormat ? newPictureFormat.value : 'scr';
+    if (typeof createNewPicture === 'function') {
+      createNewPicture(format);
+    }
+  });
+
+  // Mouse wheel zoom handler
+  const canvasContainer = document.getElementById('canvasContainer');
+  canvasContainer?.addEventListener('wheel', function(event) {
+    if (!event.ctrlKey) return;
+    event.preventDefault();
+
+    // Available zoom levels matching the dropdown
+    const zoomLevels = [1, 2, 3, 4, 5, 6, 8, 10];
+    const currentIndex = zoomLevels.indexOf(zoom);
+    let newIndex;
+    if (event.deltaY < 0) {
+      // Scroll up = zoom in
+      newIndex = Math.min(currentIndex + 1, zoomLevels.length - 1);
+    } else {
+      // Scroll down = zoom out
+      newIndex = Math.max(currentIndex - 1, 0);
+    }
+    if (zoomLevels[newIndex] !== zoom) {
+      const newZoom = zoomLevels[newIndex];
+      if (zoomSelect) zoomSelect.value = String(newZoom);
+      setZoom(newZoom);
+    }
+  }, { passive: false });
 
   // Flash checkbox handler
   flashCheckbox?.addEventListener('change', function() {
@@ -122,15 +174,16 @@ function initScreenViewerUI() {
 
   // Help button handler
   helpBtn?.addEventListener('click', function() {
-    const helpText = `SpectraLab v1.15.0
+    const helpText = `SpectraLab v1.16.0
 
 Keyboard Shortcuts (Viewer):
-  1-5   : Set zoom level (x1 to x5, x6/x8/x10 via menu)
-  F     : Toggle flash animation
-  G     : Toggle grid overlay
-  Space : Play/Pause animation (SCA)
-  Left  : Previous frame (SCA)
-  Right : Next frame (SCA)
+  1-5        : Set zoom level (x1 to x5, x6/x8/x10 via menu)
+  Ctrl+Wheel : Zoom in/out
+  Arrows     : Pan canvas when zoomed in
+  F          : Toggle flash animation
+  G          : Toggle grid overlay
+  Space      : Play/Pause animation (SCA)
+  Left/Right : Previous/Next frame (SCA)
 
 Keyboard Shortcuts (Screen Editor):
   P     : Pixel tool
@@ -138,23 +191,36 @@ Keyboard Shortcuts (Screen Editor):
   R     : Rectangle tool
   C     : Fill cell tool
   A     : Recolor tool (attribute only)
+  S     : Select tool (drag to select region)
   B     : Toggle bright
   [     : Decrease brush size
   ]     : Increase brush size
+  Ctrl+C : Copy selection
+  Ctrl+V : Paste (click to place)
   Ctrl+Z : Undo (${MAX_UNDO_LEVELS} levels)
   Ctrl+Y : Redo
   Ctrl+S : Save
+  Escape : Cancel selection / paste
 
   Left click  = Draw with ink
   Right click = Draw with paper (erase)
   Brush: Size 1-16, shapes: Square, Round, H-line, V-line, Stroke, Back stroke
-  Custom brushes: 4 slots for 16x16 patterns captured from screen
+  Brush mode: Replace (default), Set, Invert — saved to localStorage
+  Custom brushes: 5 slots for patterns captured from screen (max 64x64)
     Click slot = select (empty slot starts capture)
-    Shift+click = capture/recapture from screen
+    Shift+click = capture/recapture (two clicks to select rectangle)
   Attrs checkbox = Toggle monochrome view
+
+  Copy/Paste:
+    Select tool (S) — drag to select region (auto-copies on release)
+    Ctrl+V or Paste button — enter paste mode with preview
+    Click to place, Escape to cancel
+    Paste respects brush mode (Replace/Set/Invert)
+    Snap to grid checkbox — snaps to 8x8 cells (on by default)
 
 Attribute Editor (.53c/.atr):
   Click/drag to paint cell attributes
+  S     : Select tool (drag to select, Ctrl+V to paste)
   B     : Toggle bright
   F     : Toggle flash
   Ctrl+Z : Undo (${MAX_UNDO_LEVELS} levels)
@@ -232,19 +298,41 @@ Supported Formats:
         break;
 
       case 'ArrowLeft':
-        // Left arrow: Previous SCA frame
         if (currentFormat === FORMAT.SCA) {
           event.preventDefault();
           prevScaFrame();
+        } else {
+          // Pan canvas left
+          event.preventDefault();
+          const cl = document.getElementById('canvasContainer');
+          if (cl) cl.scrollLeft -= 40;
         }
         break;
 
       case 'ArrowRight':
-        // Right arrow: Next SCA frame
         if (currentFormat === FORMAT.SCA) {
           event.preventDefault();
           nextScaFrame();
+        } else {
+          // Pan canvas right
+          event.preventDefault();
+          const cr = document.getElementById('canvasContainer');
+          if (cr) cr.scrollLeft += 40;
         }
+        break;
+
+      case 'ArrowUp':
+        // Pan canvas up
+        event.preventDefault();
+        const cu = document.getElementById('canvasContainer');
+        if (cu) cu.scrollTop -= 40;
+        break;
+
+      case 'ArrowDown':
+        // Pan canvas down
+        event.preventDefault();
+        const cd = document.getElementById('canvasContainer');
+        if (cd) cd.scrollTop += 40;
         break;
     }
   });

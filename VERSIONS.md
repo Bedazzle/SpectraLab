@@ -1,5 +1,23 @@
 # SpectraLab Version History
 
+## v1.16.0
+- Added copy/paste with region selection
+  - Select tool (S): drag to select a rectangular region (auto-copies on release)
+  - Paste (Ctrl+V or Paste button): enter paste mode, click to place
+  - Semi-transparent paste preview follows cursor
+  - Cyan dashed rectangle shows selection and paste outline
+  - Snap to grid option (checkbox, on by default) — snaps to 8x8 cell boundaries
+  - Works in both .scr and .53c/.atr editors
+  - .scr: copies bitmap pixels (linear packed) + attributes
+  - .53c: copies attributes only; snap always active (grid control hidden)
+  - Paste respects brush paint mode (Replace/Set/Invert)
+  - Preserves original clipboard colors (not current ink/paper)
+  - Clipboard preserved after paste — multiple pastes supported
+  - Escape cancels selection or paste mode
+  - Undo supported for paste operations
+- Changed default brush paint mode from Set to Replace
+- Brush paint mode now persists to localStorage
+
 ## v1.15.0
 - Added .53c / .atr attribute editor
   - Edit 768-byte attribute-only files with click/drag cell painting

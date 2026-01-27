@@ -20,7 +20,9 @@ Edit standard 6912-byte .scr files with authentic ZX Spectrum color handling:
 
 - **Tools**: Pixel, Line, Rectangle, Fill Cell, Recolor (attribute only)
 - **Brush**: Sizes 1-16px, shapes: Square, Round, Horizontal, Vertical, Stroke (/), Back stroke (\) (applies to Pixel, Line, Rectangle)
-- **Custom Brushes**: 5 user-defined 16×16 custom brushes (capture from screen, click=select, Shift+click=capture)
+- **Brush mode**: Replace (default), Set, Invert — persisted to localStorage
+- **Custom Brushes**: 5 user-defined custom brushes (capture from screen, click=select, Shift+click=capture, max 64x64)
+- **Copy/Paste**: Select tool (S) to drag-select a region (auto-copies), Paste (Ctrl+V) to place with preview
 - **Drawing**: Left click = ink color, Right click = paper color
 - **Colors**: Select ink (0-7), paper (0-7), toggle Bright, Attrs toggle (monochrome view)
 - **Undo/Redo**: 32 levels (Ctrl+Z / Ctrl+Y)
@@ -77,12 +79,16 @@ Edit 768-byte .53c/.atr attribute-only files:
 | `R` | Rectangle tool |
 | `C` | Fill cell tool |
 | `A` | Recolor tool (attribute only) |
+| `S` | Select tool (drag to select, auto-copies) |
 | `B` | Toggle Bright |
 | `[` | Decrease brush size |
 | `]` | Increase brush size |
+| `Ctrl+C` | Copy selection |
+| `Ctrl+V` | Paste (enter paste mode) |
 | `Ctrl+Z` | Undo |
 | `Ctrl+Y` | Redo |
 | `Ctrl+S` | Save |
+| `Escape` | Cancel selection / paste |
 
 ## Usage
 

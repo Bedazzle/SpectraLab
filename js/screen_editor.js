@@ -1,4 +1,4 @@
-// SpectraLab Screen Editor v1.15.0
+// SpectraLab Screen Editor v1.16.0
 // Tools for editing ZX Spectrum .scr files
 // Works like Art Studio / Artist 2 - simple attribute-per-cell model
 // @ts-check
@@ -13,7 +13,8 @@ const EDITOR = {
   TOOL_LINE: 'line',
   TOOL_RECT: 'rect',
   TOOL_FILL_CELL: 'fillcell',
-  TOOL_RECOLOR: 'recolor'
+  TOOL_RECOLOR: 'recolor',
+  TOOL_SELECT: 'select'
 };
 
 const COLOR_NAMES = ['Black', 'Blue', 'Red', 'Magenta', 'Green', 'Cyan', 'Yellow', 'White'];
@@ -46,17 +47,23 @@ let brushSize = 1;
 /** @type {string} - Brush shape: 'square', 'round', 'hline', 'vline', 'stroke', 'bstroke', 'custom' */
 let brushShape = 'square';
 
-/** @type {Array<Uint8Array|null>} - 5 custom brush bitmaps (16 rows × 2 bytes = 32 bytes each) */
+/** @type {Array<{width:number, height:number, data:Uint8Array}|null>} - 5 custom brush bitmaps (variable size, max 64×64) */
 let customBrushes = [null, null, null, null, null];
 
 /** @type {number} - Active custom brush slot (0-4), or -1 for built-in shapes */
 let activeCustomBrush = -1;
 
-/** @type {boolean} - True when waiting for click to capture 16x16 region */
+/** @type {boolean} - True when waiting for click(s) to capture region */
 let capturingBrush = false;
 
 /** @type {number} - Slot being captured into (0-4) */
 let captureSlot = 0;
+
+/** @type {{x:number, y:number}|null} - First corner of brush capture rectangle */
+let captureStartPoint = null;
+
+/** @type {string} - Custom brush paint mode: 'set', 'invert', 'replace' */
+let brushPaintMode = localStorage.getItem('spectraLabBrushPaintMode') || 'replace';
 
 /** @type {{x: number, y: number}|null} - Start point for line/rect */
 let toolStartPoint = null;
@@ -81,6 +88,39 @@ let previewZoom = 1;
 
 /** @type {HTMLCanvasElement|null} */
 let previewCanvas = null;
+
+// ============================================================================
+// Selection / Clipboard State
+// ============================================================================
+
+/** @type {{x:number, y:number}|null} - First corner of selection */
+let selectionStartPoint = null;
+
+/** @type {{x:number, y:number}|null} - Second corner of selection */
+let selectionEndPoint = null;
+
+/** @type {boolean} - Dragging to define selection */
+let isSelecting = false;
+
+/** @type {boolean} - Snap selection to 8x8 cell boundaries */
+let selectionSnapToCell = true;
+
+/**
+ * Effective snap state — always true for .53c (attribute-only, cell granularity)
+ * @returns {boolean}
+ */
+function isSnapActive() {
+  return selectionSnapToCell || currentFormat === FORMAT.ATTR_53C;
+}
+
+/** @type {{format:string, width?:number, height?:number, cellCols:number, cellRows:number, bitmap?:Uint8Array, attrs:Uint8Array}|null} */
+let clipboardData = null;
+
+/** @type {boolean} - Paste preview mode active */
+let isPasting = false;
+
+/** @type {{x:number, y:number}} - Current cursor position during paste */
+let pasteCursorPos = { x: 0, y: 0 };
 
 // ============================================================================
 // ZX Spectrum Screen Address Calculation
@@ -208,20 +248,36 @@ function parseAttribute(attr) {
  * @param {boolean} isInk
  */
 function stampBrush(cx, cy, isInk) {
-  // Custom brush: stamp 16x16 pattern centered on cursor
+  // Custom brush: stamp variable-size pattern centered on cursor
   if (brushShape === 'custom' && activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
-    const data = customBrushes[activeCustomBrush];
-    for (let r = 0; r < 16; r++) {
-      const byte0 = data[r * 2];
-      const byte1 = data[r * 2 + 1];
-      for (let c = 0; c < 8; c++) {
-        if (byte0 & (0x80 >> c)) {
-          setPixel(screenData, cx + c - 7, cy + r - 7, isInk);
-        }
-      }
-      for (let c = 0; c < 8; c++) {
-        if (byte1 & (0x80 >> c)) {
-          setPixel(screenData, cx + 8 + c - 7, cy + r - 7, isInk);
+    const brush = customBrushes[activeCustomBrush];
+    const bw = brush.width;
+    const bh = brush.height;
+    const bytesPerRow = Math.ceil(bw / 8);
+    const offsetX = Math.floor((bw - 1) / 2);
+    const offsetY = Math.floor((bh - 1) / 2);
+    for (let r = 0; r < bh; r++) {
+      for (let c = 0; c < bw; c++) {
+        const px = cx + c - offsetX;
+        const py = cy + r - offsetY;
+        const byteIdx = r * bytesPerRow + Math.floor(c / 8);
+        const bitIdx = 7 - (c % 8);
+        const brushBit = (brush.data[byteIdx] & (1 << bitIdx)) !== 0;
+
+        if (brushPaintMode === 'replace') {
+          // Replace: overwrite every pixel in the brush rectangle
+          setPixel(screenData, px, py, brushBit);
+        } else if (brushPaintMode === 'invert') {
+          // Invert: toggle screen pixel where brush bit is set
+          if (brushBit) {
+            const current = getPixel(screenData, px, py);
+            setPixel(screenData, px, py, !current);
+          }
+        } else {
+          // Set (default): paint ink/paper where brush bit is set
+          if (brushBit) {
+            setPixel(screenData, px, py, isInk);
+          }
         }
       }
     }
@@ -395,6 +451,424 @@ function recolorCell53c(x, y) {
 }
 
 // ============================================================================
+// Selection / Clipboard Functions
+// ============================================================================
+
+/**
+ * Normalizes selection start/end into a rectangle, snaps if enabled, clamps to screen
+ * @returns {{left:number, top:number, right:number, bottom:number, width:number, height:number}|null}
+ */
+function getSelectionRect() {
+  if (!selectionStartPoint || !selectionEndPoint) return null;
+
+  let left = Math.min(selectionStartPoint.x, selectionEndPoint.x);
+  let top = Math.min(selectionStartPoint.y, selectionEndPoint.y);
+  let right = Math.max(selectionStartPoint.x, selectionEndPoint.x);
+  let bottom = Math.max(selectionStartPoint.y, selectionEndPoint.y);
+
+  if (isSnapActive()) {
+    left = Math.floor(left / 8) * 8;
+    top = Math.floor(top / 8) * 8;
+    right = Math.floor(right / 8) * 8 + 7;
+    bottom = Math.floor(bottom / 8) * 8 + 7;
+  }
+
+  // Clamp to screen bounds
+  left = Math.max(0, left);
+  top = Math.max(0, top);
+  right = Math.min(SCREEN.WIDTH - 1, right);
+  bottom = Math.min(SCREEN.HEIGHT - 1, bottom);
+
+  const width = right - left + 1;
+  const height = bottom - top + 1;
+  if (width <= 0 || height <= 0) return null;
+
+  return { left, top, right, bottom, width, height };
+}
+
+/**
+ * Copies pixel bitmap and attributes from the current selection into clipboardData
+ */
+function copySelection() {
+  const infoEl = document.getElementById('editorPositionInfo');
+  const rect = getSelectionRect();
+  if (!rect) {
+    if (infoEl) infoEl.innerHTML = 'No selection — use Select tool first';
+    return;
+  }
+
+  if (currentFormat === FORMAT.ATTR_53C) {
+    // .53c: copy attributes only
+    const cellLeft = Math.floor(rect.left / 8);
+    const cellTop = Math.floor(rect.top / 8);
+    const cellCols = Math.ceil(rect.width / 8);
+    const cellRows = Math.ceil(rect.height / 8);
+    const attrs = new Uint8Array(cellCols * cellRows);
+
+    for (let cr = 0; cr < cellRows; cr++) {
+      for (let cc = 0; cc < cellCols; cc++) {
+        const srcAddr = (cellLeft + cc) + (cellTop + cr) * 32;
+        attrs[cr * cellCols + cc] = screenData[srcAddr];
+      }
+    }
+
+    clipboardData = { format: '53c', cellCols, cellRows, attrs };
+  } else {
+    // .scr: copy bitmap (linear packed) + attributes
+    const cellLeft = Math.floor(rect.left / 8);
+    const cellTop = Math.floor(rect.top / 8);
+    const cellCols = Math.ceil(rect.width / 8);
+    const cellRows = Math.ceil(rect.height / 8);
+
+    // Pack bitmap: one bit per pixel, row by row, MSB-first, linear (not ZX-interleaved)
+    const bitmapBytesPerRow = Math.ceil(rect.width / 8);
+    const bitmap = new Uint8Array(bitmapBytesPerRow * rect.height);
+
+    for (let py = 0; py < rect.height; py++) {
+      for (let px = 0; px < rect.width; px++) {
+        const sx = rect.left + px;
+        const sy = rect.top + py;
+        if (getPixel(screenData, sx, sy)) {
+          const byteIdx = py * bitmapBytesPerRow + Math.floor(px / 8);
+          const bitIdx = 7 - (px % 8);
+          bitmap[byteIdx] |= (1 << bitIdx);
+        }
+      }
+    }
+
+    // Copy attributes
+    const attrs = new Uint8Array(cellCols * cellRows);
+    for (let cr = 0; cr < cellRows; cr++) {
+      for (let cc = 0; cc < cellCols; cc++) {
+        const srcAddr = SCREEN.BITMAP_SIZE + (cellLeft + cc) + (cellTop + cr) * 32;
+        attrs[cr * cellCols + cc] = screenData[srcAddr];
+      }
+    }
+
+    clipboardData = {
+      format: 'scr',
+      width: rect.width,
+      height: rect.height,
+      cellCols,
+      cellRows,
+      bitmap,
+      attrs
+    };
+  }
+
+  if (infoEl) {
+    const fmt = clipboardData.format;
+    const cols = clipboardData.cellCols;
+    const rows = clipboardData.cellRows;
+    infoEl.innerHTML = `Copied ${fmt} region: ${cols}\u00d7${rows} cells`;
+  }
+}
+
+/**
+ * Enters paste preview mode if clipboard has compatible data
+ */
+function startPasteMode() {
+  const infoEl = document.getElementById('editorPositionInfo');
+  if (!clipboardData) {
+    if (infoEl) infoEl.innerHTML = 'Clipboard empty — copy a selection first';
+    return;
+  }
+
+  // Validate format match
+  const editorFormat = currentFormat === FORMAT.ATTR_53C ? '53c' : 'scr';
+  if (clipboardData.format !== editorFormat) {
+    if (infoEl) {
+      infoEl.innerHTML = 'Clipboard format mismatch (' + clipboardData.format + ' vs ' + editorFormat + ')';
+    }
+    return;
+  }
+
+  isPasting = true;
+  // Fully exit select mode — clear selection state and deselect tool
+  isSelecting = false;
+  selectionStartPoint = null;
+  selectionEndPoint = null;
+  currentTool = '';
+  document.querySelectorAll('.editor-tool-btn[data-tool]').forEach(btn => {
+    btn.classList.remove('selected');
+  });
+  if (infoEl) infoEl.innerHTML = 'Click to place — Escape to cancel';
+  editorRender();
+}
+
+/**
+ * Writes clipboard bitmap+attrs to screen at the given position
+ * @param {number} x - Top-left X of paste destination (pixel coords)
+ * @param {number} y - Top-left Y of paste destination (pixel coords)
+ */
+function executePaste(x, y) {
+  if (!clipboardData || !screenData) return;
+
+  // Snap paste position if enabled
+  if (isSnapActive()) {
+    x = Math.floor(x / 8) * 8;
+    y = Math.floor(y / 8) * 8;
+  }
+
+  saveUndoState();
+
+  if (clipboardData.format === 'scr' && clipboardData.bitmap) {
+    // Write bitmap pixels — respects brushPaintMode
+    const bitmapBytesPerRow = Math.ceil(clipboardData.width / 8);
+    for (let py = 0; py < clipboardData.height; py++) {
+      for (let px = 0; px < clipboardData.width; px++) {
+        const dx = x + px;
+        const dy = y + py;
+        if (dx < 0 || dx >= SCREEN.WIDTH || dy < 0 || dy >= SCREEN.HEIGHT) continue;
+
+        const byteIdx = py * bitmapBytesPerRow + Math.floor(px / 8);
+        const bitIdx = 7 - (px % 8);
+        const clipBit = (clipboardData.bitmap[byteIdx] & (1 << bitIdx)) !== 0;
+
+        const bitmapAddr = getBitmapAddress(dx, dy);
+        const bit = getBitPosition(dx);
+
+        if (brushPaintMode === 'invert') {
+          // XOR: toggle screen pixel where clipboard has ink
+          if (clipBit) {
+            screenData[bitmapAddr] ^= (1 << bit);
+          }
+        } else if (brushPaintMode === 'set') {
+          // Set: only write ink pixels, leave paper pixels untouched
+          if (clipBit) {
+            screenData[bitmapAddr] |= (1 << bit);
+          }
+        } else {
+          // Replace (default): overwrite every pixel from clipboard
+          if (clipBit) {
+            screenData[bitmapAddr] |= (1 << bit);
+          } else {
+            screenData[bitmapAddr] &= ~(1 << bit);
+          }
+        }
+      }
+    }
+
+    // Write attributes from clipboard (preserving original colors)
+    const cellLeft = Math.floor(x / 8);
+    const cellTop = Math.floor(y / 8);
+    for (let cr = 0; cr < clipboardData.cellRows; cr++) {
+      for (let cc = 0; cc < clipboardData.cellCols; cc++) {
+        const destCol = cellLeft + cc;
+        const destRow = cellTop + cr;
+        if (destCol < 0 || destCol >= SCREEN.CHAR_COLS || destRow < 0 || destRow >= SCREEN.CHAR_ROWS) continue;
+        const destAddr = SCREEN.BITMAP_SIZE + destCol + destRow * 32;
+        screenData[destAddr] = clipboardData.attrs[cr * clipboardData.cellCols + cc];
+      }
+    }
+  } else if (clipboardData.format === '53c') {
+    // .53c: write attributes only
+    const cellLeft = Math.floor(x / 8);
+    const cellTop = Math.floor(y / 8);
+    for (let cr = 0; cr < clipboardData.cellRows; cr++) {
+      for (let cc = 0; cc < clipboardData.cellCols; cc++) {
+        const destCol = cellLeft + cc;
+        const destRow = cellTop + cr;
+        if (destCol < 0 || destCol >= SCREEN.CHAR_COLS || destRow < 0 || destRow >= SCREEN.CHAR_ROWS) continue;
+        const destAddr = destCol + destRow * 32;
+        screenData[destAddr] = clipboardData.attrs[cr * clipboardData.cellCols + cc];
+      }
+    }
+  }
+
+  isPasting = false;
+  editorRender();
+}
+
+/**
+ * Draws a cyan dashed rectangle while dragging to define selection
+ * @param {number} x0
+ * @param {number} y0
+ * @param {number} x1
+ * @param {number} y1
+ */
+function drawSelectionPreview(x0, y0, x1, y1) {
+  const ctx = screenCanvas.getContext('2d');
+  if (!ctx) return;
+
+  let left = Math.min(x0, x1);
+  let top = Math.min(y0, y1);
+  let right = Math.max(x0, x1);
+  let bottom = Math.max(y0, y1);
+
+  if (isSnapActive()) {
+    left = Math.floor(left / 8) * 8;
+    top = Math.floor(top / 8) * 8;
+    right = Math.floor(right / 8) * 8 + 7;
+    bottom = Math.floor(bottom / 8) * 8 + 7;
+  }
+
+  left = Math.max(0, left);
+  top = Math.max(0, top);
+  right = Math.min(SCREEN.WIDTH - 1, right);
+  bottom = Math.min(SCREEN.HEIGHT - 1, bottom);
+
+  const borderPixels = borderSize * zoom;
+  const w = right - left + 1;
+  const h = bottom - top + 1;
+
+  ctx.strokeStyle = 'rgba(0, 255, 255, 0.9)';
+  ctx.lineWidth = Math.max(1, zoom / 2);
+  ctx.setLineDash([4, 4]);
+  ctx.strokeRect(
+    borderPixels + left * zoom,
+    borderPixels + top * zoom,
+    w * zoom,
+    h * zoom
+  );
+  ctx.setLineDash([]);
+}
+
+/**
+ * Draws a cyan dashed rectangle for the committed (finalized) selection
+ */
+function drawFinalizedSelectionOverlay() {
+  const rect = getSelectionRect();
+  if (!rect) return;
+
+  const ctx = screenCanvas.getContext('2d');
+  if (!ctx) return;
+
+  const borderPixels = borderSize * zoom;
+
+  ctx.strokeStyle = 'rgba(0, 255, 255, 0.9)';
+  ctx.lineWidth = Math.max(1, zoom / 2);
+  ctx.setLineDash([4, 4]);
+  ctx.strokeRect(
+    borderPixels + rect.left * zoom,
+    borderPixels + rect.top * zoom,
+    rect.width * zoom,
+    rect.height * zoom
+  );
+  ctx.setLineDash([]);
+}
+
+/**
+ * Draws a semi-transparent preview of clipboard content at the cursor position
+ * @param {number} x - Top-left X (pixel coords)
+ * @param {number} y - Top-left Y (pixel coords)
+ */
+function drawPastePreview(x, y) {
+  if (!clipboardData) return;
+
+  const ctx = screenCanvas.getContext('2d');
+  if (!ctx) return;
+
+  if (isSnapActive()) {
+    x = Math.floor(x / 8) * 8;
+    y = Math.floor(y / 8) * 8;
+  }
+
+  const borderPixels = borderSize * zoom;
+
+  ctx.globalAlpha = 0.5;
+
+  if (clipboardData.format === 'scr' && clipboardData.bitmap) {
+    // Draw bitmap pixels
+    const bitmapBytesPerRow = Math.ceil(clipboardData.width / 8);
+    for (let py = 0; py < clipboardData.height; py++) {
+      for (let px = 0; px < clipboardData.width; px++) {
+        const dx = x + px;
+        const dy = y + py;
+        if (dx < 0 || dx >= SCREEN.WIDTH || dy < 0 || dy >= SCREEN.HEIGHT) continue;
+
+        const byteIdx = py * bitmapBytesPerRow + Math.floor(px / 8);
+        const bitIdx = 7 - (px % 8);
+        const isSet = (clipboardData.bitmap[byteIdx] & (1 << bitIdx)) !== 0;
+
+        // Determine color from clipboard attributes
+        const cellCol = Math.floor(px / 8);
+        const cellRow = Math.floor(py / 8);
+        const attrIdx = cellRow * clipboardData.cellCols + cellCol;
+        const attr = clipboardData.attrs[attrIdx];
+        const { inkRgb, paperRgb } = getColorsRgb(attr);
+        const rgb = isSet ? inkRgb : paperRgb;
+
+        ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+        ctx.fillRect(
+          borderPixels + dx * zoom,
+          borderPixels + dy * zoom,
+          zoom,
+          zoom
+        );
+      }
+    }
+  } else if (clipboardData.format === '53c') {
+    // Draw attribute cells as colored blocks
+    const select = /** @type {HTMLSelectElement|null} */ (document.getElementById('pattern53cSelect'));
+    const pattern = select?.value || 'checker';
+    for (let cr = 0; cr < clipboardData.cellRows; cr++) {
+      for (let cc = 0; cc < clipboardData.cellCols; cc++) {
+        const cellX = x + cc * 8;
+        const cellY = y + cr * 8;
+        const attr = clipboardData.attrs[cr * clipboardData.cellCols + cc];
+        const { inkRgb, paperRgb } = getColorsRgb(attr);
+
+        for (let py = 0; py < 8; py++) {
+          for (let px = 0; px < 8; px++) {
+            const dx = cellX + px;
+            const dy = cellY + py;
+            if (dx < 0 || dx >= SCREEN.WIDTH || dy < 0 || dy >= SCREEN.HEIGHT) continue;
+
+            let isInk;
+            if (pattern === 'stripes') {
+              isInk = (Math.floor(px / 2) % 2 + py % 2) % 2 === 0;
+            } else if (pattern === 'dd77') {
+              const patternByte = (py % 2 === 0) ? 0xDD : 0x77;
+              isInk = (patternByte & (1 << (7 - px))) !== 0;
+            } else {
+              isInk = (px + py) % 2 === 0;
+            }
+            const rgb = isInk ? inkRgb : paperRgb;
+
+            ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+            ctx.fillRect(
+              borderPixels + dx * zoom,
+              borderPixels + dy * zoom,
+              zoom,
+              zoom
+            );
+          }
+        }
+      }
+    }
+  }
+
+  ctx.globalAlpha = 1.0;
+
+  // Draw outline around paste region
+  const pw = clipboardData.format === 'scr' ? clipboardData.width : clipboardData.cellCols * 8;
+  const ph = clipboardData.format === 'scr' ? clipboardData.height : clipboardData.cellRows * 8;
+
+  ctx.strokeStyle = 'rgba(0, 255, 255, 0.9)';
+  ctx.lineWidth = Math.max(1, zoom / 2);
+  ctx.setLineDash([4, 4]);
+  ctx.strokeRect(
+    borderPixels + x * zoom,
+    borderPixels + y * zoom,
+    pw * zoom,
+    ph * zoom
+  );
+  ctx.setLineDash([]);
+}
+
+/**
+ * Clears all selection and paste state
+ */
+function cancelSelection() {
+  selectionStartPoint = null;
+  selectionEndPoint = null;
+  isSelecting = false;
+  isPasting = false;
+  editorRender();
+}
+
+// ============================================================================
 // Mouse Handling
 // ============================================================================
 
@@ -430,9 +904,35 @@ function handleEditorMouseDown(event) {
   const coords = canvasToScreenCoords(screenCanvas, event);
   if (!coords) return;
 
-  // Intercept for brush capture
+  // Intercept for brush capture (two-click rectangle selection)
   if (capturingBrush) {
-    finishBrushCapture(coords.x, coords.y);
+    if (!captureStartPoint) {
+      // First click: set start corner
+      captureStartPoint = { x: coords.x, y: coords.y };
+      const infoEl = document.getElementById('editorPositionInfo');
+      if (infoEl) {
+        infoEl.innerHTML = 'Click second corner (max 64\u00d764)';
+      }
+    } else {
+      // Second click: capture the rectangle
+      finishBrushCapture(captureStartPoint.x, captureStartPoint.y, coords.x, coords.y);
+    }
+    return;
+  }
+
+  // Paste mode: click to execute paste
+  if (isPasting) {
+    executePaste(coords.x, coords.y);
+    return;
+  }
+
+  // Select tool: start selection drag (works in both .scr and .53c)
+  if (currentTool === EDITOR.TOOL_SELECT) {
+    selectionStartPoint = { x: coords.x, y: coords.y };
+    selectionEndPoint = null;
+    isSelecting = true;
+    editorRender();
+    updateEditorInfo(coords.x, coords.y);
     return;
   }
 
@@ -487,12 +987,34 @@ function handleEditorMouseMove(event) {
   const coords = canvasToScreenCoords(screenCanvas, event);
   if (coords) {
     updateEditorInfo(coords.x, coords.y);
+    pasteCursorPos = { x: coords.x, y: coords.y };
+  }
+
+  // Paste preview: redraw with paste overlay at cursor
+  if (isPasting && coords) {
+    editorRender();
+    drawPastePreview(coords.x, coords.y);
+    return;
+  }
+
+  // Show capture selection rectangle preview
+  if (capturingBrush && captureStartPoint && coords) {
+    editorRender();
+    drawCapturePreview(captureStartPoint.x, captureStartPoint.y, coords.x, coords.y);
+    return;
+  }
+
+  // Selection drag: update preview
+  if (isSelecting && selectionStartPoint && coords) {
+    editorRender();
+    drawSelectionPreview(selectionStartPoint.x, selectionStartPoint.y, coords.x, coords.y);
+    return;
   }
 
   if (!coords) return;
 
-  // .53c attribute editor: drag-paint cells
-  if (isAttrEditor()) {
+  // .53c attribute editor: drag-paint cells (but not when Select tool is active)
+  if (isAttrEditor() && currentTool !== EDITOR.TOOL_SELECT) {
     if (isDrawing) {
       recolorCell53c(coords.x, coords.y);
       editorRender();
@@ -541,7 +1063,21 @@ function handleEditorMouseMove(event) {
  * @param {MouseEvent} event
  */
 function handleEditorMouseUp(event) {
-  if (!editorActive || !isDrawing) return;
+  if (!editorActive) return;
+
+  // Finalize selection rectangle on mouse release — auto-copy
+  if (isSelecting && selectionStartPoint) {
+    const coords = canvasToScreenCoords(screenCanvas, event);
+    if (coords) {
+      selectionEndPoint = { x: coords.x, y: coords.y };
+    }
+    isSelecting = false;
+    copySelection();
+    editorRender();
+    return;
+  }
+
+  if (!isDrawing) return;
 
   // .53c attribute editor: just reset drawing state
   if (isAttrEditor()) {
@@ -698,8 +1234,7 @@ function clearScreen() {
  * Renders the preview canvas
  */
 function renderPreview() {
-  if (currentFormat === FORMAT.ATTR_53C) return;
-  if (!previewCanvas || !screenData || screenData.length < SCREEN.TOTAL_SIZE) return;
+  if (!previewCanvas || !screenData) return;
 
   const ctx = previewCanvas.getContext('2d');
   if (!ctx) return;
@@ -712,43 +1247,31 @@ function renderPreview() {
   const imageData = ctx.createImageData(SCREEN.WIDTH, SCREEN.HEIGHT);
   const data = imageData.data;
 
-  // Render all three screen thirds
-  const sections = [
-    { bitmapAddr: 0, attrAddr: 6144, yOffset: 0 },
-    { bitmapAddr: 2048, attrAddr: 6400, yOffset: 64 },
-    { bitmapAddr: 4096, attrAddr: 6656, yOffset: 128 }
-  ];
+  if (currentFormat === FORMAT.ATTR_53C && screenData.length >= SCREEN.ATTR_SIZE) {
+    // .53c: render attribute pattern
+    const select = /** @type {HTMLSelectElement|null} */ (document.getElementById('pattern53cSelect'));
+    const pattern = select?.value || 'checker';
+    const patternDD = 0xDD;
+    const pattern77 = 0x77;
 
-  for (const section of sections) {
-    for (let line = 0; line < 8; line++) {
-      for (let row = 0; row < 8; row++) {
-        for (let col = 0; col < 32; col++) {
-          const bitmapOffset = section.bitmapAddr + col + row * 32 + line * 256;
-          const byte = screenData[bitmapOffset];
+    for (let row = 0; row < SCREEN.CHAR_ROWS; row++) {
+      for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
+        const attr = screenData[col + row * 32];
+        const { inkRgb, paperRgb } = getColorsRgb(attr);
 
-          const attrOffset = section.attrAddr + col + row * 32;
-          const attr = screenData[attrOffset];
-
-          let inkIndex = attr & 0x07;
-          let paperIndex = (attr >> 3) & 0x07;
-          const isBright = (attr & 0x40) !== 0;
-          const isFlash = (attr & 0x80) !== 0;
-
-          if (isFlash && flashPhase && flashEnabled) {
-            const tmp = inkIndex;
-            inkIndex = paperIndex;
-            paperIndex = tmp;
-          }
-
-          const palette = isBright ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
-
-          const x = col * 8;
-          const y = section.yOffset + row * 8 + line;
-
-          for (let bit = 0; bit < 8; bit++) {
-            const isSet = (byte & (0x80 >> bit)) !== 0;
-            const rgb = isSet ? palette[inkIndex] : palette[paperIndex];
-            const pixelIndex = ((y * SCREEN.WIDTH) + x + bit) * 4;
+        for (let py = 0; py < 8; py++) {
+          for (let px = 0; px < 8; px++) {
+            let isInk;
+            if (pattern === 'stripes') {
+              isInk = (Math.floor(px / 2) % 2 + py % 2) % 2 === 0;
+            } else if (pattern === 'dd77') {
+              const patternByte = (py % 2 === 0) ? patternDD : pattern77;
+              isInk = (patternByte & (1 << (7 - px))) !== 0;
+            } else {
+              isInk = (px + py) % 2 === 0;
+            }
+            const rgb = isInk ? inkRgb : paperRgb;
+            const pixelIndex = (((row * 8 + py) * SCREEN.WIDTH) + col * 8 + px) * 4;
             data[pixelIndex] = rgb[0];
             data[pixelIndex + 1] = rgb[1];
             data[pixelIndex + 2] = rgb[2];
@@ -757,6 +1280,55 @@ function renderPreview() {
         }
       }
     }
+  } else if (screenData.length >= SCREEN.TOTAL_SIZE) {
+    // SCR: render bitmap + attributes
+    const sections = [
+      { bitmapAddr: 0, attrAddr: 6144, yOffset: 0 },
+      { bitmapAddr: 2048, attrAddr: 6400, yOffset: 64 },
+      { bitmapAddr: 4096, attrAddr: 6656, yOffset: 128 }
+    ];
+
+    for (const section of sections) {
+      for (let line = 0; line < 8; line++) {
+        for (let row = 0; row < 8; row++) {
+          for (let col = 0; col < 32; col++) {
+            const bitmapOffset = section.bitmapAddr + col + row * 32 + line * 256;
+            const byte = screenData[bitmapOffset];
+
+            const attrOffset = section.attrAddr + col + row * 32;
+            const attr = screenData[attrOffset];
+
+            let inkIndex = attr & 0x07;
+            let paperIndex = (attr >> 3) & 0x07;
+            const isBright = (attr & 0x40) !== 0;
+            const isFlash = (attr & 0x80) !== 0;
+
+            if (isFlash && flashPhase && flashEnabled) {
+              const tmp = inkIndex;
+              inkIndex = paperIndex;
+              paperIndex = tmp;
+            }
+
+            const palette = isBright ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
+
+            const x = col * 8;
+            const y = section.yOffset + row * 8 + line;
+
+            for (let bit = 0; bit < 8; bit++) {
+              const isSet = (byte & (0x80 >> bit)) !== 0;
+              const rgb = isSet ? palette[inkIndex] : palette[paperIndex];
+              const pixelIndex = ((y * SCREEN.WIDTH) + x + bit) * 4;
+              data[pixelIndex] = rgb[0];
+              data[pixelIndex + 1] = rgb[1];
+              data[pixelIndex + 2] = rgb[2];
+              data[pixelIndex + 3] = 255;
+            }
+          }
+        }
+      }
+    }
+  } else {
+    return;
   }
 
   // Draw at 1:1 then scale
@@ -855,6 +1427,16 @@ function editorRender() {
   if (editorActive) {
     renderPreview();
     updateFlashTimer();
+
+    // Draw selection overlay (finalized selection rectangle)
+    if (selectionStartPoint && selectionEndPoint && !isSelecting && !isPasting) {
+      drawFinalizedSelectionOverlay();
+    }
+
+    // Draw paste preview at last cursor position
+    if (isPasting && clipboardData) {
+      drawPastePreview(pasteCursorPos.x, pasteCursorPos.y);
+    }
   }
 }
 
@@ -932,6 +1514,52 @@ function createNewScreen(ink, paper, bright) {
   editorRender();
 }
 
+/**
+ * Creates a new picture of the given format and enters the editor.
+ * Extensible — add new format cases as needed.
+ * @param {string} format - 'scr', 'atr', etc.
+ */
+function createNewPicture(format) {
+  // Exit editor first if active
+  if (editorActive) {
+    toggleEditorMode();
+  }
+
+  switch (format) {
+    case 'atr':
+      screenData = new Uint8Array(SCREEN.ATTR_SIZE);
+      const atrAttr = buildAttribute(7, 0, false, false);
+      for (let i = 0; i < SCREEN.ATTR_SIZE; i++) {
+        screenData[i] = atrAttr;
+      }
+      currentFormat = FORMAT.ATTR_53C;
+      currentFileName = 'new_screen.atr';
+      break;
+
+    case 'scr':
+    default:
+      screenData = new Uint8Array(SCREEN.TOTAL_SIZE);
+      const scrAttr = buildAttribute(7, 0, false, false);
+      for (let i = SCREEN.BITMAP_SIZE; i < SCREEN.TOTAL_SIZE; i++) {
+        screenData[i] = scrAttr;
+      }
+      currentFormat = FORMAT.SCR;
+      currentFileName = 'new_screen.scr';
+      break;
+  }
+
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+  if (typeof updateFileInfo === 'function') {
+    updateFileInfo();
+  }
+  renderScreen();
+
+  // Enter editor
+  toggleEditorMode();
+}
+
 // ============================================================================
 // Editor UI
 // ============================================================================
@@ -992,10 +1620,18 @@ function updateEditorInfo(x, y) {
  * @param {string} tool
  */
 function setEditorTool(tool) {
+  // Cancel selection/paste when switching away from Select
+  if (currentTool === EDITOR.TOOL_SELECT && tool !== EDITOR.TOOL_SELECT) {
+    selectionStartPoint = null;
+    selectionEndPoint = null;
+    isSelecting = false;
+    isPasting = false;
+  }
   currentTool = tool;
   document.querySelectorAll('.editor-tool-btn[data-tool]').forEach(btn => {
     btn.classList.toggle('selected', /** @type {HTMLElement} */(btn).dataset.tool === tool);
   });
+  editorRender();
 }
 
 /**
@@ -1156,6 +1792,7 @@ function toggleEditorMode() {
   const toolsSection = document.getElementById('editorToolsSection');
   const brushSection = document.getElementById('editorBrushSection');
   const attrsCheckbox = document.getElementById('editorShowAttrs');
+  const clipboardSection = document.getElementById('editorClipboardSection');
 
   if (editorActive) {
     screenCanvas.addEventListener('mousedown', handleEditorMouseDown);
@@ -1164,19 +1801,31 @@ function toggleEditorMode() {
     screenCanvas.addEventListener('mouseleave', handleEditorMouseUp);
     screenCanvas.addEventListener('contextmenu', handleContextMenu);
 
+    // Clipboard section: always visible when editor is active
+    if (clipboardSection) clipboardSection.style.display = '';
+
+    const snapCheckbox = document.getElementById('editorSnapCheckbox');
     if (currentFormat === FORMAT.ATTR_53C) {
-      // .53c editor: hide tools, brush, attrs checkbox; no preview panel
+      // .53c editor: hide tools, brush, attrs checkbox, snap (always snapped)
       if (toolsSection) toolsSection.style.display = 'none';
       if (brushSection) brushSection.style.display = 'none';
       if (attrsCheckbox) attrsCheckbox.parentElement.style.display = 'none';
+      if (snapCheckbox) snapCheckbox.parentElement.style.display = 'none';
     } else {
-      // SCR editor: show everything + preview panel
+      // SCR editor: show everything
       if (toolsSection) toolsSection.style.display = '';
       if (brushSection) brushSection.style.display = '';
       if (attrsCheckbox) attrsCheckbox.parentElement.style.display = '';
-      showPreviewPanel();
+      if (snapCheckbox) snapCheckbox.parentElement.style.display = '';
     }
+    showPreviewPanel();
   } else {
+    // Cancel selection/paste on editor exit
+    selectionStartPoint = null;
+    selectionEndPoint = null;
+    isSelecting = false;
+    isPasting = false;
+
     screenCanvas.removeEventListener('mousedown', handleEditorMouseDown);
     screenCanvas.removeEventListener('mousemove', handleEditorMouseMove);
     screenCanvas.removeEventListener('mouseup', handleEditorMouseUp);
@@ -1187,6 +1836,7 @@ function toggleEditorMode() {
     if (toolsSection) toolsSection.style.display = '';
     if (brushSection) brushSection.style.display = '';
     if (attrsCheckbox) attrsCheckbox.parentElement.style.display = '';
+    if (clipboardSection) clipboardSection.style.display = '';
     hidePreviewPanel();
   }
 }
@@ -1196,53 +1846,95 @@ function toggleEditorMode() {
 // ============================================================================
 
 /**
- * Starts capturing a 16x16 region from the screen into a custom brush slot
- * @param {number} slot - Slot index (0-3)
+ * Starts capturing a rectangular region from the screen into a custom brush slot
+ * @param {number} slot - Slot index (0-4)
  */
 function startBrushCapture(slot) {
   capturingBrush = true;
   captureSlot = slot;
+  captureStartPoint = null;
   const infoEl = document.getElementById('editorPositionInfo');
   if (infoEl) {
-    infoEl.innerHTML = 'Click on screen to capture 16\u00d716 brush';
+    infoEl.innerHTML = 'Click first corner of brush region (max 64\u00d764)';
   }
 }
 
 /**
- * Finishes capturing a 16x16 region from the screen
- * @param {number} x - Click X coordinate
- * @param {number} y - Click Y coordinate
+ * Finishes capturing a rectangular region from the screen
+ * @param {number} x0 - First corner X
+ * @param {number} y0 - First corner Y
+ * @param {number} x1 - Second corner X
+ * @param {number} y1 - Second corner Y
  */
-function finishBrushCapture(x, y) {
+function finishBrushCapture(x0, y0, x1, y1) {
   if (!screenData || screenData.length < SCREEN.TOTAL_SIZE) return;
 
-  // Clamp to screen bounds so 16x16 region fits
-  x = Math.min(x, 240);
-  y = Math.min(y, 176);
+  // Normalize rectangle
+  let left = Math.min(x0, x1);
+  let top = Math.min(y0, y1);
+  let right = Math.max(x0, x1);
+  let bottom = Math.max(y0, y1);
 
-  const data = new Uint8Array(32);
-  for (let r = 0; r < 16; r++) {
-    let byte0 = 0;
-    let byte1 = 0;
-    for (let c = 0; c < 8; c++) {
-      if (getPixel(screenData, x + c, y + r)) {
-        byte0 |= (0x80 >> c);
+  // Clamp to screen bounds
+  left = Math.max(0, left);
+  top = Math.max(0, top);
+  right = Math.min(SCREEN.WIDTH - 1, right);
+  bottom = Math.min(SCREEN.HEIGHT - 1, bottom);
+
+  // Limit to 64x64
+  let bw = right - left + 1;
+  let bh = bottom - top + 1;
+  if (bw > 64) { right = left + 63; bw = 64; }
+  if (bh > 64) { bottom = top + 63; bh = 64; }
+
+  const bytesPerRow = Math.ceil(bw / 8);
+  const data = new Uint8Array(bytesPerRow * bh);
+
+  for (let r = 0; r < bh; r++) {
+    for (let c = 0; c < bw; c++) {
+      if (getPixel(screenData, left + c, top + r)) {
+        const byteIdx = r * bytesPerRow + Math.floor(c / 8);
+        const bitIdx = 7 - (c % 8);
+        data[byteIdx] |= (1 << bitIdx);
       }
     }
-    for (let c = 0; c < 8; c++) {
-      if (getPixel(screenData, x + 8 + c, y + r)) {
-        byte1 |= (0x80 >> c);
-      }
-    }
-    data[r * 2] = byte0;
-    data[r * 2 + 1] = byte1;
   }
 
-  customBrushes[captureSlot] = data;
+  customBrushes[captureSlot] = { width: bw, height: bh, data: data };
   capturingBrush = false;
+  captureStartPoint = null;
   selectCustomBrush(captureSlot);
   renderCustomBrushPreview(captureSlot);
   saveCustomBrushes();
+}
+
+/**
+ * Draws capture selection rectangle preview on canvas
+ * @param {number} x0
+ * @param {number} y0
+ * @param {number} x1
+ * @param {number} y1
+ */
+function drawCapturePreview(x0, y0, x1, y1) {
+  const ctx = screenCanvas.getContext('2d');
+  if (!ctx) return;
+
+  const borderPixels = borderSize * zoom;
+  const left = Math.min(x0, x1);
+  const top = Math.min(y0, y1);
+  const w = Math.min(Math.abs(x1 - x0) + 1, 64);
+  const h = Math.min(Math.abs(y1 - y0) + 1, 64);
+
+  ctx.strokeStyle = 'rgba(0, 255, 128, 0.9)';
+  ctx.lineWidth = Math.max(1, zoom / 2);
+  ctx.setLineDash([4, 4]);
+  ctx.strokeRect(
+    borderPixels + left * zoom,
+    borderPixels + top * zoom,
+    w * zoom,
+    h * zoom
+  );
+  ctx.setLineDash([]);
 }
 
 /**
@@ -1272,7 +1964,7 @@ function selectCustomBrush(slot) {
 
 /**
  * Renders a custom brush preview into its canvas
- * @param {number} slot - Slot index (0-3)
+ * @param {number} slot - Slot index (0-4)
  */
 function renderCustomBrushPreview(slot) {
   const canvas = /** @type {HTMLCanvasElement|null} */ (document.getElementById('customBrush' + slot));
@@ -1281,34 +1973,44 @@ function renderCustomBrushPreview(slot) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
-  ctx.clearRect(0, 0, 32, 32);
+  const cw = canvas.width;
+  const ch = canvas.height;
+  ctx.clearRect(0, 0, cw, ch);
 
   if (!customBrushes[slot]) {
     // Draw "+" crosshair for empty slot
     ctx.fillStyle = '#1a1a1a';
-    ctx.fillRect(0, 0, 32, 32);
+    ctx.fillRect(0, 0, cw, ch);
     ctx.strokeStyle = '#444';
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(16, 8);
-    ctx.lineTo(16, 24);
-    ctx.moveTo(8, 16);
-    ctx.lineTo(24, 16);
+    ctx.moveTo(cw / 2, ch / 2 - 8);
+    ctx.lineTo(cw / 2, ch / 2 + 8);
+    ctx.moveTo(cw / 2 - 8, ch / 2);
+    ctx.lineTo(cw / 2 + 8, ch / 2);
     ctx.stroke();
   } else {
-    const data = customBrushes[slot];
-    for (let r = 0; r < 16; r++) {
-      const byte0 = data[r * 2];
-      const byte1 = data[r * 2 + 1];
-      for (let c = 0; c < 8; c++) {
-        const isSet = (byte0 & (0x80 >> c)) !== 0;
-        ctx.fillStyle = isSet ? '#e0e0e0' : '#1a1a1a';
-        ctx.fillRect(c * 2, r * 2, 2, 2);
-      }
-      for (let c = 0; c < 8; c++) {
-        const isSet = (byte1 & (0x80 >> c)) !== 0;
-        ctx.fillStyle = isSet ? '#e0e0e0' : '#1a1a1a';
-        ctx.fillRect((8 + c) * 2, r * 2, 2, 2);
+    const brush = customBrushes[slot];
+    const bw = brush.width;
+    const bh = brush.height;
+    const bytesPerRow = Math.ceil(bw / 8);
+    // Scale to fit canvas, integer scale preferred
+    const scale = Math.max(1, Math.min(Math.floor(cw / bw), Math.floor(ch / bh)));
+    const ox = Math.floor((cw - bw * scale) / 2);
+    const oy = Math.floor((ch - bh * scale) / 2);
+
+    ctx.fillStyle = '#1a1a1a';
+    ctx.fillRect(0, 0, cw, ch);
+
+    for (let r = 0; r < bh; r++) {
+      for (let c = 0; c < bw; c++) {
+        const byteIdx = r * bytesPerRow + Math.floor(c / 8);
+        const bitIdx = 7 - (c % 8);
+        const isSet = (brush.data[byteIdx] & (1 << bitIdx)) !== 0;
+        if (isSet) {
+          ctx.fillStyle = '#e0e0e0';
+          ctx.fillRect(ox + c * scale, oy + r * scale, scale, scale);
+        }
       }
     }
   }
@@ -1329,13 +2031,17 @@ function renderAllCustomBrushPreviews() {
 function saveCustomBrushes() {
   const arr = customBrushes.map(b => {
     if (!b) return null;
-    return btoa(String.fromCharCode(...b));
+    return {
+      w: b.width,
+      h: b.height,
+      d: btoa(String.fromCharCode(...b.data))
+    };
   });
   localStorage.setItem('spectraLabCustomBrushes', JSON.stringify(arr));
 }
 
 /**
- * Loads custom brushes from localStorage
+ * Loads custom brushes from localStorage (with backward compatibility for old 16×16 format)
  */
 function loadCustomBrushes() {
   const raw = localStorage.getItem('spectraLabCustomBrushes');
@@ -1343,10 +2049,16 @@ function loadCustomBrushes() {
   try {
     const arr = JSON.parse(raw);
     for (let i = 0; i < 5; i++) {
-      if (arr[i]) {
-        customBrushes[i] = new Uint8Array([...atob(arr[i])].map(c => c.charCodeAt(0)));
-      } else {
+      if (!arr[i]) {
         customBrushes[i] = null;
+      } else if (typeof arr[i] === 'string') {
+        // Old format: base64 string of 32-byte Uint8Array (16×16)
+        const data = new Uint8Array([...atob(arr[i])].map(c => c.charCodeAt(0)));
+        customBrushes[i] = { width: 16, height: 16, data: data };
+      } else {
+        // New format: {w, h, d}
+        const data = new Uint8Array([...atob(arr[i].d)].map(c => c.charCodeAt(0)));
+        customBrushes[i] = { width: arr[i].w, height: arr[i].h, data: data };
       }
     }
   } catch (e) {
@@ -1398,6 +2110,16 @@ function initEditor() {
     });
   });
 
+  // Brush paint mode select
+  const paintModeSelect = /** @type {HTMLSelectElement|null} */ (document.getElementById('brushPaintMode'));
+  if (paintModeSelect) {
+    paintModeSelect.value = brushPaintMode;
+    paintModeSelect.addEventListener('change', (e) => {
+      brushPaintMode = /** @type {HTMLSelectElement} */ (e.target).value;
+      localStorage.setItem('spectraLabBrushPaintMode', brushPaintMode);
+    });
+  }
+
   // Load custom brushes from localStorage and render previews
   loadCustomBrushes();
   renderAllCustomBrushPreviews();
@@ -1427,6 +2149,19 @@ function initEditor() {
       editorRender();
     });
   }
+
+  // Snap checkbox
+  const snapCb = document.getElementById('editorSnapCheckbox');
+  if (snapCb) {
+    snapCb.addEventListener('change', (e) => {
+      selectionSnapToCell = /** @type {HTMLInputElement} */ (e.target).checked;
+    });
+  }
+
+  // Paste button
+  document.getElementById('editorPasteBtn')?.addEventListener('click', () => {
+    startPasteMode();
+  });
 
   // Action buttons
   document.getElementById('editorSaveBtn')?.addEventListener('click', () => saveScrFile());
@@ -1463,6 +2198,14 @@ function initEditor() {
       e.preventDefault();
       saveScrFile();
     }
+    if (e.ctrlKey && e.key === 'c') {
+      e.preventDefault();
+      copySelection();
+    }
+    if (e.ctrlKey && e.key === 'v') {
+      e.preventDefault();
+      startPasteMode();
+    }
 
     if (!e.ctrlKey && !e.altKey) {
       switch (e.key.toLowerCase()) {
@@ -1471,6 +2214,7 @@ function initEditor() {
         case 'r': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_RECT); break;
         case 'c': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_FILL_CELL); break;
         case 'a': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_RECOLOR); break;
+        case 's': setEditorTool(EDITOR.TOOL_SELECT); break;
         case 'b':
           editorBright = !editorBright;
           updateColorSelectors();
@@ -1479,6 +2223,22 @@ function initEditor() {
           editorFlash = !editorFlash;
           updateColorSelectors();
           break;
+      }
+    }
+
+    // Escape: cancel paste/selection first (higher priority), then brush capture
+    if (e.key === 'Escape') {
+      if (isPasting || selectionStartPoint || selectionEndPoint || isSelecting) {
+        e.preventDefault();
+        cancelSelection();
+        return;
+      }
+      if (capturingBrush) {
+        capturingBrush = false;
+        captureStartPoint = null;
+        editorRender();
+        const infoEl = document.getElementById('editorPositionInfo');
+        if (infoEl) infoEl.innerHTML = '';
       }
     }
 

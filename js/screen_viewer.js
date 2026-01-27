@@ -1,4 +1,4 @@
-// SpectraLab v1.15.0 - Main application
+// SpectraLab v1.16.0 - Main application
 // @ts-check
 "use strict";
 

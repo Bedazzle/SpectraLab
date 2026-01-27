@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.15.0 -->
+<!-- SpectraLab v1.16.0 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -661,6 +661,8 @@
 
   /* Custom brush slots */
   .custom-brush-slot {
+    width: 32px;
+    height: 32px;
     border: 2px solid var(--border-secondary);
     border-radius: 2px;
     cursor: pointer;
@@ -682,6 +684,32 @@
     pointer-events: none;
     box-sizing: border-box;
   }
+
+  /* Modal dialog */
+  .modal-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .modal-dialog {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    padding: 16px 20px;
+    min-width: 300px;
+    max-width: 400px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    color: var(--text-primary);
+  }
+  .modal-title {
+    font-size: 14px;
+    font-weight: bold;
+    margin-bottom: 12px;
+  }
 </style>
 </head>
 <body>
@@ -695,7 +723,7 @@
         <div class="control-group">
           <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.ifl,.bmc4,.mlt,.mc,.3,.mem,.specscii,.sca,.zip,application/zip,application/x-zip-compressed" style="width: 100%; font-size: 11px;">
           <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px;">
-            <a href="../index.html" id="appTitle" style="text-decoration: none; color: var(--text-secondary); font-size: 11px;">SpectraLab v1.15.0</a>
+            <a href="../index.html" id="appTitle" style="text-decoration: none; color: var(--text-secondary); font-size: 11px;">SpectraLab v1.16.0</a>
             <button id="helpBtn" style="padding: 2px 6px; font-size: 10px;" title="Help">?</button>
           </div>
         </div>
@@ -769,6 +797,9 @@
           </label>
           <input type="file" id="fontFile" accept=".bin,.SpecCHR" style="display: none;">
         </div>
+        <div class="control-group">
+          <button id="newPictureBtn" style="padding: 5px 12px; font-size: 11px; width: 100%;">New Picture</button>
+        </div>
         <div class="control-group" id="scrEditorControls">
           <button id="scrEditBtn" style="padding: 5px 12px; font-size: 11px; width: 100%;">Edit Screen</button>
           <div id="scrEditorOverlay" class="scr-editor-panel">
@@ -780,6 +811,16 @@
               <button class="editor-tool-btn" data-tool="rect" title="Rectangle (R)">Rect</button>
               <button class="editor-tool-btn" data-tool="fillcell" title="Fill Cell (C)">Cell</button>
               <button class="editor-tool-btn" data-tool="recolor" title="Recolor (A)">Color</button>
+            </div>
+            <div id="editorClipboardSection" style="margin-bottom: 8px;">
+              <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">CLIPBOARD</div>
+              <div style="display: flex; gap: 4px; align-items: center;">
+                <button class="editor-tool-btn" data-tool="select" title="Select (S)">Select</button>
+                <button id="editorPasteBtn" class="editor-tool-btn" title="Paste (Ctrl+V)">Paste</button>
+                <label style="font-size: 11px; margin-bottom: 0; margin-left: 4px; display: flex; align-items: center; gap: 3px;">
+                  <input type="checkbox" id="editorSnapCheckbox" checked> Snap to grid
+                </label>
+              </div>
             </div>
             <div id="editorBrushSection" style="margin-bottom: 8px;">
               <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">BRUSH</div>
@@ -813,11 +854,19 @@
                 <button class="editor-tool-btn editor-shape-btn" data-shape="bstroke" title="Back stroke brush (\)">\</button>
               </div>
               <div style="display: flex; gap: 4px; align-items: center; margin-top: 4px;">
-                <canvas id="customBrush0" class="custom-brush-slot" width="32" height="32" data-slot="0" title="Custom brush 1 (click=select, Shift+click=capture)"></canvas>
-                <canvas id="customBrush1" class="custom-brush-slot" width="32" height="32" data-slot="1" title="Custom brush 2 (click=select, Shift+click=capture)"></canvas>
-                <canvas id="customBrush2" class="custom-brush-slot" width="32" height="32" data-slot="2" title="Custom brush 3 (click=select, Shift+click=capture)"></canvas>
-                <canvas id="customBrush3" class="custom-brush-slot" width="32" height="32" data-slot="3" title="Custom brush 4 (click=select, Shift+click=capture)"></canvas>
-                <canvas id="customBrush4" class="custom-brush-slot" width="32" height="32" data-slot="4" title="Custom brush 5 (click=select, Shift+click=capture)"></canvas>
+                <canvas id="customBrush0" class="custom-brush-slot" width="64" height="64" data-slot="0" title="Custom brush 1 (click=select, Shift+click=capture)"></canvas>
+                <canvas id="customBrush1" class="custom-brush-slot" width="64" height="64" data-slot="1" title="Custom brush 2 (click=select, Shift+click=capture)"></canvas>
+                <canvas id="customBrush2" class="custom-brush-slot" width="64" height="64" data-slot="2" title="Custom brush 3 (click=select, Shift+click=capture)"></canvas>
+                <canvas id="customBrush3" class="custom-brush-slot" width="64" height="64" data-slot="3" title="Custom brush 4 (click=select, Shift+click=capture)"></canvas>
+                <canvas id="customBrush4" class="custom-brush-slot" width="64" height="64" data-slot="4" title="Custom brush 5 (click=select, Shift+click=capture)"></canvas>
+              </div>
+              <div class="editor-color-row" style="margin-top: 4px;">
+                <label style="min-width: auto;">Mode:</label>
+                <select id="brushPaintMode" style="width: 80px; flex: none; font-size: 11px; padding: 2px;" title="Custom brush paint mode">
+                  <option value="set">Set</option>
+                  <option value="invert">Invert</option>
+                  <option value="replace" selected>Replace</option>
+                </select>
               </div>
             </div>
             <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">COLORS (LMB=ink, RMB=paper)</div>
@@ -1082,6 +1131,26 @@
     <div id="zipFileList" style="overflow-y: auto; max-height: 300px; border: 1px solid var(--border-secondary); border-radius: 3px;"></div>
     <div style="margin-top: 10px; text-align: right;">
       <button id="zipCancelBtn" style="padding: 5px 15px;">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- New Picture Dialog -->
+<div id="newPictureDialog" class="modal-overlay" style="display:none;">
+  <div class="modal-dialog">
+    <div class="modal-title">New Picture</div>
+    <div style="margin-bottom: 12px;">
+      <label style="font-size: 12px;">
+        Format:
+        <select id="newPictureFormat" style="width: 100%; margin-top: 4px; padding: 4px; font-size: 12px;">
+          <option value="scr" selected>Screen (.scr) — 256×192, bitmap + attributes</option>
+          <option value="atr">Attributes (.atr) — 32×24 color cells</option>
+        </select>
+      </label>
+    </div>
+    <div style="display: flex; gap: 8px; justify-content: flex-end;">
+      <button id="newPictureCancelBtn" style="padding: 5px 16px; font-size: 12px;">Cancel</button>
+      <button id="newPictureOkBtn" style="padding: 5px 16px; font-size: 12px;">Create</button>
     </div>
   </div>
 </div>
