@@ -1,4 +1,4 @@
-// SpectraLab v1.18.0 - UI Event Handlers
+// SpectraLab v1.20.0 - UI Event Handlers
 // @ts-check
 "use strict";
 
@@ -35,7 +35,9 @@ function initScreenViewerUI() {
     const target = /** @type {HTMLInputElement} */ (event.target);
     const file = target.files?.[0];
     if (file) {
-      if (isZipFile(file.name)) {
+      if (typeof isImageFile === 'function' && isImageFile(file.name)) {
+        openImportDialog(file);
+      } else if (isZipFile(file.name)) {
         handleZipFile(file);
       } else {
         loadScreenFile(file);
@@ -182,7 +184,7 @@ function initScreenViewerUI() {
 
   // Help button handler
   helpBtn?.addEventListener('click', function() {
-    const helpText = `SpectraLab v1.18.0
+    const helpText = `SpectraLab v1.20.0
 
 Keyboard Shortcuts (Viewer):
   1-5        : Set zoom level (x1 to x5, x6/x8/x10 via menu)
@@ -263,7 +265,10 @@ Supported Formats:
   .3       18432 bytes  Tricolor RGB
   .specscii  var bytes  Text mode with colors
   .sca       var bytes  Animation (frames)
-  .zip                  Archive (auto-extract)`;
+  .zip                  Archive (auto-extract)
+
+Import Formats:
+  .png/.gif/.jpg/.webp/.bmp  Convert to SCR with dithering`;
     alert(helpText);
   });
 
@@ -358,6 +363,11 @@ Supported Formats:
 
   // Load palettes from JSON
   loadPalettes();
+
+  // Initialize PNG import dialog
+  if (typeof initPngImport === 'function') {
+    initPngImport();
+  }
 
   // Load saved settings
   loadSettings();

@@ -7,6 +7,7 @@ A pure JavaScript viewer and editor for ZX Spectrum graphics formats. No server 
 - **View** various ZX Spectrum screen formats
 - **Edit** SCR screens with pixel-accurate tools (like Art Studio)
 - **Edit** .53c/.atr attribute files with cell painting
+- **Import** PNG/GIF/JPG images and convert to SCR format
 - **Play** SCA animations with frame-by-frame control
 - **Edit** SCA animations: trim frames, adjust delays, remove duplicates
 - **Customize** display: zoom (x1-x10), border color/size, palettes, grid overlay, monochrome mode
@@ -44,6 +45,19 @@ Edit 768-byte .53c/.atr attribute-only files:
 - **No bitmap tools**: Tools and brush sections are hidden (not applicable)
 - **Undo/Redo**: 32 levels (Ctrl+Z / Ctrl+Y)
 - **Save**: Export as .53c file (Ctrl+S)
+
+## Image Import
+
+Import standard image formats (PNG, GIF, JPG, WebP, BMP) and convert to ZX Spectrum SCR format:
+
+- **Automatic scaling**: Images are scaled to 256x192 pixels
+- **Dithering options**: Floyd-Steinberg, Ordered (Bayer 4x4), Atkinson, or None
+- **Brightness/Contrast**: Manual or auto-detected adjustment
+- **Cell-aware conversion**: Respects 8x8 cell attribute constraints (2 colors per cell)
+- **Palette support**: Uses the currently selected display palette
+- **Live preview**: See the converted result before importing
+
+The converter analyzes each 8x8 cell to find the optimal ink/paper combination from both normal and bright color sets, minimizing color error.
 
 ## BSC Editor
 
@@ -108,6 +122,16 @@ Edit 11136-byte .bsc border screen files:
 ## Usage
 
 Open `index.html` in a web browser. No server required - runs entirely client-side.
+
+## Resources & References
+
+Tools and documentation that inspired or informed SpectraLab development:
+
+- [img2zxscr](https://gitverse.ru/nodeus/img2zxscr) - PNG to ZX Spectrum converter (Go)
+- [PNG-to-SCR](https://github.com/MatejJan/PNG-to-SCR) - Online JavaScript converter
+- [Image to ZX Spec](https://github.com/KodeMunkie/imagetozxspec) - Cross-platform converter with dithering
+- [img2spec](https://github.com/jarikomppa/img2spec) - Image Spectrumizer tool
+- [World of Spectrum](https://worldofspectrum.org/) - ZX Spectrum documentation and resources
 
 ## License
 

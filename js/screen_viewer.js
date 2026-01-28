@@ -1,4 +1,4 @@
-// SpectraLab v1.18.0 - Main application
+// SpectraLab v1.20.0 - Main application
 // @ts-check
 "use strict";
 
@@ -1804,6 +1804,7 @@ function resetScaState() {
 
 /** @type {string[]} - List of supported file extensions */
 const SUPPORTED_EXTENSIONS = ['scr', '53c', 'atr', 'bsc', 'ifl', 'bmc4', 'mlt', 'mc', '3', 'mem', 'specscii', 'sca'];
+const IMAGE_EXTENSIONS = ['png', 'gif', 'jpg', 'jpeg', 'webp', 'bmp'];
 
 /** @type {JSZip|null} - Current loaded ZIP archive */
 let currentZip = null;
@@ -1818,7 +1819,17 @@ let currentZipName = '';
  */
 function isSupportedFile(fileName) {
   const ext = fileName.toLowerCase().split('.').pop() || '';
-  return SUPPORTED_EXTENSIONS.includes(ext);
+  return SUPPORTED_EXTENSIONS.includes(ext) || IMAGE_EXTENSIONS.includes(ext);
+}
+
+/**
+ * Checks if a file is an image file
+ * @param {string} fileName - The file name to check
+ * @returns {boolean} True if the file is an image
+ */
+function isImageFileExt(fileName) {
+  const ext = fileName.toLowerCase().split('.').pop() || '';
+  return IMAGE_EXTENSIONS.includes(ext);
 }
 
 /**
@@ -1904,6 +1915,21 @@ async function loadFileFromZip(fileName) {
       return;
     }
 
+    // Check if this is an image file - handle via import dialog
+    if (isImageFileExt(fileName)) {
+      const blob = await zipEntry.async('blob');
+      const ext = fileName.toLowerCase().split('.').pop() || 'png';
+      const mimeType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' :
+                       ext === 'gif' ? 'image/gif' :
+                       ext === 'webp' ? 'image/webp' :
+                       ext === 'bmp' ? 'image/bmp' : 'image/png';
+      const file = new File([blob], fileName, { type: mimeType });
+      if (typeof openImportDialog === 'function') {
+        openImportDialog(file);
+      }
+      return;
+    }
+
     const arrayBuffer = await zipEntry.async('arraybuffer');
 
     // Stop any existing timers
@@ -1933,6 +1959,11 @@ async function loadFileFromZip(fileName) {
     updateScaControls();
     updateFileInfo();
     renderScreen();
+
+    // Update convert dropdown if editor function exists
+    if (typeof updateConvertOptions === 'function') {
+      updateConvertOptions();
+    }
 
     // Update editor preview if editor is active
     if (typeof editorActive !== 'undefined' && editorActive && typeof renderPreview === 'function') {
@@ -2694,6 +2725,11 @@ function loadScreenFile(file) {
       updateScaControls();
       updateFileInfo();
       renderScreen();
+
+      // Update convert dropdown if editor function exists
+      if (typeof updateConvertOptions === 'function') {
+        updateConvertOptions();
+      }
 
       // Update editor preview if editor is active
       if (typeof editorActive !== 'undefined' && editorActive && typeof renderPreview === 'function') {

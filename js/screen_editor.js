@@ -1,4 +1,4 @@
-// SpectraLab Screen Editor v1.18.0
+// SpectraLab Screen Editor v1.20.0
 // Tools for editing ZX Spectrum .scr files
 // Works like Art Studio / Artist 2 - simple attribute-per-cell model
 // @ts-check
@@ -2383,6 +2383,8 @@ function toggleEditorMode() {
     }
     // Show Export ASM button only for BSC format
     if (exportAsmBtn) exportAsmBtn.style.display = (currentFormat === FORMAT.BSC) ? '' : 'none';
+    // Update convert dropdown options
+    updateConvertOptions();
     showPreviewPanel();
   } else {
     // Cancel selection/paste on editor exit
@@ -2912,6 +2914,477 @@ function loadCustomBrushes() {
 }
 
 // ============================================================================
+// Format Conversion
+// ============================================================================
+
+/**
+ * Updates the convert dropdown options based on current format
+ */
+function updateConvertOptions() {
+  const convertSelect = /** @type {HTMLSelectElement|null} */ (document.getElementById('editorConvertSelect'));
+  if (!convertSelect) return;
+
+  // Clear existing options except the placeholder
+  convertSelect.innerHTML = '<option value="" disabled selected>Convert...</option>';
+
+  if (currentFormat === FORMAT.SCR) {
+    // SCR can convert to ATTR or BSC
+    convertSelect.innerHTML += '<option value="scr-to-attr">→ ATTR (.53c)</option>';
+    convertSelect.innerHTML += '<option value="scr-to-bsc">→ BSC (add border)</option>';
+  } else if (currentFormat === FORMAT.ATTR_53C) {
+    // ATTR can convert to SCR or BSC
+    convertSelect.innerHTML += '<option value="attr-to-scr">→ SCR (add pattern)</option>';
+    convertSelect.innerHTML += '<option value="attr-to-bsc">→ BSC (add pattern + border)</option>';
+  } else if (currentFormat === FORMAT.BSC) {
+    // BSC can convert to SCR
+    convertSelect.innerHTML += '<option value="bsc-to-scr">→ SCR (strip border)</option>';
+  }
+}
+
+/**
+ * Handles conversion action from dropdown
+ * @param {string} action - Conversion action identifier
+ */
+function handleConversion(action) {
+  switch (action) {
+    case 'scr-to-attr':
+      convertScrToAttr();
+      break;
+    case 'scr-to-bsc':
+      showBorderColorPicker();
+      break;
+    case 'attr-to-scr':
+      showPatternPicker(false);
+      break;
+    case 'attr-to-bsc':
+      showPatternPicker(true);
+      break;
+    case 'bsc-to-scr':
+      convertBscToScr();
+      break;
+  }
+}
+
+/**
+ * Convert SCR to ATTR (.53c) - extract attributes only
+ */
+function convertScrToAttr() {
+  if (!screenData || screenData.length < SCREEN.TOTAL_SIZE) {
+    alert('No valid SCR data to convert');
+    return;
+  }
+
+  // Extract attributes (last 768 bytes of SCR)
+  const attrData = new Uint8Array(SCREEN.ATTR_SIZE);
+  attrData.set(screenData.slice(SCREEN.BITMAP_SIZE, SCREEN.TOTAL_SIZE));
+
+  // Update state
+  screenData = attrData;
+  currentFormat = FORMAT.ATTR_53C;
+  currentFileName = currentFileName.replace(/\.[^.]+$/, '.53c');
+
+  // Clear undo history for new format
+  undoStack = [];
+  redoStack = [];
+
+  // Update UI
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+  updateConvertOptions();
+  updateFileInfo();
+  renderScreen();
+  editorRender();
+}
+
+/**
+ * Bitmap patterns for ATTR to SCR conversion
+ */
+const BITMAP_PATTERNS = {
+  empty: { name: 'Empty', generate: () => 0x00 },
+  solid: { name: 'Solid', generate: () => 0xFF },
+  checker1: { name: 'Check 1px', generate: (x, y) => (y % 2 === 0) ? 0xAA : 0x55 },
+  checker2: { name: 'Check 2px', generate: (x, y) => (Math.floor(y / 2) % 2 === 0) ? 0xCC : 0x33 },
+  checker4: { name: 'Check 4px', generate: (x, y) => (Math.floor(y / 4) % 2 === 0) ? 0xF0 : 0x0F },
+  hstripes1: { name: 'H-Strip 1', generate: (x, y) => (y % 2 === 0) ? 0xFF : 0x00 },
+  hstripes2: { name: 'H-Strip 2', generate: (x, y) => (Math.floor(y / 2) % 2 === 0) ? 0xFF : 0x00 },
+  hstripes4: { name: 'H-Strip 4', generate: (x, y) => (Math.floor(y / 4) % 2 === 0) ? 0xFF : 0x00 },
+  vstripes1: { name: 'V-Strip 1', generate: () => 0xAA },
+  vstripes2: { name: 'V-Strip 2', generate: () => 0xCC },
+  vstripes4: { name: 'V-Strip 4', generate: () => 0xF0 },
+  grid: { name: 'Grid', generate: (x, y) => (y % 8 === 0) ? 0xFF : 0x80 },
+  dots: { name: 'Dots', generate: (x, y) => (y % 2 === 0) ? 0x88 : 0x22 },
+  diagonal: { name: 'Diagonal', generate: (x, y) => (1 << (7 - (y % 8))) },
+  brick: { name: 'Brick', generate: (x, y) => (y % 8 === 0) ? 0xFF : ((Math.floor(y / 4) % 2 === 0) ? 0x80 : 0x08) },
+  dither25: { name: '25% Dith', generate: (x, y) => (y % 2 === 0) ? 0x88 : 0x00 },
+  dither50: { name: '50% Dith', generate: (x, y) => (y % 2 === 0) ? 0xAA : 0x55 },
+  dither75: { name: '75% Dith', generate: (x, y) => (y % 2 === 0) ? 0xEE : 0xBB }
+};
+
+/**
+ * Generate bitmap data with pattern
+ * @param {string} patternId - Pattern identifier
+ * @returns {Uint8Array} 6144 bytes of bitmap data
+ */
+function generatePatternBitmap(patternId) {
+  const pattern = BITMAP_PATTERNS[patternId] || BITMAP_PATTERNS.empty;
+  const bitmap = new Uint8Array(SCREEN.BITMAP_SIZE);
+
+  for (let y = 0; y < 192; y++) {
+    // Use getBitmapAddress with x=0 to get line start offset
+    const offset = getBitmapAddress(0, y);
+    for (let x = 0; x < 32; x++) {
+      bitmap[offset + x] = pattern.generate(x, y);
+    }
+  }
+
+  return bitmap;
+}
+
+/**
+ * Convert ATTR (.53c) to SCR - add pattern bitmap
+ * @param {string} patternId - Pattern to use for bitmap
+ */
+function convertAttrToScr(patternId = 'empty') {
+  if (!screenData || screenData.length < SCREEN.ATTR_SIZE) {
+    alert('No valid ATTR data to convert');
+    return;
+  }
+
+  // Create new SCR with pattern bitmap + existing attributes
+  const scrData = new Uint8Array(SCREEN.TOTAL_SIZE);
+  // Generate bitmap pattern
+  const bitmap = generatePatternBitmap(patternId);
+  scrData.set(bitmap, 0);
+  // Copy attributes
+  scrData.set(screenData.slice(0, SCREEN.ATTR_SIZE), SCREEN.BITMAP_SIZE);
+
+  // Update state
+  screenData = scrData;
+  currentFormat = FORMAT.SCR;
+  currentFileName = currentFileName.replace(/\.[^.]+$/, '.scr');
+
+  // Clear undo history for new format
+  undoStack = [];
+  redoStack = [];
+
+  // Update UI
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+  updateConvertOptions();
+  updateFileInfo();
+  renderScreen();
+  editorRender();
+}
+
+/**
+ * Convert ATTR (.53c) to BSC - add pattern bitmap and border
+ * @param {string} patternId - Pattern to use for bitmap
+ * @param {number} borderColor - Border color index (0-7)
+ */
+function convertAttrToBsc(patternId, borderColor) {
+  if (!screenData || screenData.length < SCREEN.ATTR_SIZE) {
+    alert('No valid ATTR data to convert');
+    return;
+  }
+
+  // Create BSC data
+  const bscData = new Uint8Array(BSC.TOTAL_SIZE);
+
+  // Generate bitmap pattern
+  const bitmap = generatePatternBitmap(patternId);
+  bscData.set(bitmap, 0);
+
+  // Copy attributes
+  bscData.set(screenData.slice(0, SCREEN.ATTR_SIZE), SCREEN.BITMAP_SIZE);
+
+  // Fill border data with solid color
+  const borderByte = borderColor | (borderColor << 3);
+  for (let i = BSC.BORDER_OFFSET; i < BSC.TOTAL_SIZE; i++) {
+    bscData[i] = borderByte;
+  }
+
+  // Update state
+  screenData = bscData;
+  currentFormat = FORMAT.BSC;
+  currentFileName = currentFileName.replace(/\.[^.]+$/, '.bsc');
+
+  // Clear undo history for new format
+  undoStack = [];
+  redoStack = [];
+
+  // Update UI
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+  // Show Export ASM button (BSC format)
+  const exportAsmBtn = document.getElementById('editorExportAsmBtn');
+  if (exportAsmBtn) exportAsmBtn.style.display = '';
+  updateConvertOptions();
+  updateFileInfo();
+  renderScreen();
+  editorRender();
+}
+
+/**
+ * Show pattern picker dialog for ATTR to SCR/BSC conversion
+ * @param {boolean} toBsc - If true, also ask for border color after pattern
+ */
+function showPatternPicker(toBsc) {
+  const dialog = document.createElement('div');
+  dialog.style.cssText = `
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.5); display: flex;
+    justify-content: center; align-items: center; z-index: 10000;
+  `;
+
+  const panel = document.createElement('div');
+  panel.style.cssText = `
+    background: var(--bg-primary, #1e1e1e); padding: 16px; border-radius: 8px;
+    border: 1px solid var(--border-color, #444); min-width: 360px;
+  `;
+
+  const title = document.createElement('div');
+  title.textContent = 'Select bitmap pattern:';
+  title.style.cssText = 'margin-bottom: 12px; font-size: 12px; color: var(--text-primary, #fff);';
+  panel.appendChild(title);
+
+  const patterns = document.createElement('div');
+  patterns.style.cssText = 'display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px;';
+
+  for (const [id, pattern] of Object.entries(BITMAP_PATTERNS)) {
+    const btn = document.createElement('button');
+    btn.style.cssText = `
+      padding: 6px 2px; font-size: 9px; cursor: pointer;
+      background: var(--bg-secondary, #2d2d2d); border: 1px solid #666;
+      color: var(--text-primary, #fff); white-space: nowrap;
+    `;
+    btn.textContent = pattern.name;
+    btn.addEventListener('click', () => {
+      document.body.removeChild(dialog);
+      if (toBsc) {
+        // Show border color picker next
+        showBorderColorPickerForAttr(id);
+      } else {
+        convertAttrToScr(id);
+      }
+    });
+    patterns.appendChild(btn);
+  }
+  panel.appendChild(patterns);
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.style.cssText = 'margin-top: 12px; width: 100%; padding: 6px; font-size: 11px;';
+  cancelBtn.addEventListener('click', () => document.body.removeChild(dialog));
+  panel.appendChild(cancelBtn);
+
+  dialog.appendChild(panel);
+  dialog.addEventListener('click', (e) => {
+    if (e.target === dialog) document.body.removeChild(dialog);
+  });
+
+  document.body.appendChild(dialog);
+}
+
+/**
+ * Show border color picker for ATTR to BSC conversion (after pattern selection)
+ * @param {string} patternId - Previously selected pattern
+ */
+function showBorderColorPickerForAttr(patternId) {
+  const dialog = document.createElement('div');
+  dialog.style.cssText = `
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.5); display: flex;
+    justify-content: center; align-items: center; z-index: 10000;
+  `;
+
+  const panel = document.createElement('div');
+  panel.style.cssText = `
+    background: var(--bg-primary, #1e1e1e); padding: 16px; border-radius: 8px;
+    border: 1px solid var(--border-color, #444); min-width: 200px;
+  `;
+
+  const title = document.createElement('div');
+  title.textContent = 'Select border color:';
+  title.style.cssText = 'margin-bottom: 12px; font-size: 12px; color: var(--text-primary, #fff);';
+  panel.appendChild(title);
+
+  const colors = document.createElement('div');
+  colors.style.cssText = 'display: flex; gap: 4px; flex-wrap: wrap; justify-content: center;';
+
+  const colorNames = ['Black', 'Blue', 'Red', 'Magenta', 'Green', 'Cyan', 'Yellow', 'White'];
+  const colorValues = ['#000', '#0000d7', '#d70000', '#d700d7', '#00d700', '#00d7d7', '#d7d700', '#d7d7d7'];
+
+  for (let i = 0; i < 8; i++) {
+    const btn = document.createElement('button');
+    btn.style.cssText = `
+      width: 32px; height: 32px; border: 2px solid #666; cursor: pointer;
+      background: ${colorValues[i]};
+    `;
+    btn.title = colorNames[i];
+    btn.addEventListener('click', () => {
+      document.body.removeChild(dialog);
+      convertAttrToBsc(patternId, i);
+    });
+    colors.appendChild(btn);
+  }
+  panel.appendChild(colors);
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.style.cssText = 'margin-top: 12px; width: 100%; padding: 6px; font-size: 11px;';
+  cancelBtn.addEventListener('click', () => document.body.removeChild(dialog));
+  panel.appendChild(cancelBtn);
+
+  dialog.appendChild(panel);
+  dialog.addEventListener('click', (e) => {
+    if (e.target === dialog) document.body.removeChild(dialog);
+  });
+
+  document.body.appendChild(dialog);
+}
+
+/**
+ * Convert BSC to SCR - strip border data
+ */
+function convertBscToScr() {
+  if (!screenData || screenData.length < BSC.TOTAL_SIZE) {
+    alert('No valid BSC data to convert');
+    return;
+  }
+
+  // Extract first 6912 bytes (SCR portion)
+  const scrData = new Uint8Array(SCREEN.TOTAL_SIZE);
+  scrData.set(screenData.slice(0, SCREEN.TOTAL_SIZE));
+
+  // Update state
+  screenData = scrData;
+  currentFormat = FORMAT.SCR;
+  currentFileName = currentFileName.replace(/\.[^.]+$/, '.scr');
+
+  // Clear undo history for new format
+  undoStack = [];
+  redoStack = [];
+
+  // Update UI
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+  // Hide Export ASM button (only for BSC)
+  const exportAsmBtn = document.getElementById('editorExportAsmBtn');
+  if (exportAsmBtn) exportAsmBtn.style.display = 'none';
+  updateConvertOptions();
+  updateFileInfo();
+  renderScreen();
+  editorRender();
+}
+
+/**
+ * Convert SCR to BSC - add solid border of chosen color
+ * @param {number} borderColor - Border color index (0-7)
+ */
+function convertScrToBsc(borderColor) {
+  if (!screenData || screenData.length < SCREEN.TOTAL_SIZE) {
+    alert('No valid SCR data to convert');
+    return;
+  }
+
+  // Create BSC data
+  const bscData = new Uint8Array(BSC.TOTAL_SIZE);
+
+  // Copy SCR data (first 6912 bytes)
+  bscData.set(screenData.slice(0, SCREEN.TOTAL_SIZE));
+
+  // Fill border data with solid color
+  // Each byte stores 2 colors: bits 0-2 = first, bits 3-5 = second
+  const borderByte = borderColor | (borderColor << 3);
+  for (let i = BSC.BORDER_OFFSET; i < BSC.TOTAL_SIZE; i++) {
+    bscData[i] = borderByte;
+  }
+
+  // Update state
+  screenData = bscData;
+  currentFormat = FORMAT.BSC;
+  currentFileName = currentFileName.replace(/\.[^.]+$/, '.bsc');
+
+  // Clear undo history for new format
+  undoStack = [];
+  redoStack = [];
+
+  // Update UI
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+  // Show Export ASM button (BSC format)
+  const exportAsmBtn = document.getElementById('editorExportAsmBtn');
+  if (exportAsmBtn) exportAsmBtn.style.display = '';
+  updateConvertOptions();
+  updateFileInfo();
+  renderScreen();
+  editorRender();
+}
+
+/**
+ * Show border color picker dialog for SCR to BSC conversion
+ */
+function showBorderColorPicker() {
+  // Create simple dialog with 8 color buttons
+  const dialog = document.createElement('div');
+  dialog.style.cssText = `
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.5); display: flex;
+    justify-content: center; align-items: center; z-index: 10000;
+  `;
+
+  const panel = document.createElement('div');
+  panel.style.cssText = `
+    background: var(--bg-primary, #1e1e1e); padding: 16px; border-radius: 8px;
+    border: 1px solid var(--border-color, #444); min-width: 200px;
+  `;
+
+  const title = document.createElement('div');
+  title.textContent = 'Select border color:';
+  title.style.cssText = 'margin-bottom: 12px; font-size: 12px; color: var(--text-primary, #fff);';
+  panel.appendChild(title);
+
+  const colors = document.createElement('div');
+  colors.style.cssText = 'display: flex; gap: 4px; flex-wrap: wrap; justify-content: center;';
+
+  const colorNames = ['Black', 'Blue', 'Red', 'Magenta', 'Green', 'Cyan', 'Yellow', 'White'];
+  const colorValues = ['#000', '#0000d7', '#d70000', '#d700d7', '#00d700', '#00d7d7', '#d7d700', '#d7d7d7'];
+
+  for (let i = 0; i < 8; i++) {
+    const btn = document.createElement('button');
+    btn.style.cssText = `
+      width: 32px; height: 32px; border: 2px solid #666; cursor: pointer;
+      background: ${colorValues[i]};
+    `;
+    btn.title = colorNames[i];
+    btn.addEventListener('click', () => {
+      document.body.removeChild(dialog);
+      convertScrToBsc(i);
+    });
+    colors.appendChild(btn);
+  }
+  panel.appendChild(colors);
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.style.cssText = 'margin-top: 12px; width: 100%; padding: 6px; font-size: 11px;';
+  cancelBtn.addEventListener('click', () => document.body.removeChild(dialog));
+  panel.appendChild(cancelBtn);
+
+  dialog.appendChild(panel);
+  dialog.addEventListener('click', (e) => {
+    if (e.target === dialog) document.body.removeChild(dialog);
+  });
+
+  document.body.appendChild(dialog);
+}
+
+// ============================================================================
 // Initialization
 // ============================================================================
 
@@ -3013,6 +3486,19 @@ function initEditor() {
   // Action buttons
   document.getElementById('editorSaveBtn')?.addEventListener('click', () => saveScrFile());
   document.getElementById('editorExportAsmBtn')?.addEventListener('click', exportBscAsm);
+
+  // Convert dropdown
+  const convertSelect = /** @type {HTMLSelectElement|null} */ (document.getElementById('editorConvertSelect'));
+  if (convertSelect) {
+    convertSelect.addEventListener('change', (e) => {
+      const value = /** @type {HTMLSelectElement} */ (e.target).value;
+      if (value) {
+        handleConversion(value);
+        // Reset dropdown to placeholder
+        /** @type {HTMLSelectElement} */ (e.target).selectedIndex = 0;
+      }
+    });
+  }
   document.getElementById('editorUndoBtn')?.addEventListener('click', undo);
   document.getElementById('editorRedoBtn')?.addEventListener('click', redo);
   document.getElementById('editorClearBtn')?.addEventListener('click', clearScreen);

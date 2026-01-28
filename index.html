@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.18.0 -->
+<!-- SpectraLab v1.20.0 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -721,9 +721,9 @@
     <div class="panel controls-panel">
       <div class="panel-content">
         <div class="control-group">
-          <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.ifl,.bmc4,.mlt,.mc,.3,.mem,.specscii,.sca,.zip,application/zip,application/x-zip-compressed" style="width: 100%; font-size: 11px;">
+          <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.ifl,.bmc4,.mlt,.mc,.3,.mem,.specscii,.sca,.zip,application/zip,application/x-zip-compressed,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
           <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px;">
-            <a href="../index.html" id="appTitle" style="text-decoration: none; color: var(--text-secondary); font-size: 11px;">SpectraLab v1.18.0</a>
+            <a href="../index.html" id="appTitle" style="text-decoration: none; color: var(--text-secondary); font-size: 11px;">SpectraLab v1.20.0</a>
             <button id="helpBtn" style="padding: 2px 6px; font-size: 10px;" title="Help">?</button>
           </div>
         </div>
@@ -900,6 +900,9 @@
             </div>
             <div class="editor-actions">
               <button id="editorSaveBtn" title="Save (Ctrl+S)">Save</button>
+              <select id="editorConvertSelect" title="Convert to different format" style="padding: 2px 4px; font-size: 11px;">
+                <option value="" disabled selected>Convert...</option>
+              </select>
               <button id="editorExportAsmBtn" title="Export ASM (Pentagon border)" style="display:none;">Export ASM</button>
             </div>
           </div>
@@ -1170,12 +1173,131 @@
   </div>
 </div>
 
+<!-- PNG/GIF Import Dialog -->
+<div id="pngImportDialog" class="modal-overlay" style="display:none;">
+  <div class="modal-dialog" style="max-width: 90vw; min-width: 580px;">
+    <div id="importCanvasContainer" style="display: flex; gap: 12px; margin-bottom: 12px; justify-content: center;">
+      <div style="text-align: center;">
+        <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">ORIGINAL <span id="importOriginalSize">256x192</span></div>
+        <canvas id="importOriginalCanvas" width="512" height="384" style="border: 1px solid var(--border-secondary); background: #000; image-rendering: pixelated;"></canvas>
+      </div>
+      <div style="text-align: center;">
+        <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">PREVIEW <span id="importPreviewSize">256x192</span></div>
+        <canvas id="importPreviewCanvas" width="512" height="384" style="border: 1px solid var(--border-secondary); background: #000; image-rendering: pixelated;"></canvas>
+      </div>
+    </div>
+    <!-- Tab buttons -->
+    <div style="display: flex; gap: 0; margin-bottom: 8px; border-bottom: 1px solid var(--border-secondary);">
+      <button id="importTabImage" class="import-tab active" style="padding: 4px 16px; font-size: 11px; border: 1px solid var(--border-secondary); border-bottom: none; background: var(--bg-primary); cursor: pointer; margin-bottom: -1px;">Image</button>
+      <button id="importTabAdjust" class="import-tab" style="padding: 4px 16px; font-size: 11px; border: 1px solid var(--border-secondary); border-bottom: none; background: var(--bg-secondary); cursor: pointer; margin-bottom: -1px; margin-left: -1px;">Adjustments</button>
+    </div>
+    <!-- Image tab content -->
+    <div id="importPanelImage" style="display: flex; gap: 16px; margin-bottom: 12px; height: 115px;">
+      <div style="flex: 1;">
+        <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">SOURCE REGION</div>
+        <div style="display: flex; gap: 3px; margin-bottom: 4px; font-size: 10px;">
+          <label>X:<input type="number" id="importCropX" value="0" min="0" style="width: 42px; padding: 1px; font-size: 10px;"></label>
+          <label>Y:<input type="number" id="importCropY" value="0" min="0" style="width: 42px; padding: 1px; font-size: 10px;"></label>
+          <label>W:<input type="number" id="importCropW" value="256" min="1" style="width: 42px; padding: 1px; font-size: 10px;"></label>
+          <label>H:<input type="number" id="importCropH" value="192" min="1" style="width: 42px; padding: 1px; font-size: 10px;"></label>
+        </div>
+        <div style="display: flex; gap: 3px;">
+          <button id="importCropReset" style="padding: 2px 6px; font-size: 10px;">Reset</button>
+          <button id="importCropFull" style="padding: 2px 6px; font-size: 10px;">Full</button>
+          <button id="importCropDetect" style="padding: 2px 6px; font-size: 10px;" title="Detect 256x192 region">Detect</button>
+        </div>
+      </div>
+      <div style="flex: 0 0 auto;">
+        <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">SCALING</div>
+        <label style="font-size: 11px; display: block; margin-bottom: 4px;">Fit:
+          <select id="importFitMode" style="width: 90px; padding: 2px; font-size: 11px;">
+            <option value="stretch" selected>Stretch</option>
+            <option value="fit">Letterbox</option>
+            <option value="fill">Fill/crop</option>
+            <option value="fit-width">Fit width</option>
+            <option value="fit-height">Fit height</option>
+          </select>
+        </label>
+        <label style="font-size: 11px; display: block;">Dither:
+          <select id="importDithering" style="width: 90px; padding: 2px; font-size: 11px;">
+            <option value="floyd-steinberg" selected>Floyd-Steinb.</option>
+            <option value="jarvis">Jarvis</option>
+            <option value="stucki">Stucki</option>
+            <option value="burkes">Burkes</option>
+            <option value="sierra">Sierra</option>
+            <option value="sierra-lite">Sierra Lite</option>
+            <option value="atkinson">Atkinson</option>
+            <option value="ordered">Ordered 4x4</option>
+            <option value="ordered8">Ordered 8x8</option>
+            <option value="noise">Noise</option>
+            <option value="none">None</option>
+          </select>
+        </label>
+      </div>
+      <div style="flex: 0 0 auto;">
+        <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">OUTPUT</div>
+        <label style="font-size: 11px; display: block; margin-bottom: 4px;">Palette:
+          <select id="importPalette" style="width: 90px; padding: 2px; font-size: 11px;"></select>
+        </label>
+        <label style="font-size: 11px; display: block; margin-bottom: 4px;">Format:
+          <select id="importFormat" style="width: 90px; padding: 2px; font-size: 11px;">
+            <option value="scr" selected>SCR</option>
+            <option value="bsc">BSC</option>
+          </select>
+        </label>
+        <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;"><input type="checkbox" id="importGrayscale"> Grayscale</label>
+      </div>
+    </div>
+    <!-- Adjustments tab content -->
+    <div id="importPanelAdjust" style="display: none; gap: 16px; margin-bottom: 12px; height: 115px;">
+      <div style="display: flex; gap: 16px;">
+        <div style="flex: 1;">
+          <div style="font-size: 10px; margin-bottom: 2px;">Contrast: <span id="importContrastValue">0</span></div>
+          <input type="range" id="importContrast" min="-100" max="100" value="0" style="width: 100%;">
+          <div style="font-size: 10px; margin-bottom: 2px; margin-top: 4px;">Brightness: <span id="importBrightnessValue">0</span></div>
+          <input type="range" id="importBrightness" min="-100" max="100" value="0" style="width: 100%;">
+          <div style="font-size: 10px; margin-bottom: 2px; margin-top: 4px;">Saturation: <span id="importSaturationValue">0</span></div>
+          <input type="range" id="importSaturation" min="-100" max="100" value="0" style="width: 100%;">
+        </div>
+        <div style="flex: 1;">
+          <div style="font-size: 10px; margin-bottom: 2px;">Gamma: <span id="importGammaValue">1.0</span></div>
+          <input type="range" id="importGamma" min="20" max="300" value="100" style="width: 100%;">
+          <div style="font-size: 10px; margin-bottom: 2px; margin-top: 4px;">Sharpness: <span id="importSharpnessValue">0</span></div>
+          <input type="range" id="importSharpness" min="0" max="100" value="0" style="width: 100%;">
+          <div style="font-size: 10px; margin-bottom: 2px; margin-top: 4px;">Levels: <span id="importLevelsValue">0-255</span></div>
+          <div style="display: flex; gap: 4px;"><input type="range" id="importBlackPoint" min="0" max="127" value="0" style="flex: 1;" title="Black"><input type="range" id="importWhitePoint" min="128" max="255" value="255" style="flex: 1;" title="White"></div>
+        </div>
+        <div style="flex: 1;">
+          <div style="font-size: 10px; margin-bottom: 2px;">Color: <span id="importColorBalanceValue">0/0/0</span></div>
+          <div style="display: flex; align-items: center; gap: 2px; margin-bottom: 2px;"><span style="font-size: 10px; width: 14px;">R:</span><input type="range" id="importBalanceR" min="-50" max="50" value="0" style="flex: 1;" title="Red"></div>
+          <div style="display: flex; align-items: center; gap: 2px; margin-bottom: 2px;"><span style="font-size: 10px; width: 14px;">G:</span><input type="range" id="importBalanceG" min="-50" max="50" value="0" style="flex: 1;" title="Green"></div>
+          <div style="display: flex; align-items: center; gap: 2px;"><span style="font-size: 10px; width: 14px;">B:</span><input type="range" id="importBalanceB" min="-50" max="50" value="0" style="flex: 1;" title="Blue"></div>
+        </div>
+      </div>
+    </div>
+    <div style="display: flex; gap: 8px; justify-content: space-between; align-items: center;">
+      <div style="display: flex; align-items: center; gap: 4px;">
+        <span style="font-size: 11px; color: var(--text-secondary);">Zoom:</span>
+        <select id="importZoom" style="padding: 2px 4px; font-size: 11px;">
+          <option value="1">x1</option>
+          <option value="2" selected>x2</option>
+        </select>
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <button id="importCancelBtn" style="padding: 5px 16px; font-size: 12px;">Cancel</button>
+        <button id="importOkBtn" style="padding: 5px 16px; font-size: 12px;">Import</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- External libraries -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
 <!-- Screen Viewer scripts -->
 <script src="js/app_config.js"></script>
 <script src="js/screen_viewer.js"></script>
+<script src="js/png_import.js"></script>
 <script src="js/bsc_asm_export.js"></script>
 <script src="js/screen_viewer_ui.js"></script>
 <script src="js/sca_editor.js"></script>

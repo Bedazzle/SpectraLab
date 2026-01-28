@@ -1,5 +1,39 @@
 # SpectraLab Version History
 
+## v1.20.0
+- Added BSC format support in image import
+  - Output format dropdown: SCR (256×192) or BSC (384×304 with borders)
+  - Border colors quantized from source image
+  - Respects ZX Spectrum timing: 24px minimum for interior segments
+  - Edge segments (at screen edge or touching paper) can be 8px
+  - Side borders use 8px granularity (no interior segments)
+- Added format conversion in editor
+  - Convert dropdown near Save button
+  - SCR → ATTR (.53c): extract attributes only
+  - SCR → BSC: add solid border with color picker
+  - ATTR → SCR: add bitmap with pattern picker (18 patterns)
+  - ATTR → BSC: add pattern + border color
+  - BSC → SCR: strip border data
+- Bitmap patterns for ATTR conversion:
+  - Empty, Solid
+  - Checkerboard: 1px, 2px, 4px
+  - Horizontal stripes: 1px, 2px, 4px
+  - Vertical stripes: 1px, 2px, 4px
+  - Grid, Dots, Diagonal, Brick
+  - Dither: 25%, 50%, 75%
+
+## v1.19.0
+- Added PNG/GIF/JPG/WebP/BMP image import
+  - Converts images to ZX Spectrum SCR format (6912 bytes)
+  - Automatic scaling to 256x192 pixels
+  - Dithering options: Floyd-Steinberg, Ordered (Bayer 4x4), Atkinson, None
+  - Brightness/Contrast adjustment with auto-detect option
+  - Cell-aware conversion respecting 8x8 attribute constraints
+  - Live preview with side-by-side original/converted view
+  - Uses current display palette for color matching
+  - Automatically enters editor mode after import
+- Added Resources section to README with related tools/projects
+
 ## v1.18.0
 - BSC editor improvements
   - Grid overlay shows hidden zones (leftmost/rightmost 2 columns) with red tint
