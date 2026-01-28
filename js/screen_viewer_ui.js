@@ -1,4 +1,4 @@
-// SpectraLab v1.17.0 - UI Event Handlers
+// SpectraLab v1.18.0 - UI Event Handlers
 // @ts-check
 "use strict";
 
@@ -182,7 +182,7 @@ function initScreenViewerUI() {
 
   // Help button handler
   helpBtn?.addEventListener('click', function() {
-    const helpText = `SpectraLab v1.17.0
+    const helpText = `SpectraLab v1.18.0
 
 Keyboard Shortcuts (Viewer):
   1-5        : Set zoom level (x1 to x5, x6/x8/x10 via menu)
@@ -239,6 +239,11 @@ Attribute Editor (.53c/.atr):
   Ctrl+S : Save
   Pattern selector remains visible during editing
 
+BSC Editor (Border Screen):
+  Grid shows hidden zones (red overlay) — leftmost/rightmost 2 columns
+    are typically not visible on real hardware
+  Export ASM: generates sjasmplus-compatible source for Pentagon 128K
+
 Keyboard Shortcuts (SCA Editor):
   Left/Right : Navigate frames (with wrap)
   Space      : Play/Pause
@@ -251,7 +256,7 @@ Supported Formats:
   .scr      4096 bytes  Monochrome 2/3
   .scr      2048 bytes  Monochrome 1/3
   .53c/.atr  768 bytes  Attributes only (editable)
-  .bsc     11136 bytes  Border screen
+  .bsc     11136 bytes  Border screen (editable)
   .ifl      9216 bytes  8x2 multicolor
   .bmc4    11904 bytes  Border + 8x4 multicolor
   .mlt/.mc 12288 bytes  8x1 multicolor

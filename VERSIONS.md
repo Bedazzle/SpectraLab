@@ -1,5 +1,16 @@
 # SpectraLab Version History
 
+## v1.18.0
+- BSC editor improvements
+  - Grid overlay shows hidden zones (leftmost/rightmost 2 columns) with red tint
+  - These 16px margins are typically not visible on real hardware
+  - Semi-transparent red overlay plus red grid lines indicate hidden areas
+- Added ASM export for BSC files
+  - Generates sjasmplus-compatible source for Pentagon 128K
+  - OUT on color change only, NOPs fill same-color runs
+  - Exact 71680T loop timing (224T/line × 320 lines)
+  - Uses original filename for .asm and .sna output
+
 ## v1.17.0
 - Moved Attrs checkbox to viewer controls (same row as Flash/Grid)
   - Now available in viewer mode, not just the editor

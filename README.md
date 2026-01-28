@@ -45,6 +45,16 @@ Edit 768-byte .53c/.atr attribute-only files:
 - **Undo/Redo**: 32 levels (Ctrl+Z / Ctrl+Y)
 - **Save**: Export as .53c file (Ctrl+S)
 
+## BSC Editor
+
+Edit 11136-byte .bsc border screen files:
+
+- **Full border editing**: Edit per-line border colors for top/bottom/side borders
+- **Hidden zone indicator**: Grid shows leftmost/rightmost 2 columns with red overlay (typically hidden on real hardware)
+- **ASM export**: Generate sjasmplus-compatible source for Pentagon 128K
+  - Exact cycle-accurate timing (224T/line, 71680T/frame)
+  - SAVESNA output with original filename
+
 ## Supported Formats
 
 | Extension | Size | Description |
@@ -54,7 +64,7 @@ Edit 768-byte .53c/.atr attribute-only files:
 | `.scr` | 4096 bytes | Monochrome 2/3 screen |
 | `.scr` | 2048 bytes | Monochrome 1/3 screen |
 | `.53c` / `.atr` | 768 bytes | Attributes only - **editable** |
-| `.bsc` | 11136 bytes | Border screen (SCR + border) |
+| `.bsc` | 11136 bytes | Border screen (SCR + border) - **editable** |
 | `.ifl` | 9216 bytes | 8x2 multicolor |
 | `.bmc4` | 11904 bytes | Border + 8x4 multicolor |
 | `.mlt` / `.mc` | 12288 bytes | 8x1 multicolor |

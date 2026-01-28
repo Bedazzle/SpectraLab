@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.17.0 -->
+<!-- SpectraLab v1.18.0 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -723,7 +723,7 @@
         <div class="control-group">
           <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.ifl,.bmc4,.mlt,.mc,.3,.mem,.specscii,.sca,.zip,application/zip,application/x-zip-compressed" style="width: 100%; font-size: 11px;">
           <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px;">
-            <a href="../index.html" id="appTitle" style="text-decoration: none; color: var(--text-secondary); font-size: 11px;">SpectraLab v1.17.0</a>
+            <a href="../index.html" id="appTitle" style="text-decoration: none; color: var(--text-secondary); font-size: 11px;">SpectraLab v1.18.0</a>
             <button id="helpBtn" style="padding: 2px 6px; font-size: 10px;" title="Help">?</button>
           </div>
         </div>
@@ -900,6 +900,7 @@
             </div>
             <div class="editor-actions">
               <button id="editorSaveBtn" title="Save (Ctrl+S)">Save</button>
+              <button id="editorExportAsmBtn" title="Export ASM (Pentagon border)" style="display:none;">Export ASM</button>
             </div>
           </div>
         </div>
@@ -1157,6 +1158,7 @@
         Format:
         <select id="newPictureFormat" style="width: 100%; margin-top: 4px; padding: 4px; font-size: 12px;">
           <option value="scr" selected>Screen (.scr) — 256×192, bitmap + attributes</option>
+          <option value="bsc">Border Screen (.bsc) — 384×304, bitmap + attributes + border</option>
           <option value="atr">Attributes (.atr) — 32×24 color cells</option>
         </select>
       </label>
@@ -1174,6 +1176,7 @@
 <!-- Screen Viewer scripts -->
 <script src="js/app_config.js"></script>
 <script src="js/screen_viewer.js"></script>
+<script src="js/bsc_asm_export.js"></script>
 <script src="js/screen_viewer_ui.js"></script>
 <script src="js/sca_editor.js"></script>
 <script src="js/screen_editor.js"></script>

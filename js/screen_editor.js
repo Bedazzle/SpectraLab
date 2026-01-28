@@ -1,4 +1,4 @@
-// SpectraLab Screen Editor v1.17.0
+// SpectraLab Screen Editor v1.18.0
 // Tools for editing ZX Spectrum .scr files
 // Works like Art Studio / Artist 2 - simple attribute-per-cell model
 // @ts-check
@@ -819,7 +819,7 @@ function drawSelectionPreview(x0, y0, x1, y1) {
   right = Math.min(SCREEN.WIDTH - 1, right);
   bottom = Math.min(SCREEN.HEIGHT - 1, bottom);
 
-  const borderPixels = borderSize * zoom;
+  const borderPixels = getMainScreenOffset();
   const w = right - left + 1;
   const h = bottom - top + 1;
 
@@ -845,7 +845,7 @@ function drawFinalizedSelectionOverlay() {
   const ctx = screenCanvas.getContext('2d');
   if (!ctx) return;
 
-  const borderPixels = borderSize * zoom;
+  const borderPixels = getMainScreenOffset();
 
   ctx.strokeStyle = 'rgba(0, 255, 255, 0.9)';
   ctx.lineWidth = Math.max(1, zoom / 2);
@@ -874,7 +874,7 @@ function drawPastePreview(x, y) {
   x = snapped.x;
   y = snapped.y;
 
-  const borderPixels = borderSize * zoom;
+  const borderPixels = getMainScreenOffset();
 
   ctx.globalAlpha = 0.5;
 
@@ -1012,9 +1012,34 @@ function handleEditorMouseDown(event) {
   if (!editorActive) return;
   event.preventDefault();
 
+  // BSC dispatch: route to main screen or border handler
+  if (isBscEditor()) {
+    const bsc = canvasToBscCoords(screenCanvas, event);
+    if (!bsc) return;
+
+    if (bsc.type === 'main') {
+      bscDrawRegion = 'main';
+      // Fall through to existing SCR logic with translated coords
+      const coords = { x: bsc.x, y: bsc.y };
+      _handleEditorMouseDownCoords(event, coords);
+    } else {
+      bscDrawRegion = 'border';
+      handleBorderMouseDown(event, bsc);
+    }
+    return;
+  }
+
   const coords = canvasToScreenCoords(screenCanvas, event);
   if (!coords) return;
+  _handleEditorMouseDownCoords(event, coords);
+}
 
+/**
+ * Core mouse-down logic shared by SCR and BSC (main area).
+ * @param {MouseEvent} event
+ * @param {{x:number, y:number}} coords
+ */
+function _handleEditorMouseDownCoords(event, coords) {
   // Intercept for brush capture (two-click rectangle selection)
   if (capturingBrush) {
     if (!captureStartPoint) {
@@ -1097,7 +1122,40 @@ function handleEditorMouseDown(event) {
 function handleEditorMouseMove(event) {
   if (!editorActive) return;
 
+  // BSC dispatch
+  if (isBscEditor()) {
+    const bsc = canvasToBscCoords(screenCanvas, event);
+    if (!bsc) return;
+
+    if (bsc.type === 'main') {
+      // Ignore if mouseDown started in border
+      if (bscDrawRegion === 'border') {
+        updateEditorInfo(bsc.x, bsc.y);
+        return;
+      }
+      const coords = { x: bsc.x, y: bsc.y };
+      _handleEditorMouseMoveCoords(event, coords);
+    } else {
+      // Ignore if mouseDown started in main
+      if (bscDrawRegion === 'main') {
+        updateBscEditorInfo(bsc);
+        return;
+      }
+      handleBorderMouseMove(event, bsc);
+    }
+    return;
+  }
+
   const coords = canvasToScreenCoords(screenCanvas, event);
+  _handleEditorMouseMoveCoords(event, coords);
+}
+
+/**
+ * Core mouse-move logic shared by SCR and BSC (main area).
+ * @param {MouseEvent} event
+ * @param {{x:number, y:number}|null} coords
+ */
+function _handleEditorMouseMoveCoords(event, coords) {
   if (coords) {
     updateEditorInfo(coords.x, coords.y);
     pasteCursorPos = { x: coords.x, y: coords.y };
@@ -1189,9 +1247,33 @@ function handleEditorMouseMove(event) {
 function handleEditorMouseUp(event) {
   if (!editorActive) return;
 
+  // BSC dispatch
+  if (isBscEditor()) {
+    if (bscDrawRegion === 'border') {
+      handleBorderMouseUp();
+      bscDrawRegion = null;
+      return;
+    }
+    // BSC main area or no region — fall through to normal logic
+    bscDrawRegion = null;
+    const bsc = canvasToBscCoords(screenCanvas, event);
+    const coords = (bsc && bsc.type === 'main') ? { x: bsc.x, y: bsc.y } : null;
+    _handleEditorMouseUpCoords(event, coords);
+    return;
+  }
+
+  const coords = canvasToScreenCoords(screenCanvas, event);
+  _handleEditorMouseUpCoords(event, coords);
+}
+
+/**
+ * Core mouse-up logic shared by SCR and BSC (main area).
+ * @param {MouseEvent} event
+ * @param {{x:number, y:number}|null} coords
+ */
+function _handleEditorMouseUpCoords(event, coords) {
   // Finalize selection rectangle on mouse release — auto-copy
   if (isSelecting && selectionStartPoint) {
-    const coords = canvasToScreenCoords(screenCanvas, event);
     if (coords) {
       selectionEndPoint = { x: coords.x, y: coords.y };
     }
@@ -1209,7 +1291,6 @@ function handleEditorMouseUp(event) {
     return;
   }
 
-  const coords = canvasToScreenCoords(screenCanvas, event);
   const isInk = event.button !== 2;
 
   if (toolStartPoint && coords) {
@@ -1243,7 +1324,7 @@ function drawToolPreview(x0, y0, x1, y1) {
   const ctx = screenCanvas.getContext('2d');
   if (!ctx) return;
 
-  const borderPixels = borderSize * zoom;
+  const borderPixels = getMainScreenOffset();
 
   ctx.strokeStyle = 'rgba(255, 255, 0, 0.8)';
   ctx.lineWidth = Math.max(1, zoom / 2);
@@ -1337,7 +1418,7 @@ function clearScreen() {
     return;
   }
 
-  // SCR: Clear all bitmap data (all pixels become paper)
+  // SCR / BSC: Clear all bitmap data (all pixels become paper)
   for (let i = 0; i < SCREEN.BITMAP_SIZE; i++) {
     screenData[i] = 0;
   }
@@ -1346,6 +1427,13 @@ function clearScreen() {
   const attr = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
   for (let i = SCREEN.BITMAP_SIZE; i < SCREEN.TOTAL_SIZE; i++) {
     screenData[i] = attr;
+  }
+
+  // BSC: clear border data to zeros (all black)
+  if (currentFormat === FORMAT.BSC) {
+    for (let i = BSC.BORDER_OFFSET; i < BSC.TOTAL_SIZE; i++) {
+      screenData[i] = 0;
+    }
   }
 
   editorRender();
@@ -1363,6 +1451,12 @@ function renderPreview() {
 
   const ctx = previewCanvas.getContext('2d');
   if (!ctx) return;
+
+  // BSC: render full frame including borders
+  if (currentFormat === FORMAT.BSC && screenData.length >= BSC.TOTAL_SIZE) {
+    renderBscPreview(ctx);
+    return;
+  }
 
   // Set canvas size based on preview zoom
   previewCanvas.width = SCREEN.WIDTH * previewZoom;
@@ -1466,6 +1560,135 @@ function renderPreview() {
 
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(tempCanvas, 0, 0, SCREEN.WIDTH * previewZoom, SCREEN.HEIGHT * previewZoom);
+}
+
+/**
+ * Renders BSC preview showing full 384x304 frame with border data
+ * @param {CanvasRenderingContext2D} ctx
+ */
+function renderBscPreview(ctx) {
+  const fw = BSC.FRAME_WIDTH;   // 384
+  const fh = BSC.FRAME_HEIGHT;  // 304
+
+  previewCanvas.width = fw * previewZoom;
+  previewCanvas.height = fh * previewZoom;
+
+  const imageData = ctx.createImageData(fw, fh);
+  const pixels = imageData.data;
+
+  const mainLeft = BSC.BORDER_LEFT_PX;        // 64
+  const mainTop = BSC.BORDER_TOP_PX;          // 64
+  const mainRight = mainLeft + SCREEN.WIDTH;  // 320
+  const mainBottom = mainTop + SCREEN.HEIGHT; // 256
+
+  // --- Render border regions ---
+  const pxPerColor = BSC.PIXELS_PER_COLOR; // 8
+
+  /**
+   * @param {number} frameY
+   * @param {number} lineOffset
+   * @param {number} byteCount
+   * @param {number} startX
+   */
+  function renderBorderLine(frameY, lineOffset, byteCount, startX) {
+    let x = startX;
+    for (let b = 0; b < byteCount; b++) {
+      const byte = screenData[lineOffset + b];
+      const c1 = byte & 0x07;
+      const c2 = (byte >> 3) & 0x07;
+      const rgb1 = ZX_PALETTE_RGB.REGULAR[c1];
+      const rgb2 = ZX_PALETTE_RGB.REGULAR[c2];
+
+      for (let p = 0; p < pxPerColor && x < fw; p++, x++) {
+        const idx = (frameY * fw + x) * 4;
+        pixels[idx] = rgb1[0]; pixels[idx + 1] = rgb1[1]; pixels[idx + 2] = rgb1[2]; pixels[idx + 3] = 255;
+      }
+      for (let p = 0; p < pxPerColor && x < fw; p++, x++) {
+        const idx = (frameY * fw + x) * 4;
+        pixels[idx] = rgb2[0]; pixels[idx + 1] = rgb2[1]; pixels[idx + 2] = rgb2[2]; pixels[idx + 3] = 255;
+      }
+    }
+  }
+
+  // Top border: 64 lines, 24 bytes each, full width
+  for (let line = 0; line < 64; line++) {
+    const offset = BSC.BORDER_OFFSET + line * BSC.BYTES_PER_FULL_LINE;
+    renderBorderLine(line, offset, BSC.BYTES_PER_FULL_LINE, 0);
+  }
+
+  // Side borders: 192 lines, 8 bytes each (4 left + 4 right)
+  const sideBase = BSC.BORDER_OFFSET + 64 * BSC.BYTES_PER_FULL_LINE;
+  for (let line = 0; line < 192; line++) {
+    const frameY = mainTop + line;
+    const offset = sideBase + line * BSC.BYTES_PER_SIDE_LINE;
+    // Left 4 bytes (64px)
+    renderBorderLine(frameY, offset, 4, 0);
+    // Right 4 bytes (64px)
+    renderBorderLine(frameY, offset + 4, 4, mainRight);
+  }
+
+  // Bottom border: 48 lines, 24 bytes each, full width
+  const bottomBase = sideBase + 192 * BSC.BYTES_PER_SIDE_LINE;
+  for (let line = 0; line < 48; line++) {
+    const frameY = mainBottom + line;
+    const offset = bottomBase + line * BSC.BYTES_PER_FULL_LINE;
+    renderBorderLine(frameY, offset, BSC.BYTES_PER_FULL_LINE, 0);
+  }
+
+  // --- Render main screen (bitmap + attributes) at (64, 64) ---
+  const sections = [
+    { bitmapAddr: 0, attrAddr: 6144, yOffset: 0 },
+    { bitmapAddr: 2048, attrAddr: 6400, yOffset: 64 },
+    { bitmapAddr: 4096, attrAddr: 6656, yOffset: 128 }
+  ];
+
+  for (const section of sections) {
+    for (let line = 0; line < 8; line++) {
+      for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 32; col++) {
+          const bitmapOffset = section.bitmapAddr + col + row * 32 + line * 256;
+          const byte = screenData[bitmapOffset];
+          const attrOffset = section.attrAddr + col + row * 32;
+          const attr = screenData[attrOffset];
+
+          let inkIndex = attr & 0x07;
+          let paperIndex = (attr >> 3) & 0x07;
+          const isBright = (attr & 0x40) !== 0;
+          const isFlash = (attr & 0x80) !== 0;
+
+          if (isFlash && flashPhase && flashEnabled) {
+            const tmp = inkIndex;
+            inkIndex = paperIndex;
+            paperIndex = tmp;
+          }
+
+          const palette = isBright ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
+          const sx = col * 8;
+          const sy = section.yOffset + row * 8 + line;
+          const frameY = mainTop + sy;
+          const frameXBase = mainLeft + sx;
+
+          for (let bit = 0; bit < 8; bit++) {
+            const isSet = (byte & (0x80 >> bit)) !== 0;
+            const rgb = isSet ? palette[inkIndex] : palette[paperIndex];
+            const idx = (frameY * fw + frameXBase + bit) * 4;
+            pixels[idx] = rgb[0]; pixels[idx + 1] = rgb[1]; pixels[idx + 2] = rgb[2]; pixels[idx + 3] = 255;
+          }
+        }
+      }
+    }
+  }
+
+  // Draw at 1:1 then scale
+  const tempCanvas = document.createElement('canvas');
+  tempCanvas.width = fw;
+  tempCanvas.height = fh;
+  const tempCtx = tempCanvas.getContext('2d');
+  if (!tempCtx) return;
+  tempCtx.putImageData(imageData, 0, 0);
+
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(tempCanvas, 0, 0, fw * previewZoom, fh * previewZoom);
 }
 
 /**
@@ -1587,6 +1810,9 @@ function saveScrFile(filename) {
   if (currentFormat === FORMAT.ATTR_53C) {
     saveData = screenData.slice(0, 768);
     defaultExt = '.53c';
+  } else if (currentFormat === FORMAT.BSC) {
+    saveData = screenData.slice(0, BSC.TOTAL_SIZE);
+    defaultExt = '.bsc';
   } else {
     saveData = screenData.slice(0, SCREEN.TOTAL_SIZE);
     defaultExt = '.scr';
@@ -1603,7 +1829,8 @@ function saveScrFile(filename) {
       const baseName = currentFileName.replace(/\.[^.]+$/, '');
       filename = baseName + '_edited' + defaultExt;
     } else {
-      filename = currentFormat === FORMAT.ATTR_53C ? 'attributes.53c' : 'screen.scr';
+      filename = currentFormat === FORMAT.ATTR_53C ? 'attributes.53c' :
+                 currentFormat === FORMAT.BSC ? 'screen.bsc' : 'screen.scr';
     }
   }
 
@@ -1613,6 +1840,7 @@ function saveScrFile(filename) {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
+
 
 /**
  * Creates a new blank screen
@@ -1659,6 +1887,18 @@ function createNewPicture(format) {
       }
       currentFormat = FORMAT.ATTR_53C;
       currentFileName = 'new_screen.atr';
+      break;
+
+    case 'bsc':
+      screenData = new Uint8Array(BSC.TOTAL_SIZE);
+      // Fill attributes (bytes 6144–6911) with white ink on black paper
+      const bscAttr = buildAttribute(7, 0, false, false);
+      for (let i = SCREEN.BITMAP_SIZE; i < SCREEN.TOTAL_SIZE; i++) {
+        screenData[i] = bscAttr;
+      }
+      // Border data (bytes 6912–11135) starts as zeros (all black)
+      currentFormat = FORMAT.BSC;
+      currentFileName = 'new_screen.bsc';
       break;
 
     case 'scr':
@@ -1873,6 +2113,7 @@ function buildPalette() {
 function isFormatEditable() {
   if (currentFormat === FORMAT.SCR && screenData && screenData.length >= SCREEN.TOTAL_SIZE) return true;
   if (currentFormat === FORMAT.ATTR_53C && screenData && screenData.length >= 768) return true;
+  if (currentFormat === FORMAT.BSC && screenData && screenData.length >= BSC.TOTAL_SIZE) return true;
   return false;
 }
 
@@ -1884,6 +2125,205 @@ function isAttrEditor() {
   return editorActive && currentFormat === FORMAT.ATTR_53C;
 }
 
+/**
+ * Checks if we're in BSC editor mode
+ * @returns {boolean}
+ */
+function isBscEditor() {
+  return editorActive && currentFormat === FORMAT.BSC;
+}
+
+/**
+ * Returns the canvas pixel offset for the main screen area.
+ * BSC: 64 * zoom (border is the content, no padding).
+ * SCR/53c: borderSize * zoom (user-configured border padding).
+ * @returns {number}
+ */
+function getMainScreenOffset() {
+  if (currentFormat === FORMAT.BSC) {
+    return BSC.BORDER_LEFT_PX * zoom;
+  }
+  return borderSize * zoom;
+}
+
+// ============================================================================
+// BSC Border Editing
+// ============================================================================
+
+/** @type {string|null} - Tracks which region mouseDown started in ('main'|'border'|null) */
+let bscDrawRegion = null;
+
+/** @type {boolean} - Is border drawing in progress */
+let isBorderDrawing = false;
+
+/**
+ * Converts canvas mouse event to BSC coordinates.
+ * Returns {type:'main', x, y} for main screen area,
+ * {type:'border', frameX, frameY, region, byteOffset, halfIndex} for border area,
+ * or null if outside canvas.
+ * @param {HTMLCanvasElement} canvas
+ * @param {MouseEvent} event
+ * @returns {{type:'main', x:number, y:number}|{type:'border', frameX:number, frameY:number, region:string, byteOffset:number, halfIndex:number}|null}
+ */
+function canvasToBscCoords(canvas, event) {
+  const rect = canvas.getBoundingClientRect();
+  const canvasX = event.clientX - rect.left;
+  const canvasY = event.clientY - rect.top;
+
+  // BSC canvas has no border padding — frame pixel coords directly
+  const frameX = Math.floor(canvasX / zoom);
+  const frameY = Math.floor(canvasY / zoom);
+
+  if (frameX < 0 || frameX >= BSC.FRAME_WIDTH || frameY < 0 || frameY >= BSC.FRAME_HEIGHT) {
+    return null;
+  }
+
+  // Check if in main screen area (64–319 x, 64–255 y)
+  if (frameX >= 64 && frameX < 320 && frameY >= 64 && frameY < 256) {
+    return { type: 'main', x: frameX - 64, y: frameY - 64 };
+  }
+
+  // Border area — compute byte offset and half index
+  const info = getBscBorderByteInfo(frameX, frameY);
+  if (!info) return null;
+
+  return {
+    type: 'border',
+    frameX: frameX,
+    frameY: frameY,
+    region: info.region,
+    byteOffset: info.byteOffset,
+    halfIndex: info.halfIndex
+  };
+}
+
+/**
+ * Maps frame pixel coords to border data byte offset + halfIndex.
+ * halfIndex: 0 = bits 0–2 (first color), 1 = bits 3–5 (second color).
+ * @param {number} frameX - Frame X coordinate (0–383)
+ * @param {number} frameY - Frame Y coordinate (0–303)
+ * @returns {{byteOffset:number, halfIndex:number, region:string}|null}
+ */
+function getBscBorderByteInfo(frameX, frameY) {
+  if (frameY < 64) {
+    // Top border: full 384px width, 64 lines
+    const byteOffset = BSC.BORDER_OFFSET + frameY * BSC.BYTES_PER_FULL_LINE + Math.floor(frameX / 16);
+    const halfIndex = Math.floor((frameX % 16) / 8);
+    return { byteOffset, halfIndex, region: 'top' };
+  } else if (frameY < 256) {
+    // Side borders (main screen Y range)
+    if (frameX < 64) {
+      // Left side
+      const byteOffset = BSC.BORDER_OFFSET + 64 * BSC.BYTES_PER_FULL_LINE + (frameY - 64) * BSC.BYTES_PER_SIDE_LINE + Math.floor(frameX / 16);
+      const halfIndex = Math.floor((frameX % 16) / 8);
+      return { byteOffset, halfIndex, region: 'left' };
+    } else if (frameX >= 320) {
+      // Right side
+      const byteOffset = BSC.BORDER_OFFSET + 64 * BSC.BYTES_PER_FULL_LINE + (frameY - 64) * BSC.BYTES_PER_SIDE_LINE + 4 + Math.floor((frameX - 320) / 16);
+      const halfIndex = Math.floor(((frameX - 320) % 16) / 8);
+      return { byteOffset, halfIndex, region: 'right' };
+    }
+    return null; // Inside main screen area — not border
+  } else if (frameY < 304) {
+    // Bottom border: full 384px width, 48 lines
+    const bottomOffset = BSC.BORDER_OFFSET + 64 * BSC.BYTES_PER_FULL_LINE + 192 * BSC.BYTES_PER_SIDE_LINE;
+    const byteOffset = bottomOffset + (frameY - 256) * BSC.BYTES_PER_FULL_LINE + Math.floor(frameX / 16);
+    const halfIndex = Math.floor((frameX % 16) / 8);
+    return { byteOffset, halfIndex, region: 'bottom' };
+  }
+  return null;
+}
+
+/**
+ * Writes a 3-bit color (0–7) into the appropriate half of a border byte.
+ * @param {number} byteOffset - Offset in screenData
+ * @param {number} halfIndex - 0 = bits 0–2, 1 = bits 3–5
+ * @param {number} color - Color value (0–7)
+ */
+function setBscBorderColor(byteOffset, halfIndex, color) {
+  if (!screenData || byteOffset >= screenData.length) return;
+  const c = color & 0x07;
+  let byte = screenData[byteOffset];
+  if (halfIndex === 0) {
+    byte = (byte & 0xF8) | c;         // Clear bits 0–2, set color
+  } else {
+    byte = (byte & 0xC7) | (c << 3);  // Clear bits 3–5, set color
+  }
+  screenData[byteOffset] = byte;
+}
+
+/**
+ * Paints a 24px-wide border cell (3 consecutive 8px segments) at the given frame position.
+ * The horizontal start is snapped to the nearest 8px boundary so the 24px block
+ * always begins at a segment edge.
+ * @param {number} frameX - Raw frame X coordinate
+ * @param {number} frameY - Frame Y coordinate
+ * @param {number} color - Color value (0–7)
+ */
+function paintBscBorderCell(frameX, frameY, color) {
+  const snappedX = Math.floor(frameX / 8) * 8;
+  for (let dx = 0; dx < 24; dx += 8) {
+    const px = snappedX + dx;
+    if (px < 0 || px >= BSC.FRAME_WIDTH) continue;
+    const info = getBscBorderByteInfo(px, frameY);
+    if (info) {
+      setBscBorderColor(info.byteOffset, info.halfIndex, color);
+    }
+  }
+}
+
+/**
+ * Handles mouse down on BSC border area.
+ * @param {MouseEvent} event
+ * @param {{type:'border', frameX:number, frameY:number, region:string, byteOffset:number, halfIndex:number}} bscCoords
+ */
+function handleBorderMouseDown(event, bscCoords) {
+  saveUndoState();
+  isBorderDrawing = true;
+  // Left click = ink color, Right click = black (color 0)
+  const color = event.button !== 2 ? editorInkColor : 0;
+  paintBscBorderCell(bscCoords.frameX, bscCoords.frameY, color);
+  editorRender();
+  updateBscEditorInfo(bscCoords);
+}
+
+/**
+ * Handles mouse move on BSC border area during drawing.
+ * @param {MouseEvent} event
+ * @param {{type:'border', frameX:number, frameY:number, region:string, byteOffset:number, halfIndex:number}} bscCoords
+ */
+function handleBorderMouseMove(event, bscCoords) {
+  if (isBorderDrawing) {
+    const color = (event.buttons & 2) !== 0 ? 0 : editorInkColor;
+    paintBscBorderCell(bscCoords.frameX, bscCoords.frameY, color);
+    editorRender();
+  }
+  updateBscEditorInfo(bscCoords);
+}
+
+/**
+ * Handles mouse up on BSC border area.
+ */
+function handleBorderMouseUp() {
+  isBorderDrawing = false;
+}
+
+/**
+ * Updates info panel for BSC border coordinates.
+ * @param {{type:'border', frameX:number, frameY:number, region:string, byteOffset:number, halfIndex:number}} bscCoords
+ */
+function updateBscEditorInfo(bscCoords) {
+  const infoEl = document.getElementById('editorPositionInfo');
+  if (!infoEl || !screenData) return;
+
+  const byte = screenData[bscCoords.byteOffset];
+  const segColor = bscCoords.halfIndex === 0 ? (byte & 0x07) : ((byte >> 3) & 0x07);
+
+  infoEl.innerHTML =
+    `Frame: (${bscCoords.frameX}, ${bscCoords.frameY})<br>` +
+    `Border: ${bscCoords.region} — ${COLOR_NAMES[segColor]}`;
+}
+
 function toggleEditorMode() {
   if (!editorActive) {
     if (!screenData || screenData.length === 0) {
@@ -1893,7 +2333,7 @@ function toggleEditorMode() {
         return;
       }
     } else if (!isFormatEditable()) {
-      alert('Editor only supports .scr (6912 bytes) and .53c/.atr (768 bytes) formats.\nCurrent format: ' + currentFormat);
+      alert('Editor only supports .scr (6912 bytes), .53c/.atr (768 bytes) and .bsc (11136 bytes) formats.\nCurrent format: ' + currentFormat);
       return;
     }
   }
@@ -1929,6 +2369,7 @@ function toggleEditorMode() {
     if (clipboardSection) clipboardSection.style.display = '';
 
     const snapSelect = document.getElementById('editorSnapMode');
+    const exportAsmBtn = document.getElementById('editorExportAsmBtn');
     if (currentFormat === FORMAT.ATTR_53C) {
       // .53c editor: hide tools, brush, snap (always grid)
       if (toolsSection) toolsSection.style.display = 'none';
@@ -1940,6 +2381,8 @@ function toggleEditorMode() {
       if (brushSection) brushSection.style.display = '';
       if (snapSelect) snapSelect.parentElement.style.display = '';
     }
+    // Show Export ASM button only for BSC format
+    if (exportAsmBtn) exportAsmBtn.style.display = (currentFormat === FORMAT.BSC) ? '' : 'none';
     showPreviewPanel();
   } else {
     // Cancel selection/paste on editor exit
@@ -1958,6 +2401,8 @@ function toggleEditorMode() {
     if (toolsSection) toolsSection.style.display = '';
     if (brushSection) brushSection.style.display = '';
     if (clipboardSection) clipboardSection.style.display = '';
+    const exportAsmBtn = document.getElementById('editorExportAsmBtn');
+    if (exportAsmBtn) exportAsmBtn.style.display = 'none';
     hidePreviewPanel();
   }
 }
@@ -2040,7 +2485,7 @@ function drawCapturePreview(x0, y0, x1, y1) {
   const ctx = screenCanvas.getContext('2d');
   if (!ctx) return;
 
-  const borderPixels = borderSize * zoom;
+  const borderPixels = getMainScreenOffset();
   const left = Math.min(x0, x1);
   const top = Math.min(y0, y1);
   const w = Math.min(Math.abs(x1 - x0) + 1, 64);
@@ -2567,6 +3012,7 @@ function initEditor() {
 
   // Action buttons
   document.getElementById('editorSaveBtn')?.addEventListener('click', () => saveScrFile());
+  document.getElementById('editorExportAsmBtn')?.addEventListener('click', exportBscAsm);
   document.getElementById('editorUndoBtn')?.addEventListener('click', undo);
   document.getElementById('editorRedoBtn')?.addEventListener('click', redo);
   document.getElementById('editorClearBtn')?.addEventListener('click', clearScreen);

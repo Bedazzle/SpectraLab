@@ -1,4 +1,4 @@
-// SpectraLab v1.17.0 - Main application
+// SpectraLab v1.18.0 - Main application
 // @ts-check
 "use strict";
 
@@ -1785,7 +1785,7 @@ function toggleFormatControlsVisibility() {
   }
   const scrEditorControls = document.getElementById('scrEditorControls');
   if (scrEditorControls) {
-    scrEditorControls.style.display = (currentFormat === FORMAT.SCR || currentFormat === FORMAT.ATTR_53C) ? 'flex' : 'none';
+    scrEditorControls.style.display = (currentFormat === FORMAT.SCR || currentFormat === FORMAT.ATTR_53C || currentFormat === FORMAT.BSC) ? 'flex' : 'none';
   }
 }
 
@@ -1934,6 +1934,11 @@ async function loadFileFromZip(fileName) {
     updateFileInfo();
     renderScreen();
 
+    // Update editor preview if editor is active
+    if (typeof editorActive !== 'undefined' && editorActive && typeof renderPreview === 'function') {
+      renderPreview();
+    }
+
     if (currentFormat !== FORMAT.SCA) {
       updateFlashTimer();
     }
@@ -2015,6 +2020,7 @@ function renderScreen() {
     // Draw grid overlay if enabled (BSC has different dimensions)
     if (showGridCheckbox && showGridCheckbox.checked) {
       drawCharGrid(ctx, BSC.BORDER_LEFT_PX * zoom, BSC.BORDER_TOP_PX * zoom);
+      drawBscBorderGrid(ctx);
     }
     return; // BSC handles everything including grid
   } else if (currentFormat === FORMAT.BMC4) {
@@ -2086,6 +2092,145 @@ function drawCharGrid(ctx, offsetX, offsetY = offsetX) {
     ctx.moveTo(offsetX, offsetY + row * 8 * zoom);
     ctx.lineTo(offsetX + SCREEN.WIDTH * zoom, offsetY + row * 8 * zoom);
     ctx.stroke();
+  }
+}
+
+/**
+ * Draws an 8px segment grid over BSC border areas in a distinct color.
+ * Covers top, left, right, and bottom border regions only (skips main screen area).
+ * @param {CanvasRenderingContext2D} ctx - Canvas context
+ */
+function drawBscBorderGrid(ctx) {
+  const fw = BSC.FRAME_WIDTH;
+  const fh = BSC.FRAME_HEIGHT;
+  const mainLeft = BSC.BORDER_LEFT_PX;          // 64
+  const mainTop = BSC.BORDER_TOP_PX;            // 64
+  const mainRight = mainLeft + SCREEN.WIDTH;     // 320
+  const mainBottom = mainTop + SCREEN.HEIGHT;    // 256
+  const seg = 8; // segment width in pixels
+
+  // Hidden zone boundaries (2 columns = 16px on each side)
+  const hiddenLeft = 16;                         // x <= 16 is hidden
+  const hiddenRight = fw - 16;                   // x >= 368 is hidden
+
+  const normalColor = 'rgba(0, 160, 255, 0.25)';
+  const hiddenColor = 'rgba(255, 0, 0, 0.35)';
+  const hiddenOverlay = 'rgba(255, 0, 0, 0.12)';
+
+  // --- Draw semi-transparent overlay on hidden zones ---
+  ctx.fillStyle = hiddenOverlay;
+  // Left hidden zone (2 columns = 16px)
+  ctx.fillRect(0, 0, hiddenLeft * zoom, fh * zoom);
+  // Right hidden zone (2 columns = 16px)
+  ctx.fillRect(hiddenRight * zoom, 0, (fw - hiddenRight) * zoom, fh * zoom);
+
+  ctx.lineWidth = 1;
+
+  // --- Vertical lines (8px spacing) ---
+  for (let px = 0; px <= fw; px += seg) {
+    const cx = px * zoom;
+    // Use red for lines in hidden zones (leftmost 2 and rightmost 2 columns)
+    ctx.strokeStyle = (px <= hiddenLeft || px >= hiddenRight) ? hiddenColor : normalColor;
+
+    // Top border strip (y: 0 → mainTop)
+    ctx.beginPath();
+    ctx.moveTo(cx, 0);
+    ctx.lineTo(cx, mainTop * zoom);
+    ctx.stroke();
+    // Bottom border strip (y: mainBottom → fh)
+    ctx.beginPath();
+    ctx.moveTo(cx, mainBottom * zoom);
+    ctx.lineTo(cx, fh * zoom);
+    ctx.stroke();
+    // Left side strip (y: mainTop → mainBottom, x < mainLeft)
+    if (px <= mainLeft) {
+      ctx.beginPath();
+      ctx.moveTo(cx, mainTop * zoom);
+      ctx.lineTo(cx, mainBottom * zoom);
+      ctx.stroke();
+    }
+    // Right side strip (y: mainTop → mainBottom, x >= mainRight)
+    if (px >= mainRight) {
+      ctx.beginPath();
+      ctx.moveTo(cx, mainTop * zoom);
+      ctx.lineTo(cx, mainBottom * zoom);
+      ctx.stroke();
+    }
+  }
+
+  // --- Horizontal lines (8px spacing) ---
+  for (let py = 0; py <= fh; py += seg) {
+    const cy = py * zoom;
+    // Top border strip (y < mainTop, full width)
+    if (py <= mainTop) {
+      // Draw in segments: hidden left, normal middle, hidden right
+      ctx.strokeStyle = hiddenColor;
+      ctx.beginPath();
+      ctx.moveTo(0, cy);
+      ctx.lineTo(hiddenLeft * zoom, cy);
+      ctx.stroke();
+
+      ctx.strokeStyle = normalColor;
+      ctx.beginPath();
+      ctx.moveTo(hiddenLeft * zoom, cy);
+      ctx.lineTo(hiddenRight * zoom, cy);
+      ctx.stroke();
+
+      ctx.strokeStyle = hiddenColor;
+      ctx.beginPath();
+      ctx.moveTo(hiddenRight * zoom, cy);
+      ctx.lineTo(fw * zoom, cy);
+      ctx.stroke();
+    }
+    // Bottom border strip (y >= mainBottom, full width)
+    if (py >= mainBottom) {
+      // Draw in segments: hidden left, normal middle, hidden right
+      ctx.strokeStyle = hiddenColor;
+      ctx.beginPath();
+      ctx.moveTo(0, cy);
+      ctx.lineTo(hiddenLeft * zoom, cy);
+      ctx.stroke();
+
+      ctx.strokeStyle = normalColor;
+      ctx.beginPath();
+      ctx.moveTo(hiddenLeft * zoom, cy);
+      ctx.lineTo(hiddenRight * zoom, cy);
+      ctx.stroke();
+
+      ctx.strokeStyle = hiddenColor;
+      ctx.beginPath();
+      ctx.moveTo(hiddenRight * zoom, cy);
+      ctx.lineTo(fw * zoom, cy);
+      ctx.stroke();
+    }
+    // Side strips (mainTop < y < mainBottom)
+    if (py > mainTop && py < mainBottom) {
+      // Left side - draw in segments: hidden (0-16), normal (16-64)
+      ctx.strokeStyle = hiddenColor;
+      ctx.beginPath();
+      ctx.moveTo(0, cy);
+      ctx.lineTo(hiddenLeft * zoom, cy);
+      ctx.stroke();
+
+      ctx.strokeStyle = normalColor;
+      ctx.beginPath();
+      ctx.moveTo(hiddenLeft * zoom, cy);
+      ctx.lineTo(mainLeft * zoom, cy);
+      ctx.stroke();
+
+      // Right side - draw in segments: normal (320-368), hidden (368-384)
+      ctx.strokeStyle = normalColor;
+      ctx.beginPath();
+      ctx.moveTo(mainRight * zoom, cy);
+      ctx.lineTo(hiddenRight * zoom, cy);
+      ctx.stroke();
+
+      ctx.strokeStyle = hiddenColor;
+      ctx.beginPath();
+      ctx.moveTo(hiddenRight * zoom, cy);
+      ctx.lineTo(fw * zoom, cy);
+      ctx.stroke();
+    }
   }
 }
 
@@ -2549,6 +2694,11 @@ function loadScreenFile(file) {
       updateScaControls();
       updateFileInfo();
       renderScreen();
+
+      // Update editor preview if editor is active
+      if (typeof editorActive !== 'undefined' && editorActive && typeof renderPreview === 'function') {
+        renderPreview();
+      }
 
       // Start flash timer if needed (for non-SCA formats)
       if (currentFormat !== FORMAT.SCA) {
