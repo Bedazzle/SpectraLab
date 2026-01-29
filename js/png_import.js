@@ -95,15 +95,20 @@ function updateColorDistanceMode() {
 
 /**
  * Convert RGB to LAB with caching (for palette colors)
- * @param {number[]} rgb - RGB color [R, G, B] (0-255)
+ * @param {number[]} rgb - RGB color [R, G, B] (0-255, will be clamped)
  * @returns {number[]} LAB color [L, a, b]
  */
 function rgbToLabCached(rgb) {
+  // Clamp values to 0-255 range (important for dithering which can produce out-of-range values)
+  const r = Math.max(0, Math.min(255, Math.round(rgb[0])));
+  const g = Math.max(0, Math.min(255, Math.round(rgb[1])));
+  const b = Math.max(0, Math.min(255, Math.round(rgb[2])));
+
   // Use numeric key for faster lookup (R * 65536 + G * 256 + B)
-  const key = (rgb[0] << 16) | (rgb[1] << 8) | rgb[2];
+  const key = (r << 16) | (g << 8) | b;
   let lab = labCache.get(key);
   if (!lab) {
-    lab = rgbToLab(rgb);
+    lab = rgbToLab([r, g, b]);
     labCache.set(key, lab);
   }
   return lab;
@@ -111,15 +116,20 @@ function rgbToLabCached(rgb) {
 
 /**
  * Color distance using weighted RGB (classic method)
- * @param {number[]} rgb1 - First color [R, G, B] (0-255)
+ * @param {number[]} rgb1 - First color [R, G, B] (0-255, will be clamped)
  * @param {number[]} rgb2 - Second color [R, G, B] (0-255)
  * @returns {number} Distance value
  */
 function colorDistanceRgb(rgb1, rgb2) {
-  const rMean = (rgb1[0] + rgb2[0]) / 2;
-  const dr = rgb1[0] - rgb2[0];
-  const dg = rgb1[1] - rgb2[1];
-  const db = rgb1[2] - rgb2[2];
+  // Clamp first color (may be out of range during dithering)
+  const r1 = Math.max(0, Math.min(255, rgb1[0]));
+  const g1 = Math.max(0, Math.min(255, rgb1[1]));
+  const b1 = Math.max(0, Math.min(255, rgb1[2]));
+
+  const rMean = (r1 + rgb2[0]) / 2;
+  const dr = r1 - rgb2[0];
+  const dg = g1 - rgb2[1];
+  const db = b1 - rgb2[2];
   const rWeight = 2 + rMean / 256;
   const gWeight = 4;
   const bWeight = 2 + (255 - rMean) / 256;
