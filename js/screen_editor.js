@@ -1,4 +1,4 @@
-// SpectraLab Screen Editor v1.20.0
+// SpectraLab Screen Editor v1.21.0
 // Tools for editing ZX Spectrum .scr files
 // Works like Art Studio / Artist 2 - simple attribute-per-cell model
 // @ts-check
@@ -88,6 +88,52 @@ let previewZoom = 1;
 
 /** @type {HTMLCanvasElement|null} */
 let previewCanvas = null;
+
+/** @type {CanvasRenderingContext2D|null} - Cached screen canvas 2D context */
+let screenCtx = null;
+
+// ============================================================================
+// Cached DOM Element Collections
+// ============================================================================
+
+/** @type {NodeListOf<Element>|null} */
+let editorToolButtons = null;
+
+/** @type {NodeListOf<Element>|null} */
+let editorShapeButtons = null;
+
+/** @type {NodeListOf<Element>|null} */
+let customBrushSlots = null;
+
+// ============================================================================
+// Reusable Temporary Canvas (for preview rendering)
+// ============================================================================
+
+/** @type {HTMLCanvasElement|null} - Reusable temp canvas for preview */
+let tempPreviewCanvas = null;
+
+/** @type {CanvasRenderingContext2D|null} - Reusable temp canvas context */
+let tempPreviewCtx = null;
+
+/**
+ * Get or create the reusable temp canvas for preview rendering
+ * @param {number} width - Required width
+ * @param {number} height - Required height
+ * @returns {{canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D}|null}
+ */
+function getTempPreviewCanvas(width, height) {
+  if (!tempPreviewCanvas) {
+    tempPreviewCanvas = document.createElement('canvas');
+    tempPreviewCtx = tempPreviewCanvas.getContext('2d');
+  }
+  // Resize only if needed
+  if (tempPreviewCanvas.width !== width || tempPreviewCanvas.height !== height) {
+    tempPreviewCanvas.width = width;
+    tempPreviewCanvas.height = height;
+  }
+  if (!tempPreviewCtx) return null;
+  return { canvas: tempPreviewCanvas, ctx: tempPreviewCtx };
+}
 
 // ============================================================================
 // Selection / Clipboard State
@@ -696,7 +742,7 @@ function startPasteMode() {
   selectionStartPoint = null;
   selectionEndPoint = null;
   currentTool = '';
-  document.querySelectorAll('.editor-tool-btn[data-tool]').forEach(btn => {
+  (editorToolButtons || document.querySelectorAll('.editor-tool-btn[data-tool]')).forEach(btn => {
     btn.classList.remove('selected');
   });
   if (infoEl) infoEl.innerHTML = 'Click to place — Escape to cancel';
@@ -799,7 +845,7 @@ function executePaste(x, y) {
  * @param {number} y1
  */
 function drawSelectionPreview(x0, y0, x1, y1) {
-  const ctx = screenCanvas.getContext('2d');
+  const ctx = screenCtx || (screenCanvas && screenCanvas.getContext('2d'));
   if (!ctx) return;
 
   let left = Math.min(x0, x1);
@@ -842,7 +888,7 @@ function drawFinalizedSelectionOverlay() {
   const rect = getSelectionRect();
   if (!rect) return;
 
-  const ctx = screenCanvas.getContext('2d');
+  const ctx = screenCtx || (screenCanvas && screenCanvas.getContext('2d'));
   if (!ctx) return;
 
   const borderPixels = getMainScreenOffset();
@@ -867,7 +913,7 @@ function drawFinalizedSelectionOverlay() {
 function drawPastePreview(x, y) {
   if (!clipboardData) return;
 
-  const ctx = screenCanvas.getContext('2d');
+  const ctx = screenCtx || (screenCanvas && screenCanvas.getContext('2d'));
   if (!ctx) return;
 
   const snapped = snapPastePosition(x, y);
@@ -1321,7 +1367,7 @@ function _handleEditorMouseUpCoords(event, coords) {
  * @param {number} y1
  */
 function drawToolPreview(x0, y0, x1, y1) {
-  const ctx = screenCanvas.getContext('2d');
+  const ctx = screenCtx || (screenCanvas && screenCanvas.getContext('2d'));
   if (!ctx) return;
 
   const borderPixels = getMainScreenOffset();
@@ -1550,16 +1596,13 @@ function renderPreview() {
     return;
   }
 
-  // Draw at 1:1 then scale
-  const tempCanvas = document.createElement('canvas');
-  tempCanvas.width = SCREEN.WIDTH;
-  tempCanvas.height = SCREEN.HEIGHT;
-  const tempCtx = tempCanvas.getContext('2d');
-  if (!tempCtx) return;
-  tempCtx.putImageData(imageData, 0, 0);
+  // Draw at 1:1 then scale (reuse temp canvas for performance)
+  const temp = getTempPreviewCanvas(SCREEN.WIDTH, SCREEN.HEIGHT);
+  if (!temp) return;
+  temp.ctx.putImageData(imageData, 0, 0);
 
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(tempCanvas, 0, 0, SCREEN.WIDTH * previewZoom, SCREEN.HEIGHT * previewZoom);
+  ctx.drawImage(temp.canvas, 0, 0, SCREEN.WIDTH * previewZoom, SCREEN.HEIGHT * previewZoom);
 }
 
 /**
@@ -1679,16 +1722,13 @@ function renderBscPreview(ctx) {
     }
   }
 
-  // Draw at 1:1 then scale
-  const tempCanvas = document.createElement('canvas');
-  tempCanvas.width = fw;
-  tempCanvas.height = fh;
-  const tempCtx = tempCanvas.getContext('2d');
-  if (!tempCtx) return;
-  tempCtx.putImageData(imageData, 0, 0);
+  // Draw at 1:1 then scale (reuse temp canvas for performance)
+  const temp = getTempPreviewCanvas(fw, fh);
+  if (!temp) return;
+  temp.ctx.putImageData(imageData, 0, 0);
 
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(tempCanvas, 0, 0, fw * previewZoom, fh * previewZoom);
+  ctx.drawImage(temp.canvas, 0, 0, fw * previewZoom, fh * previewZoom);
 }
 
 /**
@@ -1993,7 +2033,7 @@ function setEditorTool(tool) {
     isPasting = false;
   }
   currentTool = tool;
-  document.querySelectorAll('.editor-tool-btn[data-tool]').forEach(btn => {
+  (editorToolButtons || document.querySelectorAll('.editor-tool-btn[data-tool]')).forEach(btn => {
     btn.classList.toggle('selected', /** @type {HTMLElement} */(btn).dataset.tool === tool);
   });
   editorRender();
@@ -2016,11 +2056,11 @@ function setBrushSize(size) {
 function setBrushShape(shape) {
   brushShape = shape;
   activeCustomBrush = -1;
-  document.querySelectorAll('.editor-shape-btn').forEach(btn => {
+  (editorShapeButtons || document.querySelectorAll('.editor-shape-btn')).forEach(btn => {
     btn.classList.toggle('selected', /** @type {HTMLElement} */(btn).dataset.shape === shape);
   });
   // Deselect custom brush slots
-  document.querySelectorAll('.custom-brush-slot').forEach(el => {
+  (customBrushSlots || document.querySelectorAll('.custom-brush-slot')).forEach(el => {
     el.classList.remove('selected');
   });
 }
@@ -2253,21 +2293,146 @@ function setBscBorderColor(byteOffset, halfIndex, color) {
 }
 
 /**
- * Paints a 24px-wide border cell (3 consecutive 8px segments) at the given frame position.
- * The horizontal start is snapped to the nearest 8px boundary so the 24px block
- * always begins at a segment edge.
+ * Gets the horizontal boundaries for a border region at given Y coordinate.
+ * @param {number} frameY - Frame Y coordinate
+ * @param {number} frameX - Frame X coordinate (to determine left vs right side)
+ * @returns {{left: number, right: number}} Boundaries in pixels (right is exclusive)
+ */
+function getBorderRegionBounds(frameY, frameX) {
+  if (frameY < 64 || frameY >= 256) {
+    // Top or bottom border: full width
+    return { left: 0, right: 384 };
+  }
+  // Side borders during main screen Y range
+  if (frameX < 64) {
+    return { left: 0, right: 64 };   // Left side border
+  }
+  return { left: 320, right: 384 };  // Right side border
+}
+
+/**
+ * Gets the color of a border cell at given pixel position.
+ * @param {number} px - X pixel position (must be 8px aligned)
+ * @param {number} frameY - Frame Y coordinate
+ * @returns {number} Color value (0–7) or -1 if outside border
+ */
+function getBorderCellColor(px, frameY) {
+  const info = getBscBorderByteInfo(px, frameY);
+  if (!info) return -1;
+  const byte = screenData[info.byteOffset];
+  return info.halfIndex === 0 ? (byte & 0x07) : ((byte >> 3) & 0x07);
+}
+
+/**
+ * Paints a 24px-wide border cell with orphan segment validation.
+ * After painting, checks if neighboring segments become orphaned (< 24px and not
+ * touching a boundary). Orphaned segments are consumed by extending the painted color.
  * @param {number} frameX - Raw frame X coordinate
  * @param {number} frameY - Frame Y coordinate
  * @param {number} color - Color value (0–7)
  */
 function paintBscBorderCell(frameX, frameY, color) {
   const snappedX = Math.floor(frameX / 8) * 8;
-  for (let dx = 0; dx < 24; dx += 8) {
-    const px = snappedX + dx;
-    if (px < 0 || px >= BSC.FRAME_WIDTH) continue;
+  const bounds = getBorderRegionBounds(frameY, frameX);
+
+  // Convert to cell indices (each cell = 8px)
+  const leftCell = bounds.left / 8;
+  const rightCell = bounds.right / 8;  // exclusive
+  const cellCount = rightCell - leftCell;
+
+  // Read current colors for all cells in this region
+  const cellColors = [];
+  for (let i = 0; i < cellCount; i++) {
+    cellColors[i] = getBorderCellColor(bounds.left + i * 8, frameY);
+  }
+
+  // Determine which cells we're painting with edge proximity detection
+  const clickedCell = Math.floor(snappedX / 8) - leftCell;
+  let paintStartCell, paintEndCell;
+
+  if (clickedCell <= 1) {
+    // Near left boundary - paint from left edge to clicked cell (8px or 16px)
+    paintStartCell = 0;
+    paintEndCell = clickedCell;
+  } else if (clickedCell >= cellCount - 2) {
+    // Near right boundary - paint from clicked cell to right edge (8px or 16px)
+    paintStartCell = clickedCell;
+    paintEndCell = cellCount - 1;
+  } else {
+    // Middle area - normal 24px brush
+    paintStartCell = clickedCell;
+    paintEndCell = clickedCell + 2;
+  }
+
+  // Apply paint to target cells
+  for (let i = paintStartCell; i <= paintEndCell && i < cellCount; i++) {
+    if (i >= 0) cellColors[i] = color;
+  }
+
+  // Check left side for orphaned segments
+  let extendLeft = paintStartCell;
+  while (extendLeft > 0) {
+    const neighborColor = cellColors[extendLeft - 1];
+    if (neighborColor === color) {
+      // Same color - coalesce but don't modify
+      extendLeft--;
+      continue;
+    }
+    // Different color - find the run start
+    let runStart = extendLeft - 1;
+    while (runStart > 0 && cellColors[runStart - 1] === neighborColor) {
+      runStart--;
+    }
+    const runLength = extendLeft - runStart;
+    const touchesLeftBoundary = (runStart === 0);
+
+    if (!touchesLeftBoundary && runLength < 3) {
+      // Orphaned - extend paint color leftward
+      for (let i = runStart; i < extendLeft; i++) {
+        cellColors[i] = color;
+      }
+      extendLeft = runStart;
+    } else {
+      // Valid segment - stop checking
+      break;
+    }
+  }
+
+  // Check right side for orphaned segments
+  let extendRight = paintEndCell;
+  while (extendRight < cellCount - 1) {
+    const neighborColor = cellColors[extendRight + 1];
+    if (neighborColor === color) {
+      // Same color - coalesce but don't modify
+      extendRight++;
+      continue;
+    }
+    // Different color - find the run end (inclusive)
+    let runEnd = extendRight + 1;
+    while (runEnd < cellCount - 1 && cellColors[runEnd + 1] === neighborColor) {
+      runEnd++;
+    }
+    const runLength = runEnd - extendRight;  // Number of cells in neighbor run
+    const touchesRightBoundary = (runEnd === cellCount - 1);
+
+    if (!touchesRightBoundary && runLength < 3) {
+      // Orphaned - extend paint color rightward
+      for (let i = extendRight + 1; i <= runEnd; i++) {
+        cellColors[i] = color;
+      }
+      extendRight = runEnd;
+    } else {
+      // Valid segment - stop checking
+      break;
+    }
+  }
+
+  // Write back all cells to screen data
+  for (let i = 0; i < cellCount; i++) {
+    const px = bounds.left + i * 8;
     const info = getBscBorderByteInfo(px, frameY);
     if (info) {
-      setBscBorderColor(info.byteOffset, info.halfIndex, color);
+      setBscBorderColor(info.byteOffset, info.halfIndex, cellColors[i]);
     }
   }
 }
@@ -2280,8 +2445,8 @@ function paintBscBorderCell(frameX, frameY, color) {
 function handleBorderMouseDown(event, bscCoords) {
   saveUndoState();
   isBorderDrawing = true;
-  // Left click = ink color, Right click = black (color 0)
-  const color = event.button !== 2 ? editorInkColor : 0;
+  // Left click = ink color, Right click = paper color
+  const color = event.button !== 2 ? editorInkColor : editorPaperColor;
   paintBscBorderCell(bscCoords.frameX, bscCoords.frameY, color);
   editorRender();
   updateBscEditorInfo(bscCoords);
@@ -2294,7 +2459,7 @@ function handleBorderMouseDown(event, bscCoords) {
  */
 function handleBorderMouseMove(event, bscCoords) {
   if (isBorderDrawing) {
-    const color = (event.buttons & 2) !== 0 ? 0 : editorInkColor;
+    const color = (event.buttons & 2) !== 0 ? editorPaperColor : editorInkColor;
     paintBscBorderCell(bscCoords.frameX, bscCoords.frameY, color);
     editorRender();
   }
@@ -2484,7 +2649,7 @@ function finishBrushCapture(x0, y0, x1, y1) {
  * @param {number} y1
  */
 function drawCapturePreview(x0, y0, x1, y1) {
-  const ctx = screenCanvas.getContext('2d');
+  const ctx = screenCtx || (screenCanvas && screenCanvas.getContext('2d'));
   if (!ctx) return;
 
   const borderPixels = getMainScreenOffset();
@@ -2774,7 +2939,7 @@ function clearCustomBrush(slot) {
   if (brushShape === 'custom' && activeCustomBrush === slot) {
     brushShape = 'square';
     activeCustomBrush = -1;
-    document.querySelectorAll('.editor-shape-btn').forEach(btn => {
+    (editorShapeButtons || document.querySelectorAll('.editor-shape-btn')).forEach(btn => {
       btn.classList.toggle('selected', /** @type {HTMLElement} */(btn).dataset.shape === 'square');
     });
   }
@@ -2798,14 +2963,20 @@ function selectCustomBrush(slot) {
   activeCustomBrush = slot;
 
   // Deselect built-in shape buttons
-  document.querySelectorAll('.editor-shape-btn').forEach(btn => {
+  (editorShapeButtons || document.querySelectorAll('.editor-shape-btn')).forEach(btn => {
     btn.classList.remove('selected');
   });
 
   // Highlight selected custom brush slot
-  for (let i = 0; i < 5; i++) {
-    const el = document.getElementById('customBrush' + i);
-    if (el) el.classList.toggle('selected', i === slot);
+  if (customBrushSlots) {
+    customBrushSlots.forEach((el, i) => {
+      el.classList.toggle('selected', i === slot);
+    });
+  } else {
+    for (let i = 0; i < 5; i++) {
+      const el = document.getElementById('customBrush' + i);
+      if (el) el.classList.toggle('selected', i === slot);
+    }
   }
 }
 
@@ -3392,8 +3563,18 @@ function initEditor() {
   // Cache preview canvas
   previewCanvas = /** @type {HTMLCanvasElement} */ (document.getElementById('editorPreviewCanvas'));
 
+  // Cache screen canvas context (screenCanvas is defined in screen_viewer.js)
+  if (typeof screenCanvas !== 'undefined' && screenCanvas) {
+    screenCtx = screenCanvas.getContext('2d');
+  }
+
+  // Cache element collections
+  editorToolButtons = document.querySelectorAll('.editor-tool-btn[data-tool]');
+  editorShapeButtons = document.querySelectorAll('.editor-shape-btn');
+  customBrushSlots = document.querySelectorAll('.custom-brush-slot');
+
   // Tool buttons
-  document.querySelectorAll('.editor-tool-btn[data-tool]').forEach(btn => {
+  editorToolButtons.forEach(btn => {
     btn.addEventListener('click', () => {
       const tool = /** @type {HTMLElement} */ (btn).dataset.tool;
       if (tool) setEditorTool(tool);
@@ -3409,7 +3590,7 @@ function initEditor() {
   }
 
   // Brush shape buttons
-  document.querySelectorAll('.editor-shape-btn').forEach(btn => {
+  editorShapeButtons.forEach(btn => {
     btn.addEventListener('click', () => {
       const shape = /** @type {HTMLElement} */ (btn).dataset.shape;
       if (shape) setBrushShape(shape);
@@ -3417,7 +3598,7 @@ function initEditor() {
   });
 
   // Custom brush slots
-  document.querySelectorAll('.custom-brush-slot').forEach(canvas => {
+  customBrushSlots.forEach(canvas => {
     canvas.addEventListener('click', (e) => {
       const slot = parseInt(/** @type {HTMLElement} */ (canvas).dataset.slot, 10);
       if (/** @type {MouseEvent} */ (e).ctrlKey) {

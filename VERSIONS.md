@@ -1,5 +1,18 @@
 # SpectraLab Version History
 
+## v1.21.0
+- Performance optimizations
+  - DOM element caching in import dialog (30+ elements cached)
+  - Reusable temporary canvases for rendering (eliminates per-frame allocation)
+  - Optimized canvas resizing (only when dimensions change)
+  - Faster slider response in image import dialog
+- Added new dithering methods for image import
+  - Two-row Sierra, Serpentine Floyd-Steinberg
+  - Riemersma (Hilbert curve), Blue noise, Pattern dithering
+- Added edge-preserving smoothing (bilateral filter) for image import
+- Added mono output option for black & white only conversion
+- Fixed ESC key to close import dialog
+
 ## v1.20.0
 - Added BSC format support in image import
   - Output format dropdown: SCR (256×192) or BSC (384×304 with borders)

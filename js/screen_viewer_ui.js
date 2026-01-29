@@ -1,4 +1,4 @@
-// SpectraLab v1.20.0 - UI Event Handlers
+// SpectraLab v1.21.0 - UI Event Handlers
 // @ts-check
 "use strict";
 
@@ -184,7 +184,7 @@ function initScreenViewerUI() {
 
   // Help button handler
   helpBtn?.addEventListener('click', function() {
-    const helpText = `SpectraLab v1.20.0
+    const helpText = `SpectraLab v1.21.0
 
 Keyboard Shortcuts (Viewer):
   1-5        : Set zoom level (x1 to x5, x6/x8/x10 via menu)

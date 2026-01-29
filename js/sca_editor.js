@@ -1,4 +1,4 @@
-// SCA Editor v1.20.0 - Animation trimming, optimization, and frame deletion
+// SCA Editor v1.21.0 - Animation trimming, optimization, and frame deletion
 // @ts-check
 "use strict";
 

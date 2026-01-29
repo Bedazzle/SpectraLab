@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.20.0 -->
+<!-- SpectraLab v1.21.0 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -723,7 +723,7 @@
         <div class="control-group">
           <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.ifl,.bmc4,.mlt,.mc,.3,.mem,.specscii,.sca,.zip,application/zip,application/x-zip-compressed,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
           <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px;">
-            <a href="../index.html" id="appTitle" style="text-decoration: none; color: var(--text-secondary); font-size: 11px;">SpectraLab v1.20.0</a>
+            <a href="../index.html" id="appTitle" style="text-decoration: none; color: var(--text-secondary); font-size: 11px;">SpectraLab v1.21.0</a>
             <button id="helpBtn" style="padding: 2px 6px; font-size: 10px;" title="Help">?</button>
           </div>
         </div>
@@ -1192,7 +1192,7 @@
       <button id="importTabAdjust" class="import-tab" style="padding: 4px 16px; font-size: 11px; border: 1px solid var(--border-secondary); border-bottom: none; background: var(--bg-secondary); cursor: pointer; margin-bottom: -1px; margin-left: -1px;">Adjustments</button>
     </div>
     <!-- Image tab content -->
-    <div id="importPanelImage" style="display: flex; gap: 16px; margin-bottom: 12px; height: 115px;">
+    <div id="importPanelImage" style="display: flex; gap: 16px; margin-bottom: 12px; height: 150px;">
       <div style="flex: 1;">
         <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">SOURCE REGION</div>
         <div style="display: flex; gap: 3px; margin-bottom: 4px; font-size: 10px;">
@@ -1201,10 +1201,11 @@
           <label>W:<input type="number" id="importCropW" value="256" min="1" style="width: 42px; padding: 1px; font-size: 10px;"></label>
           <label>H:<input type="number" id="importCropH" value="192" min="1" style="width: 42px; padding: 1px; font-size: 10px;"></label>
         </div>
-        <div style="display: flex; gap: 3px;">
+        <div style="display: flex; gap: 3px; align-items: center;">
           <button id="importCropReset" style="padding: 2px 6px; font-size: 10px;">Reset</button>
           <button id="importCropFull" style="padding: 2px 6px; font-size: 10px;">Full</button>
           <button id="importCropDetect" style="padding: 2px 6px; font-size: 10px;" title="Detect 256x192 region">Detect</button>
+          <label style="font-size: 10px; margin-left: 4px;" title="Lock 4:3 aspect ratio"><input type="checkbox" id="importCropLock43" checked style="margin: 0 2px 0 0; vertical-align: middle;">4:3</label>
         </div>
       </div>
       <div style="flex: 0 0 auto;">
@@ -1220,18 +1221,42 @@
         </label>
         <label style="font-size: 11px; display: block;">Dither:
           <select id="importDithering" style="width: 90px; padding: 2px; font-size: 11px;">
-            <option value="floyd-steinberg" selected>Floyd-Steinb.</option>
-            <option value="jarvis">Jarvis</option>
-            <option value="stucki">Stucki</option>
-            <option value="burkes">Burkes</option>
-            <option value="sierra">Sierra</option>
-            <option value="sierra-lite">Sierra Lite</option>
-            <option value="atkinson">Atkinson</option>
-            <option value="ordered">Ordered 4x4</option>
-            <option value="ordered8">Ordered 8x8</option>
-            <option value="noise">Noise</option>
-            <option value="none">None</option>
+            <optgroup label="Cell-Aware">
+              <option value="cell-floyd" selected>Cell Floyd</option>
+              <option value="cell-atkinson">Cell Atkinson</option>
+              <option value="cell-serpentine">Cell Serpentine</option>
+              <option value="cell-sierra2">Cell Sierra 2</option>
+              <option value="cell-riemersma">Cell Riemersma</option>
+              <option value="cell-ordered">Cell Ordered</option>
+              <option value="cell-blue-noise">Cell Blue Noise</option>
+              <option value="cell-pattern">Cell Pattern</option>
+              <option value="cell-none">Cell None</option>
+            </optgroup>
+            <optgroup label="Global (classic)">
+              <option value="floyd-steinberg">Floyd-Steinb.</option>
+              <option value="jarvis">Jarvis</option>
+              <option value="stucki">Stucki</option>
+              <option value="burkes">Burkes</option>
+              <option value="sierra">Sierra</option>
+              <option value="sierra-lite">Sierra Lite</option>
+              <option value="sierra2">Sierra 2-Row</option>
+              <option value="serpentine">Serpentine</option>
+              <option value="riemersma">Riemersma</option>
+              <option value="atkinson">Atkinson</option>
+              <option value="ordered">Ordered 4x4</option>
+              <option value="ordered8">Ordered 8x8</option>
+              <option value="blue-noise">Blue Noise</option>
+              <option value="pattern">Pattern</option>
+              <option value="noise">Noise</option>
+              <option value="none">None</option>
+            </optgroup>
           </select>
+        </label>
+        <label style="font-size: 11px; display: block; margin-top: 4px;" title="Use LAB color space for more accurate perceptual color matching">
+          <input type="checkbox" id="importUseLab" checked style="margin: 0 4px 0 0; vertical-align: middle;">LAB colors
+        </label>
+        <label style="font-size: 11px; display: block; margin-top: 4px;" title="Output black and white only (no colors)">
+          <input type="checkbox" id="importMonoOutput" style="margin: 0 4px 0 0; vertical-align: middle;">Mono output
         </label>
       </div>
       <div style="flex: 0 0 auto;">
@@ -1249,7 +1274,7 @@
       </div>
     </div>
     <!-- Adjustments tab content -->
-    <div id="importPanelAdjust" style="display: none; gap: 16px; margin-bottom: 12px; height: 115px;">
+    <div id="importPanelAdjust" style="display: none; gap: 16px; margin-bottom: 12px; height: 150px;">
       <div style="display: flex; gap: 16px;">
         <div style="flex: 1;">
           <div style="font-size: 10px; margin-bottom: 2px;">Contrast: <span id="importContrastValue">0</span></div>
@@ -1264,6 +1289,8 @@
           <input type="range" id="importGamma" min="20" max="300" value="100" style="width: 100%;">
           <div style="font-size: 10px; margin-bottom: 2px; margin-top: 4px;">Sharpness: <span id="importSharpnessValue">0</span></div>
           <input type="range" id="importSharpness" min="0" max="100" value="0" style="width: 100%;">
+          <div style="font-size: 10px; margin-bottom: 2px; margin-top: 4px;" title="Edge-preserving smoothing to reduce noise">Smoothing: <span id="importSmoothingValue">0</span></div>
+          <input type="range" id="importSmoothing" min="0" max="100" value="0" style="width: 100%;" title="Bilateral filter - reduces noise while preserving edges">
           <div style="font-size: 10px; margin-bottom: 2px; margin-top: 4px;">Levels: <span id="importLevelsValue">0-255</span></div>
           <div style="display: flex; gap: 4px;"><input type="range" id="importBlackPoint" min="0" max="127" value="0" style="flex: 1;" title="Black"><input type="range" id="importWhitePoint" min="128" max="255" value="255" style="flex: 1;" title="White"></div>
         </div>

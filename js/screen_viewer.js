@@ -1,4 +1,4 @@
-// SpectraLab v1.20.0 - Main application
+// SpectraLab v1.21.0 - Main application
 // @ts-check
 "use strict";
 
@@ -374,6 +374,12 @@ let borderColor = 0;
 /** @type {number} */
 let borderSize = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.DEFAULT_BORDER_SIZE) || 24;
 
+/** @type {number} - Last canvas width (for resize optimization) */
+let lastCanvasWidth = 0;
+
+/** @type {number} - Last canvas height (for resize optimization) */
+let lastCanvasHeight = 0;
+
 /** @type {string} */
 let currentFileName = '';
 
@@ -415,11 +421,44 @@ let scaPlaying = false;
 let scaTimerId = null;
 
 // ============================================================================
+// Reusable Temporary Canvas (for render operations)
+// ============================================================================
+
+/** @type {HTMLCanvasElement|null} - Reusable temp canvas for rendering */
+let tempRenderCanvas = null;
+
+/** @type {CanvasRenderingContext2D|null} - Reusable temp canvas context */
+let tempRenderCtx = null;
+
+/**
+ * Get or create the reusable temp canvas for rendering
+ * @param {number} width - Required width
+ * @param {number} height - Required height
+ * @returns {{canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D}|null}
+ */
+function getTempRenderCanvas(width, height) {
+  if (!tempRenderCanvas) {
+    tempRenderCanvas = document.createElement('canvas');
+    tempRenderCtx = tempRenderCanvas.getContext('2d');
+  }
+  // Resize only if needed
+  if (tempRenderCanvas.width !== width || tempRenderCanvas.height !== height) {
+    tempRenderCanvas.width = width;
+    tempRenderCanvas.height = height;
+  }
+  if (!tempRenderCtx) return null;
+  return { canvas: tempRenderCanvas, ctx: tempRenderCtx };
+}
+
+// ============================================================================
 // Cached DOM Elements
 // ============================================================================
 
 /** @type {HTMLCanvasElement} */
 let screenCanvas;
+
+/** @type {CanvasRenderingContext2D|null} - Cached screen canvas 2D context */
+let screenCanvasCtx = null;
 
 /** @type {HTMLSelectElement} */
 let zoomSelect;
@@ -477,6 +516,7 @@ let pattern53cSelect;
  */
 function cacheElements() {
   screenCanvas = /** @type {HTMLCanvasElement} */ (document.getElementById('screenCanvas'));
+  screenCanvasCtx = screenCanvas ? screenCanvas.getContext('2d') : null;
   zoomSelect = /** @type {HTMLSelectElement} */ (document.getElementById('zoomSelect'));
   showGridCheckbox = /** @type {HTMLInputElement} */ (document.getElementById('showGrid'));
   borderColorSelect = /** @type {HTMLSelectElement} */ (document.getElementById('borderColorSelect'));
@@ -677,19 +717,16 @@ function renderScrFast(ctx, borderOffset) {
     }
   }
 
-  // Put the 1:1 image onto a temporary canvas
-  const tempCanvas = document.createElement('canvas');
-  tempCanvas.width = SCREEN.WIDTH;
-  tempCanvas.height = SCREEN.HEIGHT;
-  const tempCtx = tempCanvas.getContext('2d');
-  if (!tempCtx) return;
+  // Put the 1:1 image onto a temporary canvas (reused for performance)
+  const temp = getTempRenderCanvas(SCREEN.WIDTH, SCREEN.HEIGHT);
+  if (!temp) return;
 
-  tempCtx.putImageData(imageData, 0, 0);
+  temp.ctx.putImageData(imageData, 0, 0);
 
   // Scale and draw to main canvas using drawImage (GPU accelerated)
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(
-    tempCanvas,
+    temp.canvas,
     0, 0, SCREEN.WIDTH, SCREEN.HEIGHT,
     borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom
   );
@@ -1634,19 +1671,16 @@ function renderScaFrame(ctx, borderOffset, frameIndex) {
     }
   }
 
-  // Put the 1:1 image onto a temporary canvas
-  const tempCanvas = document.createElement('canvas');
-  tempCanvas.width = SCREEN.WIDTH;
-  tempCanvas.height = SCREEN.HEIGHT;
-  const tempCtx = tempCanvas.getContext('2d');
-  if (!tempCtx) return;
+  // Put the 1:1 image onto a temporary canvas (reused for performance)
+  const temp = getTempRenderCanvas(SCREEN.WIDTH, SCREEN.HEIGHT);
+  if (!temp) return;
 
-  tempCtx.putImageData(imageData, 0, 0);
+  temp.ctx.putImageData(imageData, 0, 0);
 
   // Scale and draw to main canvas
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(
-    tempCanvas,
+    temp.canvas,
     0, 0, SCREEN.WIDTH, SCREEN.HEIGHT,
     borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom
   );
@@ -2017,15 +2051,23 @@ async function handleZipFile(file) {
  * Renders the full ZX Spectrum screen
  */
 function renderScreen() {
-  const ctx = screenCanvas.getContext('2d');
+  const ctx = screenCanvasCtx || (screenCanvas && screenCanvas.getContext('2d'));
   if (!ctx) return;
 
   // Calculate border size in pixels (scaled by zoom)
   const borderPixels = borderSize * zoom;
 
-  // Update canvas size based on zoom (including border)
-  screenCanvas.width = SCREEN.WIDTH * zoom + borderPixels * 2;
-  screenCanvas.height = SCREEN.HEIGHT * zoom + borderPixels * 2;
+  // Calculate required canvas dimensions
+  const requiredWidth = SCREEN.WIDTH * zoom + borderPixels * 2;
+  const requiredHeight = SCREEN.HEIGHT * zoom + borderPixels * 2;
+
+  // Only resize canvas when dimensions actually change (expensive operation)
+  if (screenCanvas.width !== requiredWidth || screenCanvas.height !== requiredHeight) {
+    screenCanvas.width = requiredWidth;
+    screenCanvas.height = requiredHeight;
+    lastCanvasWidth = requiredWidth;
+    lastCanvasHeight = requiredHeight;
+  }
 
   // Draw border (fill entire canvas with border color)
   ctx.fillStyle = ZX_PALETTE.REGULAR[borderColor];

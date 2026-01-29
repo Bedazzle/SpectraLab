@@ -1,4 +1,4 @@
-// SpectraLab v1.20.0 - PNG/GIF Image Import
+// SpectraLab v1.21.0 - PNG/GIF Image Import
 // @ts-check
 "use strict";
 
@@ -7,13 +7,115 @@
 // Converts PNG/GIF/JPG images to ZX Spectrum SCR format (6912 bytes)
 // ============================================================================
 
+// ============================================================================
+// LAB Color Space Conversion
+// More perceptually accurate color matching than RGB
+// ============================================================================
+
 /**
- * Perceptual color distance using weighted RGB
- * @param {number[]} rgb1 - First color [R, G, B]
- * @param {number[]} rgb2 - Second color [R, G, B]
+ * Convert sRGB to linear RGB
+ * @param {number} c - sRGB component (0-255)
+ * @returns {number} Linear RGB component (0-1)
+ */
+function srgbToLinear(c) {
+  c = c / 255;
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+
+/**
+ * Convert RGB to XYZ color space (D65 illuminant)
+ * @param {number[]} rgb - RGB color [R, G, B] (0-255)
+ * @returns {number[]} XYZ color [X, Y, Z]
+ */
+function rgbToXyz(rgb) {
+  const r = srgbToLinear(rgb[0]);
+  const g = srgbToLinear(rgb[1]);
+  const b = srgbToLinear(rgb[2]);
+
+  // sRGB to XYZ matrix (D65 illuminant)
+  const x = r * 0.4124564 + g * 0.3575761 + b * 0.1804375;
+  const y = r * 0.2126729 + g * 0.7151522 + b * 0.0721750;
+  const z = r * 0.0193339 + g * 0.1191920 + b * 0.9503041;
+
+  return [x * 100, y * 100, z * 100];
+}
+
+/**
+ * Convert XYZ to LAB color space
+ * @param {number[]} xyz - XYZ color [X, Y, Z]
+ * @returns {number[]} LAB color [L, a, b]
+ */
+function xyzToLab(xyz) {
+  // D65 reference white
+  const refX = 95.047;
+  const refY = 100.000;
+  const refZ = 108.883;
+
+  let x = xyz[0] / refX;
+  let y = xyz[1] / refY;
+  let z = xyz[2] / refZ;
+
+  const epsilon = 0.008856;
+  const kappa = 903.3;
+
+  x = x > epsilon ? Math.pow(x, 1/3) : (kappa * x + 16) / 116;
+  y = y > epsilon ? Math.pow(y, 1/3) : (kappa * y + 16) / 116;
+  z = z > epsilon ? Math.pow(z, 1/3) : (kappa * z + 16) / 116;
+
+  const L = 116 * y - 16;
+  const a = 500 * (x - y);
+  const b = 200 * (y - z);
+
+  return [L, a, b];
+}
+
+/**
+ * Convert RGB to LAB color space
+ * @param {number[]} rgb - RGB color [R, G, B] (0-255)
+ * @returns {number[]} LAB color [L, a, b]
+ */
+function rgbToLab(rgb) {
+  return xyzToLab(rgbToXyz(rgb));
+}
+
+/** @type {Map<number, number[]>} Cache for RGB to LAB conversions */
+const labCache = new Map();
+
+/** @type {boolean} Cached useLab setting - updated at start of each conversion */
+let useLabMode = true;
+
+/**
+ * Update the useLab mode from checkbox (call once at start of conversion)
+ */
+function updateColorDistanceMode() {
+  // Use cached element if available, fallback to DOM lookup
+  const useLabCheckbox = importElements.useLab || /** @type {HTMLInputElement} */ (document.getElementById('importUseLab'));
+  useLabMode = useLabCheckbox ? useLabCheckbox.checked : true;
+}
+
+/**
+ * Convert RGB to LAB with caching (for palette colors)
+ * @param {number[]} rgb - RGB color [R, G, B] (0-255)
+ * @returns {number[]} LAB color [L, a, b]
+ */
+function rgbToLabCached(rgb) {
+  // Use numeric key for faster lookup (R * 65536 + G * 256 + B)
+  const key = (rgb[0] << 16) | (rgb[1] << 8) | rgb[2];
+  let lab = labCache.get(key);
+  if (!lab) {
+    lab = rgbToLab(rgb);
+    labCache.set(key, lab);
+  }
+  return lab;
+}
+
+/**
+ * Color distance using weighted RGB (classic method)
+ * @param {number[]} rgb1 - First color [R, G, B] (0-255)
+ * @param {number[]} rgb2 - Second color [R, G, B] (0-255)
  * @returns {number} Distance value
  */
-function colorDistance(rgb1, rgb2) {
+function colorDistanceRgb(rgb1, rgb2) {
   const rMean = (rgb1[0] + rgb2[0]) / 2;
   const dr = rgb1[0] - rgb2[0];
   const dg = rgb1[1] - rgb2[1];
@@ -22,6 +124,34 @@ function colorDistance(rgb1, rgb2) {
   const gWeight = 4;
   const bWeight = 2 + (255 - rMean) / 256;
   return Math.sqrt(rWeight * dr * dr + gWeight * dg * dg + bWeight * db * db);
+}
+
+/**
+ * Color distance using LAB color space (CIE76 Delta E)
+ * @param {number[]} rgb1 - First color [R, G, B] (0-255)
+ * @param {number[]} rgb2 - Second color [R, G, B] (0-255)
+ * @returns {number} Delta E distance value
+ */
+function colorDistanceLab(rgb1, rgb2) {
+  const lab1 = rgbToLabCached(rgb1);
+  const lab2 = rgbToLabCached(rgb2);
+
+  const dL = lab1[0] - lab2[0];
+  const da = lab1[1] - lab2[1];
+  const db = lab1[2] - lab2[2];
+
+  return Math.sqrt(dL * dL + da * da + db * db);
+}
+
+/**
+ * Perceptual color distance - uses LAB or RGB based on cached setting
+ * Call updateColorDistanceMode() once before batch operations
+ * @param {number[]} rgb1 - First color [R, G, B] (0-255)
+ * @param {number[]} rgb2 - Second color [R, G, B] (0-255)
+ * @returns {number} Distance value
+ */
+function colorDistance(rgb1, rgb2) {
+  return useLabMode ? colorDistanceLab(rgb1, rgb2) : colorDistanceRgb(rgb1, rgb2);
 }
 
 /**
@@ -201,6 +331,93 @@ function applySharpening(pixels, width, height, amount) {
         // Blend original with sharpened based on strength
         const blended = center + (sharp - center) * strength;
         pixels[idx + c] = clamp(blended);
+      }
+    }
+  }
+}
+
+/**
+ * Apply bilateral filter for edge-preserving smoothing
+ * Reduces noise while keeping edges sharp
+ * @param {Uint8ClampedArray} pixels - RGBA pixels
+ * @param {number} width - Image width
+ * @param {number} height - Image height
+ * @param {number} amount - Smoothing amount (0-100)
+ */
+function applyBilateralFilter(pixels, width, height, amount) {
+  if (amount <= 0) return;
+
+  // Scale parameters based on amount (0-100)
+  const spatialSigma = 2 + (amount / 100) * 4; // 2-6 pixels
+  const rangeSigma = 20 + (amount / 100) * 60; // 20-80 intensity
+
+  // Kernel radius (2-3 sigma covers most of the gaussian)
+  const radius = Math.ceil(spatialSigma * 2);
+
+  // Pre-compute spatial gaussian weights
+  const spatialWeights = [];
+  for (let dy = -radius; dy <= radius; dy++) {
+    spatialWeights[dy + radius] = [];
+    for (let dx = -radius; dx <= radius; dx++) {
+      const dist2 = dx * dx + dy * dy;
+      spatialWeights[dy + radius][dx + radius] = Math.exp(-dist2 / (2 * spatialSigma * spatialSigma));
+    }
+  }
+
+  // Pre-compute range gaussian lookup table (0-441 for max RGB distance sqrt(255²*3))
+  const rangeWeights = new Float32Array(442);
+  for (let i = 0; i < 442; i++) {
+    rangeWeights[i] = Math.exp(-(i * i) / (2 * rangeSigma * rangeSigma));
+  }
+
+  // Create copy of original pixels
+  const original = new Uint8ClampedArray(pixels);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 4;
+      const centerR = original[idx];
+      const centerG = original[idx + 1];
+      const centerB = original[idx + 2];
+
+      let sumR = 0, sumG = 0, sumB = 0;
+      let weightSum = 0;
+
+      for (let dy = -radius; dy <= radius; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= height) continue;
+
+        for (let dx = -radius; dx <= radius; dx++) {
+          const nx = x + dx;
+          if (nx < 0 || nx >= width) continue;
+
+          const nidx = (ny * width + nx) * 4;
+          const nr = original[nidx];
+          const ng = original[nidx + 1];
+          const nb = original[nidx + 2];
+
+          // Color distance (Euclidean in RGB)
+          const dr = nr - centerR;
+          const dg = ng - centerG;
+          const db = nb - centerB;
+          const colorDist = Math.sqrt(dr * dr + dg * dg + db * db) | 0;
+
+          // Combined weight: spatial * range
+          const spatialW = spatialWeights[dy + radius][dx + radius];
+          const rangeW = rangeWeights[Math.min(colorDist, 441)];
+          const weight = spatialW * rangeW;
+
+          sumR += nr * weight;
+          sumG += ng * weight;
+          sumB += nb * weight;
+          weightSum += weight;
+        }
+      }
+
+      if (weightSum > 0) {
+        pixels[idx] = clamp(sumR / weightSum);
+        pixels[idx + 1] = clamp(sumG / weightSum);
+        pixels[idx + 2] = clamp(sumB / weightSum);
       }
     }
   }
@@ -501,6 +718,823 @@ function noiseDither(pixels, width, height, palette) {
 }
 
 /**
+ * Two-row Sierra dithering (Sierra-2, faster than full Sierra)
+ */
+function sierra2Dither(pixels, width, height, palette) {
+  const kernel = [
+    [1, 0, 4/16], [2, 0, 3/16],
+    [-2, 1, 1/16], [-1, 1, 2/16], [0, 1, 3/16], [1, 1, 2/16], [2, 1, 1/16]
+  ];
+  errorDiffusionDither(pixels, width, height, palette, kernel);
+}
+
+/**
+ * Serpentine error diffusion (alternating row direction, reduces banding)
+ * Uses Floyd-Steinberg weights with bidirectional scanning
+ */
+function serpentineDither(pixels, width, height, palette) {
+  for (let y = 0; y < height; y++) {
+    const reverse = y % 2 === 1;
+    const startX = reverse ? width - 1 : 0;
+    const endX = reverse ? -1 : width;
+    const stepX = reverse ? -1 : 1;
+
+    for (let x = startX; x !== endX; x += stepX) {
+      const idx = (y * width + x) * 3;
+      const oldR = pixels[idx];
+      const oldG = pixels[idx + 1];
+      const oldB = pixels[idx + 2];
+
+      const nearest = findNearestColor([oldR, oldG, oldB], palette);
+      const newColor = palette[nearest];
+
+      pixels[idx] = newColor[0];
+      pixels[idx + 1] = newColor[1];
+      pixels[idx + 2] = newColor[2];
+
+      const errR = oldR - newColor[0];
+      const errG = oldG - newColor[1];
+      const errB = oldB - newColor[2];
+
+      // Floyd-Steinberg weights, direction-aware
+      const right = reverse ? -1 : 1;
+      const left = reverse ? 1 : -1;
+
+      if (x + right >= 0 && x + right < width) {
+        const i = idx + right * 3;
+        pixels[i] += errR * 7 / 16;
+        pixels[i + 1] += errG * 7 / 16;
+        pixels[i + 2] += errB * 7 / 16;
+      }
+      if (y + 1 < height) {
+        if (x + left >= 0 && x + left < width) {
+          const i = ((y + 1) * width + (x + left)) * 3;
+          pixels[i] += errR * 3 / 16;
+          pixels[i + 1] += errG * 3 / 16;
+          pixels[i + 2] += errB * 3 / 16;
+        }
+        {
+          const i = ((y + 1) * width + x) * 3;
+          pixels[i] += errR * 5 / 16;
+          pixels[i + 1] += errG * 5 / 16;
+          pixels[i + 2] += errB * 5 / 16;
+        }
+        if (x + right >= 0 && x + right < width) {
+          const i = ((y + 1) * width + (x + right)) * 3;
+          pixels[i] += errR * 1 / 16;
+          pixels[i + 1] += errG * 1 / 16;
+          pixels[i + 2] += errB * 1 / 16;
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Generate Hilbert curve coordinates for given order
+ * @param {number} order - Hilbert curve order (2^order x 2^order grid)
+ * @returns {Array<{x: number, y: number}>} Array of coordinates in curve order
+ */
+function generateHilbertCurve(order) {
+  const n = 1 << order;
+  const coords = [];
+
+  function d2xy(d) {
+    let x = 0, y = 0;
+    let rx, ry, s, t = d;
+    for (s = 1; s < n; s *= 2) {
+      rx = 1 & (t / 2);
+      ry = 1 & (t ^ rx);
+      if (ry === 0) {
+        if (rx === 1) {
+          x = s - 1 - x;
+          y = s - 1 - y;
+        }
+        [x, y] = [y, x];
+      }
+      x += s * rx;
+      y += s * ry;
+      t = Math.floor(t / 4);
+    }
+    return { x, y };
+  }
+
+  for (let d = 0; d < n * n; d++) {
+    coords.push(d2xy(d));
+  }
+  return coords;
+}
+
+/**
+ * Riemersma dithering (Hilbert curve based error diffusion)
+ * Reduces directional artifacts by following space-filling curve
+ */
+function riemersmaDither(pixels, width, height, palette) {
+  // Use queue-based error diffusion along Hilbert curve
+  const queueSize = 16;
+  const weights = [];
+  let sum = 0;
+  for (let i = 0; i < queueSize; i++) {
+    weights[i] = Math.pow(2, -(i + 1) / 3);
+    sum += weights[i];
+  }
+  // Normalize weights
+  for (let i = 0; i < queueSize; i++) {
+    weights[i] /= sum;
+  }
+
+  // Determine Hilbert curve order to cover image
+  const maxDim = Math.max(width, height);
+  const order = Math.ceil(Math.log2(maxDim));
+  const hilbert = generateHilbertCurve(order);
+
+  // Error queues for R, G, B
+  const errQueueR = new Array(queueSize).fill(0);
+  const errQueueG = new Array(queueSize).fill(0);
+  const errQueueB = new Array(queueSize).fill(0);
+
+  for (const { x, y } of hilbert) {
+    if (x >= width || y >= height) continue;
+
+    const idx = (y * width + x) * 3;
+
+    // Add weighted error from queue
+    let addErrR = 0, addErrG = 0, addErrB = 0;
+    for (let i = 0; i < queueSize; i++) {
+      addErrR += errQueueR[i] * weights[i];
+      addErrG += errQueueG[i] * weights[i];
+      addErrB += errQueueB[i] * weights[i];
+    }
+
+    const oldR = pixels[idx] + addErrR;
+    const oldG = pixels[idx + 1] + addErrG;
+    const oldB = pixels[idx + 2] + addErrB;
+
+    const nearest = findNearestColor([clamp(oldR), clamp(oldG), clamp(oldB)], palette);
+    const newColor = palette[nearest];
+
+    pixels[idx] = newColor[0];
+    pixels[idx + 1] = newColor[1];
+    pixels[idx + 2] = newColor[2];
+
+    // Calculate error and push to queue
+    const errR = oldR - newColor[0];
+    const errG = oldG - newColor[1];
+    const errB = oldB - newColor[2];
+
+    // Shift queue and add new error
+    errQueueR.shift(); errQueueR.push(errR);
+    errQueueG.shift(); errQueueG.push(errG);
+    errQueueB.shift(); errQueueB.push(errB);
+  }
+}
+
+/**
+ * Blue noise threshold map (16x16 precomputed)
+ */
+const BLUE_NOISE_16 = [
+  [106, 53, 174, 89, 219, 16, 142, 70, 195, 38, 162, 121, 8, 182, 65, 237],
+  [231, 138, 21, 246, 115, 180, 56, 241, 108, 225, 82, 205, 145, 95, 213, 42],
+  [76, 189, 98, 156, 46, 208, 130, 12, 167, 47, 134, 26, 239, 58, 156, 123],
+  [152, 6, 217, 67, 136, 88, 252, 78, 193, 96, 177, 69, 113, 186, 31, 199],
+  [249, 112, 165, 30, 185, 35, 163, 116, 29, 248, 147, 223, 4, 140, 86, 243],
+  [59, 202, 83, 235, 101, 222, 50, 210, 144, 61, 17, 102, 172, 236, 51, 130],
+  [133, 17, 143, 54, 149, 2, 126, 73, 186, 92, 196, 82, 41, 117, 192, 73],
+  [228, 178, 92, 198, 170, 250, 183, 242, 22, 232, 125, 155, 214, 63, 160, 14],
+  [44, 109, 254, 37, 79, 107, 40, 100, 150, 48, 173, 10, 253, 91, 229, 105],
+  [148, 211, 64, 168, 122, 206, 158, 226, 69, 209, 77, 187, 135, 33, 176, 49],
+  [18, 85, 188, 8, 238, 23, 62, 4, 119, 255, 99, 52, 234, 111, 216, 139],
+  [234, 128, 227, 102, 146, 181, 134, 197, 161, 25, 139, 169, 72, 153, 81, 247],
+  [57, 175, 44, 203, 55, 247, 86, 34, 83, 218, 194, 20, 245, 38, 190, 28],
+  [201, 93, 161, 78, 166, 118, 220, 151, 240, 110, 58, 129, 97, 164, 114, 127],
+  [11, 244, 120, 223, 15, 191, 42, 103, 66, 175, 148, 220, 184, 45, 230, 68],
+  [137, 36, 183, 90, 141, 252, 75, 179, 13, 201, 88, 7, 254, 75, 141, 204]
+];
+
+/**
+ * Blue noise dithering (visually pleasing, organic-looking pattern)
+ */
+function blueNoiseDither(pixels, width, height, palette) {
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 3;
+      const threshold = BLUE_NOISE_16[y % 16][x % 16] - 128;
+      const scale = 0.5; // Adjust strength
+
+      const r = clamp(pixels[idx] + threshold * scale);
+      const g = clamp(pixels[idx + 1] + threshold * scale);
+      const b = clamp(pixels[idx + 2] + threshold * scale);
+
+      const nearest = findNearestColor([r, g, b], palette);
+      const newColor = palette[nearest];
+
+      pixels[idx] = newColor[0];
+      pixels[idx + 1] = newColor[1];
+      pixels[idx + 2] = newColor[2];
+    }
+  }
+}
+
+/**
+ * Pattern dithering using clustered dot pattern (halftone-like)
+ */
+const CLUSTER_8X8 = [
+  [24, 10, 12, 26, 35, 47, 49, 37],
+  [8, 0, 2, 14, 45, 59, 61, 51],
+  [22, 6, 4, 16, 43, 57, 63, 53],
+  [30, 20, 18, 28, 33, 41, 55, 39],
+  [34, 46, 48, 36, 25, 11, 13, 27],
+  [44, 58, 60, 50, 9, 1, 3, 15],
+  [42, 56, 62, 52, 23, 7, 5, 17],
+  [32, 40, 54, 38, 31, 21, 19, 29]
+];
+
+function patternDither(pixels, width, height, palette) {
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 3;
+      // Threshold scaled to -32..+31 range
+      const threshold = (CLUSTER_8X8[y % 8][x % 8] - 32) * 4;
+
+      const r = clamp(pixels[idx] + threshold);
+      const g = clamp(pixels[idx + 1] + threshold);
+      const b = clamp(pixels[idx + 2] + threshold);
+
+      const nearest = findNearestColor([r, g, b], palette);
+      const newColor = palette[nearest];
+
+      pixels[idx] = newColor[0];
+      pixels[idx + 1] = newColor[1];
+      pixels[idx + 2] = newColor[2];
+    }
+  }
+}
+
+// ============================================================================
+// Cell-Aware Dithering
+// Dithers within 8x8 cells using only the 2 selected colors per cell
+// Prevents error diffusion across cell boundaries for cleaner results
+// ============================================================================
+
+/**
+ * Find best ink/paper combination for a cell from original pixels (no dithering)
+ * @param {Float32Array} pixels - Original pixels array (RGB)
+ * @param {number} cellX - Cell X position (0-31)
+ * @param {number} cellY - Cell Y position (0-23)
+ * @param {number} width - Image width
+ * @param {{regular: number[][], bright: number[][]}} palette - Color palette
+ * @returns {{ink: number, paper: number, bright: boolean, inkRgb: number[], paperRgb: number[]}}
+ */
+function findCellColors(pixels, cellX, cellY, width, palette) {
+  // Collect all 64 pixel colors from original image
+  const cellColors = [];
+  for (let dy = 0; dy < 8; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const px = cellX * 8 + dx;
+      const py = cellY * 8 + dy;
+      const idx = (py * width + px) * 3;
+      cellColors.push([pixels[idx], pixels[idx + 1], pixels[idx + 2]]);
+    }
+  }
+
+  let bestError = Infinity;
+  let bestInk = 0;
+  let bestPaper = 7;
+  let bestBright = false;
+
+  // Try all ink/paper combinations for both brightness levels
+  for (let bright = 0; bright <= 1; bright++) {
+    const pal = bright ? palette.bright : palette.regular;
+
+    for (let ink = 0; ink < 8; ink++) {
+      for (let paper = 0; paper < 8; paper++) {
+        let totalError = 0;
+
+        for (let i = 0; i < 64; i++) {
+          const color = cellColors[i];
+          const inkDist = colorDistance(color, pal[ink]);
+          const paperDist = colorDistance(color, pal[paper]);
+          totalError += Math.min(inkDist, paperDist);
+        }
+
+        if (totalError < bestError) {
+          bestError = totalError;
+          bestInk = ink;
+          bestPaper = paper;
+          bestBright = bright === 1;
+        }
+      }
+    }
+  }
+
+  const pal = bestBright ? palette.bright : palette.regular;
+  return {
+    ink: bestInk,
+    paper: bestPaper,
+    bright: bestBright,
+    inkRgb: pal[bestInk],
+    paperRgb: pal[bestPaper]
+  };
+}
+
+/**
+ * Apply Floyd-Steinberg dithering within a single 8x8 cell using only 2 colors
+ * @param {Float32Array} pixels - Source pixels (full image)
+ * @param {number} cellX - Cell X position
+ * @param {number} cellY - Cell Y position
+ * @param {number} width - Image width
+ * @param {number[]} inkRgb - Ink color RGB
+ * @param {number[]} paperRgb - Paper color RGB
+ * @returns {Uint8Array} 8-byte bitmap for the cell
+ */
+function ditherCellFloydSteinberg(pixels, cellX, cellY, width, inkRgb, paperRgb) {
+  // Copy cell pixels to local buffer for dithering
+  const cellPixels = new Float32Array(8 * 8 * 3);
+  for (let dy = 0; dy < 8; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const srcIdx = ((cellY * 8 + dy) * width + (cellX * 8 + dx)) * 3;
+      const dstIdx = (dy * 8 + dx) * 3;
+      cellPixels[dstIdx] = pixels[srcIdx];
+      cellPixels[dstIdx + 1] = pixels[srcIdx + 1];
+      cellPixels[dstIdx + 2] = pixels[srcIdx + 2];
+    }
+  }
+
+  const bitmap = new Uint8Array(8);
+  const twoColorPalette = [inkRgb, paperRgb];
+
+  // Apply Floyd-Steinberg within cell
+  for (let y = 0; y < 8; y++) {
+    for (let x = 0; x < 8; x++) {
+      const idx = (y * 8 + x) * 3;
+      const oldR = cellPixels[idx];
+      const oldG = cellPixels[idx + 1];
+      const oldB = cellPixels[idx + 2];
+
+      // Find nearest of the two colors
+      const inkDist = colorDistance([oldR, oldG, oldB], inkRgb);
+      const paperDist = colorDistance([oldR, oldG, oldB], paperRgb);
+      const useInk = inkDist < paperDist;
+      const newColor = useInk ? inkRgb : paperRgb;
+
+      if (useInk) {
+        bitmap[y] |= (0x80 >> x);
+      }
+
+      // Calculate error
+      const errR = oldR - newColor[0];
+      const errG = oldG - newColor[1];
+      const errB = oldB - newColor[2];
+
+      // Distribute error to neighbors (within cell only)
+      if (x + 1 < 8) {
+        const i = idx + 3;
+        cellPixels[i] += errR * 7 / 16;
+        cellPixels[i + 1] += errG * 7 / 16;
+        cellPixels[i + 2] += errB * 7 / 16;
+      }
+      if (y + 1 < 8) {
+        if (x > 0) {
+          const i = ((y + 1) * 8 + (x - 1)) * 3;
+          cellPixels[i] += errR * 3 / 16;
+          cellPixels[i + 1] += errG * 3 / 16;
+          cellPixels[i + 2] += errB * 3 / 16;
+        }
+        {
+          const i = ((y + 1) * 8 + x) * 3;
+          cellPixels[i] += errR * 5 / 16;
+          cellPixels[i + 1] += errG * 5 / 16;
+          cellPixels[i + 2] += errB * 5 / 16;
+        }
+        if (x + 1 < 8) {
+          const i = ((y + 1) * 8 + (x + 1)) * 3;
+          cellPixels[i] += errR * 1 / 16;
+          cellPixels[i + 1] += errG * 1 / 16;
+          cellPixels[i + 2] += errB * 1 / 16;
+        }
+      }
+    }
+  }
+
+  return bitmap;
+}
+
+/**
+ * Apply Atkinson dithering within a single 8x8 cell using only 2 colors
+ * @param {Float32Array} pixels - Source pixels (full image)
+ * @param {number} cellX - Cell X position
+ * @param {number} cellY - Cell Y position
+ * @param {number} width - Image width
+ * @param {number[]} inkRgb - Ink color RGB
+ * @param {number[]} paperRgb - Paper color RGB
+ * @returns {Uint8Array} 8-byte bitmap for the cell
+ */
+function ditherCellAtkinson(pixels, cellX, cellY, width, inkRgb, paperRgb) {
+  // Copy cell pixels to local buffer
+  const cellPixels = new Float32Array(8 * 8 * 3);
+  for (let dy = 0; dy < 8; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const srcIdx = ((cellY * 8 + dy) * width + (cellX * 8 + dx)) * 3;
+      const dstIdx = (dy * 8 + dx) * 3;
+      cellPixels[dstIdx] = pixels[srcIdx];
+      cellPixels[dstIdx + 1] = pixels[srcIdx + 1];
+      cellPixels[dstIdx + 2] = pixels[srcIdx + 2];
+    }
+  }
+
+  const bitmap = new Uint8Array(8);
+
+  for (let y = 0; y < 8; y++) {
+    for (let x = 0; x < 8; x++) {
+      const idx = (y * 8 + x) * 3;
+      const oldR = cellPixels[idx];
+      const oldG = cellPixels[idx + 1];
+      const oldB = cellPixels[idx + 2];
+
+      const inkDist = colorDistance([oldR, oldG, oldB], inkRgb);
+      const paperDist = colorDistance([oldR, oldG, oldB], paperRgb);
+      const useInk = inkDist < paperDist;
+      const newColor = useInk ? inkRgb : paperRgb;
+
+      if (useInk) {
+        bitmap[y] |= (0x80 >> x);
+      }
+
+      // Atkinson: 1/8 error to 6 neighbors
+      const errR = (oldR - newColor[0]) / 8;
+      const errG = (oldG - newColor[1]) / 8;
+      const errB = (oldB - newColor[2]) / 8;
+
+      const neighbors = [
+        [x + 1, y], [x + 2, y],
+        [x - 1, y + 1], [x, y + 1], [x + 1, y + 1],
+        [x, y + 2]
+      ];
+
+      for (const [nx, ny] of neighbors) {
+        if (nx >= 0 && nx < 8 && ny >= 0 && ny < 8) {
+          const i = (ny * 8 + nx) * 3;
+          cellPixels[i] += errR;
+          cellPixels[i + 1] += errG;
+          cellPixels[i + 2] += errB;
+        }
+      }
+    }
+  }
+
+  return bitmap;
+}
+
+/**
+ * Apply ordered dithering within a single 8x8 cell using only 2 colors
+ * @param {Float32Array} pixels - Source pixels (full image)
+ * @param {number} cellX - Cell X position
+ * @param {number} cellY - Cell Y position
+ * @param {number} width - Image width
+ * @param {number[]} inkRgb - Ink color RGB
+ * @param {number[]} paperRgb - Paper color RGB
+ * @returns {Uint8Array} 8-byte bitmap for the cell
+ */
+function ditherCellOrdered(pixels, cellX, cellY, width, inkRgb, paperRgb) {
+  const bitmap = new Uint8Array(8);
+
+  for (let dy = 0; dy < 8; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const srcIdx = ((cellY * 8 + dy) * width + (cellX * 8 + dx)) * 3;
+      const r = pixels[srcIdx];
+      const g = pixels[srcIdx + 1];
+      const b = pixels[srcIdx + 2];
+
+      // Calculate luminance difference between ink and paper
+      const inkLum = 0.299 * inkRgb[0] + 0.587 * inkRgb[1] + 0.114 * inkRgb[2];
+      const paperLum = 0.299 * paperRgb[0] + 0.587 * paperRgb[1] + 0.114 * paperRgb[2];
+      const pixelLum = 0.299 * r + 0.587 * g + 0.114 * b;
+
+      // Normalize to 0-1 range between paper and ink
+      const range = Math.abs(inkLum - paperLum);
+      let t = range > 0 ? (pixelLum - Math.min(inkLum, paperLum)) / range : 0.5;
+      t = Math.max(0, Math.min(1, t));
+
+      // Apply Bayer threshold
+      const threshold = (BAYER_4X4[dy % 4][dx % 4] + 0.5) / 16;
+      const useInk = inkLum < paperLum ? (t < threshold) : (t >= (1 - threshold));
+
+      if (useInk) {
+        bitmap[dy] |= (0x80 >> dx);
+      }
+    }
+  }
+
+  return bitmap;
+}
+
+/**
+ * No dithering - just find nearest color for each pixel
+ * @param {Float32Array} pixels - Source pixels (full image)
+ * @param {number} cellX - Cell X position
+ * @param {number} cellY - Cell Y position
+ * @param {number} width - Image width
+ * @param {number[]} inkRgb - Ink color RGB
+ * @param {number[]} paperRgb - Paper color RGB
+ * @returns {Uint8Array} 8-byte bitmap for the cell
+ */
+function ditherCellNone(pixels, cellX, cellY, width, inkRgb, paperRgb) {
+  const bitmap = new Uint8Array(8);
+
+  for (let dy = 0; dy < 8; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const srcIdx = ((cellY * 8 + dy) * width + (cellX * 8 + dx)) * 3;
+      const r = pixels[srcIdx];
+      const g = pixels[srcIdx + 1];
+      const b = pixels[srcIdx + 2];
+
+      const inkDist = colorDistance([r, g, b], inkRgb);
+      const paperDist = colorDistance([r, g, b], paperRgb);
+
+      if (inkDist < paperDist) {
+        bitmap[dy] |= (0x80 >> dx);
+      }
+    }
+  }
+
+  return bitmap;
+}
+
+/**
+ * Two-row Sierra dithering within an 8x8 cell
+ * @param {Float32Array} pixels - Source pixels (full image)
+ * @param {number} cellX - Cell X position
+ * @param {number} cellY - Cell Y position
+ * @param {number} width - Image width
+ * @param {number[]} inkRgb - Ink color RGB
+ * @param {number[]} paperRgb - Paper color RGB
+ * @returns {Uint8Array} 8-byte bitmap for the cell
+ */
+function ditherCellSierra2(pixels, cellX, cellY, width, inkRgb, paperRgb) {
+  const bitmap = new Uint8Array(8);
+  // Work with a local copy for error diffusion
+  const local = new Float32Array(8 * 8 * 3);
+  for (let dy = 0; dy < 8; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const srcIdx = ((cellY * 8 + dy) * width + (cellX * 8 + dx)) * 3;
+      const localIdx = (dy * 8 + dx) * 3;
+      local[localIdx] = pixels[srcIdx];
+      local[localIdx + 1] = pixels[srcIdx + 1];
+      local[localIdx + 2] = pixels[srcIdx + 2];
+    }
+  }
+
+  for (let dy = 0; dy < 8; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const localIdx = (dy * 8 + dx) * 3;
+      const r = local[localIdx];
+      const g = local[localIdx + 1];
+      const b = local[localIdx + 2];
+
+      const inkDist = colorDistance([r, g, b], inkRgb);
+      const paperDist = colorDistance([r, g, b], paperRgb);
+      const useInk = inkDist < paperDist;
+
+      if (useInk) {
+        bitmap[dy] |= (0x80 >> dx);
+      }
+
+      const newColor = useInk ? inkRgb : paperRgb;
+      const errR = r - newColor[0];
+      const errG = g - newColor[1];
+      const errB = b - newColor[2];
+
+      // Two-row Sierra: /16 scale
+      const diffuse = (ddx, ddy, weight) => {
+        const nx = dx + ddx, ny = dy + ddy;
+        if (nx >= 0 && nx < 8 && ny < 8) {
+          const idx = (ny * 8 + nx) * 3;
+          local[idx] += errR * weight / 16;
+          local[idx + 1] += errG * weight / 16;
+          local[idx + 2] += errB * weight / 16;
+        }
+      };
+      diffuse(1, 0, 4); diffuse(2, 0, 3);
+      diffuse(-2, 1, 1); diffuse(-1, 1, 2); diffuse(0, 1, 3); diffuse(1, 1, 2); diffuse(2, 1, 1);
+    }
+  }
+  return bitmap;
+}
+
+/**
+ * Serpentine (bidirectional) Floyd-Steinberg within an 8x8 cell
+ * @param {Float32Array} pixels - Source pixels (full image)
+ * @param {number} cellX - Cell X position
+ * @param {number} cellY - Cell Y position
+ * @param {number} width - Image width
+ * @param {number[]} inkRgb - Ink color RGB
+ * @param {number[]} paperRgb - Paper color RGB
+ * @returns {Uint8Array} 8-byte bitmap for the cell
+ */
+function ditherCellSerpentine(pixels, cellX, cellY, width, inkRgb, paperRgb) {
+  const bitmap = new Uint8Array(8);
+  const local = new Float32Array(8 * 8 * 3);
+  for (let dy = 0; dy < 8; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const srcIdx = ((cellY * 8 + dy) * width + (cellX * 8 + dx)) * 3;
+      const localIdx = (dy * 8 + dx) * 3;
+      local[localIdx] = pixels[srcIdx];
+      local[localIdx + 1] = pixels[srcIdx + 1];
+      local[localIdx + 2] = pixels[srcIdx + 2];
+    }
+  }
+
+  for (let dy = 0; dy < 8; dy++) {
+    const leftToRight = (dy % 2 === 0);
+    for (let i = 0; i < 8; i++) {
+      const dx = leftToRight ? i : (7 - i);
+      const localIdx = (dy * 8 + dx) * 3;
+      const r = local[localIdx];
+      const g = local[localIdx + 1];
+      const b = local[localIdx + 2];
+
+      const inkDist = colorDistance([r, g, b], inkRgb);
+      const paperDist = colorDistance([r, g, b], paperRgb);
+      const useInk = inkDist < paperDist;
+
+      if (useInk) {
+        bitmap[dy] |= (0x80 >> dx);
+      }
+
+      const newColor = useInk ? inkRgb : paperRgb;
+      const errR = r - newColor[0];
+      const errG = g - newColor[1];
+      const errB = b - newColor[2];
+
+      const diffuse = (ddx, ddy, weight) => {
+        const nx = dx + (leftToRight ? ddx : -ddx), ny = dy + ddy;
+        if (nx >= 0 && nx < 8 && ny < 8) {
+          const idx = (ny * 8 + nx) * 3;
+          local[idx] += errR * weight / 16;
+          local[idx + 1] += errG * weight / 16;
+          local[idx + 2] += errB * weight / 16;
+        }
+      };
+      diffuse(1, 0, 7);
+      diffuse(-1, 1, 3); diffuse(0, 1, 5); diffuse(1, 1, 1);
+    }
+  }
+  return bitmap;
+}
+
+/**
+ * Riemersma-style dithering within an 8x8 cell using Z-order curve
+ * @param {Float32Array} pixels - Source pixels (full image)
+ * @param {number} cellX - Cell X position
+ * @param {number} cellY - Cell Y position
+ * @param {number} width - Image width
+ * @param {number[]} inkRgb - Ink color RGB
+ * @param {number[]} paperRgb - Paper color RGB
+ * @returns {Uint8Array} 8-byte bitmap for the cell
+ */
+function ditherCellRiemersma(pixels, cellX, cellY, width, inkRgb, paperRgb) {
+  const bitmap = new Uint8Array(8);
+  const local = new Float32Array(8 * 8 * 3);
+  for (let dy = 0; dy < 8; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const srcIdx = ((cellY * 8 + dy) * width + (cellX * 8 + dx)) * 3;
+      const localIdx = (dy * 8 + dx) * 3;
+      local[localIdx] = pixels[srcIdx];
+      local[localIdx + 1] = pixels[srcIdx + 1];
+      local[localIdx + 2] = pixels[srcIdx + 2];
+    }
+  }
+
+  // Generate Z-order (Morton) curve for 8x8
+  const curve = [];
+  for (let i = 0; i < 64; i++) {
+    let x = 0, y = 0;
+    for (let b = 0; b < 3; b++) {
+      x |= ((i >> (2 * b)) & 1) << b;
+      y |= ((i >> (2 * b + 1)) & 1) << b;
+    }
+    curve.push({ x, y });
+  }
+
+  // Error buffer along the curve
+  const histLen = 16;
+  const errHist = new Float32Array(histLen * 3);
+  let histIdx = 0;
+
+  for (const pt of curve) {
+    const localIdx = (pt.y * 8 + pt.x) * 3;
+    // Add accumulated error
+    let errSum = [0, 0, 0];
+    for (let h = 0; h < histLen; h++) {
+      const weight = (histLen - h) / ((histLen * (histLen + 1)) / 2);
+      errSum[0] += errHist[h * 3] * weight;
+      errSum[1] += errHist[h * 3 + 1] * weight;
+      errSum[2] += errHist[h * 3 + 2] * weight;
+    }
+    const r = local[localIdx] + errSum[0];
+    const g = local[localIdx + 1] + errSum[1];
+    const b = local[localIdx + 2] + errSum[2];
+
+    const inkDist = colorDistance([r, g, b], inkRgb);
+    const paperDist = colorDistance([r, g, b], paperRgb);
+    const useInk = inkDist < paperDist;
+
+    if (useInk) {
+      bitmap[pt.y] |= (0x80 >> pt.x);
+    }
+
+    const newColor = useInk ? inkRgb : paperRgb;
+    errHist[histIdx * 3] = r - newColor[0];
+    errHist[histIdx * 3 + 1] = g - newColor[1];
+    errHist[histIdx * 3 + 2] = b - newColor[2];
+    histIdx = (histIdx + 1) % histLen;
+  }
+  return bitmap;
+}
+
+/**
+ * Blue noise dithering within an 8x8 cell
+ * @param {Float32Array} pixels - Source pixels (full image)
+ * @param {number} cellX - Cell X position
+ * @param {number} cellY - Cell Y position
+ * @param {number} width - Image width
+ * @param {number[]} inkRgb - Ink color RGB
+ * @param {number[]} paperRgb - Paper color RGB
+ * @returns {Uint8Array} 8-byte bitmap for the cell
+ */
+function ditherCellBlueNoise(pixels, cellX, cellY, width, inkRgb, paperRgb) {
+  const bitmap = new Uint8Array(8);
+
+  for (let dy = 0; dy < 8; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const srcIdx = ((cellY * 8 + dy) * width + (cellX * 8 + dx)) * 3;
+      const r = pixels[srcIdx];
+      const g = pixels[srcIdx + 1];
+      const b = pixels[srcIdx + 2];
+
+      const inkLum = 0.299 * inkRgb[0] + 0.587 * inkRgb[1] + 0.114 * inkRgb[2];
+      const paperLum = 0.299 * paperRgb[0] + 0.587 * paperRgb[1] + 0.114 * paperRgb[2];
+      const pixelLum = 0.299 * r + 0.587 * g + 0.114 * b;
+
+      const range = Math.abs(inkLum - paperLum);
+      let t = range > 0 ? (pixelLum - Math.min(inkLum, paperLum)) / range : 0.5;
+      t = Math.max(0, Math.min(1, t));
+
+      // Use blue noise pattern (tile from global 16x16)
+      const globalX = cellX * 8 + dx;
+      const globalY = cellY * 8 + dy;
+      const threshold = BLUE_NOISE_16[globalY % 16][globalX % 16] / 255;
+      const useInk = inkLum < paperLum ? (t < threshold) : (t >= (1 - threshold));
+
+      if (useInk) {
+        bitmap[dy] |= (0x80 >> dx);
+      }
+    }
+  }
+  return bitmap;
+}
+
+/**
+ * Clustered dot (pattern) dithering within an 8x8 cell
+ * @param {Float32Array} pixels - Source pixels (full image)
+ * @param {number} cellX - Cell X position
+ * @param {number} cellY - Cell Y position
+ * @param {number} width - Image width
+ * @param {number[]} inkRgb - Ink color RGB
+ * @param {number[]} paperRgb - Paper color RGB
+ * @returns {Uint8Array} 8-byte bitmap for the cell
+ */
+function ditherCellPattern(pixels, cellX, cellY, width, inkRgb, paperRgb) {
+  const bitmap = new Uint8Array(8);
+
+  for (let dy = 0; dy < 8; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const srcIdx = ((cellY * 8 + dy) * width + (cellX * 8 + dx)) * 3;
+      const r = pixels[srcIdx];
+      const g = pixels[srcIdx + 1];
+      const b = pixels[srcIdx + 2];
+
+      const inkLum = 0.299 * inkRgb[0] + 0.587 * inkRgb[1] + 0.114 * inkRgb[2];
+      const paperLum = 0.299 * paperRgb[0] + 0.587 * paperRgb[1] + 0.114 * paperRgb[2];
+      const pixelLum = 0.299 * r + 0.587 * g + 0.114 * b;
+
+      const range = Math.abs(inkLum - paperLum);
+      let t = range > 0 ? (pixelLum - Math.min(inkLum, paperLum)) / range : 0.5;
+      t = Math.max(0, Math.min(1, t));
+
+      // Use clustered dot pattern
+      const threshold = (CLUSTER_8X8[dy][dx] + 0.5) / 64;
+      const useInk = inkLum < paperLum ? (t < threshold) : (t >= (1 - threshold));
+
+      if (useInk) {
+        bitmap[dy] |= (0x80 >> dx);
+      }
+    }
+  }
+  return bitmap;
+}
+
+/**
  * Get combined palette (16 colors: 8 regular + 8 bright)
  * Uses the import dialog's selected palette
  * @returns {{regular: number[][], bright: number[][]}}
@@ -524,10 +1558,7 @@ function getCombinedPalette() {
  * Update crop input fields from importCrop state
  */
 function updateCropInputs() {
-  const cropX = /** @type {HTMLInputElement} */ (document.getElementById('importCropX'));
-  const cropY = /** @type {HTMLInputElement} */ (document.getElementById('importCropY'));
-  const cropW = /** @type {HTMLInputElement} */ (document.getElementById('importCropW'));
-  const cropH = /** @type {HTMLInputElement} */ (document.getElementById('importCropH'));
+  const { cropX, cropY, cropW, cropH } = importElements;
 
   if (cropX) cropX.value = String(importCrop.x);
   if (cropY) cropY.value = String(importCrop.y);
@@ -539,10 +1570,7 @@ function updateCropInputs() {
  * Read crop values from input fields
  */
 function readCropInputs() {
-  const cropX = /** @type {HTMLInputElement} */ (document.getElementById('importCropX'));
-  const cropY = /** @type {HTMLInputElement} */ (document.getElementById('importCropY'));
-  const cropW = /** @type {HTMLInputElement} */ (document.getElementById('importCropW'));
-  const cropH = /** @type {HTMLInputElement} */ (document.getElementById('importCropH'));
+  const { cropX, cropY, cropW, cropH } = importElements;
 
   if (cropX) importCrop.x = Math.max(0, parseInt(cropX.value, 10) || 0);
   if (cropY) importCrop.y = Math.max(0, parseInt(cropY.value, 10) || 0);
@@ -650,6 +1678,38 @@ function analyzeCell(pixels, cellX, cellY, width) {
 }
 
 /**
+ * Analyze cell for mono output (black ink on white paper)
+ * @param {Float32Array} pixels - Float array of RGB values
+ * @param {number} cellX - Cell X position (0-31)
+ * @param {number} cellY - Cell Y position (0-23)
+ * @param {number} width - Image width
+ * @param {number[]} inkRgb - Ink color (black)
+ * @param {number[]} paperRgb - Paper color (white)
+ * @returns {{ink: number, paper: number, bright: boolean, bitmap: Uint8Array}}
+ */
+function analyzeCellMono(pixels, cellX, cellY, width, inkRgb, paperRgb) {
+  const bitmap = new Uint8Array(8);
+
+  for (let dy = 0; dy < 8; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const px = cellX * 8 + dx;
+      const py = cellY * 8 + dy;
+      const idx = (py * width + px) * 3;
+      const color = [pixels[idx], pixels[idx + 1], pixels[idx + 2]];
+
+      const inkDist = colorDistance(color, inkRgb);
+      const paperDist = colorDistance(color, paperRgb);
+
+      if (inkDist < paperDist) {
+        bitmap[dy] |= (0x80 >> dx);
+      }
+    }
+  }
+
+  return { ink: 0, paper: 7, bright: true, bitmap };
+}
+
+/**
  * Calculate bitmap offset for a pixel row
  * ZX Spectrum screen memory layout
  * @param {number} y - Pixel Y coordinate (0-191)
@@ -682,7 +1742,10 @@ function getBitmapOffset(y) {
  * @param {number} balanceB - Blue channel adjustment (-50 to 50)
  * @returns {Uint8Array} 6912-byte SCR data
  */
-function convertToScr(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0) {
+function convertToScr(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, monoOutput = false) {
+  // Cache color distance mode setting once at start
+  updateColorDistanceMode();
+
   const ctx = sourceCanvas.getContext('2d');
   if (!ctx) throw new Error('Cannot get canvas context');
 
@@ -718,6 +1781,11 @@ function convertToScr(sourceCanvas, dithering, brightness, contrast, saturation 
     applyBrightnessContrast(pixels, brightness, contrast);
   }
 
+  // Apply smoothing (bilateral filter) - before sharpening to reduce noise first
+  if (smoothing > 0) {
+    applyBilateralFilter(pixels, 256, 192, smoothing);
+  }
+
   // Apply sharpening
   if (sharpness > 0) {
     applySharpening(pixels, 256, 192, sharpness);
@@ -731,64 +1799,152 @@ function convertToScr(sourceCanvas, dithering, brightness, contrast, saturation 
     floatPixels[i * 3 + 2] = pixels[i * 4 + 2];
   }
 
-  // Apply dithering
+  // Get palette
   const palette = getCombinedPalette();
   const fullPalette = [...palette.regular, ...palette.bright];
-
-  switch (dithering) {
-    case 'floyd-steinberg':
-      floydSteinbergDither(floatPixels, 256, 192, fullPalette);
-      break;
-    case 'jarvis':
-      jarvisDither(floatPixels, 256, 192, fullPalette);
-      break;
-    case 'stucki':
-      stuckiDither(floatPixels, 256, 192, fullPalette);
-      break;
-    case 'burkes':
-      burkesDither(floatPixels, 256, 192, fullPalette);
-      break;
-    case 'sierra':
-      sierraDither(floatPixels, 256, 192, fullPalette);
-      break;
-    case 'sierra-lite':
-      sierraLiteDither(floatPixels, 256, 192, fullPalette);
-      break;
-    case 'atkinson':
-      atkinsonDither(floatPixels, 256, 192, fullPalette);
-      break;
-    case 'ordered':
-      orderedDither(floatPixels, 256, 192, fullPalette);
-      break;
-    case 'ordered8':
-      ordered8Dither(floatPixels, 256, 192, fullPalette);
-      break;
-    case 'noise':
-      noiseDither(floatPixels, 256, 192, fullPalette);
-      break;
-    // 'none' - no dithering applied
-  }
 
   // Create SCR buffer
   const scr = new Uint8Array(6912);
 
-  // Process each 8x8 cell
-  for (let cellY = 0; cellY < 24; cellY++) {
-    for (let cellX = 0; cellX < 32; cellX++) {
-      const cell = analyzeCell(floatPixels, cellX, cellY, 256);
+  // Check if using cell-aware dithering
+  const isCellAware = dithering.startsWith('cell-');
 
-      // Write bitmap bytes
-      for (let line = 0; line < 8; line++) {
-        const y = cellY * 8 + line;
-        const offset = getBitmapOffset(y) + cellX;
-        scr[offset] = cell.bitmap[line];
+  if (isCellAware) {
+    // Cell-aware dithering: process each cell independently
+    // 1. Find best ink/paper for cell from original pixels
+    // 2. Apply dithering within cell using only those 2 colors
+    const cellDitherMethod = dithering.replace('cell-', '');
+
+    // Mono output uses fixed black ink on white paper (bright)
+    const monoColors = monoOutput ? {
+      ink: 0, paper: 7, bright: true,
+      inkRgb: palette.bright[0], paperRgb: palette.bright[7]
+    } : null;
+
+    for (let cellY = 0; cellY < 24; cellY++) {
+      for (let cellX = 0; cellX < 32; cellX++) {
+        // Find best ink/paper combination (or use mono if enabled)
+        const colors = monoColors || findCellColors(floatPixels, cellX, cellY, 256, palette);
+
+        // Apply cell-local dithering
+        let bitmap;
+        switch (cellDitherMethod) {
+          case 'floyd':
+            bitmap = ditherCellFloydSteinberg(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'atkinson':
+            bitmap = ditherCellAtkinson(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'ordered':
+            bitmap = ditherCellOrdered(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'sierra2':
+            bitmap = ditherCellSierra2(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'serpentine':
+            bitmap = ditherCellSerpentine(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'riemersma':
+            bitmap = ditherCellRiemersma(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'blue-noise':
+            bitmap = ditherCellBlueNoise(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'pattern':
+            bitmap = ditherCellPattern(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          default: // 'none' or unknown
+            bitmap = ditherCellNone(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+        }
+
+        // Write bitmap bytes
+        for (let line = 0; line < 8; line++) {
+          const y = cellY * 8 + line;
+          const offset = getBitmapOffset(y) + cellX;
+          scr[offset] = bitmap[line];
+        }
+
+        // Write attribute byte
+        const attrOffset = 6144 + cellY * 32 + cellX;
+        let attr = (colors.paper << 3) | colors.ink;
+        if (colors.bright) attr |= 0x40;
+        scr[attrOffset] = attr;
       }
+    }
+  } else {
+    // Traditional global dithering approach
+    // For mono output, use only black and white
+    const ditherPalette = monoOutput ? [palette.bright[0], palette.bright[7]] : fullPalette;
 
-      // Write attribute byte
-      const attrOffset = 6144 + cellY * 32 + cellX;
-      let attr = (cell.paper << 3) | cell.ink;
-      if (cell.bright) attr |= 0x40;
-      scr[attrOffset] = attr;
+    switch (dithering) {
+      case 'floyd-steinberg':
+        floydSteinbergDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'jarvis':
+        jarvisDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'stucki':
+        stuckiDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'burkes':
+        burkesDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'sierra':
+        sierraDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'sierra-lite':
+        sierraLiteDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'sierra2':
+        sierra2Dither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'serpentine':
+        serpentineDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'riemersma':
+        riemersmaDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'blue-noise':
+        blueNoiseDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'pattern':
+        patternDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'atkinson':
+        atkinsonDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'ordered':
+        orderedDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'ordered8':
+        ordered8Dither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'noise':
+        noiseDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      // 'none' - no dithering applied
+    }
+
+    // Process each 8x8 cell
+    for (let cellY = 0; cellY < 24; cellY++) {
+      for (let cellX = 0; cellX < 32; cellX++) {
+        const cell = monoOutput
+          ? analyzeCellMono(floatPixels, cellX, cellY, 256, palette.bright[0], palette.bright[7])
+          : analyzeCell(floatPixels, cellX, cellY, 256);
+
+        // Write bitmap bytes
+        for (let line = 0; line < 8; line++) {
+          const y = cellY * 8 + line;
+          const offset = getBitmapOffset(y) + cellX;
+          scr[offset] = cell.bitmap[line];
+        }
+
+        // Write attribute byte
+        const attrOffset = 6144 + cellY * 32 + cellX;
+        let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((cell.paper << 3) | cell.ink | (cell.bright ? 0x40 : 0));
+        scr[attrOffset] = attr;
+      }
     }
   }
 
@@ -866,7 +2022,10 @@ function getBlockAverageColor(pixels, width, x, y, blockWidth = 32) {
  * @param {number} balanceB - Blue channel adjustment
  * @returns {Uint8Array} 11136-byte BSC data
  */
-function convertToBsc(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0) {
+function convertToBsc(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, monoOutput = false) {
+  // Cache color distance mode setting once at start
+  updateColorDistanceMode();
+
   const ctx = sourceCanvas.getContext('2d');
   if (!ctx) throw new Error('Cannot get canvas context');
 
@@ -885,6 +2044,7 @@ function convertToBsc(sourceCanvas, dithering, brightness, contrast, saturation 
   if (gamma !== 1.0) applyGamma(pixels, gamma);
   if (blackPoint > 0 || whitePoint < 255) applyLevels(pixels, blackPoint, whitePoint);
   if (brightness !== 0 || contrast !== 0) applyBrightnessContrast(pixels, brightness, contrast);
+  if (smoothing > 0) applyBilateralFilter(pixels, 384, 304, smoothing);
   if (sharpness > 0) applySharpening(pixels, 384, 304, sharpness);
 
   // Extract main screen area (256x192 at offset 64,64)
@@ -909,7 +2069,7 @@ function convertToBsc(sourceCanvas, dithering, brightness, contrast, saturation 
   mainCtx.putImageData(mainImageData, 0, 0);
 
   // Convert main screen using SCR conversion (without re-applying adjustments)
-  const scrData = convertMainAreaToScr(mainCanvas, dithering);
+  const scrData = convertMainAreaToScr(mainCanvas, dithering, monoOutput);
 
   // Create BSC buffer
   const bsc = new Uint8Array(BSC_CONST.TOTAL_SIZE);
@@ -1002,7 +2162,7 @@ function convertToBsc(sourceCanvas, dithering, brightness, contrast, saturation 
  * @param {string} dithering - Dithering method
  * @returns {Uint8Array} 6912-byte SCR data
  */
-function convertMainAreaToScr(sourceCanvas, dithering) {
+function convertMainAreaToScr(sourceCanvas, dithering, monoOutput = false) {
   const ctx = sourceCanvas.getContext('2d');
   if (!ctx) throw new Error('Cannot get canvas context');
 
@@ -1017,41 +2177,108 @@ function convertMainAreaToScr(sourceCanvas, dithering) {
     floatPixels[i * 3 + 2] = pixels[i * 4 + 2];
   }
 
-  // Apply dithering
   const palette = getCombinedPalette();
   const fullPalette = [...palette.regular, ...palette.bright];
-
-  switch (dithering) {
-    case 'floyd-steinberg': floydSteinbergDither(floatPixels, 256, 192, fullPalette); break;
-    case 'jarvis': jarvisDither(floatPixels, 256, 192, fullPalette); break;
-    case 'stucki': stuckiDither(floatPixels, 256, 192, fullPalette); break;
-    case 'burkes': burkesDither(floatPixels, 256, 192, fullPalette); break;
-    case 'sierra': sierraDither(floatPixels, 256, 192, fullPalette); break;
-    case 'sierra-lite': sierraLiteDither(floatPixels, 256, 192, fullPalette); break;
-    case 'atkinson': atkinsonDither(floatPixels, 256, 192, fullPalette); break;
-    case 'ordered': orderedDither(floatPixels, 256, 192, fullPalette); break;
-    case 'ordered8': ordered8Dither(floatPixels, 256, 192, fullPalette); break;
-    case 'noise': noiseDither(floatPixels, 256, 192, fullPalette); break;
-  }
-
-  // Create SCR buffer
   const scr = new Uint8Array(6912);
 
-  // Process each 8x8 cell
-  for (let cellY = 0; cellY < 24; cellY++) {
-    for (let cellX = 0; cellX < 32; cellX++) {
-      const cell = analyzeCell(floatPixels, cellX, cellY, 256);
+  // Check if using cell-aware dithering
+  const isCellAware = dithering.startsWith('cell-');
 
-      for (let line = 0; line < 8; line++) {
-        const y = cellY * 8 + line;
-        const offset = getBitmapOffset(y) + cellX;
-        scr[offset] = cell.bitmap[line];
+  if (isCellAware) {
+    const cellDitherMethod = dithering.replace('cell-', '');
+
+    // Mono output uses fixed black ink on white paper (bright)
+    const monoColors = monoOutput ? {
+      ink: 0, paper: 7, bright: true,
+      inkRgb: palette.bright[0], paperRgb: palette.bright[7]
+    } : null;
+
+    for (let cellY = 0; cellY < 24; cellY++) {
+      for (let cellX = 0; cellX < 32; cellX++) {
+        const colors = monoColors || findCellColors(floatPixels, cellX, cellY, 256, palette);
+
+        let bitmap;
+        switch (cellDitherMethod) {
+          case 'floyd':
+            bitmap = ditherCellFloydSteinberg(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'atkinson':
+            bitmap = ditherCellAtkinson(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'ordered':
+            bitmap = ditherCellOrdered(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'sierra2':
+            bitmap = ditherCellSierra2(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'serpentine':
+            bitmap = ditherCellSerpentine(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'riemersma':
+            bitmap = ditherCellRiemersma(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'blue-noise':
+            bitmap = ditherCellBlueNoise(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'pattern':
+            bitmap = ditherCellPattern(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          default:
+            bitmap = ditherCellNone(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+        }
+
+        for (let line = 0; line < 8; line++) {
+          const y = cellY * 8 + line;
+          const offset = getBitmapOffset(y) + cellX;
+          scr[offset] = bitmap[line];
+        }
+
+        const attrOffset = 6144 + cellY * 32 + cellX;
+        let attr = (colors.paper << 3) | colors.ink;
+        if (colors.bright) attr |= 0x40;
+        scr[attrOffset] = attr;
       }
+    }
+  } else {
+    // Traditional global dithering
+    // For mono output, use only black and white
+    const ditherPalette = monoOutput ? [palette.bright[0], palette.bright[7]] : fullPalette;
 
-      const attrOffset = 6144 + cellY * 32 + cellX;
-      let attr = (cell.paper << 3) | cell.ink;
-      if (cell.bright) attr |= 0x40;
-      scr[attrOffset] = attr;
+    switch (dithering) {
+      case 'floyd-steinberg': floydSteinbergDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'jarvis': jarvisDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'stucki': stuckiDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'burkes': burkesDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'sierra': sierraDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'sierra-lite': sierraLiteDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'sierra2': sierra2Dither(floatPixels, 256, 192, ditherPalette); break;
+      case 'serpentine': serpentineDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'riemersma': riemersmaDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'blue-noise': blueNoiseDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'pattern': patternDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'atkinson': atkinsonDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'ordered': orderedDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'ordered8': ordered8Dither(floatPixels, 256, 192, ditherPalette); break;
+      case 'noise': noiseDither(floatPixels, 256, 192, ditherPalette); break;
+    }
+
+    for (let cellY = 0; cellY < 24; cellY++) {
+      for (let cellX = 0; cellX < 32; cellX++) {
+        const cell = monoOutput
+          ? analyzeCellMono(floatPixels, cellX, cellY, 256, palette.bright[0], palette.bright[7])
+          : analyzeCell(floatPixels, cellX, cellY, 256);
+
+        for (let line = 0; line < 8; line++) {
+          const y = cellY * 8 + line;
+          const offset = getBitmapOffset(y) + cellX;
+          scr[offset] = cell.bitmap[line];
+        }
+
+        const attrOffset = 6144 + cellY * 32 + cellX;
+        let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((cell.paper << 3) | cell.ink | (cell.bright ? 0x40 : 0));
+        scr[attrOffset] = attr;
+      }
     }
   }
 
@@ -1199,15 +2426,12 @@ function renderBscToCanvas(bscData, canvas, zoom = 2) {
     }
   }
 
-  // Draw at 1x then scale up
-  const tempCanvas = document.createElement('canvas');
-  tempCanvas.width = 384;
-  tempCanvas.height = 304;
-  const tempCtx = tempCanvas.getContext('2d');
-  if (tempCtx) {
-    tempCtx.putImageData(imageData, 0, 0);
+  // Draw at 1x then scale up (reuse temp canvas for performance)
+  const temp = getImportTempCanvas(384, 304);
+  if (temp) {
+    temp.ctx.putImageData(imageData, 0, 0);
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(tempCanvas, 0, 0, 384 * zoom, 304 * zoom);
+    ctx.drawImage(temp.canvas, 0, 0, 384 * zoom, 304 * zoom);
   }
 }
 
@@ -1259,16 +2483,43 @@ function renderScrToCanvas(scrData, canvas, zoom = 2) {
     }
   }
 
-  // Draw at 1x then scale up
-  const tempCanvas = document.createElement('canvas');
-  tempCanvas.width = 256;
-  tempCanvas.height = 192;
-  const tempCtx = tempCanvas.getContext('2d');
-  if (tempCtx) {
-    tempCtx.putImageData(imageData, 0, 0);
+  // Draw at 1x then scale up (reuse temp canvas for performance)
+  const temp = getImportTempCanvas(256, 192);
+  if (temp) {
+    temp.ctx.putImageData(imageData, 0, 0);
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(tempCanvas, 0, 0, 256 * zoom, 192 * zoom);
+    ctx.drawImage(temp.canvas, 0, 0, 256 * zoom, 192 * zoom);
   }
+}
+
+// ============================================================================
+// Reusable Temporary Canvas (for preview rendering)
+// ============================================================================
+
+/** @type {HTMLCanvasElement|null} - Reusable temp canvas for preview */
+let importTempCanvas = null;
+
+/** @type {CanvasRenderingContext2D|null} - Reusable temp canvas context */
+let importTempCtx = null;
+
+/**
+ * Get or create the reusable temp canvas for import preview rendering
+ * @param {number} width - Required width
+ * @param {number} height - Required height
+ * @returns {{canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D}|null}
+ */
+function getImportTempCanvas(width, height) {
+  if (!importTempCanvas) {
+    importTempCanvas = document.createElement('canvas');
+    importTempCtx = importTempCanvas.getContext('2d');
+  }
+  // Resize only if needed
+  if (importTempCanvas.width !== width || importTempCanvas.height !== height) {
+    importTempCanvas.width = width;
+    importTempCanvas.height = height;
+  }
+  if (!importTempCtx) return null;
+  return { canvas: importTempCanvas, ctx: importTempCtx };
 }
 
 // ============================================================================
@@ -1310,6 +2561,49 @@ let importPaletteColors = { regular: [], bright: [] };
 
 /** @type {Function|null} - Reference to updatePreview for mouse handlers */
 let updateImportPreview = null;
+
+/**
+ * Cached DOM elements for import dialog - populated in initPngImport()
+ */
+const importElements = {
+  // Crop inputs
+  /** @type {HTMLInputElement|null} */ cropX: null,
+  /** @type {HTMLInputElement|null} */ cropY: null,
+  /** @type {HTMLInputElement|null} */ cropW: null,
+  /** @type {HTMLInputElement|null} */ cropH: null,
+  /** @type {HTMLInputElement|null} */ cropLock43: null,
+  // Selects
+  /** @type {HTMLSelectElement|null} */ dithering: null,
+  /** @type {HTMLSelectElement|null} */ format: null,
+  /** @type {HTMLSelectElement|null} */ palette: null,
+  /** @type {HTMLSelectElement|null} */ zoom: null,
+  /** @type {HTMLSelectElement|null} */ fitMode: null,
+  // Sliders
+  /** @type {HTMLInputElement|null} */ contrast: null,
+  /** @type {HTMLInputElement|null} */ brightness: null,
+  /** @type {HTMLInputElement|null} */ saturation: null,
+  /** @type {HTMLInputElement|null} */ gamma: null,
+  /** @type {HTMLInputElement|null} */ sharpness: null,
+  /** @type {HTMLInputElement|null} */ smoothing: null,
+  /** @type {HTMLInputElement|null} */ blackPoint: null,
+  /** @type {HTMLInputElement|null} */ whitePoint: null,
+  /** @type {HTMLInputElement|null} */ balanceR: null,
+  /** @type {HTMLInputElement|null} */ balanceG: null,
+  /** @type {HTMLInputElement|null} */ balanceB: null,
+  // Checkboxes
+  /** @type {HTMLInputElement|null} */ grayscale: null,
+  /** @type {HTMLInputElement|null} */ monoOutput: null,
+  /** @type {HTMLInputElement|null} */ useLab: null,
+  // Value labels
+  /** @type {HTMLElement|null} */ saturationValue: null,
+  /** @type {HTMLElement|null} */ gammaValue: null,
+  /** @type {HTMLElement|null} */ sharpnessValue: null,
+  /** @type {HTMLElement|null} */ smoothingValue: null,
+  /** @type {HTMLElement|null} */ levelsValue: null,
+  /** @type {HTMLElement|null} */ colorBalanceValue: null,
+  // Dialog
+  /** @type {HTMLElement|null} */ dialog: null
+};
 
 /**
  * Apply crop and fit mode to source canvas
@@ -1623,6 +2917,9 @@ function initCropMouseHandlers() {
       let newW = cropDragInitial.w;
       let newH = cropDragInitial.h;
 
+      // Check if 4:3 lock is enabled
+      const isLocked = importElements.cropLock43?.checked || false;
+
       if (dir.includes('l')) {
         newX = Math.max(0, Math.min(cropDragInitial.x + cropDragInitial.w - 8, Math.round(cropDragInitial.x + dx)));
         newW = cropDragInitial.w - (newX - cropDragInitial.x);
@@ -1636,6 +2933,41 @@ function initCropMouseHandlers() {
       }
       if (dir.includes('b')) {
         newH = Math.max(8, Math.min(imgH - cropDragInitial.y, Math.round(cropDragInitial.h + dy)));
+      }
+
+      // Apply 4:3 aspect ratio lock
+      if (isLocked) {
+        const isCorner = dir.length === 2;
+        const isHorizontal = dir === 'l' || dir === 'r';
+        const isVertical = dir === 't' || dir === 'b';
+
+        if (isCorner || isHorizontal) {
+          // Width changed - adjust height
+          const targetH = Math.round(newW * 3 / 4);
+          if (dir.includes('t')) {
+            // Top edge - adjust Y to maintain bottom position
+            const bottomY = newY + newH;
+            newH = targetH;
+            newY = bottomY - newH;
+            if (newY < 0) { newY = 0; newH = bottomY; newW = Math.round(newH * 4 / 3); }
+          } else {
+            // Bottom edge or no vertical - just adjust height
+            newH = targetH;
+            if (newY + newH > imgH) { newH = imgH - newY; newW = Math.round(newH * 4 / 3); }
+          }
+        } else if (isVertical) {
+          // Height changed - adjust width
+          const targetW = Math.round(newH * 4 / 3);
+          if (dir.includes('l')) {
+            const rightX = newX + newW;
+            newW = targetW;
+            newX = rightX - newW;
+            if (newX < 0) { newX = 0; newW = rightX; newH = Math.round(newW * 3 / 4); }
+          } else {
+            newW = targetW;
+            if (newX + newW > imgW) { newW = imgW - newX; newH = Math.round(newW * 3 / 4); }
+          }
+        }
       }
 
       importCrop.x = newX;
@@ -1705,8 +3037,8 @@ function detectScreenRegion() {
  * Initialize PNG import dialog
  */
 function initPngImport() {
-  const dialog = document.getElementById('pngImportDialog');
-  if (!dialog) return;
+  importElements.dialog = document.getElementById('pngImportDialog');
+  if (!importElements.dialog) return;
 
   // Get canvas elements
   importOriginalCanvas = /** @type {HTMLCanvasElement} */ (document.getElementById('importOriginalCanvas'));
@@ -1719,6 +3051,38 @@ function initPngImport() {
   importSourceCanvasBsc = document.createElement('canvas');
   importSourceCanvasBsc.width = BSC_CONST.FRAME_WIDTH;
   importSourceCanvasBsc.height = BSC_CONST.FRAME_HEIGHT;
+
+  // Cache all DOM elements once
+  importElements.cropX = /** @type {HTMLInputElement} */ (document.getElementById('importCropX'));
+  importElements.cropY = /** @type {HTMLInputElement} */ (document.getElementById('importCropY'));
+  importElements.cropW = /** @type {HTMLInputElement} */ (document.getElementById('importCropW'));
+  importElements.cropH = /** @type {HTMLInputElement} */ (document.getElementById('importCropH'));
+  importElements.cropLock43 = /** @type {HTMLInputElement} */ (document.getElementById('importCropLock43'));
+  importElements.dithering = /** @type {HTMLSelectElement} */ (document.getElementById('importDithering'));
+  importElements.contrast = /** @type {HTMLInputElement} */ (document.getElementById('importContrast'));
+  importElements.brightness = /** @type {HTMLInputElement} */ (document.getElementById('importBrightness'));
+  importElements.zoom = /** @type {HTMLSelectElement} */ (document.getElementById('importZoom'));
+  importElements.palette = /** @type {HTMLSelectElement} */ (document.getElementById('importPalette'));
+  importElements.format = /** @type {HTMLSelectElement} */ (document.getElementById('importFormat'));
+  importElements.fitMode = /** @type {HTMLSelectElement} */ (document.getElementById('importFitMode'));
+  importElements.grayscale = /** @type {HTMLInputElement} */ (document.getElementById('importGrayscale'));
+  importElements.monoOutput = /** @type {HTMLInputElement} */ (document.getElementById('importMonoOutput'));
+  importElements.saturation = /** @type {HTMLInputElement} */ (document.getElementById('importSaturation'));
+  importElements.gamma = /** @type {HTMLInputElement} */ (document.getElementById('importGamma'));
+  importElements.sharpness = /** @type {HTMLInputElement} */ (document.getElementById('importSharpness'));
+  importElements.smoothing = /** @type {HTMLInputElement} */ (document.getElementById('importSmoothing'));
+  importElements.blackPoint = /** @type {HTMLInputElement} */ (document.getElementById('importBlackPoint'));
+  importElements.whitePoint = /** @type {HTMLInputElement} */ (document.getElementById('importWhitePoint'));
+  importElements.balanceR = /** @type {HTMLInputElement} */ (document.getElementById('importBalanceR'));
+  importElements.balanceG = /** @type {HTMLInputElement} */ (document.getElementById('importBalanceG'));
+  importElements.balanceB = /** @type {HTMLInputElement} */ (document.getElementById('importBalanceB'));
+  importElements.useLab = /** @type {HTMLInputElement} */ (document.getElementById('importUseLab'));
+  importElements.saturationValue = document.getElementById('importSaturationValue');
+  importElements.gammaValue = document.getElementById('importGammaValue');
+  importElements.sharpnessValue = document.getElementById('importSharpnessValue');
+  importElements.smoothingValue = document.getElementById('importSmoothingValue');
+  importElements.levelsValue = document.getElementById('importLevelsValue');
+  importElements.colorBalanceValue = document.getElementById('importColorBalanceValue');
 
   // Tab switching
   const tabImage = document.getElementById('importTabImage');
@@ -1743,13 +3107,13 @@ function initPngImport() {
   tabImage?.addEventListener('click', () => switchTab('image'));
   tabAdjust?.addEventListener('click', () => switchTab('adjust'));
 
-  // Get controls
-  const ditheringSelect = /** @type {HTMLSelectElement} */ (document.getElementById('importDithering'));
-  const contrastSlider = /** @type {HTMLInputElement} */ (document.getElementById('importContrast'));
-  const brightnessSlider = /** @type {HTMLInputElement} */ (document.getElementById('importBrightness'));
-  const zoomSelect = /** @type {HTMLSelectElement} */ (document.getElementById('importZoom'));
-  const paletteSelect = /** @type {HTMLSelectElement} */ (document.getElementById('importPalette'));
-  const formatSelect = /** @type {HTMLSelectElement} */ (document.getElementById('importFormat'));
+  // Local references for closure (from cached elements)
+  const ditheringSelect = importElements.dithering;
+  const contrastSlider = importElements.contrast;
+  const brightnessSlider = importElements.brightness;
+  const zoomSelect = importElements.zoom;
+  const paletteSelect = importElements.palette;
+  const formatSelect = importElements.format;
   const cancelBtn = document.getElementById('importCancelBtn');
   const importBtn = document.getElementById('importOkBtn');
 
@@ -1765,26 +3129,29 @@ function initPngImport() {
     });
   }
 
-  // Get crop and fit controls
-  const cropXInput = /** @type {HTMLInputElement} */ (document.getElementById('importCropX'));
-  const cropYInput = /** @type {HTMLInputElement} */ (document.getElementById('importCropY'));
-  const cropWInput = /** @type {HTMLInputElement} */ (document.getElementById('importCropW'));
-  const cropHInput = /** @type {HTMLInputElement} */ (document.getElementById('importCropH'));
+  // Local references for crop controls (from cached elements)
+  const cropXInput = importElements.cropX;
+  const cropYInput = importElements.cropY;
+  const cropWInput = importElements.cropW;
+  const cropHInput = importElements.cropH;
+  const cropLock43 = importElements.cropLock43;
   const cropResetBtn = document.getElementById('importCropReset');
   const cropFullBtn = document.getElementById('importCropFull');
   const cropDetectBtn = document.getElementById('importCropDetect');
-  const fitModeSelect = /** @type {HTMLSelectElement} */ (document.getElementById('importFitMode'));
+  const fitModeSelect = importElements.fitMode;
 
-  // Get additional controls
-  const grayscaleCheckbox = /** @type {HTMLInputElement} */ (document.getElementById('importGrayscale'));
-  const saturationSlider = /** @type {HTMLInputElement} */ (document.getElementById('importSaturation'));
-  const gammaSlider = /** @type {HTMLInputElement} */ (document.getElementById('importGamma'));
-  const sharpnessSlider = /** @type {HTMLInputElement} */ (document.getElementById('importSharpness'));
-  const blackPointSlider = /** @type {HTMLInputElement} */ (document.getElementById('importBlackPoint'));
-  const whitePointSlider = /** @type {HTMLInputElement} */ (document.getElementById('importWhitePoint'));
-  const balanceRSlider = /** @type {HTMLInputElement} */ (document.getElementById('importBalanceR'));
-  const balanceGSlider = /** @type {HTMLInputElement} */ (document.getElementById('importBalanceG'));
-  const balanceBSlider = /** @type {HTMLInputElement} */ (document.getElementById('importBalanceB'));
+  // Local references for additional controls (from cached elements)
+  const grayscaleCheckbox = importElements.grayscale;
+  const monoOutputCheckbox = importElements.monoOutput;
+  const saturationSlider = importElements.saturation;
+  const gammaSlider = importElements.gamma;
+  const sharpnessSlider = importElements.sharpness;
+  const smoothingSlider = importElements.smoothing;
+  const blackPointSlider = importElements.blackPoint;
+  const whitePointSlider = importElements.whitePoint;
+  const balanceRSlider = importElements.balanceR;
+  const balanceGSlider = importElements.balanceG;
+  const balanceBSlider = importElements.balanceB;
 
   // Update preview on control change
   const updatePreview = () => {
@@ -1799,7 +3166,9 @@ function initPngImport() {
     const saturation = parseInt(saturationSlider?.value || '0', 10);
     const gamma = parseInt(gammaSlider?.value || '100', 10) / 100;
     const grayscale = grayscaleCheckbox?.checked || false;
+    const monoOutput = monoOutputCheckbox?.checked || false;
     const sharpness = parseInt(sharpnessSlider?.value || '0', 10);
+    const smoothing = parseInt(smoothingSlider?.value || '0', 10);
     const blackPoint = parseInt(blackPointSlider?.value || '0', 10);
     const whitePoint = parseInt(whitePointSlider?.value || '255', 10);
     const balanceR = parseInt(balanceRSlider?.value || '0', 10);
@@ -1808,10 +3177,10 @@ function initPngImport() {
     const format = formatSelect?.value || 'scr';
 
     if (format === 'bsc' && importSourceCanvasBsc) {
-      const bscData = convertToBsc(importSourceCanvasBsc, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      const bscData = convertToBsc(importSourceCanvasBsc, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderBscToCanvas(bscData, importPreviewCanvas, importZoom);
     } else {
-      const scrData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      const scrData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderScrToCanvas(scrData, importPreviewCanvas, importZoom);
     }
   };
@@ -1831,10 +3200,32 @@ function initPngImport() {
     updateAll();
   };
 
+  // Width change - adjust height if 4:3 locked
+  const onCropWChange = () => {
+    if (cropLock43?.checked && cropWInput && cropHInput) {
+      const w = Math.max(1, parseInt(cropWInput.value, 10) || 256);
+      const h = Math.round(w * 3 / 4);
+      cropHInput.value = String(h);
+    }
+    readCropInputs();
+    updateAll();
+  };
+
+  // Height change - adjust width if 4:3 locked
+  const onCropHChange = () => {
+    if (cropLock43?.checked && cropWInput && cropHInput) {
+      const h = Math.max(1, parseInt(cropHInput.value, 10) || 192);
+      const w = Math.round(h * 4 / 3);
+      cropWInput.value = String(w);
+    }
+    readCropInputs();
+    updateAll();
+  };
+
   cropXInput?.addEventListener('change', onCropChange);
   cropYInput?.addEventListener('change', onCropChange);
-  cropWInput?.addEventListener('change', onCropChange);
-  cropHInput?.addEventListener('change', onCropChange);
+  cropWInput?.addEventListener('change', onCropWChange);
+  cropHInput?.addEventListener('change', onCropHChange);
 
   // Crop buttons
   cropResetBtn?.addEventListener('click', () => {
@@ -1860,7 +3251,33 @@ function initPngImport() {
 
   cropFullBtn?.addEventListener('click', () => {
     if (importImage) {
-      importCrop = { x: 0, y: 0, w: importImage.naturalWidth, h: importImage.naturalHeight };
+      const imgW = importImage.naturalWidth;
+      const imgH = importImage.naturalHeight;
+
+      if (cropLock43?.checked) {
+        // Calculate maximum 4:3 region that fits
+        const targetRatio = 4 / 3;
+        const imgRatio = imgW / imgH;
+
+        let cropW, cropH;
+        if (imgRatio > targetRatio) {
+          // Image is wider - fit by height
+          cropH = imgH;
+          cropW = Math.round(imgH * targetRatio);
+        } else {
+          // Image is taller - fit by width
+          cropW = imgW;
+          cropH = Math.round(imgW / targetRatio);
+        }
+        importCrop = {
+          x: Math.floor((imgW - cropW) / 2),
+          y: Math.floor((imgH - cropH) / 2),
+          w: cropW,
+          h: cropH
+        };
+      } else {
+        importCrop = { x: 0, y: 0, w: imgW, h: imgH };
+      }
       updateCropInputs();
       updateAll();
     }
@@ -1920,34 +3337,36 @@ function initPngImport() {
   contrastSlider?.addEventListener('input', updatePreview);
   brightnessSlider?.addEventListener('input', updatePreview);
   saturationSlider?.addEventListener('input', function() {
-    const saturationValueLabel = document.getElementById('importSaturationValue');
-    if (saturationValueLabel) {
-      saturationValueLabel.textContent = this.value;
+    if (importElements.saturationValue) {
+      importElements.saturationValue.textContent = this.value;
     }
     updatePreview();
   });
   gammaSlider?.addEventListener('input', function() {
-    const gammaValueLabel = document.getElementById('importGammaValue');
-    if (gammaValueLabel) {
-      gammaValueLabel.textContent = (parseInt(this.value, 10) / 100).toFixed(1);
+    if (importElements.gammaValue) {
+      importElements.gammaValue.textContent = (parseInt(this.value, 10) / 100).toFixed(1);
     }
     updatePreview();
   });
   sharpnessSlider?.addEventListener('input', function() {
-    const sharpnessValueLabel = document.getElementById('importSharpnessValue');
-    if (sharpnessValueLabel) {
-      sharpnessValueLabel.textContent = this.value;
+    if (importElements.sharpnessValue) {
+      importElements.sharpnessValue.textContent = this.value;
+    }
+    updatePreview();
+  });
+  smoothingSlider?.addEventListener('input', function() {
+    if (importElements.smoothingValue) {
+      importElements.smoothingValue.textContent = this.value;
     }
     updatePreview();
   });
 
   // Levels sliders with combined value display
   const updateLevelsLabel = () => {
-    const levelsValueLabel = document.getElementById('importLevelsValue');
-    if (levelsValueLabel) {
+    if (importElements.levelsValue) {
       const bp = blackPointSlider?.value || '0';
       const wp = whitePointSlider?.value || '255';
-      levelsValueLabel.textContent = `${bp}-${wp}`;
+      importElements.levelsValue.textContent = `${bp}-${wp}`;
     }
   };
   blackPointSlider?.addEventListener('input', function() {
@@ -1961,12 +3380,11 @@ function initPngImport() {
 
   // Color balance sliders with combined value display
   const updateColorBalanceLabel = () => {
-    const colorBalanceValueLabel = document.getElementById('importColorBalanceValue');
-    if (colorBalanceValueLabel) {
+    if (importElements.colorBalanceValue) {
       const r = balanceRSlider?.value || '0';
       const g = balanceGSlider?.value || '0';
       const b = balanceBSlider?.value || '0';
-      colorBalanceValueLabel.textContent = `${r}/${g}/${b}`;
+      importElements.colorBalanceValue.textContent = `${r}/${g}/${b}`;
     }
   };
   balanceRSlider?.addEventListener('input', function() {
@@ -1983,6 +3401,7 @@ function initPngImport() {
   });
 
   grayscaleCheckbox?.addEventListener('change', updatePreview);
+  monoOutputCheckbox?.addEventListener('change', updatePreview);
 
   // Zoom control
   zoomSelect?.addEventListener('change', function() {
@@ -2001,6 +3420,13 @@ function initPngImport() {
     closeImportDialog();
   });
 
+  // ESC key to close dialog
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && importElements.dialog && importElements.dialog.style.display !== 'none') {
+      closeImportDialog();
+    }
+  });
+
   // Import button
   importBtn?.addEventListener('click', () => {
     if (!importSourceCanvas) return;
@@ -2011,7 +3437,9 @@ function initPngImport() {
     const saturation = parseInt(saturationSlider?.value || '0', 10);
     const gamma = parseInt(gammaSlider?.value || '100', 10) / 100;
     const grayscale = grayscaleCheckbox?.checked || false;
+    const monoOutput = monoOutputCheckbox?.checked || false;
     const sharpness = parseInt(sharpnessSlider?.value || '0', 10);
+    const smoothing = parseInt(smoothingSlider?.value || '0', 10);
     const blackPoint = parseInt(blackPointSlider?.value || '0', 10);
     const whitePoint = parseInt(whitePointSlider?.value || '255', 10);
     const balanceR = parseInt(balanceRSlider?.value || '0', 10);
@@ -2024,11 +3452,11 @@ function initPngImport() {
     let fileExt;
 
     if (format === 'bsc' && importSourceCanvasBsc) {
-      outputData = convertToBsc(importSourceCanvasBsc, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputData = convertToBsc(importSourceCanvasBsc, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.BSC;
       fileExt = '.bsc';
     } else {
-      outputData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.SCR;
       fileExt = '.scr';
     }
@@ -2066,11 +3494,11 @@ function initPngImport() {
     }
   });
 
-  // Close on overlay click
-  dialog.addEventListener('click', (e) => {
-    if (e.target === dialog) {
-      closeImportDialog();
-    }
+  // Prevent accidental close on overlay click
+  importElements.dialog.addEventListener('click', (e) => {
+    // Only close if clicking directly on overlay AND using Cancel button
+    // (which is handled separately) - do nothing here to prevent accidental close
+    e.stopPropagation();
   });
 
   // Initialize crop rectangle mouse handlers
@@ -2098,10 +3526,9 @@ function autoDetectBrightness() {
   const avgLum = totalLum / (256 * 192);
 
   // Adjust brightness to target ~128 average
-  const brightnessSlider = /** @type {HTMLInputElement} */ (document.getElementById('importBrightness'));
-  if (brightnessSlider) {
+  if (importElements.brightness) {
     const adjustment = Math.round((128 - avgLum) * 0.5);
-    brightnessSlider.value = String(Math.max(-100, Math.min(100, adjustment)));
+    importElements.brightness.value = String(Math.max(-100, Math.min(100, adjustment)));
   }
 }
 
@@ -2111,65 +3538,46 @@ function autoDetectBrightness() {
  */
 function openImportDialog(file) {
   importFile = file;
-  const dialog = document.getElementById('pngImportDialog');
-  if (!dialog) return;
+  if (!importElements.dialog) return;
 
-  // Reset controls
-  const ditheringSelect = /** @type {HTMLSelectElement} */ (document.getElementById('importDithering'));
-  const contrastSlider = /** @type {HTMLInputElement} */ (document.getElementById('importContrast'));
-  const brightnessSlider = /** @type {HTMLInputElement} */ (document.getElementById('importBrightness'));
-  const zoomSelect = /** @type {HTMLSelectElement} */ (document.getElementById('importZoom'));
-  const paletteSelect = /** @type {HTMLSelectElement} */ (document.getElementById('importPalette'));
-
-  if (ditheringSelect) ditheringSelect.value = 'floyd-steinberg';
-  if (contrastSlider) contrastSlider.value = '0';
-  if (brightnessSlider) brightnessSlider.value = '0';
-  if (zoomSelect) zoomSelect.value = '2';
+  // Reset controls using cached elements
+  if (importElements.dithering) importElements.dithering.value = 'floyd-steinberg';
+  if (importElements.contrast) importElements.contrast.value = '0';
+  if (importElements.brightness) importElements.brightness.value = '0';
+  if (importElements.zoom) importElements.zoom.value = '2';
   importZoom = 2;
 
   // Reset saturation, gamma, sharpness, and grayscale
-  const saturationSlider = /** @type {HTMLInputElement} */ (document.getElementById('importSaturation'));
-  if (saturationSlider) saturationSlider.value = '0';
-  const gammaSlider = /** @type {HTMLInputElement} */ (document.getElementById('importGamma'));
-  if (gammaSlider) gammaSlider.value = '100';
-  const sharpnessSlider = /** @type {HTMLInputElement} */ (document.getElementById('importSharpness'));
-  if (sharpnessSlider) sharpnessSlider.value = '0';
-  const grayscaleCheckbox = /** @type {HTMLInputElement} */ (document.getElementById('importGrayscale'));
-  if (grayscaleCheckbox) grayscaleCheckbox.checked = false;
+  if (importElements.saturation) importElements.saturation.value = '0';
+  if (importElements.gamma) importElements.gamma.value = '100';
+  if (importElements.sharpness) importElements.sharpness.value = '0';
+  if (importElements.smoothing) importElements.smoothing.value = '0';
+  if (importElements.grayscale) importElements.grayscale.checked = false;
+  if (importElements.monoOutput) importElements.monoOutput.checked = false;
 
   // Reset levels sliders
-  const blackPointSlider = /** @type {HTMLInputElement} */ (document.getElementById('importBlackPoint'));
-  if (blackPointSlider) blackPointSlider.value = '0';
-  const whitePointSlider = /** @type {HTMLInputElement} */ (document.getElementById('importWhitePoint'));
-  if (whitePointSlider) whitePointSlider.value = '255';
+  if (importElements.blackPoint) importElements.blackPoint.value = '0';
+  if (importElements.whitePoint) importElements.whitePoint.value = '255';
 
   // Reset color balance sliders
-  const balanceRSlider = /** @type {HTMLInputElement} */ (document.getElementById('importBalanceR'));
-  if (balanceRSlider) balanceRSlider.value = '0';
-  const balanceGSlider = /** @type {HTMLInputElement} */ (document.getElementById('importBalanceG'));
-  if (balanceGSlider) balanceGSlider.value = '0';
-  const balanceBSlider = /** @type {HTMLInputElement} */ (document.getElementById('importBalanceB'));
-  if (balanceBSlider) balanceBSlider.value = '0';
+  if (importElements.balanceR) importElements.balanceR.value = '0';
+  if (importElements.balanceG) importElements.balanceG.value = '0';
+  if (importElements.balanceB) importElements.balanceB.value = '0';
 
-  // Reset value display labels
-  const gammaValueLabel = document.getElementById('importGammaValue');
-  if (gammaValueLabel) gammaValueLabel.textContent = '1.0';
-  const sharpnessValueLabel = document.getElementById('importSharpnessValue');
-  if (sharpnessValueLabel) sharpnessValueLabel.textContent = '0';
-  const saturationValueLabel = document.getElementById('importSaturationValue');
-  if (saturationValueLabel) saturationValueLabel.textContent = '0';
-  const levelsValueLabel = document.getElementById('importLevelsValue');
-  if (levelsValueLabel) levelsValueLabel.textContent = '0-255';
-  const colorBalanceValueLabel = document.getElementById('importColorBalanceValue');
-  if (colorBalanceValueLabel) colorBalanceValueLabel.textContent = '0/0/0';
+  // Reset value display labels using cached elements
+  if (importElements.gammaValue) importElements.gammaValue.textContent = '1.0';
+  if (importElements.sharpnessValue) importElements.sharpnessValue.textContent = '0';
+  if (importElements.smoothingValue) importElements.smoothingValue.textContent = '0';
+  if (importElements.saturationValue) importElements.saturationValue.textContent = '0';
+  if (importElements.levelsValue) importElements.levelsValue.textContent = '0-255';
+  if (importElements.colorBalanceValue) importElements.colorBalanceValue.textContent = '0/0/0';
 
   // Set palette to current display palette
-  if (paletteSelect) paletteSelect.value = currentPaletteId;
+  if (importElements.palette) importElements.palette.value = currentPaletteId;
   applyImportPalette(currentPaletteId);
 
   // Reset fit mode
-  const fitModeSelect = /** @type {HTMLSelectElement} */ (document.getElementById('importFitMode'));
-  if (fitModeSelect) fitModeSelect.value = 'stretch';
+  if (importElements.fitMode) importElements.fitMode.value = 'stretch';
   importFitMode = 'stretch';
 
   // Load image
@@ -2211,34 +3619,27 @@ function openImportDialog(file) {
     // Auto-detect brightness
     autoDetectBrightness();
 
-    // Generate initial preview
-    const dithering = ditheringSelect?.value || 'floyd-steinberg';
-    const contrast = parseInt(contrastSlider?.value || '0', 10);
-    const brightness = parseInt(brightnessSlider?.value || '0', 10);
-    const saturationSliderInit = /** @type {HTMLInputElement} */ (document.getElementById('importSaturation'));
-    const saturation = parseInt(saturationSliderInit?.value || '0', 10);
-    const gammaSliderInit = /** @type {HTMLInputElement} */ (document.getElementById('importGamma'));
-    const gamma = parseInt(gammaSliderInit?.value || '100', 10) / 100;
-    const sharpnessSliderInit = /** @type {HTMLInputElement} */ (document.getElementById('importSharpness'));
-    const sharpness = parseInt(sharpnessSliderInit?.value || '0', 10);
-    const blackPointSliderInit = /** @type {HTMLInputElement} */ (document.getElementById('importBlackPoint'));
-    const blackPoint = parseInt(blackPointSliderInit?.value || '0', 10);
-    const whitePointSliderInit = /** @type {HTMLInputElement} */ (document.getElementById('importWhitePoint'));
-    const whitePoint = parseInt(whitePointSliderInit?.value || '255', 10);
-    const balanceRSliderInit = /** @type {HTMLInputElement} */ (document.getElementById('importBalanceR'));
-    const balanceRInit = parseInt(balanceRSliderInit?.value || '0', 10);
-    const balanceGSliderInit = /** @type {HTMLInputElement} */ (document.getElementById('importBalanceG'));
-    const balanceGInit = parseInt(balanceGSliderInit?.value || '0', 10);
-    const balanceBSliderInit = /** @type {HTMLInputElement} */ (document.getElementById('importBalanceB'));
-    const balanceBInit = parseInt(balanceBSliderInit?.value || '0', 10);
-    const grayscaleCheckboxInit = /** @type {HTMLInputElement} */ (document.getElementById('importGrayscale'));
-    const grayscale = grayscaleCheckboxInit?.checked || false;
+    // Generate initial preview using cached elements
+    const dithering = importElements.dithering?.value || 'floyd-steinberg';
+    const contrast = parseInt(importElements.contrast?.value || '0', 10);
+    const brightness = parseInt(importElements.brightness?.value || '0', 10);
+    const saturation = parseInt(importElements.saturation?.value || '0', 10);
+    const gamma = parseInt(importElements.gamma?.value || '100', 10) / 100;
+    const sharpness = parseInt(importElements.sharpness?.value || '0', 10);
+    const smoothing = parseInt(importElements.smoothing?.value || '0', 10);
+    const blackPoint = parseInt(importElements.blackPoint?.value || '0', 10);
+    const whitePoint = parseInt(importElements.whitePoint?.value || '255', 10);
+    const balanceR = parseInt(importElements.balanceR?.value || '0', 10);
+    const balanceG = parseInt(importElements.balanceG?.value || '0', 10);
+    const balanceB = parseInt(importElements.balanceB?.value || '0', 10);
+    const grayscale = importElements.grayscale?.checked || false;
+    const monoOutput = importElements.monoOutput?.checked || false;
 
-    const scrData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, blackPoint, whitePoint, balanceRInit, balanceGInit, balanceBInit);
+    const scrData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
     renderScrToCanvas(scrData, importPreviewCanvas, importZoom);
 
     // Show dialog
-    dialog.style.display = '';
+    importElements.dialog.style.display = '';
   };
 
   img.onerror = () => {
@@ -2259,9 +3660,8 @@ function openImportDialog(file) {
  * Close import dialog
  */
 function closeImportDialog() {
-  const dialog = document.getElementById('pngImportDialog');
-  if (dialog) {
-    dialog.style.display = 'none';
+  if (importElements.dialog) {
+    importElements.dialog.style.display = 'none';
   }
   importFile = null;
 }
