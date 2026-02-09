@@ -1,5 +1,291 @@
 # SpectraLab Version History
 
+## v1.38.0
+- SCA animation payload type 1 support
+  - Attribute-only animation format (768 bytes per frame vs 6912 for full frames)
+  - Uses 8-byte fill pattern as bitmap template for all frames
+  - Significantly smaller file sizes for attribute-based animations
+  - Info panel shows format version and payload type (e.g., "SCA (v1)", "full frames (v0)")
+  - SCA editor fully supports type 1: trim, optimize, save, export
+  - Export to SCR series generates proper bitmaps from fill pattern
+  - Export to 53c series extracts attributes only (works with both type 0 and type 1)
+- Image import: 53c/127c (attribute-only) format
+  - New "53c (attr)" output format option
+  - Pattern selector: Checker (53c), Stripes, or DD/77 (127c)
+  - Pattern-aware color detection for accurate ink/paper separation
+  - Uses pattern mask to identify ink vs paper pixels in source image
+  - Ideal for re-importing images that were originally 53c/127c format
+
+## v1.37.0
+- Airbrush now supports masked modes
+  - Spray through custom brush pattern like a stencil
+  - Only paints ink where mask pattern is set (gradual buildup without overwriting)
+  - Works with both Masked (fixed origin) and Masked+ (stroke-relative origin)
+- UI reorganization
+  - Moved clipboard buttons (Select, Cut, Paste, Invert, Rotate, Flip H/V) to Transform tab
+  - Combined rotate/mirror buttons: auto-detect target (clipboard while pasting, otherwise custom brush)
+  - Compacted layer buttons: Save/Load Project now use 💾/📂 icons on same row
+  - Moved Save/Load Brushes to Custom Brushes header with 💾/📂 icons
+  - Snap and Mode dropdowns remain in Edit tab
+
+## v1.36.0
+- Masked paint modes for pattern drawing
+  - Masked mode: use custom brush as tiled mask pattern with fixed origin (0,0)
+  - Masked+ mode: use custom brush as tiled mask with stroke-relative origin (each stroke starts fresh)
+  - In masked modes, custom brush defines the pattern, regular brush shape/size defines the tool
+  - Custom brush transparency (mask) is respected in masked modes
+- Undo/redo improvements
+  - Undo now properly restores layer data, not just flattened screen
+  - Fixed issue where undo appeared to work but layer content was preserved
+
+## v1.35.0
+- Per-layer attributes support
+  - Each layer now stores its own attribute data (ink/paper/bright/flash colors)
+  - Drawing on a layer sets attributes on that layer, not globally
+  - Attribute compositing: each cell uses the topmost visible layer's attribute that has pixel content
+  - Supports all attribute formats: SCR/BSC (8×8 cells), BMC4 (8×4 cells with dual banks), IFL (8×2 cells), MLT (8×1 cells)
+  - Project file format updated to v3 with per-layer attributes
+  - Backward compatible: v2 projects load with global attributes on background layer only
+  - Workspace files also save/load per-layer attributes
+- Editor color improvements
+  - Ink/paper colors now persist to localStorage
+  - New default colors: ink=black, paper=white, border=white
+  - New pictures use current editor colors instead of hardcoded values
+  - BSC/BMC4 borders use current border color when creating new pictures
+  - Clear screen uses current border color for BSC/BMC4 border area
+- Added x20 zoom level
+- Preview panel default position changed to bottom-right
+
+## v1.34.0
+- Reference image improvements
+  - Controls moved to collapsible block
+  - Added Clear button to remove reference image
+  - Added X/Y position controls (can be negative for offset)
+  - Added W/H size controls (custom size or auto-fit to format)
+  - Reference image now saved in workspace files
+- UI improvements
+  - View Settings (border, palette, grid, flash, attrs, preview) in collapsible block
+  - File Info section in collapsible block
+  - Collapsible block states persist in localStorage
+  - Preview panel can be dragged to any position
+  - Preview panel can be dragged up to 3/4 outside viewport
+  - Renamed "Paper" to "Paper grid" and "Border" to "Border grid"
+  - Added 32px to grid sizes, 8px/16px to subgrid sizes
+- Fixed: Opening pictures no longer resets zoom level
+
+## v1.33.0
+- UI improvements
+  - New and Save buttons at top of control panel (between Browse and tabs)
+  - Palette, Bright, Flash moved to top of Edit tab for quick access
+  - Renamed "Save file..." to "Save ASM file" in Transform tab
+  - Reduced spacing between clipboard buttons
+- Added Subgrid snap mode
+  - Grid snap uses paper grid size from View tab
+  - Subgrid snap uses paper subgrid size from View tab
+- Fixed brush preview offset bug (preview now matches actual stamp position)
+- QR code generator improvements
+  - Added version picker (V1-V20) with dimensions and max capacity
+  - Added 3px module size option
+  - Auto-uppercase conversion for alphanumeric mode (max capacity)
+  - Better error messages for size constraints
+
+## v1.32.0
+- Shape modifier keys for Rectangle and Circle tools
+  - Ctrl: Constrain to square/circle (1:1 aspect ratio)
+  - Alt: Draw from center instead of corner
+  - Ctrl+Alt: Both combined
+  - Works during preview and final drawing
+- New pictures now open at zoom x2 by default
+
+## v1.31.0
+- Added Airbrush tool (G)
+  - Sprays random pixels within configurable radius
+  - Uses current brush size and shape for each spray point
+  - Settings: Radius (4-32px), Density (0.03-1.0), Falloff
+  - Falloff options: Uniform, Soft, Medium, Hard, Very Hard
+  - Center-concentrated distribution with higher falloff values
+  - Continuous spray while mouse button held (no movement required)
+  - Right-click sprays paper color instead of ink
+- Added Gradient tool (D)
+  - Fills screen with dithered monochrome gradients
+  - Six gradient types: Linear, Radial, Diamond, Conical, Square, Spiral
+  - Two dithering methods: Bayer (ordered 8×8) and Noise (blue noise 16×16)
+  - Reverse option to swap ink/paper direction
+  - Drag from start to end point to define gradient direction/size
+  - Right-click reverses gradient direction
+- Updated Help dialog with new tools documentation
+
+## v1.30.0
+- Fixed mono output in image import
+  - Now uses luminance (perceived brightness) instead of color distance
+  - Yellow/orange colors now correctly show dithered detail instead of solid white
+  - Applies to SCR, IFL, MLT, BMC4, and BSC formats with mono output enabled
+
+## v1.29.0
+- Multi-picture editor
+  - Load and edit multiple pictures simultaneously
+  - Tab bar appears when 2+ pictures are open
+  - Switch between pictures by clicking tabs
+  - Close button (×) on each tab
+  - Modified indicator (•) shows unsaved changes
+  - Confirmation dialog when closing modified pictures
+  - Maximum 8 pictures open at once
+  - Independent undo/redo history per picture
+  - Independent layer state per picture
+  - Independent zoom level per picture
+  - Copy/paste works across pictures (same format)
+- Workspace files (.slw)
+  - Save Workspace: saves all open pictures to single file
+  - Load Workspace: restores all pictures from workspace file
+  - Preserves layers, zoom levels, and active picture
+  - Per-picture settings: ink/paper colors, bright, tool, brush size/shape, scroll position
+  - Workspace-level settings: palette, border color/size, grid settings, show attributes
+  - Buttons in Transform tab
+- SCA animations don't participate in multi-picture (separate workflow)
+
+## v1.28.0
+- QR code generation tool
+  - Generate QR codes from text or URLs
+  - Configurable size (64-192px) or auto-fit
+  - Position control (X/Y offset on canvas)
+  - Live preview before applying
+  - Pure JavaScript implementation (no external dependencies)
+
+## v1.27.0
+- Fullscreen editor mode (F11)
+  - Maximizes canvas to fill entire screen
+  - Compact floating draggable palette with tools and colors
+  - Tab key toggles floating palette visibility
+  - ESC or close button to exit fullscreen
+  - Use keyboard shortcuts for brush size ([ ]) and undo/redo (Ctrl+Z/Y)
+- Fixed keyboard shortcuts for non-Latin keyboard layouts (Russian, etc.)
+  - Shortcuts now work based on physical key position, not character produced
+  - Affects all letter-based shortcuts (P, L, R, C, etc.) and Ctrl+key combinations
+- Changed Preview panel hotkey from P to ~ (Shift+backtick) to avoid conflict with Pixel tool
+- Fixed first click not drawing on canvas (focus issue)
+- Image import dialog redesigned with better UI organization
+  - Three logical groups: SOURCE, TRANSFORM, OUTPUT
+  - Each group has bordered container with clear visual separation
+  - Position (X/Y) and Size (W/H) now on separate rows for clarity
+  - Color options (LAB, Grayscale, Mono) grouped together
+- Image import dialog now has Width/Height controls
+  - Specify exact output dimensions alongside X/Y offset
+  - Defaults update automatically when format changes (256×192 for SCR, 384×304 for BSC, etc.)
+  - Lock aspect ratio option (🔗): changing W auto-calculates H and vice versa
+- Border brush size support
+  - Brush size now controls vertical height when painting on BSC/BMC4 border
+  - Size 1 = 24×1px line, Size 2 = 24×2px line, etc.
+  - Width remains fixed at 24px (3 border cells)
+- Brush preview updates immediately when changing size with [ ] hotkeys
+  - No longer requires mouse movement to see new brush size
+- Brush size hotkeys work in border area
+
+## v1.26.0
+- Text tool for adding text to images (T)
+  - Supports .768/.ch8 ZX Spectrum bitmap fonts (8×8 characters)
+  - Supports TrueType/OpenType fonts (.ttf/.otf/.woff) at any size
+  - Load custom fonts or use system fonts (Arial, Courier New, etc.)
+  - Live preview while positioning text
+  - Click canvas to stamp text
+- Tool buttons now use icons instead of text for a cleaner, more compact UI
+  - Pixel (✎), Line (╱), Rectangle (□), Circle (○), Fill (◉), Cell (▦), Eraser (⌫), Text (T)
+  - Select (⬚), Cut (✂), Paste (⧉), Invert (◐)
+- Flood fill tool now works on BSC/BMC4 border area
+  - Fills all connected 8px border cells with the same color
+- Custom brushes expanded from 6 to 12 slots (2 rows of 6)
+- Custom brushes section is now collapsible
+  - Auto-expands when any brush is defined
+  - Auto-collapses when all brushes are cleared
+  - Shows indicator with brush count ("None" or "N defined")
+
+## v1.25.0
+- Fixed BSC/BMC4 layer system for main screen editing
+  - Layers now work correctly for bitmap data (was only working for border)
+  - Fixed getLayerBitmapSize() to use correct constants for each format
+- Fixed Clear screen with layers enabled
+  - Now properly reinitializes layers after clearing
+  - Fixes issue where MLT format only cleared bitmap, leaving attributes
+- Image import dialog enhancements
+  - Added grid overlay checkbox for output preview (orange 8×8 grid)
+  - Added X/Y offset controls for positioning imported image in output
+  - Added x3 zoom option for output preview
+  - Fixed original canvas zoom (no longer affected by preview zoom setting)
+- Fixed layers not available after importing image
+  - Layers now properly initialized after PNG/image import
+- Simplified file input (removed label)
+
+## v1.24.0
+- Added BMC4 border editing
+  - Same border structure as BSC (384×304 frame, per-line colors)
+  - Click/drag to paint border colors with ink (left) or paper (right) color
+- Added layer system for bitmap editing (all formats except .53c/.atr)
+  - Add/remove/reorder layers with visibility toggles
+  - Background layer cannot be deleted (always opaque)
+  - Upper layers support transparency via eraser
+  - Shared attributes per cell across all layers (ZX Spectrum constraint)
+  - Automatic flattening on save/export
+- Layer system now includes border data for BSC/BMC4 formats
+  - Each layer stores separate border color data
+  - Border changes are tracked per-layer with transparency mask
+  - Project files (.slp v2) preserve border layer data
+- Added Eraser tool (E key)
+  - On background layer: paints with paper color
+  - On upper layers: makes pixels transparent (reveals layers below)
+  - Works with all brush shapes and sizes
+- Layer panel in Edit tab (collapsible, default hidden)
+  - Click header to expand/collapse controls
+  - Active layer indicator shown in header
+  - Click layer to select, eye icon to toggle visibility
+  - Double-click layer to rename
+  - Add, Remove, Move Up/Down, Flatten buttons
+  - Flatten merges all layers and resets to initial state
+- Project file format (.slp - SpectraLab Project)
+  - Save Project: preserves all layers, masks, names, visibility
+  - Load Project: restores complete layer structure
+  - JSON-based format for easy inspection/editing
+
+## v1.23.0
+- UI reorganization with tabbed side panel
+  - View tab: display settings (Zoom, Border, Palette, Flash, Grid, Attrs, Font, Reference Image, File Info)
+  - Edit tab: drawing tools (Pixel, Line, Rectangle, Fill, Select, Colors, Brush)
+  - Transform tab: Undo/Redo/Clear, Save, Convert
+- Simplified workflow
+  - Removed explicit Edit mode toggle - editing auto-enabled when editable picture loads
+  - Removed New button - clicking Edit/Transform tab without picture shows New Picture dialog
+  - File info moved into View tab (no separate panel)
+- SCA animation editing integrated into Edit tab
+  - Clicking Edit tab with SCA loaded opens animation editor (trim/delay)
+  - Removed separate "Edit / Trim" button
+  - Fixed SCA animation continuing after creating new picture
+- Separate grid controls for Paper and Border areas
+  - Independent grid size (None/8/16/24px) for each
+  - Independent subgrid size (None/1/2/4px) for each
+- Fill tool now uses selected brush pattern
+  - Custom brush patterns tile across fill area for dithered fills
+  - Standard brushes fill solid as before
+- Renamed Tools tab to Edit
+
+## v1.22.0
+- Added editing and import support for multicolor formats
+  - IFL (8×2 multicolor)
+  - MLT (8×1 multicolor)
+  - BMC4 (8×4 multicolor + border)
+- Added RGB3 tricolor format editing and import
+- Added Monochrome format editing and import
+  - Full (256×192), 2/3 (256×128), 1/3 (256×64) screen sizes
+- Performance optimization: all screen rendering uses ImageData
+  - Replaced ~49k fillRect calls with single putImageData
+  - Affects: Mono, RGB3, BMC4, IFL, MLT, BSC main screen
+  - Dramatically faster rendering, smooth freehand drawing
+- Fixed BMC4 drawing coordinate offset (border-aware mouse handling)
+- Fixed preview thumbnail update delay after drawing
+- Fixed New Picture dialog closing on double-click/long-click
+  - Removed click-outside-to-close behavior
+  - ESC key and Cancel button still work
+- Redesigned Help window with tabbed interface
+  - Tabs: Viewer, Editor, Formats, About
+  - Added GitHub and License links
+
 ## v1.21.0
 - Performance optimizations
   - DOM element caching in import dialog (30+ elements cached)

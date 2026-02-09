@@ -1,4 +1,4 @@
-// SpectraLab v1.21.0 - UI Event Handlers
+// SpectraLab v1.30.0 - UI Event Handlers
 // @ts-check
 "use strict";
 
@@ -35,7 +35,18 @@ function initScreenViewerUI() {
     const target = /** @type {HTMLInputElement} */ (event.target);
     const file = target.files?.[0];
     if (file) {
-      if (typeof isImageFile === 'function' && isImageFile(file.name)) {
+      const lowerName = file.name.toLowerCase();
+      if (lowerName.endsWith('.slw')) {
+        // SpectraLab Workspace file
+        if (typeof loadWorkspace === 'function') {
+          loadWorkspace(file);
+        }
+      } else if (lowerName.endsWith('.slp')) {
+        // SpectraLab Project file
+        if (typeof loadProject === 'function') {
+          loadProject(file);
+        }
+      } else if (typeof isImageFile === 'function' && isImageFile(file.name)) {
         openImportDialog(file);
       } else if (isZipFile(file.name)) {
         handleZipFile(file);
@@ -63,9 +74,47 @@ function initScreenViewerUI() {
     setBorderSize(parseInt(this.value, 10));
   });
 
-  // Grid checkbox handler
-  showGridCheckbox?.addEventListener('change', function() {
-    renderScreen();
+  // Grid size dropdown handler
+  document.getElementById('gridSizeSelect')?.addEventListener('change', function() {
+    gridSize = parseInt(/** @type {HTMLSelectElement} */ (this).value, 10);
+    if (typeof editorRender === 'function' && editorActive) {
+      editorRender();
+    } else {
+      renderScreen();
+    }
+    saveSettings();
+  });
+
+  // Subgrid size dropdown handler
+  document.getElementById('subgridSizeSelect')?.addEventListener('change', function() {
+    subgridSize = parseInt(/** @type {HTMLSelectElement} */ (this).value, 10);
+    if (typeof editorRender === 'function' && editorActive) {
+      editorRender();
+    } else {
+      renderScreen();
+    }
+    saveSettings();
+  });
+
+  // Border grid size dropdown handler
+  document.getElementById('borderGridSizeSelect')?.addEventListener('change', function() {
+    borderGridSize = parseInt(/** @type {HTMLSelectElement} */ (this).value, 10);
+    if (typeof editorRender === 'function' && editorActive) {
+      editorRender();
+    } else {
+      renderScreen();
+    }
+    saveSettings();
+  });
+
+  // Border subgrid size dropdown handler
+  document.getElementById('borderSubgridSizeSelect')?.addEventListener('change', function() {
+    borderSubgridSize = parseInt(/** @type {HTMLSelectElement} */ (this).value, 10);
+    if (typeof editorRender === 'function' && editorActive) {
+      editorRender();
+    } else {
+      renderScreen();
+    }
     saveSettings();
   });
 
@@ -75,6 +124,13 @@ function initScreenViewerUI() {
     renderScreen();
     if (typeof renderPreview === 'function') renderPreview();
     saveSettings();
+  });
+
+  // Preview checkbox handler
+  document.getElementById('showPreviewCheckbox')?.addEventListener('change', function() {
+    if (typeof setPreviewVisible === 'function') {
+      setPreviewVisible(/** @type {HTMLInputElement} */ (this).checked);
+    }
   });
 
   // 53c pattern select handler
@@ -95,30 +151,34 @@ function initScreenViewerUI() {
     screenCanvas.focus();
   });
 
-  // New Picture button and dialog
-  const newPictureBtn = document.getElementById('newPictureBtn');
-  const newPictureDialog = document.getElementById('newPictureDialog');
+  // New Picture dialog
+  const newPictureDialogLocal = document.getElementById('newPictureDialog');
   const newPictureFormat = /** @type {HTMLSelectElement|null} */ (document.getElementById('newPictureFormat'));
   const newPictureOkBtn = document.getElementById('newPictureOkBtn');
   const newPictureCancelBtn = document.getElementById('newPictureCancelBtn');
 
-  newPictureBtn?.addEventListener('click', function() {
-    if (newPictureDialog) newPictureDialog.style.display = '';
-  });
-
   newPictureCancelBtn?.addEventListener('click', function() {
-    if (newPictureDialog) newPictureDialog.style.display = 'none';
+    if (newPictureDialogLocal) newPictureDialogLocal.style.display = 'none';
   });
 
-  newPictureDialog?.addEventListener('click', function(e) {
-    if (e.target === newPictureDialog) newPictureDialog.style.display = 'none';
+  // New Picture button (next to Browse)
+  const newPictureBtn = document.getElementById('newPictureBtn');
+  newPictureBtn?.addEventListener('click', function() {
+    if (newPictureDialogLocal) newPictureDialogLocal.style.display = '';
   });
+
+  // Close on ESC key (handled globally), not on click outside
 
   newPictureOkBtn?.addEventListener('click', function() {
-    if (newPictureDialog) newPictureDialog.style.display = 'none';
+    if (newPictureDialogLocal) newPictureDialogLocal.style.display = 'none';
     const format = newPictureFormat ? newPictureFormat.value : 'scr';
     if (typeof createNewPicture === 'function') {
       createNewPicture(format);
+    }
+    // Switch to Edit tab after creating new picture
+    const editTab = document.querySelector('.panel-tab[data-tab="edit"]');
+    if (editTab) {
+      /** @type {HTMLElement} */ (editTab).click();
     }
   });
 
@@ -129,7 +189,7 @@ function initScreenViewerUI() {
     event.preventDefault();
 
     // Available zoom levels matching the dropdown
-    const zoomLevels = [1, 2, 3, 4, 5, 6, 8, 10];
+    const zoomLevels = [1, 2, 3, 4, 5, 6, 8, 10, 20];
     const currentIndex = zoomLevels.indexOf(zoom);
     let newIndex;
     if (event.deltaY < 0) {
@@ -182,94 +242,69 @@ function initScreenViewerUI() {
     renderScreen();
   });
 
-  // Help button handler
+  // Help dialog
+  const helpDialog = document.getElementById('helpDialog');
+  const helpCloseBtn = document.getElementById('helpCloseBtn');
+  const helpTabs = document.querySelectorAll('.help-tab');
+  const helpTabContents = document.querySelectorAll('.help-tab-content');
+
   helpBtn?.addEventListener('click', function() {
-    const helpText = `SpectraLab v1.21.0
+    if (helpDialog) helpDialog.style.display = '';
+  });
 
-Keyboard Shortcuts (Viewer):
-  1-5        : Set zoom level (x1 to x5, x6/x8/x10 via menu)
-  Ctrl+Wheel : Zoom in/out
-  Arrows     : Pan canvas when zoomed in
-  F          : Toggle flash animation
-  G          : Toggle grid overlay
-  Attrs      : Toggle monochrome view (all formats)
-  Space      : Play/Pause animation (SCA)
-  Left/Right : Previous/Next frame (SCA)
+  helpCloseBtn?.addEventListener('click', function() {
+    if (helpDialog) helpDialog.style.display = 'none';
+  });
 
-Keyboard Shortcuts (Screen Editor):
-  P     : Pixel tool
-  L     : Line tool
-  R     : Rectangle tool
-  C     : Fill cell tool
-  A     : Recolor tool (attribute only)
-  S     : Select tool (drag to select region)
-  B     : Toggle bright
-  [     : Decrease brush size
-  ]     : Increase brush size
-  Ctrl+C : Copy selection
-  Ctrl+V : Paste (click to place)
-  Ctrl+Z : Undo (${MAX_UNDO_LEVELS} levels)
-  Ctrl+Y : Redo
-  Ctrl+S : Save
-  Escape : Cancel selection / paste
+  // Tab switching
+  helpTabs.forEach(tab => {
+    tab.addEventListener('click', function() {
+      const tabName = this.dataset.tab;
+      // Update active tab button
+      helpTabs.forEach(t => t.classList.remove('active'));
+      this.classList.add('active');
+      // Show corresponding content
+      helpTabContents.forEach(content => {
+        content.style.display = content.id === `helpTab-${tabName}` ? '' : 'none';
+      });
+    });
+  });
 
-  Left click  = Draw with ink
-  Right click = Draw with paper (erase)
-  Brush: Size 1-16, shapes: Square, Round, H-line, V-line, Stroke, Back stroke
-  Brush mode: Replace (default), Set, Invert — saved to localStorage
-  Custom brushes: 5 slots for patterns captured from screen (max 64x64)
-    Click slot = select (empty slot starts capture)
-    Shift+click = capture/recapture (two clicks to select rectangle)
-    Ctrl+click = clear slot
-    R = Rotate 90° CW (when custom brush active, otherwise Rectangle tool)
-    H = Mirror horizontal, V = Mirror vertical
+  // Panel tab switching (View/Tools)
+  const panelTabs = document.querySelectorAll('.panel-tab');
+  const panelTabContents = document.querySelectorAll('.panel-tab-content');
+  const newPictureDialog = document.getElementById('newPictureDialog');
 
-  Copy/Paste:
-    Select tool (S) — drag to select region (auto-copies on release)
-    Ctrl+V or Paste button — enter paste mode with preview
-    Click to place, Escape to cancel
-    Paste respects brush mode (Replace/Set/Invert)
-    Snap modes: Grid (8x8), Zero (tile from 0,0), Brush (tile from first paste), Off
+  panelTabs.forEach(tab => {
+    tab.addEventListener('click', function() {
+      const tabName = this.dataset.tab;
 
-Attribute Editor (.53c/.atr):
-  Click/drag to paint cell attributes
-  S     : Select tool (drag to select, Ctrl+V to paste)
-  B     : Toggle bright
-  F     : Toggle flash
-  Ctrl+Z : Undo (${MAX_UNDO_LEVELS} levels)
-  Ctrl+Y : Redo
-  Ctrl+S : Save
-  Pattern selector remains visible during editing
+      // If clicking Edit tab with SCA loaded, trigger SCA editor instead
+      if (tabName === 'edit' && typeof currentFormat !== 'undefined' && currentFormat === FORMAT.SCA) {
+        if (typeof enterEditMode === 'function') {
+          enterEditMode();
+        }
+        return; // SCA editor handles its own UI
+      }
 
-BSC Editor (Border Screen):
-  Grid shows hidden zones (red overlay) — leftmost/rightmost 2 columns
-    are typically not visible on real hardware
-  Export ASM: generates sjasmplus-compatible source for Pentagon 128K
+      // If switching to Edit or Transform tab without an editable picture, show New Picture dialog
+      if (tabName === 'edit' || tabName === 'transform') {
+        const canEdit = typeof isFormatEditable === 'function' && isFormatEditable() &&
+                        typeof screenData !== 'undefined' && screenData && screenData.length > 0;
+        if (!canEdit && newPictureDialog) {
+          newPictureDialog.style.display = '';
+          return; // Don't switch tab yet
+        }
+      }
 
-Keyboard Shortcuts (SCA Editor):
-  Left/Right : Navigate frames (with wrap)
-  Space      : Play/Pause
-  Del/Backspace : Toggle frame deletion
-  Ctrl+Click : Toggle frame deletion
-
-Supported Formats:
-  .scr      6912 bytes  Standard screen (editable)
-  .scr      6144 bytes  Monochrome full
-  .scr      4096 bytes  Monochrome 2/3
-  .scr      2048 bytes  Monochrome 1/3
-  .53c/.atr  768 bytes  Attributes only (editable)
-  .bsc     11136 bytes  Border screen (editable)
-  .ifl      9216 bytes  8x2 multicolor
-  .bmc4    11904 bytes  Border + 8x4 multicolor
-  .mlt/.mc 12288 bytes  8x1 multicolor
-  .3       18432 bytes  Tricolor RGB
-  .specscii  var bytes  Text mode with colors
-  .sca       var bytes  Animation (frames)
-  .zip                  Archive (auto-extract)
-
-Import Formats:
-  .png/.gif/.jpg/.webp/.bmp  Convert to SCR with dithering`;
-    alert(helpText);
+      // Update active tab button
+      panelTabs.forEach(t => t.classList.remove('active'));
+      this.classList.add('active');
+      // Show corresponding content
+      panelTabContents.forEach(content => {
+        content.classList.toggle('active', content.id === `tab${tabName.charAt(0).toUpperCase() + tabName.slice(1)}`);
+      });
+    });
   });
 
   // ============================================================================
@@ -282,6 +317,7 @@ Import Formats:
       return;
     }
 
+    // Use event.key for numbers, special chars, and control keys
     switch (event.key) {
       case '1':
       case '2':
@@ -294,19 +330,11 @@ Import Formats:
         setZoom(newZoom);
         break;
 
-      case 'g':
-      case 'G':
-        // Toggle grid
-        showGridCheckbox.checked = !showGridCheckbox.checked;
-        renderScreen();
-        break;
-
-      case 'f':
-      case 'F':
-        // Toggle flash
-        if (flashCheckbox) {
-          flashCheckbox.checked = !flashCheckbox.checked;
-          setFlashEnabled(flashCheckbox.checked);
+      case '~':
+        // Toggle preview panel (Shift+`) - skip if editor handles it
+        if (typeof editorActive !== 'undefined' && editorActive) break;
+        if (typeof togglePreviewPanel === 'function') {
+          togglePreviewPanel();
         }
         break;
 
@@ -354,6 +382,42 @@ Import Formats:
         event.preventDefault();
         const cd = document.getElementById('canvasContainer');
         if (cd) cd.scrollTop += 40;
+        break;
+
+      case 'Escape':
+        // Close dialogs if open
+        if (helpDialog && helpDialog.style.display !== 'none') {
+          helpDialog.style.display = 'none';
+          event.preventDefault();
+        } else if (newPictureDialog && newPictureDialog.style.display !== 'none') {
+          newPictureDialog.style.display = 'none';
+          event.preventDefault();
+        }
+        break;
+    }
+
+    // Use event.code for layout-independent letter shortcuts (works with non-Latin keyboards)
+    switch (event.code) {
+      case 'KeyG':
+        // Cycle grid size: 0 -> 8 -> 16 -> 24 -> 0
+        const gridSizes = [0, 8, 16, 24];
+        const currentIdx = gridSizes.indexOf(gridSize);
+        gridSize = gridSizes[(currentIdx + 1) % gridSizes.length];
+        if (gridSizeSelect) gridSizeSelect.value = String(gridSize);
+        if (typeof editorRender === 'function' && editorActive) {
+          editorRender();
+        } else {
+          renderScreen();
+        }
+        saveSettings();
+        break;
+
+      case 'KeyF':
+        // Toggle flash
+        if (flashCheckbox) {
+          flashCheckbox.checked = !flashCheckbox.checked;
+          setFlashEnabled(flashCheckbox.checked);
+        }
         break;
     }
   });

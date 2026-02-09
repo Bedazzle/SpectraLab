@@ -1,4 +1,4 @@
-// SpectraLab Screen Editor v1.21.0
+// SpectraLab Screen Editor v1.37.0
 // Tools for editing ZX Spectrum .scr files
 // Works like Art Studio / Artist 2 - simple attribute-per-cell model
 // @ts-check
@@ -12,9 +12,29 @@ const EDITOR = {
   TOOL_PIXEL: 'pixel',
   TOOL_LINE: 'line',
   TOOL_RECT: 'rect',
+  TOOL_CIRCLE: 'circle',
+  TOOL_FLOOD_FILL: 'floodfill',
   TOOL_FILL_CELL: 'fillcell',
   TOOL_RECOLOR: 'recolor',
-  TOOL_SELECT: 'select'
+  TOOL_SELECT: 'select',
+  TOOL_ERASER: 'eraser',
+  TOOL_TEXT: 'text',
+  TOOL_AIRBRUSH: 'airbrush',
+  TOOL_GRADIENT: 'gradient'
+};
+
+const GRADIENT_TYPE = {
+  LINEAR: 'linear',
+  RADIAL: 'radial',
+  DIAMOND: 'diamond',
+  CONICAL: 'conical',
+  SQUARE: 'square',
+  SPIRAL: 'spiral'
+};
+
+const DITHER_METHOD = {
+  BAYER: 'bayer',
+  NOISE: 'noise'
 };
 
 const COLOR_NAMES = ['Black', 'Blue', 'Red', 'Magenta', 'Green', 'Cyan', 'Yellow', 'White'];
@@ -29,11 +49,14 @@ let editorActive = false;
 /** @type {string} */
 let currentTool = EDITOR.TOOL_PIXEL;
 
-/** @type {number} - Current ink color (0-7) */
-let editorInkColor = 7;
+/** @type {number} - Transparent color constant */
+const COLOR_TRANSPARENT = -1;
 
-/** @type {number} - Current paper color (0-7) */
-let editorPaperColor = 0;
+/** @type {number} - Current ink color (0-7, or -1 for transparent) */
+let editorInkColor = parseInt(localStorage.getItem('spectraLabInkColor') || '0', 10);
+
+/** @type {number} - Current paper color (0-7, or -1 for transparent) */
+let editorPaperColor = parseInt(localStorage.getItem('spectraLabPaperColor') || '7', 10);
 
 /** @type {boolean} */
 let editorBright = false;
@@ -47,16 +70,16 @@ let brushSize = 1;
 /** @type {string} - Brush shape: 'square', 'round', 'hline', 'vline', 'stroke', 'bstroke', 'custom' */
 let brushShape = 'square';
 
-/** @type {Array<{width:number, height:number, data:Uint8Array}|null>} - 5 custom brush bitmaps (variable size, max 64×64) */
-let customBrushes = [null, null, null, null, null];
+/** @type {Array<{width:number, height:number, data:Uint8Array, mask?:Uint8Array}|null>} - 12 custom brush bitmaps with optional transparency mask (variable size, max 64×64) */
+let customBrushes = [null, null, null, null, null, null, null, null, null, null, null, null];
 
-/** @type {number} - Active custom brush slot (0-4), or -1 for built-in shapes */
+/** @type {number} - Active custom brush slot (0-11), or -1 for built-in shapes */
 let activeCustomBrush = -1;
 
 /** @type {boolean} - True when waiting for click(s) to capture region */
 let capturingBrush = false;
 
-/** @type {number} - Slot being captured into (0-4) */
+/** @type {number} - Slot being captured into (0-11) */
 let captureSlot = 0;
 
 /** @type {{x:number, y:number}|null} - First corner of brush capture rectangle */
@@ -64,6 +87,70 @@ let captureStartPoint = null;
 
 /** @type {string} - Custom brush paint mode: 'set', 'invert', 'replace' */
 let brushPaintMode = localStorage.getItem('spectraLabBrushPaintMode') || 'replace';
+
+/** @type {{x: number, y: number}|null} - Stroke origin for masked+ mode */
+let maskStrokeOrigin = null;
+
+/** @type {boolean} - Fullscreen editor mode */
+let fullscreenMode = false;
+
+/** @type {number} - Airbrush spray radius (4-32 pixels) */
+let airbrushRadius = 8;
+
+/** @type {number} - Airbrush density (0.03-1.0, probability per spray point) */
+let airbrushDensity = 0.3;
+
+/** @type {number|null} - Airbrush continuous spray interval ID */
+let airbrushIntervalId = null;
+
+/** @type {{x: number, y: number, isInk: boolean}|null} - Current airbrush position */
+let airbrushCurrentPos = null;
+
+/** @type {number} - Airbrush falloff power (1 = uniform, higher = more center-concentrated) */
+let airbrushFalloff = 1;
+
+/** @type {string} - Current gradient type */
+let gradientType = GRADIENT_TYPE.LINEAR;
+
+/** @type {string} - Current dithering method */
+let ditherMethod = DITHER_METHOD.BAYER;
+
+/** @type {boolean} - Gradient direction: false = ink to paper, true = paper to ink */
+let gradientReverse = false;
+
+// ============================================================================
+// Text Tool State
+// ============================================================================
+
+/** @type {string} - Current text to render */
+let textToolInput = '';
+
+/** @type {string} - Font type: 'spectrum' or 'ttf' */
+let textFontType = 'spectrum';
+
+/** @type {Uint8Array} - Current .768 Spectrum font data (768 bytes) */
+let textFont768Data = new Uint8Array(768);
+
+/** @type {string} - Current .768 font name */
+let textFont768Name = 'ROM';
+
+/** @type {string} - Current TTF font family */
+let textFontTTF = 'Arial';
+
+/** @type {number} - TTF font size in pixels */
+let textFontSize = 8;
+
+/** @type {boolean} - Whether text tool is in placement mode */
+let isPlacingText = false;
+
+/** @type {{x: number, y: number}|null} - Text preview position */
+let textPreviewPos = null;
+
+/** @type {Array<{name: string, data: Uint8Array}>} - Loaded .768 fonts */
+let loaded768Fonts = [];
+
+/** @type {Array<string>} - Loaded TTF font names */
+let loadedTTFFonts = [];
 
 /** @type {{x: number, y: number}|null} - Start point for line/rect */
 let toolStartPoint = null;
@@ -74,6 +161,23 @@ let isDrawing = false;
 /** @type {{x: number, y: number}|null} */
 let lastDrawnPixel = null;
 
+/** @type {number|null} - Pending render frame ID for throttling */
+let pendingRenderFrame = null;
+
+/**
+ * Schedules a throttled render using requestAnimationFrame.
+ * Multiple calls before the next frame will only result in one render.
+ * Skips preview rendering for performance during continuous drawing.
+ */
+function scheduleRender() {
+  if (pendingRenderFrame === null) {
+    pendingRenderFrame = requestAnimationFrame(() => {
+      pendingRenderFrame = null;
+      editorRender(true); // Skip preview during continuous drawing
+    });
+  }
+}
+
 /** @type {Uint8Array[]} - Undo stack (multi-level) */
 let undoStack = [];
 
@@ -83,8 +187,63 @@ let redoStack = [];
 /** @type {number} - Maximum undo levels */
 const MAX_UNDO_LEVELS = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.MAX_UNDO_LEVELS) || 32;
 
+/** @type {HTMLImageElement|null} - Reference image for tracing */
+let referenceImage = null;
+
+/** @type {boolean} - Show reference image overlay */
+let showReference = true;
+
+/** @type {number} - Reference image opacity (0-1) */
+let referenceOpacity = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.REFERENCE_DEFAULT_OPACITY) || 0.3;
+
+/** @type {number} - Reference image X offset in pixels */
+let referenceOffsetX = 0;
+
+/** @type {number} - Reference image Y offset in pixels */
+let referenceOffsetY = 0;
+
+/** @type {number|null} - Reference image custom width (null = auto from format) */
+let referenceWidth = null;
+
+/** @type {number|null} - Reference image custom height (null = auto from format) */
+let referenceHeight = null;
+
+// ============================================================================
+// Layer System
+// ============================================================================
+
+/**
+ * @typedef {Object} Layer
+ * @property {string} name - Layer name
+ * @property {Uint8Array} bitmap - Bitmap data (same size as format requires)
+ * @property {Uint8Array} mask - Transparency mask (1=visible, 0=transparent)
+ * @property {boolean} visible - Layer visibility
+ * @property {Uint8Array} [attributes] - Attribute data (size varies by format: 768/3072/6144 bytes)
+ * @property {Uint8Array} [attributes2] - Second attribute bank (BMC4 only, 768 bytes for lines 4-7)
+ * @property {Uint8Array} [borderData] - Border color data (for BSC/BMC4 formats)
+ * @property {Uint8Array} [borderMask] - Border transparency mask (for BSC/BMC4 formats)
+ */
+
+/** @type {Layer[]} - Array of layers (index 0 = background) */
+let layers = [];
+
+/** @type {number} - Currently active layer index */
+let activeLayerIndex = 0;
+
+/** @type {boolean} - Whether layer system is enabled (for formats that support it) */
+let layersEnabled = false;
+
+/** @type {Uint8Array|null} - Transparency mask for flattened result (1=has content, 0=transparent) */
+let screenTransparencyMask = null;
+
+/** @type {Uint8Array|null} - Border transparency mask for BSC/BMC4 (1=has content, 0=transparent), 2 slots per byte */
+let borderTransparencyMask = null;
+
 /** @type {number} - Preview zoom level */
 let previewZoom = 1;
+
+/** @type {boolean} - Preview panel visibility */
+let previewVisible = true;
 
 /** @type {HTMLCanvasElement|null} */
 let previewCanvas = null;
@@ -148,11 +307,20 @@ let selectionEndPoint = null;
 /** @type {boolean} - Dragging to define selection */
 let isSelecting = false;
 
-/** @type {string} - Snap mode: 'grid', 'zero', 'brush', 'off' */
+/** @type {string} - Snap mode: 'grid', 'subgrid', 'zero', 'brush', 'off' */
 let snapMode = localStorage.getItem('spectraLabSnapMode') || 'grid';
 
 /** @type {{x:number, y:number}|null} - Origin for 'brush' snap mode (set on first paste) */
 let brushSnapOrigin = null;
+
+/** @type {boolean} - Transform tab selection mode active */
+let transformSelectActive = false;
+
+/** @type {boolean} - Grid snapping for transform selection */
+let transformSnapToGrid = true;
+
+/** @type {{left:number, top:number, right:number, bottom:number}|null} - Current transform selection rect */
+let transformSelectionRect = null;
 
 /**
  * Whether selection corners should snap to 8x8 cell boundaries.
@@ -161,6 +329,25 @@ let brushSnapOrigin = null;
  */
 function isSnapActive() {
   return snapMode !== 'off' || currentFormat === FORMAT.ATTR_53C;
+}
+
+/**
+ * Gets the width of the current format in pixels
+ * @returns {number}
+ */
+function getFormatWidth() {
+  // All formats are 256 pixels wide
+  return 256;
+}
+
+/**
+ * Gets the height of the current format in pixels
+ * @returns {number}
+ */
+function getFormatHeight() {
+  if (currentFormat === FORMAT.MONO_1_3) return 64;
+  if (currentFormat === FORMAT.MONO_2_3) return 128;
+  return 192;
 }
 
 /**
@@ -214,8 +401,16 @@ function snapDrawCoords(x, y) {
 
   const hasBrush = activeCustomBrush >= 0 && customBrushes[activeCustomBrush];
 
-  if (snapMode === 'grid' || !hasBrush) {
-    return { x: Math.floor(x / 8) * 8, y: Math.floor(y / 8) * 8 };
+  if (snapMode === 'grid' || (!hasBrush && snapMode !== 'subgrid')) {
+    // Use gridSize from View tab (default 8)
+    const gs = (typeof gridSize !== 'undefined' && gridSize > 0) ? gridSize : 8;
+    return { x: Math.floor(x / gs) * gs, y: Math.floor(y / gs) * gs };
+  }
+
+  if (snapMode === 'subgrid') {
+    // Use subgridSize from View tab (default 4 if not set)
+    const sgs = (typeof subgridSize !== 'undefined' && subgridSize > 0) ? subgridSize : 4;
+    return { x: Math.floor(x / sgs) * sgs, y: Math.floor(y / sgs) * sgs };
   }
 
   const bw = customBrushes[activeCustomBrush].width;
@@ -250,6 +445,449 @@ let isPasting = false;
 /** @type {{x:number, y:number}} - Current cursor position during paste */
 let pasteCursorPos = { x: 0, y: 0 };
 
+/** @type {boolean} - Brush preview cursor mode active */
+let brushPreviewMode = false;
+
+/** @type {{x:number, y:number}|null} - Current cursor position for brush preview (main screen) */
+let brushPreviewPos = null;
+
+/** @type {{frameX:number, frameY:number}|null} - Current cursor position for border brush preview */
+let borderPreviewPos = null;
+
+// ============================================================================
+// Multi-Picture Management
+// ============================================================================
+
+/**
+ * @typedef {{
+ *   id: number,
+ *   fileName: string,
+ *   format: string,
+ *   screenData: Uint8Array,
+ *   undoStack: Uint8Array[],
+ *   redoStack: Uint8Array[],
+ *   layers: Layer[],
+ *   activeLayerIndex: number,
+ *   layersEnabled: boolean,
+ *   modified: boolean,
+ *   zoom: number,
+ *   inkColor: number,
+ *   paperColor: number,
+ *   bright: boolean,
+ *   flash: boolean,
+ *   currentTool: string,
+ *   brushSize: number,
+ *   brushShape: string,
+ *   scrollTop: number,
+ *   scrollLeft: number
+ * }} PictureState
+ */
+
+/** @type {PictureState[]} - Array of open pictures */
+let openPictures = [];
+
+/** @type {number} - Index of currently active picture (-1 if none) */
+let activePictureIndex = -1;
+
+/** @type {number} - Next unique ID for new pictures */
+let nextPictureId = 1;
+
+/** @type {number} - Maximum number of pictures that can be open */
+const MAX_PICTURES = 8;
+
+/**
+ * Deep clones a layer array including all Uint8Array data
+ * @param {Layer[]} layerArray - Array of layers to clone
+ * @returns {Layer[]} Cloned array
+ */
+function deepCloneLayers(layerArray) {
+  return layerArray.map(layer => {
+    /** @type {Layer} */
+    const cloned = {
+      name: layer.name,
+      bitmap: layer.bitmap.slice(),
+      mask: layer.mask.slice(),
+      visible: layer.visible
+    };
+    if (layer.attributes) {
+      cloned.attributes = layer.attributes.slice();
+    }
+    if (layer.attributes2) {
+      cloned.attributes2 = layer.attributes2.slice();
+    }
+    if (layer.borderData) {
+      cloned.borderData = layer.borderData.slice();
+    }
+    if (layer.borderMask) {
+      cloned.borderMask = layer.borderMask.slice();
+    }
+    return cloned;
+  });
+}
+
+/**
+ * Saves the current picture state to the openPictures array.
+ * Call this before switching to a different picture.
+ */
+function saveCurrentPictureState() {
+  if (activePictureIndex < 0 || activePictureIndex >= openPictures.length) return;
+
+  // Don't save SCA animation data over a picture
+  if (currentFormat === FORMAT.SCA) return;
+
+  const pic = openPictures[activePictureIndex];
+  pic.screenData = screenData.slice();
+  pic.undoStack = undoStack.map(s => s.slice());
+  pic.redoStack = redoStack.map(s => s.slice());
+  pic.layers = deepCloneLayers(layers);
+  pic.activeLayerIndex = activeLayerIndex;
+  pic.layersEnabled = layersEnabled;
+  pic.fileName = currentFileName;
+  pic.format = currentFormat;
+  // Save zoom level (zoom is defined in screen_viewer.js)
+  if (typeof zoom !== 'undefined') {
+    pic.zoom = zoom;
+  }
+  // Save editor colors and tool settings
+  pic.inkColor = editorInkColor;
+  pic.paperColor = editorPaperColor;
+  pic.bright = editorBright;
+  pic.flash = editorFlash;
+  pic.currentTool = currentTool;
+  pic.brushSize = brushSize;
+  pic.brushShape = brushShape;
+  // Save canvas scroll position
+  const container = document.getElementById('canvasContainer');
+  if (container) {
+    pic.scrollTop = container.scrollTop;
+    pic.scrollLeft = container.scrollLeft;
+  }
+}
+
+/**
+ * Loads picture state from the openPictures array at the given index.
+ * @param {number} index - Index of picture to load
+ */
+function loadPictureState(index) {
+  if (index < 0 || index >= openPictures.length) return;
+
+  const pic = openPictures[index];
+  screenData = pic.screenData.slice();
+  currentFileName = pic.fileName;
+  currentFormat = pic.format;
+  undoStack = pic.undoStack.map(s => s.slice());
+  redoStack = pic.redoStack.map(s => s.slice());
+  layers = deepCloneLayers(pic.layers);
+  activeLayerIndex = pic.activeLayerIndex;
+  layersEnabled = pic.layersEnabled;
+  activePictureIndex = index;
+
+  // Restore zoom level
+  if (typeof pic.zoom !== 'undefined' && typeof zoom !== 'undefined') {
+    zoom = pic.zoom;
+    // Update zoom dropdown UI
+    const zoomSelect = document.getElementById('zoomSelect');
+    if (zoomSelect) {
+      /** @type {HTMLSelectElement} */ (zoomSelect).value = String(zoom);
+    }
+  }
+
+  // Restore editor colors and tool settings
+  if (typeof pic.inkColor !== 'undefined') {
+    editorInkColor = pic.inkColor;
+    editorPaperColor = pic.paperColor;
+    editorBright = pic.bright;
+    editorFlash = pic.flash;
+
+    // Update color UI
+    updateColorSelectors();
+
+    // Update tool UI using existing function
+    setEditorTool(pic.currentTool);
+
+    // Update brush UI using existing functions
+    setBrushSize(pic.brushSize);
+    setBrushShape(pic.brushShape);
+  }
+
+  // Restore canvas scroll position (defer to allow canvas resize)
+  if (typeof pic.scrollTop !== 'undefined') {
+    setTimeout(() => {
+      const container = document.getElementById('canvasContainer');
+      if (container) {
+        container.scrollTop = pic.scrollTop;
+        container.scrollLeft = pic.scrollLeft;
+      }
+    }, 0);
+  }
+}
+
+/**
+ * Marks the current picture as modified.
+ * Called when any change is made to the picture.
+ */
+function markPictureModified() {
+  if (activePictureIndex >= 0 && activePictureIndex < openPictures.length) {
+    openPictures[activePictureIndex].modified = true;
+    updatePictureTabBar();
+  }
+}
+
+/**
+ * Adds a new picture to the open pictures array.
+ * @param {string} fileName - File name
+ * @param {string} format - File format
+ * @param {Uint8Array} data - Screen data
+ * @returns {number} Index of the new picture
+ */
+function addPicture(fileName, format, data) {
+  if (openPictures.length >= MAX_PICTURES) {
+    alert('Maximum ' + MAX_PICTURES + ' pictures. Close one to open another.');
+    return -1;
+  }
+
+  // Save current picture state before adding new one
+  saveCurrentPictureState();
+
+  // Inherit current zoom, or use default if no pictures open yet
+  const inheritedZoom = (typeof zoom !== 'undefined' && zoom > 0) ? zoom :
+    ((typeof APP_CONFIG !== 'undefined' && APP_CONFIG.DEFAULT_ZOOM) || 2);
+
+  /** @type {PictureState} */
+  const newPicture = {
+    id: nextPictureId++,
+    fileName: fileName,
+    format: format,
+    screenData: data.slice(),
+    undoStack: [],
+    redoStack: [],
+    layers: [],
+    activeLayerIndex: 0,
+    layersEnabled: false,
+    modified: false,
+    zoom: inheritedZoom,
+    // Use current editor settings (not hardcoded defaults)
+    inkColor: editorInkColor,
+    paperColor: editorPaperColor,
+    bright: editorBright,
+    flash: editorFlash,
+    currentTool: currentTool,
+    brushSize: brushSize,
+    brushShape: brushShape,
+    scrollTop: 0,
+    scrollLeft: 0
+  };
+
+  openPictures.push(newPicture);
+  const newIndex = openPictures.length - 1;
+
+  // Switch to the new picture
+  switchToPicture(newIndex);
+
+  return newIndex;
+}
+
+/**
+ * Closes a picture at the given index.
+ * @param {number} index - Index of picture to close
+ * @returns {boolean} True if picture was closed
+ */
+function closePicture(index) {
+  if (index < 0 || index >= openPictures.length) return false;
+
+  const pic = openPictures[index];
+
+  // Confirm if modified
+  if (pic.modified) {
+    if (!confirm('Picture "' + pic.fileName + '" has unsaved changes. Close anyway?')) {
+      return false;
+    }
+  }
+
+  // Remove the picture
+  openPictures.splice(index, 1);
+
+  // Handle active picture index after removal
+  if (openPictures.length === 0) {
+    // No more pictures - reset to empty state
+    activePictureIndex = -1;
+    screenData = new Uint8Array(0);
+    currentFileName = '';
+    currentFormat = FORMAT.UNKNOWN;
+    undoStack = [];
+    redoStack = [];
+    layers = [];
+    activeLayerIndex = 0;
+    layersEnabled = false;
+    renderScreen();
+    updateFileInfo();
+  } else {
+    // Adjust active index if needed
+    if (activePictureIndex >= openPictures.length) {
+      activePictureIndex = openPictures.length - 1;
+    } else if (activePictureIndex > index) {
+      activePictureIndex--;
+    } else if (activePictureIndex === index) {
+      // Was viewing the closed picture - load adjacent
+      if (activePictureIndex >= openPictures.length) {
+        activePictureIndex = openPictures.length - 1;
+      }
+    }
+
+    // Load the new active picture
+    loadPictureState(activePictureIndex);
+    renderScreen();
+    updateFileInfo();
+
+    // Update UI components
+    if (typeof updateConvertOptions === 'function') {
+      updateConvertOptions();
+    }
+    if (typeof toggleLayerSectionVisibility === 'function') {
+      toggleLayerSectionVisibility();
+    }
+    if (typeof updateLayerPanel === 'function') {
+      updateLayerPanel();
+    }
+    if (typeof updateEditorState === 'function') {
+      updateEditorState();
+    }
+    if (editorActive && typeof renderPreview === 'function') {
+      renderPreview();
+    }
+  }
+
+  updatePictureTabBar();
+  return true;
+}
+
+/**
+ * Switches to a different picture.
+ * @param {number} index - Index of picture to switch to
+ */
+function switchToPicture(index) {
+  if (index < 0 || index >= openPictures.length) return;
+  if (index === activePictureIndex) return;
+
+  // Stop SCA animation if switching from SCA to a picture
+  if (typeof resetScaState === 'function') {
+    resetScaState();
+  }
+
+  // Save current state
+  saveCurrentPictureState();
+
+  // Load new picture
+  loadPictureState(index);
+
+  // Update UI
+  renderScreen();
+  updateFileInfo();
+  updatePictureTabBar();
+
+  // Update format-specific controls
+  if (typeof toggleScaControlsVisibility === 'function') {
+    toggleScaControlsVisibility();
+  }
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+
+  // Update editor state
+  if (typeof updateConvertOptions === 'function') {
+    updateConvertOptions();
+  }
+  if (typeof toggleLayerSectionVisibility === 'function') {
+    toggleLayerSectionVisibility();
+  }
+  if (typeof updateLayerPanel === 'function') {
+    updateLayerPanel();
+  }
+  if (typeof updateEditorState === 'function') {
+    updateEditorState();
+  }
+  if (editorActive && typeof renderPreview === 'function') {
+    renderPreview();
+  }
+
+  // Reset selection and paste states
+  if (typeof clearSelection === 'function') {
+    clearSelection();
+  }
+  isPasting = false;
+}
+
+/**
+ * Updates the picture tab bar UI.
+ * Shows the tab bar only when 2+ pictures are open.
+ */
+function updatePictureTabBar() {
+  const tabBar = document.getElementById('pictureTabBar');
+  const tabList = document.getElementById('pictureTabList');
+
+  if (!tabBar || !tabList) return;
+
+  // Show tab bar only when 2+ pictures open
+  if (openPictures.length < 2) {
+    tabBar.style.display = 'none';
+    return;
+  }
+
+  tabBar.style.display = 'block';
+  tabList.innerHTML = '';
+
+  openPictures.forEach((pic, index) => {
+    const tab = document.createElement('div');
+    tab.className = 'picture-tab' +
+      (index === activePictureIndex ? ' active' : '') +
+      (pic.modified ? ' modified' : '');
+    tab.dataset.index = String(index);
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'picture-tab-name';
+    nameSpan.textContent = pic.fileName || 'Untitled';
+    nameSpan.title = pic.fileName || 'Untitled';
+
+    const closeBtn = document.createElement('span');
+    closeBtn.className = 'picture-tab-close';
+    closeBtn.innerHTML = '&times;';
+    closeBtn.title = 'Close';
+
+    tab.appendChild(nameSpan);
+    tab.appendChild(closeBtn);
+    tabList.appendChild(tab);
+
+    // Click tab to switch
+    tab.addEventListener('click', (e) => {
+      if (e.target === closeBtn) return;
+      switchToPicture(index);
+    });
+
+    // Click close button
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closePicture(index);
+    });
+  });
+}
+
+/**
+ * Gets the index of a picture by its ID.
+ * @param {number} id - Picture ID
+ * @returns {number} Index or -1 if not found
+ */
+function getPictureIndexById(id) {
+  return openPictures.findIndex(p => p.id === id);
+}
+
+/**
+ * Returns true if there are multiple pictures open.
+ * @returns {boolean}
+ */
+function hasMultiplePictures() {
+  return openPictures.length > 1;
+}
+
 // ============================================================================
 // ZX Spectrum Screen Address Calculation
 // ============================================================================
@@ -282,6 +920,45 @@ function getAttributeAddress(x, y) {
   const charRow = Math.floor(y / 8);
   const charCol = Math.floor(x / 8);
   return SCREEN.BITMAP_SIZE + charRow * 32 + charCol;
+}
+
+/**
+ * Calculates IFL attribute address for a pixel (8×2 blocks, 96 attribute rows)
+ * @param {number} x - X coordinate (0-255)
+ * @param {number} y - Y coordinate (0-191)
+ * @returns {number} Byte offset (6144-9215)
+ */
+function getIflAttributeAddress(x, y) {
+  const attrRow = Math.floor(y / 2);  // 96 attribute rows (vs 24 for SCR)
+  const charCol = Math.floor(x / 8);
+  return IFL.BITMAP_SIZE + attrRow * 32 + charCol;
+}
+
+/**
+ * Calculates MLT attribute address for a pixel (8×1 blocks, 192 attribute rows)
+ * @param {number} x - X coordinate (0-255)
+ * @param {number} y - Y coordinate (0-191)
+ * @returns {number} Byte offset (6144-12287)
+ */
+function getMltAttributeAddress(x, y) {
+  const charCol = Math.floor(x / 8);
+  return MLT.BITMAP_SIZE + y * 32 + charCol;  // One attr row per pixel line
+}
+
+/**
+ * Calculates BMC4 attribute address for a pixel (8×4 blocks, 48 attribute rows)
+ * BMC4 has two attribute banks: attr1 for lines 0-3, attr2 for lines 4-7 of each char cell
+ * @param {number} x - X coordinate (0-255)
+ * @param {number} y - Y coordinate (0-191)
+ * @returns {number} Byte offset
+ */
+function getBmc4AttributeAddress(x, y) {
+  const charRow = Math.floor(y / 8);
+  const charCol = Math.floor(x / 8);
+  const pixelLine = y % 8;
+  // Lines 0-3 use attr1, lines 4-7 use attr2
+  const attrOffset = (pixelLine < 4) ? BMC4.ATTR1_OFFSET : BMC4.ATTR2_OFFSET;
+  return attrOffset + charRow * 32 + charCol;
 }
 
 /**
@@ -322,7 +999,56 @@ function getPixel(data, x, y) {
  * @param {boolean} isInk - true = set pixel (ink), false = clear pixel (paper)
  */
 function setPixel(data, x, y, isInk) {
-  if (x < 0 || x >= SCREEN.WIDTH || y < 0 || y >= SCREEN.HEIGHT) return;
+  const width = getFormatWidth();
+  const height = getFormatHeight();
+  if (x < 0 || x >= width || y < 0 || y >= height) return;
+
+  // Check Y bounds for partial monochrome formats
+  if (currentFormat === FORMAT.MONO_2_3 && y >= 128) return;
+  if (currentFormat === FORMAT.MONO_1_3 && y >= 64) return;
+
+  // Check if painting with transparent color
+  const color = isInk ? editorInkColor : editorPaperColor;
+  if (color === COLOR_TRANSPARENT) {
+    // Transparent: clear the mask on non-background layers
+    if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
+      const layer = layers[activeLayerIndex];
+      if (layer) {
+        const maskIdx = y * width + x;
+        layer.mask[maskIdx] = 0; // Make pixel transparent
+        flattenLayersToScreen();
+      }
+    }
+    // On background layer, transparent does nothing (can't erase background)
+    return;
+  }
+
+  // RGB3 format: set bits in all 3 color channels based on ink/paper color
+  if (currentFormat === FORMAT.RGB3) {
+    const bitmapAddr = getBitmapAddress(x, y);
+    const bit = getBitPosition(x);
+    // ZX color index bits: bit0=Blue, bit1=Red, bit2=Green
+    const hasBlue = (color & 1) !== 0;
+    const hasRed = (color & 2) !== 0;
+    const hasGreen = (color & 4) !== 0;
+    // Set/clear bits in each channel
+    if (hasRed) {
+      data[RGB3.RED_OFFSET + bitmapAddr] |= (1 << bit);
+    } else {
+      data[RGB3.RED_OFFSET + bitmapAddr] &= ~(1 << bit);
+    }
+    if (hasGreen) {
+      data[RGB3.GREEN_OFFSET + bitmapAddr] |= (1 << bit);
+    } else {
+      data[RGB3.GREEN_OFFSET + bitmapAddr] &= ~(1 << bit);
+    }
+    if (hasBlue) {
+      data[RGB3.BLUE_OFFSET + bitmapAddr] |= (1 << bit);
+    } else {
+      data[RGB3.BLUE_OFFSET + bitmapAddr] &= ~(1 << bit);
+    }
+    return;
+  }
 
   // Set the pixel bit
   const bitmapAddr = getBitmapAddress(x, y);
@@ -334,9 +1060,207 @@ function setPixel(data, x, y, isInk) {
     data[bitmapAddr] &= ~(1 << bit);
   }
 
+  // Also update active layer if layers are enabled
+  if (layersEnabled && layers.length > 0) {
+    const layer = layers[activeLayerIndex];
+    if (layer) {
+      const maskIdx = y * width + x;
+      if (isInk) {
+        layer.bitmap[bitmapAddr] |= (1 << bit);
+      } else {
+        layer.bitmap[bitmapAddr] &= ~(1 << bit);
+      }
+      layer.mask[maskIdx] = 1; // Mark pixel as visible
+      // Also update screen transparency mask
+      if (screenTransparencyMask && maskIdx < screenTransparencyMask.length) {
+        screenTransparencyMask[maskIdx] = 1;
+      }
+    }
+  }
+
+  // Monochrome formats have no attributes
+  if (currentFormat === FORMAT.MONO_FULL || currentFormat === FORMAT.MONO_2_3 || currentFormat === FORMAT.MONO_1_3) {
+    return;
+  }
+
   // Set the attribute for this cell to current ink/paper/bright
-  const attrAddr = getAttributeAddress(x, y);
-  data[attrAddr] = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+  // For attributes, use actual colors (not transparent)
+  const attrInk = editorInkColor === COLOR_TRANSPARENT ? 0 : editorInkColor;
+  const attrPaper = editorPaperColor === COLOR_TRANSPARENT ? 0 : editorPaperColor;
+  const attr = buildAttribute(attrInk, attrPaper, editorBright, editorFlash);
+
+  // MLT uses 8×1 blocks (192 rows), IFL uses 8×2 blocks (96 rows), BMC4 uses 8×4 blocks (48 rows), SCR uses 8×8 cells (24 rows)
+  const attrAddr = currentFormat === FORMAT.MLT ? getMltAttributeAddress(x, y) :
+                   currentFormat === FORMAT.IFL ? getIflAttributeAddress(x, y) :
+                   currentFormat === FORMAT.BMC4 ? getBmc4AttributeAddress(x, y) :
+                   getAttributeAddress(x, y);
+  data[attrAddr] = attr;
+
+  // Also update per-layer attributes if layers are enabled
+  if (layersEnabled && layers.length > 0) {
+    const layer = layers[activeLayerIndex];
+    if (layer && layer.attributes) {
+      if (currentFormat === FORMAT.BMC4) {
+        // BMC4: determine which attribute bank to use based on pixel line within cell
+        const pixelLine = y % 8;
+        const charRow = Math.floor(y / 8);
+        const charCol = Math.floor(x / 8);
+        const attrIdx = charRow * 32 + charCol;
+        if (pixelLine < 4) {
+          // Top half of cell -> attributes (bank 1)
+          layer.attributes[attrIdx] = attr;
+        } else if (layer.attributes2) {
+          // Bottom half of cell -> attributes2 (bank 2)
+          layer.attributes2[attrIdx] = attr;
+        }
+      } else if (currentFormat === FORMAT.MLT) {
+        // MLT: one attribute per pixel row (192 rows)
+        const attrIdx = y * 32 + Math.floor(x / 8);
+        layer.attributes[attrIdx] = attr;
+      } else if (currentFormat === FORMAT.IFL) {
+        // IFL: one attribute per 2 pixel rows (96 rows)
+        const attrRow = Math.floor(y / 2);
+        const attrIdx = attrRow * 32 + Math.floor(x / 8);
+        layer.attributes[attrIdx] = attr;
+      } else {
+        // SCR/BSC: one attribute per 8x8 cell (24 rows)
+        const charRow = Math.floor(y / 8);
+        const charCol = Math.floor(x / 8);
+        const attrIdx = charRow * 32 + charCol;
+        layer.attributes[attrIdx] = attr;
+      }
+    }
+  }
+}
+
+/**
+ * Sets only the pixel bit without updating attributes (Retouch mode)
+ * @param {Uint8Array} data
+ * @param {number} x
+ * @param {number} y
+ * @param {boolean} isInk - true = set pixel (ink), false = clear pixel (paper)
+ */
+function setPixelBitmapOnly(data, x, y, isInk) {
+  const width = getFormatWidth();
+  const height = getFormatHeight();
+  if (x < 0 || x >= width || y < 0 || y >= height) return;
+
+  if (currentFormat === FORMAT.MONO_2_3 && y >= 128) return;
+  if (currentFormat === FORMAT.MONO_1_3 && y >= 64) return;
+
+  // RGB3 format: set bits in all 3 color channels
+  if (currentFormat === FORMAT.RGB3) {
+    const bitmapAddr = getBitmapAddress(x, y);
+    const bit = getBitPosition(x);
+    const color = isInk ? editorInkColor : editorPaperColor;
+    const hasBlue = (color & 1) !== 0;
+    const hasRed = (color & 2) !== 0;
+    const hasGreen = (color & 4) !== 0;
+    if (hasRed) {
+      data[RGB3.RED_OFFSET + bitmapAddr] |= (1 << bit);
+    } else {
+      data[RGB3.RED_OFFSET + bitmapAddr] &= ~(1 << bit);
+    }
+    if (hasGreen) {
+      data[RGB3.GREEN_OFFSET + bitmapAddr] |= (1 << bit);
+    } else {
+      data[RGB3.GREEN_OFFSET + bitmapAddr] &= ~(1 << bit);
+    }
+    if (hasBlue) {
+      data[RGB3.BLUE_OFFSET + bitmapAddr] |= (1 << bit);
+    } else {
+      data[RGB3.BLUE_OFFSET + bitmapAddr] &= ~(1 << bit);
+    }
+    return;
+  }
+
+  // Set only the pixel bit, no attribute change
+  const bitmapAddr = getBitmapAddress(x, y);
+  const bit = getBitPosition(x);
+
+  if (isInk) {
+    data[bitmapAddr] |= (1 << bit);
+  } else {
+    data[bitmapAddr] &= ~(1 << bit);
+  }
+
+  // Update active layer if layers are enabled
+  if (layersEnabled && layers.length > 0) {
+    const layer = layers[activeLayerIndex];
+    if (layer) {
+      const maskIdx = y * width + x;
+      if (isInk) {
+        layer.bitmap[bitmapAddr] |= (1 << bit);
+      } else {
+        layer.bitmap[bitmapAddr] &= ~(1 << bit);
+      }
+      layer.mask[maskIdx] = 1;
+    }
+  }
+}
+
+/**
+ * Sets only the cell attribute without changing bitmap (Recolor mode)
+ * @param {Uint8Array} data
+ * @param {number} x
+ * @param {number} y
+ */
+function setPixelAttributeOnly(data, x, y) {
+  const width = getFormatWidth();
+  const height = getFormatHeight();
+  if (x < 0 || x >= width || y < 0 || y >= height) return;
+
+  // Monochrome and RGB3 formats have no attributes
+  if (currentFormat === FORMAT.MONO_FULL || currentFormat === FORMAT.MONO_2_3 ||
+      currentFormat === FORMAT.MONO_1_3 || currentFormat === FORMAT.RGB3) {
+    return;
+  }
+
+  const attr = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+  const attrAddr = currentFormat === FORMAT.MLT ? getMltAttributeAddress(x, y) :
+                   currentFormat === FORMAT.IFL ? getIflAttributeAddress(x, y) :
+                   currentFormat === FORMAT.BMC4 ? getBmc4AttributeAddress(x, y) :
+                   getAttributeAddress(x, y);
+  data[attrAddr] = attr;
+
+  // Also update per-layer attribute if layers are enabled
+  if (layersEnabled && layers.length > 0) {
+    const layer = layers[activeLayerIndex];
+    if (layer && layer.attributes) {
+      if (currentFormat === FORMAT.BMC4) {
+        const pixelLine = y % 8;
+        const charRow = Math.floor(y / 8);
+        const charCol = Math.floor(x / 8);
+        const attrIdx = charRow * 32 + charCol;
+        if (pixelLine < 4) {
+          layer.attributes[attrIdx] = attr;
+        } else if (layer.attributes2) {
+          layer.attributes2[attrIdx] = attr;
+        }
+      } else if (currentFormat === FORMAT.MLT) {
+        const attrIdx = y * 32 + Math.floor(x / 8);
+        layer.attributes[attrIdx] = attr;
+      } else if (currentFormat === FORMAT.IFL) {
+        const attrRow = Math.floor(y / 2);
+        const attrIdx = attrRow * 32 + Math.floor(x / 8);
+        layer.attributes[attrIdx] = attr;
+      } else {
+        const charRow = Math.floor(y / 8);
+        const charCol = Math.floor(x / 8);
+        const attrIdx = charRow * 32 + charCol;
+        layer.attributes[attrIdx] = attr;
+      }
+    }
+  }
+}
+
+/**
+ * Gets an attribute-safe color value (transparent becomes black)
+ * @param {number} color - Color index (0-7 or COLOR_TRANSPARENT)
+ * @returns {number} - Color index 0-7
+ */
+function getAttrSafeColor(color) {
+  return color === COLOR_TRANSPARENT ? 0 : color;
 }
 
 /**
@@ -348,7 +1272,10 @@ function setPixel(data, x, y, isInk) {
  * @returns {number}
  */
 function buildAttribute(ink, paper, bright, flash) {
-  return (ink & 0x07) | ((paper & 0x07) << 3) | (bright ? 0x40 : 0) | (flash ? 0x80 : 0);
+  // Handle transparent colors (use 0/black for attributes)
+  const safeInk = ink === COLOR_TRANSPARENT ? 0 : ink;
+  const safePaper = paper === COLOR_TRANSPARENT ? 0 : paper;
+  return (safeInk & 0x07) | ((safePaper & 0x07) << 3) | (bright ? 0x40 : 0) | (flash ? 0x80 : 0);
 }
 
 /**
@@ -366,6 +1293,1400 @@ function parseAttribute(attr) {
 }
 
 // ============================================================================
+// Layer Management Functions
+// ============================================================================
+
+/**
+ * Gets the bitmap size for the current format
+ * @returns {number}
+ */
+function getLayerBitmapSize() {
+  // BSC uses same 6144-byte bitmap as SCR (BSC object doesn't define BITMAP_SIZE)
+  if (currentFormat === FORMAT.BSC) return SCREEN.BITMAP_SIZE;
+  if (currentFormat === FORMAT.BMC4) return BMC4.BITMAP_SIZE;
+  if (currentFormat === FORMAT.IFL) return IFL.BITMAP_SIZE;
+  if (currentFormat === FORMAT.MLT) return MLT.BITMAP_SIZE;
+  return SCREEN.BITMAP_SIZE; // Default for SCR
+}
+
+/**
+ * Checks if the current format has border data (BSC or BMC4)
+ * @returns {boolean}
+ */
+function formatHasBorder() {
+  return currentFormat === FORMAT.BSC || currentFormat === FORMAT.BMC4;
+}
+
+/**
+ * Gets the border data size for the current format
+ * @returns {number} Border size in bytes (4224 for BSC/BMC4, 0 for others)
+ */
+function getLayerBorderSize() {
+  if (currentFormat === FORMAT.BSC || currentFormat === FORMAT.BMC4) {
+    return BSC.BORDER_SIZE; // 4224 bytes
+  }
+  return 0;
+}
+
+/**
+ * Gets the attribute data size for the current format (for per-layer attributes)
+ * @returns {number} Attribute size in bytes (0 for formats without attributes)
+ */
+function getLayerAttributeSize() {
+  if (currentFormat === FORMAT.SCR || currentFormat === FORMAT.BSC) {
+    return SCREEN.ATTR_SIZE; // 768 bytes (8×8 cells)
+  }
+  if (currentFormat === FORMAT.BMC4) {
+    return BMC4.ATTR1_SIZE + BMC4.ATTR2_SIZE; // 768 + 768 = 1536 bytes (8×4 cells, 2 banks)
+  }
+  if (currentFormat === FORMAT.IFL) {
+    return IFL.ATTR_SIZE; // 3072 bytes (8×2 cells)
+  }
+  if (currentFormat === FORMAT.MLT) {
+    return MLT.ATTR_SIZE; // 6144 bytes (8×1 cells)
+  }
+  // MONO, RGB3, ATTR_53C, SPECSCII, SCA have no layer attributes
+  return 0;
+}
+
+/**
+ * Initializes the layer system for the current image.
+ * Creates a background layer from the current screenData.
+ */
+function initLayers() {
+  if (!screenData || screenData.length === 0) {
+    layers = [];
+    activeLayerIndex = 0;
+    layersEnabled = false;
+    return;
+  }
+
+  // Only enable layers for editable bitmap formats (not attribute-only or SCA)
+  if (!isFormatEditable() || currentFormat === FORMAT.ATTR_53C) {
+    layersEnabled = false;
+    layers = [];
+    return;
+  }
+
+  layersEnabled = true;
+  const bitmapSize = getLayerBitmapSize();
+  const borderSize = getLayerBorderSize();
+  const hasBorder = formatHasBorder();
+  const attrSize = getLayerAttributeSize();
+
+  // Create background layer from current bitmap
+  const bgBitmap = new Uint8Array(bitmapSize);
+  const bgMask = new Uint8Array(bitmapSize * 8); // 1 bit per pixel -> 1 byte per pixel for simplicity
+  bgMask.fill(1); // Background is fully opaque
+
+  // Copy current bitmap to background layer
+  for (let i = 0; i < bitmapSize; i++) {
+    bgBitmap[i] = screenData[i];
+  }
+
+  /** @type {Layer} */
+  const bgLayer = {
+    name: 'Background',
+    bitmap: bgBitmap,
+    mask: bgMask,
+    visible: true
+  };
+
+  // Initialize per-layer attributes from screenData
+  if (attrSize > 0) {
+    if (currentFormat === FORMAT.BMC4) {
+      // BMC4: two attribute banks (768 bytes each)
+      bgLayer.attributes = new Uint8Array(BMC4.ATTR1_SIZE);
+      bgLayer.attributes2 = new Uint8Array(BMC4.ATTR2_SIZE);
+      for (let i = 0; i < BMC4.ATTR1_SIZE; i++) {
+        bgLayer.attributes[i] = screenData[BMC4.ATTR1_OFFSET + i];
+      }
+      for (let i = 0; i < BMC4.ATTR2_SIZE; i++) {
+        bgLayer.attributes2[i] = screenData[BMC4.ATTR2_OFFSET + i];
+      }
+    } else {
+      // SCR/BSC/IFL/MLT: single attribute bank
+      bgLayer.attributes = new Uint8Array(attrSize);
+      for (let i = 0; i < attrSize; i++) {
+        bgLayer.attributes[i] = screenData[bitmapSize + i];
+      }
+    }
+  }
+
+  // Initialize border data for BSC/BMC4 formats
+  if (hasBorder && borderSize > 0) {
+    const borderOffset = getBorderDataOffset();
+    const bgBorderData = new Uint8Array(borderSize);
+    const bgBorderMask = new Uint8Array(borderSize * 2); // 2 color slots per byte
+    bgBorderMask.fill(1); // Background border is fully opaque
+
+    // Copy current border data to background layer
+    for (let i = 0; i < borderSize; i++) {
+      bgBorderData[i] = screenData[borderOffset + i];
+    }
+
+    bgLayer.borderData = bgBorderData;
+    bgLayer.borderMask = bgBorderMask;
+  }
+
+  layers = [bgLayer];
+  activeLayerIndex = 0;
+
+  updateLayerPanel();
+}
+
+/**
+ * Adds a new empty layer above the current layer
+ * @param {string} [name] - Optional layer name
+ */
+function addLayer(name) {
+  if (!layersEnabled) return;
+
+  const bitmapSize = getLayerBitmapSize();
+  const borderSize = getLayerBorderSize();
+  const hasBorder = formatHasBorder();
+  const attrSize = getLayerAttributeSize();
+  const width = getFormatWidth();
+  const height = getFormatHeight();
+
+  /** @type {Layer} */
+  const newLayer = {
+    name: name || `Layer ${layers.length}`,
+    bitmap: new Uint8Array(bitmapSize), // Empty (all zeros = paper)
+    mask: new Uint8Array(width * height), // All transparent
+    visible: true
+  };
+
+  // Add default attributes (ink=7, paper=0) for formats that support them
+  if (attrSize > 0) {
+    const defaultAttr = buildAttribute(7, 0, false, false); // ink=7 (white), paper=0 (black)
+    if (currentFormat === FORMAT.BMC4) {
+      // BMC4: two attribute banks
+      newLayer.attributes = new Uint8Array(BMC4.ATTR1_SIZE);
+      newLayer.attributes2 = new Uint8Array(BMC4.ATTR2_SIZE);
+      newLayer.attributes.fill(defaultAttr);
+      newLayer.attributes2.fill(defaultAttr);
+    } else {
+      // SCR/BSC/IFL/MLT: single attribute bank
+      newLayer.attributes = new Uint8Array(attrSize);
+      newLayer.attributes.fill(defaultAttr);
+    }
+  }
+
+  // Add border data for BSC/BMC4 formats
+  if (hasBorder && borderSize > 0) {
+    newLayer.borderData = new Uint8Array(borderSize); // Empty (all zeros = black)
+    newLayer.borderMask = new Uint8Array(borderSize * 2); // All transparent (2 slots per byte)
+  }
+
+  // Insert above current layer
+  layers.splice(activeLayerIndex + 1, 0, newLayer);
+  activeLayerIndex = activeLayerIndex + 1;
+
+  updateLayerPanel();
+  flattenLayersToScreen();
+  editorRender();
+}
+
+/**
+ * Removes the currently active layer (cannot remove background)
+ */
+function removeLayer() {
+  if (!layersEnabled || layers.length <= 1 || activeLayerIndex === 0) return;
+
+  layers.splice(activeLayerIndex, 1);
+  if (activeLayerIndex >= layers.length) {
+    activeLayerIndex = layers.length - 1;
+  }
+
+  updateLayerPanel();
+  flattenLayersToScreen();
+  editorRender();
+}
+
+/**
+ * Moves the active layer up (towards front)
+ */
+function moveLayerUp() {
+  if (!layersEnabled || activeLayerIndex >= layers.length - 1) return;
+
+  const temp = layers[activeLayerIndex];
+  layers[activeLayerIndex] = layers[activeLayerIndex + 1];
+  layers[activeLayerIndex + 1] = temp;
+  activeLayerIndex++;
+
+  updateLayerPanel();
+  flattenLayersToScreen();
+  editorRender();
+}
+
+/**
+ * Moves the active layer down (towards back)
+ */
+function moveLayerDown() {
+  if (!layersEnabled || activeLayerIndex <= 1) return; // Can't move below background
+
+  const temp = layers[activeLayerIndex];
+  layers[activeLayerIndex] = layers[activeLayerIndex - 1];
+  layers[activeLayerIndex - 1] = temp;
+  activeLayerIndex--;
+
+  updateLayerPanel();
+  flattenLayersToScreen();
+  editorRender();
+}
+
+/**
+ * Sets the active layer by index
+ * @param {number} index
+ */
+function setActiveLayer(index) {
+  if (!layersEnabled || index < 0 || index >= layers.length) return;
+  activeLayerIndex = index;
+
+  // Update visual state without rebuilding DOM (preserves double-click)
+  const layerList = document.getElementById('layerList');
+  if (layerList) {
+    layerList.querySelectorAll('.layer-item').forEach(item => {
+      const itemIndex = parseInt(/** @type {HTMLElement} */ (item).dataset.index || '', 10);
+      item.classList.toggle('active', itemIndex === index);
+    });
+  }
+
+  // Update button states
+  updateLayerButtonStates();
+}
+
+/**
+ * Toggles visibility of a layer
+ * @param {number} index
+ */
+function toggleLayerVisibility(index) {
+  if (!layersEnabled || index < 0 || index >= layers.length) return;
+  layers[index].visible = !layers[index].visible;
+  updateLayerPanel();
+  flattenLayersToScreen();
+  editorRender();
+}
+
+/**
+ * Flattens all visible layers to screenData for rendering/export.
+ * Background provides base, upper layers composite on top where mask=1.
+ */
+function flattenLayersToScreen() {
+  if (!layersEnabled || layers.length === 0) return;
+
+  const bitmapSize = getLayerBitmapSize();
+  const width = getFormatWidth();
+  const height = getFormatHeight();
+  const pixelCount = width * height;
+
+  // Initialize or resize transparency mask
+  if (!screenTransparencyMask || screenTransparencyMask.length !== pixelCount) {
+    screenTransparencyMask = new Uint8Array(pixelCount);
+  }
+
+  // Start with background layer bitmap
+  for (let i = 0; i < bitmapSize; i++) {
+    if (layers[0].visible) {
+      screenData[i] = layers[0].bitmap[i];
+    } else {
+      screenData[i] = 0;
+    }
+  }
+
+  // Initialize transparency mask based on background layer visibility
+  // Background layer has content everywhere if visible
+  const bgHasContent = layers[0].visible ? 1 : 0;
+  for (let i = 0; i < pixelCount; i++) {
+    screenTransparencyMask[i] = bgHasContent;
+  }
+
+  // Composite upper layers (bitmap)
+  for (let layerIdx = 1; layerIdx < layers.length; layerIdx++) {
+    const layer = layers[layerIdx];
+    if (!layer.visible) continue;
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const maskIdx = y * width + x;
+        if (layer.mask[maskIdx]) {
+          // This pixel is visible on this layer - copy it
+          const bitmapAddr = getBitmapAddress(x, y);
+          const bitMask = 0x80 >> (x % 8);
+
+          if (layer.bitmap[bitmapAddr] & bitMask) {
+            screenData[bitmapAddr] |= bitMask;
+          } else {
+            screenData[bitmapAddr] &= ~bitMask & 0xFF;
+          }
+
+          // Mark this pixel as having content
+          screenTransparencyMask[maskIdx] = 1;
+        }
+      }
+    }
+  }
+
+  // Flatten border data for BSC/BMC4 formats
+  if (formatHasBorder()) {
+    flattenBorderLayersToScreen();
+  }
+
+  // Flatten attributes from layers based on cell ownership
+  flattenAttributesToScreen();
+}
+
+/**
+ * Flattens border data from all visible layers to screenData.
+ * Each border byte contains two 3-bit color values (bits 0-2 and 3-5).
+ */
+function flattenBorderLayersToScreen() {
+  const borderSize = getLayerBorderSize();
+  if (borderSize === 0) return;
+
+  const borderOffset = getBorderDataOffset();
+  const bgLayer = layers[0];
+  const maskSize = borderSize * 2; // 2 color slots per byte
+
+  // Initialize or resize border transparency mask
+  if (!borderTransparencyMask || borderTransparencyMask.length !== maskSize) {
+    borderTransparencyMask = new Uint8Array(maskSize);
+  }
+
+  // Start with background layer border data
+  if (bgLayer.borderData && bgLayer.visible) {
+    for (let i = 0; i < borderSize; i++) {
+      screenData[borderOffset + i] = bgLayer.borderData[i];
+    }
+    // Background border is fully opaque when visible
+    borderTransparencyMask.fill(1);
+  } else {
+    // No background border data or not visible - fill with black
+    for (let i = 0; i < borderSize; i++) {
+      screenData[borderOffset + i] = 0;
+    }
+    // Background hidden - all transparent initially
+    borderTransparencyMask.fill(0);
+  }
+
+  // Composite upper layers (border)
+  for (let layerIdx = 1; layerIdx < layers.length; layerIdx++) {
+    const layer = layers[layerIdx];
+    if (!layer.visible || !layer.borderData || !layer.borderMask) continue;
+
+    for (let i = 0; i < borderSize; i++) {
+      // Each byte has 2 color slots, so mask index is i*2 and i*2+1
+      const maskIdx0 = i * 2;
+      const maskIdx1 = i * 2 + 1;
+
+      let byte = screenData[borderOffset + i];
+
+      // First color slot (bits 0-2)
+      if (layer.borderMask[maskIdx0]) {
+        const color0 = layer.borderData[i] & 0x07;
+        byte = (byte & 0xF8) | color0;
+        borderTransparencyMask[maskIdx0] = 1; // Has content
+      }
+
+      // Second color slot (bits 3-5)
+      if (layer.borderMask[maskIdx1]) {
+        const color1 = (layer.borderData[i] >> 3) & 0x07;
+        byte = (byte & 0xC7) | (color1 << 3);
+        borderTransparencyMask[maskIdx1] = 1; // Has content
+      }
+
+      screenData[borderOffset + i] = byte;
+    }
+  }
+}
+
+/**
+ * Flattens attributes from all visible layers to screenData.
+ * For each attribute cell, use the topmost visible layer that has any pixel content.
+ */
+function flattenAttributesToScreen() {
+  const attrSize = getLayerAttributeSize();
+  if (attrSize === 0) return; // No attributes for this format
+
+  const width = getFormatWidth();
+  const height = getFormatHeight();
+  const bitmapSize = getLayerBitmapSize();
+
+  if (currentFormat === FORMAT.BMC4) {
+    // BMC4: two attribute banks (8×4 cells)
+    flattenBmc4Attributes();
+    return;
+  }
+
+  // SCR/BSC/IFL/MLT: single attribute bank
+  // Calculate cell dimensions based on format
+  let cellHeight;
+  if (currentFormat === FORMAT.MLT) {
+    cellHeight = 1; // 8×1 cells
+  } else if (currentFormat === FORMAT.IFL) {
+    cellHeight = 2; // 8×2 cells
+  } else {
+    cellHeight = 8; // 8×8 cells (SCR/BSC)
+  }
+  const cellWidth = 8;
+  const attrCols = 32;
+  const attrRows = height / cellHeight;
+
+  for (let attrRow = 0; attrRow < attrRows; attrRow++) {
+    for (let attrCol = 0; attrCol < attrCols; attrCol++) {
+      const cellStartX = attrCol * cellWidth;
+      const cellStartY = attrRow * cellHeight;
+      const attrIdx = attrRow * attrCols + attrCol;
+
+      // Find topmost visible layer with content in this cell
+      const ownerLayer = findLayerOwnerForRegion(cellStartX, cellStartY, cellWidth, cellHeight);
+
+      if (ownerLayer && ownerLayer.attributes && attrIdx < ownerLayer.attributes.length) {
+        screenData[bitmapSize + attrIdx] = ownerLayer.attributes[attrIdx];
+      } else if (layers[0].visible && layers[0].attributes && attrIdx < layers[0].attributes.length) {
+        // Fallback to background layer
+        screenData[bitmapSize + attrIdx] = layers[0].attributes[attrIdx];
+      } else {
+        // No owner found - use default (ink=7, paper=0)
+        screenData[bitmapSize + attrIdx] = buildAttribute(7, 0, false, false);
+      }
+    }
+  }
+}
+
+/**
+ * Flattens BMC4 attributes from layers to screenData.
+ * BMC4 has two attribute banks: top 4 lines use attributes, bottom 4 lines use attributes2.
+ */
+function flattenBmc4Attributes() {
+  const cellWidth = 8;
+  const attrCols = 32;
+  const attrRows = 24; // 192 / 8 = 24 character rows
+
+  for (let charRow = 0; charRow < attrRows; charRow++) {
+    for (let attrCol = 0; attrCol < attrCols; attrCol++) {
+      const cellStartX = attrCol * cellWidth;
+      const attrIdx = charRow * attrCols + attrCol;
+
+      // Top half (lines 0-3 of the 8-pixel cell)
+      const topStartY = charRow * 8;
+      const topOwner = findLayerOwnerForRegion(cellStartX, topStartY, cellWidth, 4);
+      if (topOwner && topOwner.attributes && attrIdx < topOwner.attributes.length) {
+        screenData[BMC4.ATTR1_OFFSET + attrIdx] = topOwner.attributes[attrIdx];
+      } else if (layers[0].visible && layers[0].attributes && attrIdx < layers[0].attributes.length) {
+        screenData[BMC4.ATTR1_OFFSET + attrIdx] = layers[0].attributes[attrIdx];
+      } else {
+        screenData[BMC4.ATTR1_OFFSET + attrIdx] = buildAttribute(7, 0, false, false);
+      }
+
+      // Bottom half (lines 4-7 of the 8-pixel cell)
+      const bottomStartY = charRow * 8 + 4;
+      const bottomOwner = findLayerOwnerForRegion(cellStartX, bottomStartY, cellWidth, 4);
+      if (bottomOwner && bottomOwner.attributes2 && attrIdx < bottomOwner.attributes2.length) {
+        screenData[BMC4.ATTR2_OFFSET + attrIdx] = bottomOwner.attributes2[attrIdx];
+      } else if (layers[0].visible && layers[0].attributes2 && attrIdx < layers[0].attributes2.length) {
+        screenData[BMC4.ATTR2_OFFSET + attrIdx] = layers[0].attributes2[attrIdx];
+      } else {
+        screenData[BMC4.ATTR2_OFFSET + attrIdx] = buildAttribute(7, 0, false, false);
+      }
+    }
+  }
+}
+
+/**
+ * Finds the topmost visible layer that has any pixel content in a region.
+ * Searches from top layer down to background.
+ * @param {number} startX - Region start X
+ * @param {number} startY - Region start Y
+ * @param {number} regionWidth - Region width in pixels
+ * @param {number} regionHeight - Region height in pixels
+ * @returns {Layer|null} - The owning layer, or null if no layer has content
+ */
+function findLayerOwnerForRegion(startX, startY, regionWidth, regionHeight) {
+  const width = getFormatWidth();
+
+  // Search from top layer down to background
+  for (let layerIdx = layers.length - 1; layerIdx >= 0; layerIdx--) {
+    const layer = layers[layerIdx];
+    if (!layer.visible) continue;
+
+    // Check if this layer has any visible pixel in the region
+    for (let dy = 0; dy < regionHeight; dy++) {
+      const y = startY + dy;
+      if (y >= getFormatHeight()) continue;
+
+      for (let dx = 0; dx < regionWidth; dx++) {
+        const x = startX + dx;
+        if (x >= width) continue;
+
+        const maskIdx = y * width + x;
+        if (layer.mask[maskIdx]) {
+          // Found a visible pixel on this layer
+          return layer;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Gets the active layer
+ * @returns {Layer|null}
+ */
+function getActiveLayer() {
+  if (!layersEnabled || activeLayerIndex < 0 || activeLayerIndex >= layers.length) {
+    return null;
+  }
+  return layers[activeLayerIndex];
+}
+
+/**
+ * Sets a pixel on the active layer (with mask)
+ * @param {number} x
+ * @param {number} y
+ * @param {boolean} isInk - true for ink, false for paper
+ */
+function setLayerPixel(x, y, isInk) {
+  const layer = getActiveLayer();
+  if (!layer) return;
+
+  const width = getFormatWidth();
+  const height = getFormatHeight();
+  if (x < 0 || x >= width || y < 0 || y >= height) return;
+
+  const bitmapAddr = getBitmapAddress(x, y);
+  const bitMask = 0x80 >> (x % 8);
+  const maskIdx = y * width + x;
+
+  // Set pixel in layer bitmap
+  if (isInk) {
+    layer.bitmap[bitmapAddr] |= bitMask;
+  } else {
+    layer.bitmap[bitmapAddr] &= ~bitMask & 0xFF;
+  }
+
+  // Mark pixel as visible
+  layer.mask[maskIdx] = 1;
+}
+
+/**
+ * Erases a pixel on the active layer (makes it transparent)
+ * On background layer, paints with paper instead.
+ * @param {number} x
+ * @param {number} y
+ */
+function eraseLayerPixel(x, y) {
+  const layer = getActiveLayer();
+  if (!layer) return;
+
+  const width = getFormatWidth();
+  const height = getFormatHeight();
+  if (x < 0 || x >= width || y < 0 || y >= height) return;
+
+  const maskIdx = y * width + x;
+
+  if (activeLayerIndex === 0) {
+    // Background layer: paint with paper (can't be transparent)
+    const bitmapAddr = getBitmapAddress(x, y);
+    const bitMask = 0x80 >> (x % 8);
+    layer.bitmap[bitmapAddr] &= ~bitMask & 0xFF;
+  } else {
+    // Non-background layer: make transparent
+    layer.mask[maskIdx] = 0;
+  }
+}
+
+/**
+ * Updates the layer panel UI
+ */
+function updateLayerPanel() {
+  const panel = document.getElementById('layerList');
+  const flattenBtn = document.getElementById('flattenLayersBtn');
+
+  // Update button states
+  const removeBtn = document.getElementById('removeLayerBtn');
+  const moveUpBtn = document.getElementById('moveLayerUpBtn');
+  const moveDownBtn = document.getElementById('moveLayerDownBtn');
+  const saveProjectBtn = document.getElementById('saveProjectBtn');
+
+  const hasLayers = layersEnabled && layers.length > 0;
+  const hasMultipleLayers = layersEnabled && layers.length > 1;
+
+  if (removeBtn) removeBtn.disabled = !hasMultipleLayers || activeLayerIndex === 0;
+  if (moveUpBtn) moveUpBtn.disabled = !hasMultipleLayers || activeLayerIndex >= layers.length - 1;
+  if (moveDownBtn) moveDownBtn.disabled = !hasMultipleLayers || activeLayerIndex <= 1;
+  if (flattenBtn) flattenBtn.disabled = !hasMultipleLayers;
+  if (saveProjectBtn) saveProjectBtn.disabled = !hasLayers;
+
+  if (!panel) return;
+
+  if (!hasLayers) {
+    panel.innerHTML = '<div style="color: var(--text-tertiary); font-size: 10px; padding: 4px;">Click "+ Add" to create layers</div>';
+    return;
+  }
+
+  let html = '';
+  // Render from top to bottom (highest index first)
+  for (let i = layers.length - 1; i >= 0; i--) {
+    const layer = layers[i];
+    const isActive = i === activeLayerIndex;
+    const isBackground = i === 0;
+
+    html += `<div class="layer-item${isActive ? ' active' : ''}" data-index="${i}">
+      <span class="layer-visibility${layer.visible ? ' visible' : ''}" data-index="${i}" title="Toggle visibility">
+        ${layer.visible ? '👁' : '○'}
+      </span>
+      <span class="layer-name">${layer.name}${isBackground ? ' (BG)' : ''}</span>
+    </div>`;
+  }
+  panel.innerHTML = html;
+}
+
+/**
+ * Updates only the layer button states (without rebuilding DOM)
+ */
+function updateLayerButtonStates() {
+  const removeBtn = document.getElementById('removeLayerBtn');
+  const moveUpBtn = document.getElementById('moveLayerUpBtn');
+  const moveDownBtn = document.getElementById('moveLayerDownBtn');
+  const flattenBtn = document.getElementById('flattenLayersBtn');
+
+  const hasMultipleLayers = layersEnabled && layers.length > 1;
+
+  if (removeBtn) removeBtn.disabled = !hasMultipleLayers || activeLayerIndex === 0;
+  if (moveUpBtn) moveUpBtn.disabled = !hasMultipleLayers || activeLayerIndex >= layers.length - 1;
+  if (moveDownBtn) moveDownBtn.disabled = !hasMultipleLayers || activeLayerIndex <= 1;
+  if (flattenBtn) flattenBtn.disabled = !hasMultipleLayers;
+}
+
+/**
+ * Shows or hides the layer section based on layers state
+ */
+function toggleLayerSectionVisibility() {
+  const layerSection = document.getElementById('layerSection');
+  if (layerSection) {
+    // Show layer section for all editable bitmap formats (not attribute-only or SCA)
+    const supportsLayers = isFormatEditable() && currentFormat !== FORMAT.ATTR_53C;
+    layerSection.style.display = supportsLayers ? '' : 'none';
+  }
+}
+
+/**
+ * Flattens all layers into screenData, then resets layer system to initial state
+ */
+function flattenAllLayers() {
+  if (!layersEnabled || layers.length === 0) return;
+
+  // First flatten to screenData
+  flattenLayersToScreen();
+
+  // Reset layer system completely - back to "no layers" state
+  layers = [];
+  activeLayerIndex = 0;
+  layersEnabled = false;
+
+  // Collapse the layer controls
+  const controls = document.getElementById('layerControls');
+  const icon = document.getElementById('layerExpandIcon');
+  if (controls) controls.style.display = 'none';
+  if (icon) icon.textContent = '▶';
+
+  updateLayerPanel();
+}
+
+/**
+ * Saves project with layers to a .slp file (SpectraLab Project)
+ */
+function saveProject() {
+  if (!screenData || !isFormatEditable()) {
+    alert('No screen data to save');
+    return;
+  }
+
+  // Ensure layers are flattened to screenData for rendering
+  if (layersEnabled && layers.length > 0) {
+    flattenLayersToScreen();
+  }
+
+  const hasBorder = formatHasBorder();
+  const borderSize = getLayerBorderSize();
+  const attrSize = getLayerAttributeSize();
+  const bitmapSize = getLayerBitmapSize();
+
+  const project = {
+    version: 3, // Version 3: per-layer attributes
+    format: currentFormat,
+    fileName: currentFileName,
+    width: getFormatWidth(),
+    height: getFormatHeight(),
+    hasBorder: hasBorder,
+    layers: []
+  };
+
+  if (layersEnabled && layers.length > 0) {
+    // Save all layers with per-layer attributes
+    for (const layer of layers) {
+      const layerData = {
+        name: layer.name,
+        visible: layer.visible,
+        bitmap: arrayToBase64(layer.bitmap),
+        mask: arrayToBase64(layer.mask)
+      };
+
+      // Include per-layer attributes if format supports them
+      if (attrSize > 0 && layer.attributes) {
+        layerData.attributes = arrayToBase64(layer.attributes);
+        // BMC4 has second attribute bank
+        if (currentFormat === FORMAT.BMC4 && layer.attributes2) {
+          layerData.attributes2 = arrayToBase64(layer.attributes2);
+        }
+      }
+
+      // Include border data if format supports it
+      if (hasBorder && layer.borderData && layer.borderMask) {
+        layerData.borderData = arrayToBase64(layer.borderData);
+        layerData.borderMask = arrayToBase64(layer.borderMask);
+      }
+
+      project.layers.push(layerData);
+    }
+  } else {
+    // No layers - save screenData as single background layer
+    const width = getFormatWidth();
+    const height = getFormatHeight();
+    const mask = new Uint8Array(width * height);
+    mask.fill(1);
+
+    const layerData = {
+      name: 'Background',
+      visible: true,
+      bitmap: arrayToBase64(screenData.slice(0, bitmapSize)),
+      mask: arrayToBase64(mask)
+    };
+
+    // Include attributes if format supports them
+    if (attrSize > 0) {
+      if (currentFormat === FORMAT.BMC4) {
+        // BMC4: two attribute banks
+        layerData.attributes = arrayToBase64(screenData.slice(BMC4.ATTR1_OFFSET, BMC4.ATTR1_OFFSET + BMC4.ATTR1_SIZE));
+        layerData.attributes2 = arrayToBase64(screenData.slice(BMC4.ATTR2_OFFSET, BMC4.ATTR2_OFFSET + BMC4.ATTR2_SIZE));
+      } else {
+        // SCR/BSC/IFL/MLT: single attribute bank
+        layerData.attributes = arrayToBase64(screenData.slice(bitmapSize, bitmapSize + attrSize));
+      }
+    }
+
+    // Include border data if format supports it
+    if (hasBorder && borderSize > 0) {
+      const borderOffset = getBorderDataOffset();
+      const borderData = screenData.slice(borderOffset, borderOffset + borderSize);
+      const borderMask = new Uint8Array(borderSize * 2);
+      borderMask.fill(1);
+      layerData.borderData = arrayToBase64(borderData);
+      layerData.borderMask = arrayToBase64(borderMask);
+    }
+
+    project.layers.push(layerData);
+  }
+
+  const json = JSON.stringify(project, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement('a');
+  a.href = url;
+  const baseName = currentFileName.replace(/\.[^.]+$/, '') || 'project';
+  a.download = baseName + '.slp';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  // Reset modified flag after successful save
+  if (activePictureIndex >= 0 && activePictureIndex < openPictures.length) {
+    openPictures[activePictureIndex].modified = false;
+    updatePictureTabBar();
+  }
+}
+
+/**
+ * Loads project from a .slp file
+ * @param {File} file
+ */
+function loadProject(file) {
+  const reader = new FileReader();
+
+  reader.addEventListener('load', function(event) {
+    try {
+      const json = /** @type {string} */ (event.target?.result);
+      const project = JSON.parse(json);
+
+      if (!project.version || !project.format || !project.layers || project.layers.length === 0) {
+        alert('Invalid project file');
+        return;
+      }
+
+      // Stop any existing timers/animations
+      if (typeof stopFlashTimer === 'function') stopFlashTimer();
+      if (typeof resetScaState === 'function') resetScaState();
+
+      // Restore format
+      currentFormat = project.format;
+      currentFileName = project.fileName || 'project.scr';
+
+      // Calculate sizes based on format
+      const bitmapSize = getLayerBitmapSize();
+      const attrSize = getLayerAttributeSize();
+      const hasBorder = project.hasBorder || formatHasBorder();
+      const borderSize = hasBorder ? getLayerBorderSize() : 0;
+      const borderOffset = hasBorder ? getBorderDataOffset() : 0;
+
+      // Calculate total size based on format
+      let totalSize;
+      if (currentFormat === FORMAT.BMC4) {
+        totalSize = BMC4.TOTAL_SIZE;
+      } else if (currentFormat === FORMAT.BSC) {
+        totalSize = BSC.TOTAL_SIZE;
+      } else if (currentFormat === FORMAT.IFL) {
+        totalSize = IFL.TOTAL_SIZE;
+      } else if (currentFormat === FORMAT.MLT) {
+        totalSize = MLT.TOTAL_SIZE;
+      } else {
+        totalSize = bitmapSize + attrSize;
+      }
+      if (hasBorder && borderSize > 0) {
+        totalSize = Math.max(totalSize, borderOffset + borderSize);
+      }
+
+      // Create screenData
+      screenData = new Uint8Array(totalSize);
+
+      // Version 2 backward compatibility: restore global attributes from project
+      // (will be overwritten by flattenAttributesToScreen if layers have attributes)
+      if (project.version <= 2 && project.attributes) {
+        const attrs = base64ToArray(project.attributes);
+        if (currentFormat === FORMAT.BMC4) {
+          // For BMC4, old format stored attrs at bitmapSize
+          screenData.set(attrs.slice(0, BMC4.ATTR1_SIZE), BMC4.ATTR1_OFFSET);
+          if (attrs.length > BMC4.ATTR1_SIZE) {
+            screenData.set(attrs.slice(BMC4.ATTR1_SIZE, BMC4.ATTR1_SIZE + BMC4.ATTR2_SIZE), BMC4.ATTR2_OFFSET);
+          }
+        } else {
+          screenData.set(attrs, bitmapSize);
+        }
+      }
+
+      // Restore layers
+      layers = [];
+      const defaultAttr = buildAttribute(7, 0, false, false);
+      const isVersion3 = project.version >= 3;
+
+      for (let layerIdx = 0; layerIdx < project.layers.length; layerIdx++) {
+        const layerData = project.layers[layerIdx];
+        const isBackgroundLayer = layerIdx === 0;
+
+        /** @type {Layer} */
+        const layer = {
+          name: layerData.name,
+          visible: layerData.visible,
+          bitmap: base64ToArray(layerData.bitmap),
+          mask: base64ToArray(layerData.mask)
+        };
+
+        // Restore per-layer attributes
+        if (attrSize > 0) {
+          if (isVersion3 && layerData.attributes) {
+            // Version 3: load per-layer attributes
+            layer.attributes = base64ToArray(layerData.attributes);
+            if (currentFormat === FORMAT.BMC4 && layerData.attributes2) {
+              layer.attributes2 = base64ToArray(layerData.attributes2);
+            } else if (currentFormat === FORMAT.BMC4) {
+              // BMC4 missing attributes2 - create default
+              layer.attributes2 = new Uint8Array(BMC4.ATTR2_SIZE);
+              layer.attributes2.fill(defaultAttr);
+            }
+          } else {
+            // Version 1/2: put global attributes in background layer only, default for others
+            if (currentFormat === FORMAT.BMC4) {
+              if (isBackgroundLayer && project.attributes) {
+                const attrs = base64ToArray(project.attributes);
+                layer.attributes = attrs.slice(0, BMC4.ATTR1_SIZE);
+                layer.attributes2 = attrs.length > BMC4.ATTR1_SIZE
+                  ? attrs.slice(BMC4.ATTR1_SIZE, BMC4.ATTR1_SIZE + BMC4.ATTR2_SIZE)
+                  : new Uint8Array(BMC4.ATTR2_SIZE);
+                if (!layer.attributes2 || layer.attributes2.length !== BMC4.ATTR2_SIZE) {
+                  layer.attributes2 = new Uint8Array(BMC4.ATTR2_SIZE);
+                  layer.attributes2.fill(defaultAttr);
+                }
+              } else {
+                layer.attributes = new Uint8Array(BMC4.ATTR1_SIZE);
+                layer.attributes.fill(defaultAttr);
+                layer.attributes2 = new Uint8Array(BMC4.ATTR2_SIZE);
+                layer.attributes2.fill(defaultAttr);
+              }
+            } else {
+              if (isBackgroundLayer && project.attributes) {
+                layer.attributes = base64ToArray(project.attributes);
+              } else {
+                layer.attributes = new Uint8Array(attrSize);
+                layer.attributes.fill(defaultAttr);
+              }
+            }
+          }
+        }
+
+        // Restore border data if available (version 2+)
+        if (hasBorder && borderSize > 0) {
+          if (layerData.borderData && layerData.borderMask) {
+            layer.borderData = base64ToArray(layerData.borderData);
+            layer.borderMask = base64ToArray(layerData.borderMask);
+          } else {
+            // Version 1 file or missing border data - create empty border
+            layer.borderData = new Uint8Array(borderSize);
+            layer.borderMask = new Uint8Array(borderSize * 2);
+            // For background layer, mark as opaque
+            if (isBackgroundLayer) {
+              layer.borderMask.fill(1);
+            }
+          }
+        }
+
+        layers.push(layer);
+      }
+
+      activeLayerIndex = 0;
+      layersEnabled = layers.length > 0;
+
+      // Flatten to screenData for rendering
+      if (layersEnabled) {
+        flattenLayersToScreen();
+      }
+
+      // Reset undo/redo
+      undoStack = [];
+      redoStack = [];
+
+      // Update UI
+      if (typeof toggleScaControlsVisibility === 'function') toggleScaControlsVisibility();
+      if (typeof toggleFormatControlsVisibility === 'function') toggleFormatControlsVisibility();
+      if (typeof updateFileInfo === 'function') updateFileInfo();
+
+      toggleLayerSectionVisibility();
+      updateLayerPanel();
+
+      // Expand layer controls if we have layers
+      if (layersEnabled && layers.length > 1) {
+        const controls = document.getElementById('layerControls');
+        const icon = document.getElementById('layerExpandIcon');
+        if (controls) controls.style.display = '';
+        if (icon) icon.textContent = '▼';
+      }
+
+      // Add to multi-picture system
+      const result = addPicture(currentFileName, currentFormat, screenData);
+      if (result >= 0) {
+        // Update the picture's layers in the openPictures array
+        openPictures[result].layers = deepCloneLayers(layers);
+        openPictures[result].activeLayerIndex = activeLayerIndex;
+        openPictures[result].layersEnabled = layersEnabled;
+      }
+
+      renderScreen();
+      updatePictureTabBar();
+      if (typeof updateEditorState === 'function') updateEditorState();
+
+    } catch (e) {
+      alert('Error loading project: ' + e.message);
+    }
+  });
+
+  reader.readAsText(file);
+}
+
+/**
+ * Converts Uint8Array to base64 string
+ * @param {Uint8Array} arr
+ * @returns {string}
+ */
+function arrayToBase64(arr) {
+  let binary = '';
+  for (let i = 0; i < arr.length; i++) {
+    binary += String.fromCharCode(arr[i]);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Converts base64 string to Uint8Array
+ * @param {string} base64
+ * @returns {Uint8Array}
+ */
+function base64ToArray(base64) {
+  const binary = atob(base64);
+  const arr = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    arr[i] = binary.charCodeAt(i);
+  }
+  return arr;
+}
+
+// ============================================================================
+// Workspace Save/Load (All Open Pictures)
+// ============================================================================
+
+/**
+ * Saves all open pictures to a workspace file (.slw)
+ */
+function saveWorkspace() {
+  if (openPictures.length === 0) {
+    alert('No pictures open to save');
+    return;
+  }
+
+  // Save current picture state first
+  saveCurrentPictureState();
+
+  const workspace = {
+    version: 2,
+    type: 'workspace',
+    activePictureIndex: activePictureIndex,
+    pictures: [],
+    // Workspace-level settings (from screen_viewer.js)
+    settings: {
+      currentPaletteId: typeof currentPaletteId !== 'undefined' ? currentPaletteId : 'default',
+      borderColor: typeof borderColor !== 'undefined' ? borderColor : 0,
+      borderSize: typeof borderSize !== 'undefined' ? borderSize : 24,
+      gridSize: typeof gridSize !== 'undefined' ? gridSize : 8,
+      subgridSize: typeof subgridSize !== 'undefined' ? subgridSize : 0,
+      borderGridSize: typeof borderGridSize !== 'undefined' ? borderGridSize : 0,
+      borderSubgridSize: typeof borderSubgridSize !== 'undefined' ? borderSubgridSize : 0,
+      showAttributes: typeof showAttributes !== 'undefined' ? showAttributes : true,
+      // Reference image settings
+      referenceImage: getReferenceImageDataURL(),
+      referenceOpacity: referenceOpacity,
+      referenceOffsetX: referenceOffsetX,
+      referenceOffsetY: referenceOffsetY,
+      referenceWidth: referenceWidth,
+      referenceHeight: referenceHeight,
+      showReference: showReference
+    }
+  };
+
+  // Save each picture
+  for (const pic of openPictures) {
+    const picData = {
+      fileName: pic.fileName,
+      format: pic.format,
+      screenData: arrayToBase64(pic.screenData),
+      zoom: pic.zoom,
+      modified: pic.modified,
+      layersEnabled: pic.layersEnabled,
+      activeLayerIndex: pic.activeLayerIndex,
+      layers: [],
+      // Per-picture editor settings
+      inkColor: pic.inkColor,
+      paperColor: pic.paperColor,
+      bright: pic.bright,
+      flash: pic.flash,
+      currentTool: pic.currentTool,
+      brushSize: pic.brushSize,
+      brushShape: pic.brushShape,
+      scrollTop: pic.scrollTop,
+      scrollLeft: pic.scrollLeft
+    };
+
+    // Save layers if enabled
+    if (pic.layers && pic.layers.length > 0) {
+      for (const layer of pic.layers) {
+        const layerData = {
+          name: layer.name,
+          visible: layer.visible,
+          bitmap: arrayToBase64(layer.bitmap),
+          mask: arrayToBase64(layer.mask)
+        };
+        // Save per-layer attributes
+        if (layer.attributes) {
+          layerData.attributes = arrayToBase64(layer.attributes);
+        }
+        if (layer.attributes2) {
+          layerData.attributes2 = arrayToBase64(layer.attributes2);
+        }
+        if (layer.borderData) {
+          layerData.borderData = arrayToBase64(layer.borderData);
+        }
+        if (layer.borderMask) {
+          layerData.borderMask = arrayToBase64(layer.borderMask);
+        }
+        picData.layers.push(layerData);
+      }
+    }
+
+    workspace.pictures.push(picData);
+  }
+
+  const json = JSON.stringify(workspace, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'workspace.slw';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  // Mark all pictures as unmodified after save
+  for (const pic of openPictures) {
+    pic.modified = false;
+  }
+  updatePictureTabBar();
+}
+
+/**
+ * Loads a workspace file (.slw) containing multiple pictures
+ * @param {File} file
+ */
+function loadWorkspace(file) {
+  const reader = new FileReader();
+
+  reader.addEventListener('load', function(event) {
+    try {
+      const json = /** @type {string} */ (event.target?.result);
+      const workspace = JSON.parse(json);
+
+      if (!workspace.version || workspace.type !== 'workspace' || !workspace.pictures) {
+        alert('Invalid workspace file');
+        return;
+      }
+
+      if (workspace.pictures.length === 0) {
+        alert('Workspace contains no pictures');
+        return;
+      }
+
+      // Check if we have unsaved changes
+      const hasModified = openPictures.some(p => p.modified);
+      if (hasModified) {
+        if (!confirm('Current pictures have unsaved changes. Load workspace anyway?')) {
+          return;
+        }
+      }
+
+      // Stop any existing timers/animations
+      if (typeof stopFlashTimer === 'function') stopFlashTimer();
+      if (typeof resetScaState === 'function') resetScaState();
+
+      // Clear existing pictures
+      openPictures = [];
+      activePictureIndex = -1;
+
+      // Load each picture
+      for (const picData of workspace.pictures) {
+        /** @type {PictureState} */
+        const pic = {
+          id: nextPictureId++,
+          fileName: picData.fileName || 'untitled',
+          format: picData.format || FORMAT.SCR,
+          screenData: base64ToArray(picData.screenData),
+          undoStack: [],
+          redoStack: [],
+          layers: [],
+          activeLayerIndex: picData.activeLayerIndex || 0,
+          layersEnabled: picData.layersEnabled || false,
+          modified: false, // Fresh load = not modified
+          zoom: picData.zoom || 2,
+          // Per-picture editor settings with defaults
+          inkColor: picData.inkColor !== undefined ? picData.inkColor : 7,
+          paperColor: picData.paperColor !== undefined ? picData.paperColor : 0,
+          bright: picData.bright !== undefined ? picData.bright : false,
+          flash: picData.flash !== undefined ? picData.flash : false,
+          currentTool: picData.currentTool || EDITOR.TOOL_PIXEL,
+          brushSize: picData.brushSize || 1,
+          brushShape: picData.brushShape || 'square',
+          scrollTop: picData.scrollTop || 0,
+          scrollLeft: picData.scrollLeft || 0
+        };
+
+        // Load layers if present
+        if (picData.layers && picData.layers.length > 0) {
+          for (const layerData of picData.layers) {
+            /** @type {Layer} */
+            const layer = {
+              name: layerData.name,
+              visible: layerData.visible,
+              bitmap: base64ToArray(layerData.bitmap),
+              mask: base64ToArray(layerData.mask)
+            };
+            // Load per-layer attributes
+            if (layerData.attributes) {
+              layer.attributes = base64ToArray(layerData.attributes);
+            }
+            if (layerData.attributes2) {
+              layer.attributes2 = base64ToArray(layerData.attributes2);
+            }
+            if (layerData.borderData) {
+              layer.borderData = base64ToArray(layerData.borderData);
+            }
+            if (layerData.borderMask) {
+              layer.borderMask = base64ToArray(layerData.borderMask);
+            }
+            pic.layers.push(layer);
+          }
+        }
+
+        openPictures.push(pic);
+      }
+
+      // Switch to the saved active picture index
+      let targetIndex = workspace.activePictureIndex || 0;
+      if (targetIndex >= openPictures.length) targetIndex = 0;
+
+      // Load the active picture into globals
+      const pic = openPictures[targetIndex];
+      screenData = pic.screenData.slice();
+      currentFileName = pic.fileName;
+      currentFormat = pic.format;
+      undoStack = [];
+      redoStack = [];
+      layers = deepCloneLayers(pic.layers);
+      activeLayerIndex = pic.activeLayerIndex;
+      layersEnabled = pic.layersEnabled;
+      activePictureIndex = targetIndex;
+
+      // Restore zoom
+      if (typeof zoom !== 'undefined') {
+        zoom = pic.zoom;
+        const zoomSelect = document.getElementById('zoomSelect');
+        if (zoomSelect) {
+          /** @type {HTMLSelectElement} */ (zoomSelect).value = String(zoom);
+        }
+      }
+
+      // Restore per-picture editor settings
+      editorInkColor = pic.inkColor;
+      editorPaperColor = pic.paperColor;
+      editorBright = pic.bright;
+      editorFlash = pic.flash;
+      updateColorSelectors();
+      setEditorTool(pic.currentTool);
+      setBrushSize(pic.brushSize);
+      setBrushShape(pic.brushShape);
+
+      // Restore canvas scroll position (defer to allow canvas resize)
+      setTimeout(() => {
+        const container = document.getElementById('canvasContainer');
+        if (container) {
+          container.scrollTop = pic.scrollTop;
+          container.scrollLeft = pic.scrollLeft;
+        }
+      }, 0);
+
+      // Restore workspace-level settings (if present, version 2+)
+      if (workspace.settings) {
+        const s = workspace.settings;
+        // Palette
+        if (typeof currentPaletteId !== 'undefined' && s.currentPaletteId !== undefined) {
+          currentPaletteId = s.currentPaletteId;
+          const paletteSelect = document.getElementById('paletteSelect');
+          if (paletteSelect) /** @type {HTMLSelectElement} */ (paletteSelect).value = currentPaletteId;
+        }
+        // Border color
+        if (typeof borderColor !== 'undefined' && s.borderColor !== undefined) {
+          borderColor = s.borderColor;
+          const borderColorSel = document.getElementById('borderColorSelect');
+          if (borderColorSel) /** @type {HTMLSelectElement} */ (borderColorSel).value = String(borderColor);
+        }
+        // Border size
+        if (typeof borderSize !== 'undefined' && s.borderSize !== undefined) {
+          borderSize = s.borderSize;
+          const borderSizeSel = document.getElementById('borderSizeSelect');
+          if (borderSizeSel) /** @type {HTMLSelectElement} */ (borderSizeSel).value = String(borderSize);
+        }
+        // Grid settings
+        if (typeof gridSize !== 'undefined' && s.gridSize !== undefined) {
+          gridSize = s.gridSize;
+          const gridSizeSel = document.getElementById('gridSizeSelect');
+          if (gridSizeSel) /** @type {HTMLSelectElement} */ (gridSizeSel).value = String(gridSize);
+        }
+        if (typeof subgridSize !== 'undefined' && s.subgridSize !== undefined) {
+          subgridSize = s.subgridSize;
+          const subgridSizeSel = document.getElementById('subgridSizeSelect');
+          if (subgridSizeSel) /** @type {HTMLSelectElement} */ (subgridSizeSel).value = String(subgridSize);
+        }
+        // Border grid settings
+        if (typeof borderGridSize !== 'undefined' && s.borderGridSize !== undefined) {
+          borderGridSize = s.borderGridSize;
+          const borderGridSizeSel = document.getElementById('borderGridSizeSelect');
+          if (borderGridSizeSel) /** @type {HTMLSelectElement} */ (borderGridSizeSel).value = String(borderGridSize);
+        }
+        if (typeof borderSubgridSize !== 'undefined' && s.borderSubgridSize !== undefined) {
+          borderSubgridSize = s.borderSubgridSize;
+          const borderSubgridSizeSel = document.getElementById('borderSubgridSizeSelect');
+          if (borderSubgridSizeSel) /** @type {HTMLSelectElement} */ (borderSubgridSizeSel).value = String(borderSubgridSize);
+        }
+        // Show attributes
+        if (typeof showAttributes !== 'undefined' && s.showAttributes !== undefined) {
+          showAttributes = s.showAttributes;
+          const showAttrsCb = document.getElementById('showAttrsCheckbox');
+          if (showAttrsCb) /** @type {HTMLInputElement} */ (showAttrsCb).checked = showAttributes;
+        }
+        // Reference image settings
+        if (s.referenceOpacity !== undefined) {
+          referenceOpacity = s.referenceOpacity;
+        }
+        if (s.referenceOffsetX !== undefined) {
+          referenceOffsetX = s.referenceOffsetX;
+        }
+        if (s.referenceOffsetY !== undefined) {
+          referenceOffsetY = s.referenceOffsetY;
+        }
+        if (s.referenceWidth !== undefined) {
+          referenceWidth = s.referenceWidth;
+        }
+        if (s.referenceHeight !== undefined) {
+          referenceHeight = s.referenceHeight;
+        }
+        if (s.showReference !== undefined) {
+          showReference = s.showReference;
+        }
+        if (s.referenceImage) {
+          loadReferenceImageFromDataURL(s.referenceImage);
+        } else {
+          referenceImage = null;
+        }
+        updateReferenceUI();
+      }
+
+      // Flatten layers to screenData if needed
+      if (layersEnabled && layers.length > 0) {
+        flattenLayersToScreen();
+      }
+
+      // Update UI
+      if (typeof toggleScaControlsVisibility === 'function') toggleScaControlsVisibility();
+      if (typeof toggleFormatControlsVisibility === 'function') toggleFormatControlsVisibility();
+      if (typeof updateFileInfo === 'function') updateFileInfo();
+
+      toggleLayerSectionVisibility();
+      updateLayerPanel();
+      updatePictureTabBar();
+      renderScreen();
+
+      if (typeof updateEditorState === 'function') updateEditorState();
+
+    } catch (e) {
+      alert('Error loading workspace: ' + e.message);
+    }
+  });
+
+  reader.readAsText(file);
+}
+
+// ============================================================================
 // Drawing Functions
 // ============================================================================
 
@@ -377,13 +2698,16 @@ function parseAttribute(attr) {
  */
 function stampBrush(cx, cy, isInk) {
   // Custom brush: stamp variable-size pattern centered on cursor
-  if (brushShape === 'custom' && activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
+  // Skip this path in masked mode - custom brush is only used as mask pattern, not brush shape
+  if (brushShape === 'custom' && activeCustomBrush >= 0 && customBrushes[activeCustomBrush] && brushPaintMode !== 'masked' && brushPaintMode !== 'masked+') {
     const brush = customBrushes[activeCustomBrush];
     const bw = brush.width;
     const bh = brush.height;
     const bytesPerRow = Math.ceil(bw / 8);
-    const offsetX = Math.floor((bw - 1) / 2);
-    const offsetY = Math.floor((bh - 1) / 2);
+    const offsetX = Math.floor(bw / 2);
+    const offsetY = Math.floor(bh / 2);
+    const hasMask = brush.mask && brush.mask.length > 0;
+
     for (let r = 0; r < bh; r++) {
       for (let c = 0; c < bw; c++) {
         const px = cx + c - offsetX;
@@ -391,15 +2715,39 @@ function stampBrush(cx, cy, isInk) {
         const byteIdx = r * bytesPerRow + Math.floor(c / 8);
         const bitIdx = 7 - (c % 8);
         const brushBit = (brush.data[byteIdx] & (1 << bitIdx)) !== 0;
+        const maskBit = hasMask ? (brush.mask[byteIdx] & (1 << bitIdx)) !== 0 : true;
 
-        if (brushPaintMode === 'replace') {
-          // Replace: overwrite every pixel in the brush rectangle
+        // Skip transparent pixels (mask bit = 0)
+        if (!maskBit) continue;
+
+        if (brushPaintMode === 'masked' || brushPaintMode === 'masked+') {
+          // Masked: paint through tiled mask pattern (ink where set, paper where not)
+          const patternSet = getMaskPatternAt(px, py);
+          if (patternSet === null) {
+            // Transparent in mask - skip
+          } else if (patternSet) {
+            setPixel(screenData, px, py, true);  // Ink
+          } else {
+            setPixel(screenData, px, py, false); // Paper
+          }
+        } else if (brushPaintMode === 'replace') {
+          // Replace: overwrite every visible pixel in the brush
           setPixel(screenData, px, py, brushBit);
         } else if (brushPaintMode === 'invert') {
           // Invert: toggle screen pixel where brush bit is set
           if (brushBit) {
             const current = getPixel(screenData, px, py);
             setPixel(screenData, px, py, !current);
+          }
+        } else if (brushPaintMode === 'recolor') {
+          // Recolor: only update attributes where brush bit is set
+          if (brushBit) {
+            setPixelAttributeOnly(screenData, px, py);
+          }
+        } else if (brushPaintMode === 'retouch') {
+          // Retouch: only update bitmap where brush bit is set
+          if (brushBit) {
+            setPixelBitmapOnly(screenData, px, py, isInk);
           }
         } else {
           // Set (default): paint ink/paper where brush bit is set
@@ -412,33 +2760,53 @@ function stampBrush(cx, cy, isInk) {
     return;
   }
 
+  // Helper to apply pixel based on paint mode
+  const applyPixel = (x, y, ink) => {
+    // In masked mode, paint through tiled mask pattern (ink where set, paper where not)
+    if (brushPaintMode === 'masked' || brushPaintMode === 'masked+') {
+      const patternSet = getMaskPatternAt(x, y);
+      if (patternSet === null) return; // Skip if transparent in mask
+      setPixel(screenData, x, y, patternSet); // true = ink, false = paper
+      return;
+    }
+
+    if (brushPaintMode === 'recolor') {
+      setPixelAttributeOnly(screenData, x, y);
+    } else if (brushPaintMode === 'retouch') {
+      setPixelBitmapOnly(screenData, x, y, ink);
+    } else {
+      setPixel(screenData, x, y, ink);
+    }
+  };
+
   if (brushSize <= 1) {
-    setPixel(screenData, cx, cy, isInk);
+    applyPixel(cx, cy, isInk);
     return;
   }
 
   const n = brushSize;
-  const offset = Math.floor((n - 1) / 2);
+  // Center brush on cursor (for odd sizes: exact center; for even: cursor at center-bottom-right)
+  const offset = Math.floor(n / 2);
 
   if (brushShape === 'stroke') {
     // Diagonal line from top-right to bottom-left (like /)
     for (let i = 0; i < n; i++) {
-      setPixel(screenData, cx + (n - 1 - i) - offset, cy + i - offset, isInk);
+      applyPixel(cx + (n - 1 - i) - offset, cy + i - offset, isInk);
     }
   } else if (brushShape === 'bstroke') {
     // Mirrored diagonal line from top-left to bottom-right (like \)
     for (let i = 0; i < n; i++) {
-      setPixel(screenData, cx + i - offset, cy + i - offset, isInk);
+      applyPixel(cx + i - offset, cy + i - offset, isInk);
     }
   } else if (brushShape === 'hline') {
     // Horizontal line, N pixels wide
     for (let dx = 0; dx < n; dx++) {
-      setPixel(screenData, cx + dx - offset, cy, isInk);
+      applyPixel(cx + dx - offset, cy, isInk);
     }
   } else if (brushShape === 'vline') {
     // Vertical line, N pixels tall
     for (let dy = 0; dy < n; dy++) {
-      setPixel(screenData, cx, cy + dy - offset, isInk);
+      applyPixel(cx, cy + dy - offset, isInk);
     }
   } else if (brushShape === 'round') {
     const radius = (n - 0.5) / 2;
@@ -447,7 +2815,7 @@ function stampBrush(cx, cy, isInk) {
       for (let dx = 0; dx < n; dx++) {
         const dist = Math.sqrt((dx - centerOff) ** 2 + (dy - centerOff) ** 2);
         if (dist <= radius) {
-          setPixel(screenData, cx + dx - offset, cy + dy - offset, isInk);
+          applyPixel(cx + dx - offset, cy + dy - offset, isInk);
         }
       }
     }
@@ -455,8 +2823,168 @@ function stampBrush(cx, cy, isInk) {
     // Square: fill NxN grid
     for (let dy = 0; dy < n; dy++) {
       for (let dx = 0; dx < n; dx++) {
-        setPixel(screenData, cx + dx - offset, cy + dy - offset, isInk);
+        applyPixel(cx + dx - offset, cy + dy - offset, isInk);
       }
+    }
+  }
+}
+
+/**
+ * Stamps eraser brush centered on (x, y) - makes pixels transparent on non-background layers
+ * @param {number} cx - Center X
+ * @param {number} cy - Center Y
+ */
+function stampEraser(cx, cy) {
+  if (!layersEnabled) {
+    // Without layers, eraser just paints paper color
+    stampBrush(cx, cy, false);
+    return;
+  }
+
+  const width = getFormatWidth();
+  const height = getFormatHeight();
+
+  // Custom brush eraser
+  if (brushShape === 'custom' && activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
+    const brush = customBrushes[activeCustomBrush];
+    const bw = brush.width;
+    const bh = brush.height;
+    const bytesPerRow = Math.ceil(bw / 8);
+    const offsetX = Math.floor(bw / 2);
+    const offsetY = Math.floor(bh / 2);
+    const hasMask = brush.mask && brush.mask.length > 0;
+
+    for (let r = 0; r < bh; r++) {
+      for (let c = 0; c < bw; c++) {
+        const px = cx + c - offsetX;
+        const py = cy + r - offsetY;
+        if (px < 0 || px >= width || py < 0 || py >= height) continue;
+        const byteIdx = r * bytesPerRow + Math.floor(c / 8);
+        const bitIdx = 7 - (c % 8);
+        const brushBit = (brush.data[byteIdx] & (1 << bitIdx)) !== 0;
+        const maskBit = hasMask ? (brush.mask[byteIdx] & (1 << bitIdx)) !== 0 : true;
+
+        // Only erase where mask is visible and brush bit is set
+        if (maskBit && brushBit) {
+          eraseLayerPixel(px, py);
+        }
+      }
+    }
+    flattenLayersToScreen();
+    return;
+  }
+
+  if (brushSize <= 1) {
+    eraseLayerPixel(cx, cy);
+    flattenLayersToScreen();
+    return;
+  }
+
+  const n = brushSize;
+  // Center brush on cursor (for odd sizes: exact center; for even: cursor at center-bottom-right)
+  const offset = Math.floor(n / 2);
+
+  if (brushShape === 'stroke') {
+    for (let i = 0; i < n; i++) {
+      eraseLayerPixel(cx + (n - 1 - i) - offset, cy + i - offset);
+    }
+  } else if (brushShape === 'bstroke') {
+    for (let i = 0; i < n; i++) {
+      eraseLayerPixel(cx + i - offset, cy + i - offset);
+    }
+  } else if (brushShape === 'hline') {
+    for (let dx = 0; dx < n; dx++) {
+      eraseLayerPixel(cx + dx - offset, cy);
+    }
+  } else if (brushShape === 'vline') {
+    for (let dy = 0; dy < n; dy++) {
+      eraseLayerPixel(cx, cy + dy - offset);
+    }
+  } else if (brushShape === 'round') {
+    const radius = (n - 0.5) / 2;
+    const centerOff = (n - 1) / 2;
+    for (let dy = 0; dy < n; dy++) {
+      for (let dx = 0; dx < n; dx++) {
+        const dist = Math.sqrt((dx - centerOff) ** 2 + (dy - centerOff) ** 2);
+        if (dist <= radius) {
+          eraseLayerPixel(cx + dx - offset, cy + dy - offset);
+        }
+      }
+    }
+  } else {
+    // Square
+    for (let dy = 0; dy < n; dy++) {
+      for (let dx = 0; dx < n; dx++) {
+        eraseLayerPixel(cx + dx - offset, cy + dy - offset);
+      }
+    }
+  }
+  flattenLayersToScreen();
+}
+
+/**
+ * Draws eraser at a single point
+ * @param {number} x
+ * @param {number} y
+ */
+function drawEraser(x, y) {
+  if (!screenData || !isFormatEditable()) return;
+  stampEraser(x, y);
+}
+
+/**
+ * Draws eraser line using Bresenham's algorithm
+ * @param {number} x0
+ * @param {number} y0
+ * @param {number} x1
+ * @param {number} y1
+ */
+function drawEraserLine(x0, y0, x1, y1) {
+  const hasCustomBrush = brushShape === 'custom' && activeCustomBrush >= 0 && customBrushes[activeCustomBrush];
+
+  if (hasCustomBrush) {
+    const brush = customBrushes[activeCustomBrush];
+    const ldx = x1 - x0;
+    const ldy = y1 - y0;
+    const dist = Math.sqrt(ldx * ldx + ldy * ldy);
+    if (dist === 0) {
+      drawEraser(x0, y0);
+      return;
+    }
+    const stepSize = Math.abs(ldx) >= Math.abs(ldy) ? brush.width : brush.height;
+    const steps = Math.max(1, Math.round(dist / stepSize));
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const x = Math.round(x0 + ldx * t);
+      const y = Math.round(y0 + ldy * t);
+      drawEraser(x, y);
+    }
+    return;
+  }
+
+  // Standard Bresenham pixel-by-pixel for regular brushes
+  const dx = Math.abs(x1 - x0);
+  const dy = Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1;
+  const sy = y0 < y1 ? 1 : -1;
+  let err = dx - dy;
+
+  let x = x0;
+  let y = y0;
+
+  while (true) {
+    drawEraser(x, y);
+
+    if (x === x1 && y === y1) break;
+
+    const e2 = 2 * err;
+    if (e2 > -dy) {
+      err -= dy;
+      x += sx;
+    }
+    if (e2 < dx) {
+      err += dx;
+      y += sy;
     }
   }
 }
@@ -468,7 +2996,7 @@ function stampBrush(cx, cy, isInk) {
  * @param {boolean} isInk
  */
 function drawPixel(x, y, isInk) {
-  if (!screenData || screenData.length < SCREEN.TOTAL_SIZE) return;
+  if (!screenData || !isFormatEditable()) return;
   stampBrush(x, y, isInk);
 }
 
@@ -481,31 +3009,36 @@ function drawPixel(x, y, isInk) {
  * @param {boolean} isInk
  */
 function drawLine(x0, y0, x1, y1, isInk) {
-  const hasCustomBrush = brushShape === 'custom' && activeCustomBrush >= 0 && customBrushes[activeCustomBrush];
-
-  if (hasCustomBrush) {
-    // Step at brush-sized intervals to avoid overlapping stamps destroying each other in replace mode
-    const brush = customBrushes[activeCustomBrush];
-    const ldx = x1 - x0;
-    const ldy = y1 - y0;
-    const dist = Math.sqrt(ldx * ldx + ldy * ldy);
-    if (dist === 0) {
-      drawPixel(x0, y0, isInk);
+  // For masked mode, ALWAYS use pixel-by-pixel Bresenham for continuous lines
+  if (brushPaintMode === 'masked' || brushPaintMode === 'masked+') {
+    // Skip to Bresenham below
+  } else {
+    // For custom brushes in non-masked modes, step at brush-sized intervals
+    const hasCustomBrush = brushShape === 'custom' && activeCustomBrush >= 0 && customBrushes[activeCustomBrush];
+    if (hasCustomBrush) {
+      // Step at brush-sized intervals to avoid overlapping stamps destroying each other in replace mode
+      const brush = customBrushes[activeCustomBrush];
+      const ldx = x1 - x0;
+      const ldy = y1 - y0;
+      const dist = Math.sqrt(ldx * ldx + ldy * ldy);
+      if (dist === 0) {
+        drawPixel(x0, y0, isInk);
+        return;
+      }
+      // Use brush width for horizontal-ish lines, brush height for vertical-ish
+      const stepSize = Math.abs(ldx) >= Math.abs(ldy) ? brush.width : brush.height;
+      const steps = Math.max(1, Math.round(dist / stepSize));
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const x = Math.round(x0 + ldx * t);
+        const y = Math.round(y0 + ldy * t);
+        drawPixel(x, y, isInk);
+      }
       return;
     }
-    // Use brush width for horizontal-ish lines, brush height for vertical-ish
-    const stepSize = Math.abs(ldx) >= Math.abs(ldy) ? brush.width : brush.height;
-    const steps = Math.max(1, Math.round(dist / stepSize));
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps;
-      const x = Math.round(x0 + ldx * t);
-      const y = Math.round(y0 + ldy * t);
-      drawPixel(x, y, isInk);
-    }
-    return;
   }
 
-  // Standard Bresenham pixel-by-pixel for regular brushes
+  // Standard Bresenham pixel-by-pixel for regular brushes and masked mode
   const dx = Math.abs(x1 - x0);
   const dy = Math.abs(y1 - y0);
   const sx = x0 < x1 ? 1 : -1;
@@ -555,41 +3088,715 @@ function drawRect(x0, y0, x1, y1, isInk) {
 }
 
 /**
- * Fills an 8x8 cell with current ink or paper
+ * Draws an ellipse outline using midpoint ellipse algorithm
+ * @param {number} x0 - Start X (corner of bounding box)
+ * @param {number} y0 - Start Y (corner of bounding box)
+ * @param {number} x1 - End X (corner of bounding box)
+ * @param {number} y1 - End Y (corner of bounding box)
+ * @param {boolean} isInk
+ */
+function drawCircle(x0, y0, x1, y1, isInk) {
+  // Calculate center and radii from bounding box
+  const left = Math.min(x0, x1);
+  const right = Math.max(x0, x1);
+  const top = Math.min(y0, y1);
+  const bottom = Math.max(y0, y1);
+
+  const cx = (left + right) / 2;
+  const cy = (top + bottom) / 2;
+  const rx = (right - left) / 2;
+  const ry = (bottom - top) / 2;
+
+  if (rx < 0.5 || ry < 0.5) {
+    // Too small, just draw a pixel
+    drawPixel(Math.round(cx), Math.round(cy), isInk);
+    return;
+  }
+
+  // Collect all unique ellipse outline pixels first
+  const pixels = new Set();
+
+  // Use parametric approach with enough steps to not miss any pixels
+  // Step size based on larger radius to ensure we hit every pixel
+  const maxRadius = Math.max(rx, ry);
+  const steps = Math.ceil(maxRadius * 8); // 8 steps per pixel of radius ensures coverage
+
+  for (let i = 0; i < steps; i++) {
+    const angle = (2 * Math.PI * i) / steps;
+    const px = Math.round(cx + rx * Math.cos(angle));
+    const py = Math.round(cy + ry * Math.sin(angle));
+    pixels.add(`${px},${py}`);
+  }
+
+  // Also use midpoint algorithm to catch any pixels the parametric might miss
+  let x = 0;
+  let y = Math.round(ry);
+  const rx2 = rx * rx;
+  const ry2 = ry * ry;
+
+  const addSymmetric = (px, py) => {
+    pixels.add(`${Math.round(cx + px)},${Math.round(cy + py)}`);
+    pixels.add(`${Math.round(cx - px)},${Math.round(cy + py)}`);
+    pixels.add(`${Math.round(cx + px)},${Math.round(cy - py)}`);
+    pixels.add(`${Math.round(cx - px)},${Math.round(cy - py)}`);
+  };
+
+  // Region 1
+  let dx = 2 * ry2 * x;
+  let dy = 2 * rx2 * y;
+  let d1 = ry2 - rx2 * ry + 0.25 * rx2;
+
+  while (dx < dy) {
+    addSymmetric(x, y);
+    x++;
+    dx += 2 * ry2;
+    if (d1 < 0) {
+      d1 += dx + ry2;
+    } else {
+      y--;
+      dy -= 2 * rx2;
+      d1 += dx - dy + ry2;
+    }
+  }
+
+  // Region 2
+  let d2 = ry2 * (x + 0.5) * (x + 0.5) + rx2 * (y - 1) * (y - 1) - rx2 * ry2;
+
+  while (y >= 0) {
+    addSymmetric(x, y);
+    y--;
+    dy -= 2 * rx2;
+    if (d2 > 0) {
+      d2 += rx2 - dy;
+    } else {
+      x++;
+      dx += 2 * ry2;
+      d2 += dx - dy + rx2;
+    }
+  }
+
+  // Now draw all collected pixels
+  for (const key of pixels) {
+    const [px, py] = key.split(',').map(Number);
+    drawPixel(px, py, isInk);
+  }
+}
+
+/**
+ * Sprays random pixels within a circular radius using the current brush
+ * @param {number} cx - Center X
+ * @param {number} cy - Center Y
+ * @param {boolean} isInk
+ */
+function drawAirbrush(cx, cy, isInk) {
+  const radius = airbrushRadius;
+  const isMasked = brushPaintMode === 'masked' || brushPaintMode === 'masked+';
+
+  // For masked mode, spray through mask pattern (only paint ink where mask is set)
+  // This gives a "spray through stencil" effect - gradual buildup without overwriting
+  if (isMasked) {
+    const n = Math.max(1, brushSize);
+    const offset = Math.floor(n / 2);
+    const numPoints = Math.ceil(radius * radius * Math.PI * airbrushDensity / (n * n));
+
+    for (let i = 0; i < numPoints; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = Math.pow(Math.random(), airbrushFalloff) * radius;
+      const sprayX = Math.round(cx + dist * Math.cos(angle));
+      const sprayY = Math.round(cy + dist * Math.sin(angle));
+
+      // Stamp brush-shaped area, but only paint ink where mask pattern allows
+      for (let dy = 0; dy < n; dy++) {
+        for (let dx = 0; dx < n; dx++) {
+          const px = sprayX + dx - offset;
+          const py = sprayY + dy - offset;
+
+          // For round brush, check if within circle
+          if (brushShape === 'round') {
+            const centerOff = (n - 1) / 2;
+            const distFromCenter = Math.sqrt((dx - centerOff) ** 2 + (dy - centerOff) ** 2);
+            if (distFromCenter > (n - 0.5) / 2) continue;
+          }
+
+          // Check mask pattern - only paint where mask is ink (true)
+          const patternSet = getMaskPatternAt(px, py);
+          if (patternSet === true) {
+            setPixel(screenData, px, py, isInk);
+          }
+          // Skip if false or null - don't paint paper, leave existing pixels
+        }
+      }
+    }
+    return;
+  }
+
+  // Calculate number of points based on area and density, scaled by brush size
+  const numPoints = Math.ceil(radius * radius * Math.PI * airbrushDensity / (brushSize * brushSize));
+
+  for (let i = 0; i < numPoints; i++) {
+    // Random angle and distance within circle
+    const angle = Math.random() * Math.PI * 2;
+    // Apply falloff: power > 1 concentrates particles toward center
+    // power = 1: uniform, power = 2: soft falloff, power = 3: medium, power = 4: hard
+    const dist = Math.pow(Math.random(), airbrushFalloff) * radius;
+    const px = Math.round(cx + dist * Math.cos(angle));
+    const py = Math.round(cy + dist * Math.sin(angle));
+    // Use existing stampBrush to respect brush size and shape
+    stampBrush(px, py, isInk);
+  }
+}
+
+// ============================================================================
+// Dithering Matrices
+// ============================================================================
+
+/** 8x8 Bayer ordered dithering matrix (normalized 0-63) */
+const GRADIENT_BAYER_8X8 = [
+  [ 0, 32,  8, 40,  2, 34, 10, 42],
+  [48, 16, 56, 24, 50, 18, 58, 26],
+  [12, 44,  4, 36, 14, 46,  6, 38],
+  [60, 28, 52, 20, 62, 30, 54, 22],
+  [ 3, 35, 11, 43,  1, 33,  9, 41],
+  [51, 19, 59, 27, 49, 17, 57, 25],
+  [15, 47,  7, 39, 13, 45,  5, 37],
+  [63, 31, 55, 23, 61, 29, 53, 21]
+];
+
+/** 16x16 Blue noise pattern (pre-generated, normalized 0-255) */
+const BLUE_NOISE_16X16 = [
+  [154, 73,211, 28,182,105, 62,233, 17,141,197, 89, 45,168,126,  8],
+  [ 35,118,167, 91,142, 11,176, 82,159, 54,220,  3,134,241, 70,201],
+  [188,  1,226, 56,214,128, 47,199,112, 27,175,100,187, 33,152, 85],
+  [ 69,145, 99, 18,171, 70,244, 13,138,229, 67,148,  9,219, 58,236],
+  [208, 41,179,124,  5,196, 95,162, 76,189, 38,114,206, 80,125,179],
+  [ 14,161,255, 79,232,116, 34,217,  0,104,252,169, 50,146,  4,102],
+  [108, 86, 22,139,155, 56,180,127,241, 61,192, 20,231, 93,212,163],
+  [193,203,170, 48,201, 88,  7,146, 44,165, 87,136,  75,173, 28, 65],
+  [ 52,130, 10,243,110, 26,223,103,194,120, 15,210,119, 40,245,140],
+  [227, 71,186, 67,166,135,185, 59,246, 30,238, 53,181,157,  6, 96],
+  [ 25,156,115,  2,218, 42, 78,158, 12,143,  98,164,  83, 66,200,133],
+  [178, 92,248, 37,147, 97,249,122,207,177, 72,225,  2,123,221, 51],
+  [ 63,137,172, 81,190,  8,  23,170,  85, 46,129,  31,250,106,160, 19],
+  [222, 16,213, 53,121,237,204,  55,235,111,191,151, 84, 39,184,144],
+  [101,151,  29,109,174, 68,140, 90,  5,153,  24,215, 60,202,  77,230],
+  [ 43,195,240, 74,  9,228, 32,183,131,247,  69,107,132, 13,117,  57]
+];
+
+/**
+ * Gets dither threshold for a pixel position
+ * @param {number} x
+ * @param {number} y
+ * @param {string} method - 'bayer' or 'noise'
+ * @returns {number} Threshold 0-1
+ */
+function getDitherThreshold(x, y, method) {
+  if (method === DITHER_METHOD.NOISE) {
+    return BLUE_NOISE_16X16[y & 15][x & 15] / 255;
+  }
+  // Default to Bayer
+  return GRADIENT_BAYER_8X8[y & 7][x & 7] / 63;
+}
+
+// ============================================================================
+// Gradient Functions
+// ============================================================================
+
+/**
+ * Calculates gradient value (0-1) for a point based on gradient type
+ * @param {number} px - Point X
+ * @param {number} py - Point Y
+ * @param {number} x0 - Start X
+ * @param {number} y0 - Start Y
+ * @param {number} x1 - End X
+ * @param {number} y1 - End Y
+ * @param {string} type - Gradient type
+ * @returns {number} Gradient value 0-1
+ */
+function calculateGradientValue(px, py, x0, y0, x1, y1, type) {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const length = Math.sqrt(dx * dx + dy * dy);
+
+  if (length < 1) return 0;
+
+  switch (type) {
+    case GRADIENT_TYPE.LINEAR: {
+      // Project point onto gradient line
+      const t = ((px - x0) * dx + (py - y0) * dy) / (length * length);
+      return Math.max(0, Math.min(1, t));
+    }
+
+    case GRADIENT_TYPE.RADIAL: {
+      // Distance from start point
+      const dist = Math.sqrt((px - x0) * (px - x0) + (py - y0) * (py - y0));
+      return Math.max(0, Math.min(1, dist / length));
+    }
+
+    case GRADIENT_TYPE.DIAMOND: {
+      // Manhattan distance normalized
+      const adx = Math.abs(px - x0);
+      const ady = Math.abs(py - y0);
+      return Math.max(0, Math.min(1, (adx + ady) / length));
+    }
+
+    case GRADIENT_TYPE.CONICAL: {
+      // Angle from start point, with end point defining 0 degrees
+      const baseAngle = Math.atan2(y1 - y0, x1 - x0);
+      const pointAngle = Math.atan2(py - y0, px - x0);
+      let angle = pointAngle - baseAngle;
+      // Normalize to 0-2PI
+      while (angle < 0) angle += Math.PI * 2;
+      while (angle >= Math.PI * 2) angle -= Math.PI * 2;
+      return angle / (Math.PI * 2);
+    }
+
+    case GRADIENT_TYPE.SQUARE: {
+      // Chebyshev distance (max of abs differences)
+      const adx = Math.abs(px - x0);
+      const ady = Math.abs(py - y0);
+      return Math.max(0, Math.min(1, Math.max(adx, ady) / length));
+    }
+
+    case GRADIENT_TYPE.SPIRAL: {
+      // Combination of radial and conical
+      const dist = Math.sqrt((px - x0) * (px - x0) + (py - y0) * (py - y0));
+      const baseAngle = Math.atan2(y1 - y0, x1 - x0);
+      const pointAngle = Math.atan2(py - y0, px - x0);
+      let angle = pointAngle - baseAngle;
+      while (angle < 0) angle += Math.PI * 2;
+      const radial = dist / length;
+      const angular = angle / (Math.PI * 2);
+      // Combine: spiral outward
+      return Math.max(0, Math.min(1, (radial + angular) % 1));
+    }
+
+    default:
+      return 0;
+  }
+}
+
+/**
+ * Draws a dithered gradient from (x0,y0) to (x1,y1)
+ * @param {number} x0 - Start X
+ * @param {number} y0 - Start Y
+ * @param {number} x1 - End X
+ * @param {number} y1 - End Y
+ * @param {boolean} isInk - true = gradient from paper to ink, false = ink to paper
+ */
+function drawGradient(x0, y0, x1, y1, isInk) {
+  if (!screenData) return;
+
+  // Determine screen bounds based on format
+  let width = 256, height = 192;
+  if (currentFormat === FORMAT.BSC || currentFormat === FORMAT.BMC4) {
+    width = 256;
+    height = 192;
+  } else if (currentFormat === FORMAT.IFL) {
+    width = IFL.WIDTH;
+    height = IFL.HEIGHT;
+  } else if (currentFormat === FORMAT.MLT) {
+    width = MLT.WIDTH;
+    height = MLT.HEIGHT;
+  } else if (currentFormat === FORMAT.RGB3) {
+    width = RGB3.WIDTH;
+    height = RGB3.HEIGHT;
+  }
+
+  const reverse = gradientReverse ? !isInk : isInk;
+
+  for (let py = 0; py < height; py++) {
+    for (let px = 0; px < width; px++) {
+      // Calculate gradient value at this pixel
+      let value = calculateGradientValue(px, py, x0, y0, x1, y1, gradientType);
+
+      // Reverse if needed
+      if (reverse) value = 1 - value;
+
+      // Get dither threshold
+      const threshold = getDitherThreshold(px, py, ditherMethod);
+
+      // Compare and set pixel
+      const shouldBeInk = value > threshold;
+      setPixel(screenData, px, py, shouldBeInk);
+    }
+  }
+}
+
+/**
+ * Fills a cell with current ink or paper
+ * SCR: 8×8 cell with single attribute
+ * IFL: 8×2 block with single attribute
+ * MLT: 8×1 block with single attribute (single pixel row)
  * @param {number} x
  * @param {number} y
  * @param {boolean} isInk
  */
 function fillCell(x, y, isInk) {
-  if (!screenData || screenData.length < SCREEN.TOTAL_SIZE) return;
+  if (currentFormat === FORMAT.RGB3) {
+    // RGB3: 8×8 cells, fill with selected color
+    if (!screenData || screenData.length < RGB3.TOTAL_SIZE) return;
+    const cellX = Math.floor(x / 8) * 8;
+    const cellY = Math.floor(y / 8) * 8;
+    const color = isInk ? editorInkColor : editorPaperColor;
+    // ZX color index bits: bit0=Blue, bit1=Red, bit2=Green
+    const redByte = (color & 2) ? 0xFF : 0x00;
+    const greenByte = (color & 4) ? 0xFF : 0x00;
+    const blueByte = (color & 1) ? 0xFF : 0x00;
 
-  const cellX = Math.floor(x / 8) * 8;
-  const cellY = Math.floor(y / 8) * 8;
+    for (let py = 0; py < 8; py++) {
+      const bitmapAddr = getBitmapAddress(cellX, cellY + py);
+      screenData[RGB3.RED_OFFSET + bitmapAddr] = redByte;
+      screenData[RGB3.GREEN_OFFSET + bitmapAddr] = greenByte;
+      screenData[RGB3.BLUE_OFFSET + bitmapAddr] = blueByte;
+    }
+  } else if (currentFormat === FORMAT.MONO_FULL || currentFormat === FORMAT.MONO_2_3 || currentFormat === FORMAT.MONO_1_3) {
+    // Monochrome: 8×8 cells, no attributes
+    const maxY = currentFormat === FORMAT.MONO_1_3 ? 64 : (currentFormat === FORMAT.MONO_2_3 ? 128 : 192);
+    const cellX = Math.floor(x / 8) * 8;
+    const cellY = Math.floor(y / 8) * 8;
 
-  // Set attribute
-  const attrAddr = getAttributeAddress(cellX, cellY);
-  screenData[attrAddr] = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+    for (let py = 0; py < 8 && cellY + py < maxY; py++) {
+      const bitmapAddr = getBitmapAddress(cellX, cellY + py);
+      screenData[bitmapAddr] = isInk ? 0xFF : 0x00;
+    }
+  } else if (currentFormat === FORMAT.MLT) {
+    if (!screenData || screenData.length < MLT.TOTAL_SIZE) return;
 
-  // Fill all pixels in cell
-  for (let py = 0; py < 8; py++) {
-    const bitmapAddr = getBitmapAddress(cellX, cellY + py);
+    // MLT: 8×1 blocks (single pixel row)
+    const cellX = Math.floor(x / 8) * 8;
+
+    // Set attribute for this 8×1 block
+    const attrAddr = getMltAttributeAddress(cellX, y);
+    screenData[attrAddr] = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+
+    // Fill single pixel row
+    const bitmapAddr = getBitmapAddress(cellX, y);
     screenData[bitmapAddr] = isInk ? 0xFF : 0x00;
+  } else if (currentFormat === FORMAT.IFL) {
+    if (!screenData || screenData.length < IFL.TOTAL_SIZE) return;
+
+    // IFL: 8×2 blocks
+    const cellX = Math.floor(x / 8) * 8;
+    const cellY = Math.floor(y / 2) * 2;  // Align to 2-pixel boundary
+
+    // Set attribute for this 8×2 block
+    const attrAddr = getIflAttributeAddress(cellX, cellY);
+    screenData[attrAddr] = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+
+    // Fill 2 pixel rows
+    for (let py = 0; py < 2; py++) {
+      const bitmapAddr = getBitmapAddress(cellX, cellY + py);
+      screenData[bitmapAddr] = isInk ? 0xFF : 0x00;
+    }
+  } else if (currentFormat === FORMAT.BMC4) {
+    if (!screenData || screenData.length < BMC4.TOTAL_SIZE) return;
+
+    // BMC4: 8×4 blocks
+    const cellX = Math.floor(x / 8) * 8;
+    const cellY = Math.floor(y / 4) * 4;  // Align to 4-pixel boundary
+
+    // Set attribute for this 8×4 block
+    const attrAddr = getBmc4AttributeAddress(cellX, cellY);
+    screenData[attrAddr] = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+
+    // Fill 4 pixel rows
+    for (let py = 0; py < 4; py++) {
+      const bitmapAddr = getBitmapAddress(cellX, cellY + py);
+      screenData[bitmapAddr] = isInk ? 0xFF : 0x00;
+    }
+  } else {
+    // SCR/BSC: 8×8 cells
+    if (!screenData || screenData.length < SCREEN.TOTAL_SIZE) return;
+
+    const cellX = Math.floor(x / 8) * 8;
+    const cellY = Math.floor(y / 8) * 8;
+
+    // Set attribute
+    const attrAddr = getAttributeAddress(cellX, cellY);
+    screenData[attrAddr] = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+
+    // Fill all pixels in cell
+    for (let py = 0; py < 8; py++) {
+      const bitmapAddr = getBitmapAddress(cellX, cellY + py);
+      screenData[bitmapAddr] = isInk ? 0xFF : 0x00;
+    }
   }
 }
 
 /**
- * Recolors an 8x8 cell's attribute without modifying bitmap data
+ * Gets the pixel state (ink=1, paper=0) at a given position
+ * @param {number} x
+ * @param {number} y
+ * @returns {number} 1 for ink (set pixel), 0 for paper (clear pixel)
+ */
+function getPixelState(x, y) {
+  if (!screenData) return 0;
+
+  const width = getFormatWidth();
+  const height = getFormatHeight();
+  if (x < 0 || x >= width || y < 0 || y >= height) return 0;
+
+  if (currentFormat === FORMAT.RGB3) {
+    // RGB3: any channel set = ink pixel
+    const addr = getBitmapAddress(x, y);
+    const bitMask = 0x80 >> (x % 8);
+    const r = (screenData[RGB3.RED_OFFSET + addr] & bitMask) !== 0;
+    const g = (screenData[RGB3.GREEN_OFFSET + addr] & bitMask) !== 0;
+    const b = (screenData[RGB3.BLUE_OFFSET + addr] & bitMask) !== 0;
+    return (r || g || b) ? 1 : 0;
+  }
+
+  const bitmapAddr = getBitmapAddress(x, y);
+  const bitMask = 0x80 >> (x % 8);
+  return (screenData[bitmapAddr] & bitMask) !== 0 ? 1 : 0;
+}
+
+/**
+ * Checks if brush pattern has a pixel set at given position (for tiled fill)
+ * @param {number} x - X position in screen coordinates
+ * @param {number} y - Y position in screen coordinates
+ * @returns {boolean} true if brush has pixel set at this position
+ */
+function getBrushPatternAt(x, y) {
+  // Custom brush: tile the pattern
+  if (brushShape === 'custom' && activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
+    const brush = customBrushes[activeCustomBrush];
+    const bw = brush.width;
+    const bh = brush.height;
+    const bytesPerRow = Math.ceil(bw / 8);
+    // Tile the brush pattern
+    const bx = ((x % bw) + bw) % bw;
+    const by = ((y % bh) + bh) % bh;
+    const byteIdx = by * bytesPerRow + Math.floor(bx / 8);
+    const bitIdx = 7 - (bx % 8);
+
+    // Check mask - return null for transparent pixels
+    if (brush.mask && brush.mask.length > 0) {
+      const maskBit = (brush.mask[byteIdx] & (1 << bitIdx)) !== 0;
+      if (!maskBit) return null; // Transparent - don't paint
+    }
+
+    return (brush.data[byteIdx] & (1 << bitIdx)) !== 0;
+  }
+  // Standard brushes: all pixels are set (solid fill)
+  return true;
+}
+
+/**
+ * Gets the mask pattern at given position for masked drawing mode.
+ * Always uses the custom brush pattern (if available), regardless of brushShape.
+ * @param {number} x - X position in screen coordinates
+ * @param {number} y - Y position in screen coordinates
+ * @returns {boolean|null} true if mask has pixel set, false if not, null if transparent
+ */
+function getMaskPatternAt(x, y) {
+  // Use custom brush as mask pattern if available
+  if (activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
+    const brush = customBrushes[activeCustomBrush];
+    const bw = brush.width;
+    const bh = brush.height;
+    const bytesPerRow = Math.ceil(bw / 8);
+
+    // For masked+ mode, offset by stroke origin so pattern starts from first stamp
+    let px = x;
+    let py = y;
+    if (brushPaintMode === 'masked+' && maskStrokeOrigin) {
+      px = x - maskStrokeOrigin.x;
+      py = y - maskStrokeOrigin.y;
+    }
+
+    // Compute tiled position
+    const bx = ((px % bw) + bw) % bw;
+    const by = ((py % bh) + bh) % bh;
+    const byteIdx = by * bytesPerRow + Math.floor(bx / 8);
+    const bitIdx = 7 - (bx % 8);
+
+    // Check mask - return null for transparent pixels
+    if (brush.mask && brush.mask.length > 0) {
+      const maskBit = (brush.mask[byteIdx] & (1 << bitIdx)) !== 0;
+      if (!maskBit) return null;
+    }
+
+    // Return whether this pixel is ink or paper in the brush pattern
+    return (brush.data[byteIdx] & (1 << bitIdx)) !== 0;
+  }
+  // No custom brush selected - no masking (paint all pixels)
+  return true;
+}
+
+/**
+ * Flood fill from a starting point, using current brush pattern
+ * @param {number} startX
+ * @param {number} startY
+ * @param {boolean} isInk - true to fill with ink color, false for paper
+ */
+function floodFill(startX, startY, isInk) {
+  if (!screenData) return;
+
+  const width = getFormatWidth();
+  const height = getFormatHeight();
+  if (startX < 0 || startX >= width || startY < 0 || startY >= height) return;
+
+  // Check if filling with transparent color
+  const fillColor = isInk ? editorInkColor : editorPaperColor;
+  const usingTransparent = fillColor === COLOR_TRANSPARENT;
+
+  // Get the target pixel state (what we're replacing)
+  const targetState = getPixelState(startX, startY);
+
+  // Scanline flood fill algorithm for efficiency
+  const visited = new Uint8Array(width * height);
+  const stack = [[startX, startY]];
+
+  while (stack.length > 0) {
+    const [x, y] = stack.pop();
+    const idx = y * width + x;
+
+    if (x < 0 || x >= width || y < 0 || y >= height) continue;
+    if (visited[idx]) continue;
+    if (getPixelState(x, y) !== targetState) continue;
+
+    visited[idx] = 1;
+
+    // Set the pixel based on brush pattern
+    // If brush has pixel set at this position, use ink; otherwise use paper
+    // If null, the pixel is transparent in the brush - don't paint
+    const brushSet = getBrushPatternAt(x, y);
+    if (brushSet === null) {
+      // Transparent in brush pattern - don't paint
+    } else if (brushSet) {
+      setPixelDirect(x, y, isInk);
+    } else {
+      setPixelDirect(x, y, !isInk);
+    }
+
+    // Push neighbors
+    stack.push([x - 1, y]);
+    stack.push([x + 1, y]);
+    stack.push([x, y - 1]);
+    stack.push([x, y + 1]);
+  }
+
+  // Flatten layers if we used transparent color
+  if (usingTransparent && layersEnabled && layers.length > 0) {
+    flattenLayersToScreen();
+  }
+}
+
+/**
+ * Sets a pixel without brush logic - used by flood fill
+ * @param {number} x
+ * @param {number} y
+ * @param {boolean} isInk
+ */
+function setPixelDirect(x, y, isInk) {
+  const width = getFormatWidth();
+  const height = getFormatHeight();
+  if (x < 0 || x >= width || y < 0 || y >= height) return;
+
+  // Check if painting with transparent color
+  const color = isInk ? editorInkColor : editorPaperColor;
+  if (color === COLOR_TRANSPARENT) {
+    // Transparent: clear the mask on non-background layers
+    if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
+      const layer = layers[activeLayerIndex];
+      if (layer) {
+        const maskIdx = y * width + x;
+        layer.mask[maskIdx] = 0; // Make pixel transparent
+      }
+    }
+    // On background layer, transparent does nothing
+    return;
+  }
+
+  if (currentFormat === FORMAT.RGB3) {
+    const addr = getBitmapAddress(x, y);
+    const bitMask = 0x80 >> (x % 8);
+    const invMask = ~bitMask & 0xFF;
+
+    if (color & 2) screenData[RGB3.RED_OFFSET + addr] |= bitMask;
+    else screenData[RGB3.RED_OFFSET + addr] &= invMask;
+
+    if (color & 4) screenData[RGB3.GREEN_OFFSET + addr] |= bitMask;
+    else screenData[RGB3.GREEN_OFFSET + addr] &= invMask;
+
+    if (color & 1) screenData[RGB3.BLUE_OFFSET + addr] |= bitMask;
+    else screenData[RGB3.BLUE_OFFSET + addr] &= invMask;
+    return;
+  }
+
+  if (currentFormat === FORMAT.MONO_FULL || currentFormat === FORMAT.MONO_2_3 || currentFormat === FORMAT.MONO_1_3) {
+    const bitmapAddr = getBitmapAddress(x, y);
+    const bitMask = 0x80 >> (x % 8);
+    if (isInk) screenData[bitmapAddr] |= bitMask;
+    else screenData[bitmapAddr] &= ~bitMask & 0xFF;
+    return;
+  }
+
+  // Standard formats with attributes (SCR, IFL, MLT, BMC4, BSC)
+  const bitmapAddr = getBitmapAddress(x, y);
+  const bitMask = 0x80 >> (x % 8);
+  if (isInk) screenData[bitmapAddr] |= bitMask;
+  else screenData[bitmapAddr] &= ~bitMask & 0xFF;
+
+  // Update attribute based on format (use actual colors, not transparent)
+  const attrInk = editorInkColor === COLOR_TRANSPARENT ? 0 : editorInkColor;
+  const attrPaper = editorPaperColor === COLOR_TRANSPARENT ? 0 : editorPaperColor;
+  let attrAddr;
+  if (currentFormat === FORMAT.MLT) {
+    attrAddr = getMltAttributeAddress(x, y);
+  } else if (currentFormat === FORMAT.IFL) {
+    attrAddr = getIflAttributeAddress(x, y);
+  } else if (currentFormat === FORMAT.BMC4) {
+    attrAddr = getBmc4AttributeAddress(x, y);
+  } else {
+    attrAddr = getAttributeAddress(x, y);
+  }
+  screenData[attrAddr] = buildAttribute(attrInk, attrPaper, editorBright, editorFlash);
+}
+
+/**
+ * Recolors a cell's attribute without modifying bitmap data
+ * SCR: 8×8 cell
+ * IFL: 8×2 block
+ * MLT: 8×1 block (single pixel row)
  * @param {number} x
  * @param {number} y
  */
 function recolorCell(x, y) {
-  if (!screenData || screenData.length < SCREEN.TOTAL_SIZE) return;
+  // Monochrome and RGB3 formats have no attributes to recolor
+  if (currentFormat === FORMAT.MONO_FULL || currentFormat === FORMAT.MONO_2_3 || currentFormat === FORMAT.MONO_1_3 || currentFormat === FORMAT.RGB3) {
+    return;
+  }
 
-  const cellX = Math.floor(x / 8) * 8;
-  const cellY = Math.floor(y / 8) * 8;
+  if (currentFormat === FORMAT.MLT) {
+    if (!screenData || screenData.length < MLT.TOTAL_SIZE) return;
 
-  const attrAddr = getAttributeAddress(cellX, cellY);
-  screenData[attrAddr] = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+    // MLT: 8×1 blocks - set single attribute for this pixel row
+    const attrAddr = getMltAttributeAddress(x, y);
+    screenData[attrAddr] = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+  } else if (currentFormat === FORMAT.IFL) {
+    if (!screenData || screenData.length < IFL.TOTAL_SIZE) return;
+
+    // IFL: 8×2 blocks - set single attribute for this block
+    const attrAddr = getIflAttributeAddress(x, y);
+    screenData[attrAddr] = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+  } else if (currentFormat === FORMAT.BMC4) {
+    if (!screenData || screenData.length < BMC4.TOTAL_SIZE) return;
+
+    // BMC4: 8×4 blocks - set attribute for this block
+    const attrAddr = getBmc4AttributeAddress(x, y);
+    screenData[attrAddr] = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+  } else {
+    // SCR/BSC: 8×8 cells
+    if (!screenData || screenData.length < SCREEN.TOTAL_SIZE) return;
+
+    const cellX = Math.floor(x / 8) * 8;
+    const cellY = Math.floor(y / 8) * 8;
+
+    const attrAddr = getAttributeAddress(cellX, cellY);
+    screenData[attrAddr] = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+  }
 }
 
 /**
@@ -619,7 +3826,9 @@ function getSelectionRect() {
   let right = Math.max(selectionStartPoint.x, selectionEndPoint.x);
   let bottom = Math.max(selectionStartPoint.y, selectionEndPoint.y);
 
-  if (isSnapActive()) {
+  // Use transform snap setting when in transform mode, otherwise use Edit tab snap
+  const useSnap = transformSelectActive ? transformSnapToGrid : isSnapActive();
+  if (useSnap) {
     left = Math.floor(left / 8) * 8;
     top = Math.floor(top / 8) * 8;
     right = Math.floor(right / 8) * 8 + 7;
@@ -666,6 +3875,87 @@ function copySelection() {
     }
 
     clipboardData = { format: '53c', cellCols, cellRows, attrs };
+  } else if (currentFormat === FORMAT.IFL) {
+    // .ifl: copy bitmap (linear packed) + attributes (8×2 blocks)
+    const cellLeft = Math.floor(rect.left / 8);
+    const attrTop = Math.floor(rect.top / 2);  // IFL: 2-pixel attr rows
+    const cellCols = Math.ceil(rect.width / 8);
+    const attrRows = Math.ceil(rect.height / 2);  // IFL: 96 rows total
+
+    // Pack bitmap: one bit per pixel, row by row, MSB-first, linear (not ZX-interleaved)
+    const bitmapBytesPerRow = Math.ceil(rect.width / 8);
+    const bitmap = new Uint8Array(bitmapBytesPerRow * rect.height);
+
+    for (let py = 0; py < rect.height; py++) {
+      for (let px = 0; px < rect.width; px++) {
+        const sx = rect.left + px;
+        const sy = rect.top + py;
+        if (getPixel(screenData, sx, sy)) {
+          const byteIdx = py * bitmapBytesPerRow + Math.floor(px / 8);
+          const bitIdx = 7 - (px % 8);
+          bitmap[byteIdx] |= (1 << bitIdx);
+        }
+      }
+    }
+
+    // Copy IFL attributes (8×2 blocks)
+    const attrs = new Uint8Array(cellCols * attrRows);
+    for (let ar = 0; ar < attrRows; ar++) {
+      for (let cc = 0; cc < cellCols; cc++) {
+        const srcAddr = IFL.BITMAP_SIZE + (cellLeft + cc) + (attrTop + ar) * 32;
+        attrs[ar * cellCols + cc] = screenData[srcAddr];
+      }
+    }
+
+    clipboardData = {
+      format: 'ifl',
+      width: rect.width,
+      height: rect.height,
+      cellCols,
+      attrRows,
+      bitmap,
+      attrs
+    };
+  } else if (currentFormat === FORMAT.MLT) {
+    // .mlt: copy bitmap (linear packed) + attributes (8×1 blocks)
+    const cellLeft = Math.floor(rect.left / 8);
+    const cellCols = Math.ceil(rect.width / 8);
+    const attrRows = rect.height;  // MLT: one attr row per pixel line
+
+    // Pack bitmap: one bit per pixel, row by row, MSB-first, linear (not ZX-interleaved)
+    const bitmapBytesPerRow = Math.ceil(rect.width / 8);
+    const bitmap = new Uint8Array(bitmapBytesPerRow * rect.height);
+
+    for (let py = 0; py < rect.height; py++) {
+      for (let px = 0; px < rect.width; px++) {
+        const sx = rect.left + px;
+        const sy = rect.top + py;
+        if (getPixel(screenData, sx, sy)) {
+          const byteIdx = py * bitmapBytesPerRow + Math.floor(px / 8);
+          const bitIdx = 7 - (px % 8);
+          bitmap[byteIdx] |= (1 << bitIdx);
+        }
+      }
+    }
+
+    // Copy MLT attributes (8×1 blocks - one per pixel line)
+    const attrs = new Uint8Array(cellCols * attrRows);
+    for (let ar = 0; ar < attrRows; ar++) {
+      for (let cc = 0; cc < cellCols; cc++) {
+        const srcAddr = MLT.BITMAP_SIZE + (cellLeft + cc) + (rect.top + ar) * 32;
+        attrs[ar * cellCols + cc] = screenData[srcAddr];
+      }
+    }
+
+    clipboardData = {
+      format: 'mlt',
+      width: rect.width,
+      height: rect.height,
+      cellCols,
+      attrRows,
+      bitmap,
+      attrs
+    };
   } else {
     // .scr: copy bitmap (linear packed) + attributes
     const cellLeft = Math.floor(rect.left / 8);
@@ -712,9 +4002,135 @@ function copySelection() {
   if (infoEl) {
     const fmt = clipboardData.format;
     const cols = clipboardData.cellCols;
-    const rows = clipboardData.cellRows;
-    infoEl.innerHTML = `Copied ${fmt} region: ${cols}\u00d7${rows} cells`;
+    if (fmt === 'mlt') {
+      const rows = clipboardData.attrRows;
+      infoEl.innerHTML = `Copied ${fmt} region: ${cols}\u00d7${rows} blocks (8\u00d71)`;
+    } else if (fmt === 'ifl') {
+      const rows = clipboardData.attrRows;
+      infoEl.innerHTML = `Copied ${fmt} region: ${cols}\u00d7${rows} blocks (8\u00d72)`;
+    } else {
+      const rows = clipboardData.cellRows;
+      infoEl.innerHTML = `Copied ${fmt} region: ${cols}\u00d7${rows} cells`;
+    }
   }
+}
+
+/**
+ * Cuts selection: copies to clipboard and erases original region
+ */
+function cutSelection() {
+  const rect = getSelectionRect();
+  if (!rect) return;
+
+  // First copy to clipboard
+  copySelection();
+  if (!clipboardData) return;
+
+  // Save undo state before erasing
+  saveUndoState();
+
+  // Erase the selected region (fill with paper)
+  for (let py = 0; py < rect.height; py++) {
+    for (let px = 0; px < rect.width; px++) {
+      const x = rect.left + px;
+      const y = rect.top + py;
+      setPixelDirect(x, y, false);  // false = paper (erase)
+    }
+  }
+
+  // Update info
+  const infoEl = document.getElementById('editorPositionInfo');
+  if (infoEl && clipboardData) {
+    const fmt = clipboardData.format;
+    const cols = clipboardData.cellCols;
+    if (fmt === 'mlt') {
+      const rows = clipboardData.attrRows;
+      infoEl.innerHTML = `Cut ${fmt} region: ${cols}\u00d7${rows} blocks (8\u00d71)`;
+    } else if (fmt === 'ifl') {
+      const rows = clipboardData.attrRows;
+      infoEl.innerHTML = `Cut ${fmt} region: ${cols}\u00d7${rows} blocks (8\u00d72)`;
+    } else {
+      const rows = clipboardData.cellRows;
+      infoEl.innerHTML = `Cut ${fmt} region: ${cols}\u00d7${rows} cells`;
+    }
+  }
+
+  editorRender();
+}
+
+/**
+ * Inverts pixels in the selected region (ink ↔ paper)
+ */
+function invertSelection() {
+  const rect = getSelectionRect();
+  if (!rect) {
+    const infoEl = document.getElementById('editorPositionInfo');
+    if (infoEl) infoEl.innerHTML = 'No selection — use Select tool first';
+    return;
+  }
+
+  saveUndoState();
+
+  if (currentFormat === FORMAT.RGB3) {
+    // RGB3: XOR all channel bits within selection
+    for (let py = 0; py < rect.height; py++) {
+      for (let px = 0; px < rect.width; px++) {
+        const x = rect.left + px;
+        const y = rect.top + py;
+        const addr = getBitmapAddress(x, y);
+        const bitMask = 0x80 >> (x % 8);
+        screenData[RGB3.RED_OFFSET + addr] ^= bitMask;
+        screenData[RGB3.GREEN_OFFSET + addr] ^= bitMask;
+        screenData[RGB3.BLUE_OFFSET + addr] ^= bitMask;
+      }
+    }
+  } else if (currentFormat === FORMAT.MONO_FULL || currentFormat === FORMAT.MONO_2_3 || currentFormat === FORMAT.MONO_1_3) {
+    // Monochrome: XOR bitmap bits
+    for (let py = 0; py < rect.height; py++) {
+      for (let px = 0; px < rect.width; px++) {
+        const x = rect.left + px;
+        const y = rect.top + py;
+        const addr = getBitmapAddress(x, y);
+        const bitMask = 0x80 >> (x % 8);
+        screenData[addr] ^= bitMask;
+      }
+    }
+  } else if (currentFormat === FORMAT.ATTR_53C) {
+    // .53c: swap ink and paper in attributes
+    const cellLeft = Math.floor(rect.left / 8);
+    const cellTop = Math.floor(rect.top / 8);
+    const cellRight = Math.ceil((rect.left + rect.width) / 8);
+    const cellBottom = Math.ceil((rect.top + rect.height) / 8);
+
+    for (let cy = cellTop; cy < cellBottom; cy++) {
+      for (let cx = cellLeft; cx < cellRight; cx++) {
+        const addr = cx + cy * 32;
+        const attr = screenData[addr];
+        const ink = attr & 0x07;
+        const paper = (attr >> 3) & 0x07;
+        const flags = attr & 0xC0;  // bright and flash
+        screenData[addr] = (ink << 3) | paper | flags;
+      }
+    }
+  } else {
+    // SCR/IFL/MLT/BMC4/BSC: XOR bitmap bits (attributes unchanged)
+    for (let py = 0; py < rect.height; py++) {
+      for (let px = 0; px < rect.width; px++) {
+        const x = rect.left + px;
+        const y = rect.top + py;
+        const addr = getBitmapAddress(x, y);
+        const bitMask = 0x80 >> (x % 8);
+        screenData[addr] ^= bitMask;
+      }
+    }
+  }
+
+  const infoEl = document.getElementById('editorPositionInfo');
+  if (infoEl) {
+    infoEl.innerHTML = `Inverted ${rect.width}×${rect.height} pixels`;
+  }
+
+  editorRender();
 }
 
 /**
@@ -728,7 +4144,9 @@ function startPasteMode() {
   }
 
   // Validate format match
-  const editorFormat = currentFormat === FORMAT.ATTR_53C ? '53c' : 'scr';
+  const editorFormat = currentFormat === FORMAT.ATTR_53C ? '53c' :
+                       currentFormat === FORMAT.IFL ? 'ifl' :
+                       currentFormat === FORMAT.MLT ? 'mlt' : 'scr';
   if (clipboardData.format !== editorFormat) {
     if (infoEl) {
       infoEl.innerHTML = 'Clipboard format mismatch (' + clipboardData.format + ' vs ' + editorFormat + ')';
@@ -770,65 +4188,170 @@ function executePaste(x, y) {
   saveUndoState();
 
   if (clipboardData.format === 'scr' && clipboardData.bitmap) {
-    // Write bitmap pixels — respects brushPaintMode
-    const bitmapBytesPerRow = Math.ceil(clipboardData.width / 8);
-    for (let py = 0; py < clipboardData.height; py++) {
-      for (let px = 0; px < clipboardData.width; px++) {
-        const dx = x + px;
-        const dy = y + py;
-        if (dx < 0 || dx >= SCREEN.WIDTH || dy < 0 || dy >= SCREEN.HEIGHT) continue;
+    // Write bitmap pixels — respects brushPaintMode (skip for recolor mode)
+    if (brushPaintMode !== 'recolor') {
+      const bitmapBytesPerRow = Math.ceil(clipboardData.width / 8);
+      for (let py = 0; py < clipboardData.height; py++) {
+        for (let px = 0; px < clipboardData.width; px++) {
+          const dx = x + px;
+          const dy = y + py;
+          if (dx < 0 || dx >= SCREEN.WIDTH || dy < 0 || dy >= SCREEN.HEIGHT) continue;
 
-        const byteIdx = py * bitmapBytesPerRow + Math.floor(px / 8);
-        const bitIdx = 7 - (px % 8);
-        const clipBit = (clipboardData.bitmap[byteIdx] & (1 << bitIdx)) !== 0;
+          const byteIdx = py * bitmapBytesPerRow + Math.floor(px / 8);
+          const bitIdx = 7 - (px % 8);
+          const clipBit = (clipboardData.bitmap[byteIdx] & (1 << bitIdx)) !== 0;
 
-        const bitmapAddr = getBitmapAddress(dx, dy);
-        const bit = getBitPosition(dx);
+          const bitmapAddr = getBitmapAddress(dx, dy);
+          const bit = getBitPosition(dx);
 
-        if (brushPaintMode === 'invert') {
-          // XOR: toggle screen pixel where clipboard has ink
-          if (clipBit) {
-            screenData[bitmapAddr] ^= (1 << bit);
-          }
-        } else if (brushPaintMode === 'set') {
-          // Set: only write ink pixels, leave paper pixels untouched
-          if (clipBit) {
-            screenData[bitmapAddr] |= (1 << bit);
-          }
-        } else {
-          // Replace (default): overwrite every pixel from clipboard
-          if (clipBit) {
-            screenData[bitmapAddr] |= (1 << bit);
+          if (brushPaintMode === 'invert') {
+            // XOR: toggle screen pixel where clipboard has ink
+            if (clipBit) {
+              screenData[bitmapAddr] ^= (1 << bit);
+            }
+          } else if (brushPaintMode === 'set') {
+            // Set: only write ink pixels, leave paper pixels untouched
+            if (clipBit) {
+              screenData[bitmapAddr] |= (1 << bit);
+            }
           } else {
-            screenData[bitmapAddr] &= ~(1 << bit);
+            // Replace (default): overwrite every pixel from clipboard
+            if (clipBit) {
+              screenData[bitmapAddr] |= (1 << bit);
+            } else {
+              screenData[bitmapAddr] &= ~(1 << bit);
+            }
           }
         }
       }
     }
 
-    // Write attributes from clipboard (preserving original colors)
-    const cellLeft = Math.floor(x / 8);
-    const cellTop = Math.floor(y / 8);
-    for (let cr = 0; cr < clipboardData.cellRows; cr++) {
-      for (let cc = 0; cc < clipboardData.cellCols; cc++) {
-        const destCol = cellLeft + cc;
-        const destRow = cellTop + cr;
-        if (destCol < 0 || destCol >= SCREEN.CHAR_COLS || destRow < 0 || destRow >= SCREEN.CHAR_ROWS) continue;
-        const destAddr = SCREEN.BITMAP_SIZE + destCol + destRow * 32;
-        screenData[destAddr] = clipboardData.attrs[cr * clipboardData.cellCols + cc];
+    // Write attributes from clipboard (skip for retouch mode)
+    if (brushPaintMode !== 'retouch') {
+      const cellLeft = Math.floor(x / 8);
+      const cellTop = Math.floor(y / 8);
+      for (let cr = 0; cr < clipboardData.cellRows; cr++) {
+        for (let cc = 0; cc < clipboardData.cellCols; cc++) {
+          const destCol = cellLeft + cc;
+          const destRow = cellTop + cr;
+          if (destCol < 0 || destCol >= SCREEN.CHAR_COLS || destRow < 0 || destRow >= SCREEN.CHAR_ROWS) continue;
+          const destAddr = SCREEN.BITMAP_SIZE + destCol + destRow * 32;
+          screenData[destAddr] = clipboardData.attrs[cr * clipboardData.cellCols + cc];
+        }
+      }
+    }
+  } else if (clipboardData.format === 'ifl' && clipboardData.bitmap) {
+    // IFL: write bitmap pixels (skip for recolor mode)
+    if (brushPaintMode !== 'recolor') {
+      const bitmapBytesPerRow = Math.ceil(clipboardData.width / 8);
+      for (let py = 0; py < clipboardData.height; py++) {
+        for (let px = 0; px < clipboardData.width; px++) {
+          const dx = x + px;
+          const dy = y + py;
+          if (dx < 0 || dx >= SCREEN.WIDTH || dy < 0 || dy >= SCREEN.HEIGHT) continue;
+
+          const byteIdx = py * bitmapBytesPerRow + Math.floor(px / 8);
+          const bitIdx = 7 - (px % 8);
+          const clipBit = (clipboardData.bitmap[byteIdx] & (1 << bitIdx)) !== 0;
+
+          const bitmapAddr = getBitmapAddress(dx, dy);
+          const bit = getBitPosition(dx);
+
+          if (brushPaintMode === 'invert') {
+            if (clipBit) {
+              screenData[bitmapAddr] ^= (1 << bit);
+            }
+          } else if (brushPaintMode === 'set') {
+            if (clipBit) {
+              screenData[bitmapAddr] |= (1 << bit);
+            }
+          } else {
+            if (clipBit) {
+              screenData[bitmapAddr] |= (1 << bit);
+            } else {
+              screenData[bitmapAddr] &= ~(1 << bit);
+            }
+          }
+        }
+      }
+    }
+
+    // Write IFL attributes (8×2 blocks) - skip for retouch mode
+    if (brushPaintMode !== 'retouch') {
+      const cellLeft = Math.floor(x / 8);
+      const attrTop = Math.floor(y / 2);  // IFL: 2-pixel attr rows
+      for (let ar = 0; ar < clipboardData.attrRows; ar++) {
+        for (let cc = 0; cc < clipboardData.cellCols; cc++) {
+          const destCol = cellLeft + cc;
+          const destRow = attrTop + ar;
+          if (destCol < 0 || destCol >= IFL.ATTR_COLS || destRow < 0 || destRow >= IFL.ATTR_ROWS) continue;
+          const destAddr = IFL.BITMAP_SIZE + destCol + destRow * 32;
+          screenData[destAddr] = clipboardData.attrs[ar * clipboardData.cellCols + cc];
+        }
+      }
+    }
+  } else if (clipboardData.format === 'mlt' && clipboardData.bitmap) {
+    // MLT: write bitmap pixels (skip for recolor mode)
+    if (brushPaintMode !== 'recolor') {
+      const bitmapBytesPerRow = Math.ceil(clipboardData.width / 8);
+      for (let py = 0; py < clipboardData.height; py++) {
+        for (let px = 0; px < clipboardData.width; px++) {
+          const dx = x + px;
+          const dy = y + py;
+          if (dx < 0 || dx >= SCREEN.WIDTH || dy < 0 || dy >= SCREEN.HEIGHT) continue;
+
+          const byteIdx = py * bitmapBytesPerRow + Math.floor(px / 8);
+          const bitIdx = 7 - (px % 8);
+          const clipBit = (clipboardData.bitmap[byteIdx] & (1 << bitIdx)) !== 0;
+
+          const bitmapAddr = getBitmapAddress(dx, dy);
+          const bit = getBitPosition(dx);
+
+          if (brushPaintMode === 'invert') {
+            if (clipBit) {
+              screenData[bitmapAddr] ^= (1 << bit);
+            }
+          } else if (brushPaintMode === 'set') {
+            if (clipBit) {
+              screenData[bitmapAddr] |= (1 << bit);
+            }
+          } else {
+            if (clipBit) {
+              screenData[bitmapAddr] |= (1 << bit);
+            } else {
+              screenData[bitmapAddr] &= ~(1 << bit);
+            }
+          }
+        }
+      }
+    }
+
+    // Write MLT attributes (8×1 blocks - one per pixel line) - skip for retouch mode
+    if (brushPaintMode !== 'retouch') {
+      const cellLeft = Math.floor(x / 8);
+      for (let ar = 0; ar < clipboardData.attrRows; ar++) {
+        for (let cc = 0; cc < clipboardData.cellCols; cc++) {
+          const destCol = cellLeft + cc;
+          const destRow = y + ar;  // MLT: one attr row per pixel line
+          if (destCol < 0 || destCol >= MLT.ATTR_COLS || destRow < 0 || destRow >= MLT.ATTR_ROWS) continue;
+          const destAddr = MLT.BITMAP_SIZE + destCol + destRow * 32;
+          screenData[destAddr] = clipboardData.attrs[ar * clipboardData.cellCols + cc];
+        }
       }
     }
   } else if (clipboardData.format === '53c') {
-    // .53c: write attributes only
-    const cellLeft = Math.floor(x / 8);
-    const cellTop = Math.floor(y / 8);
-    for (let cr = 0; cr < clipboardData.cellRows; cr++) {
-      for (let cc = 0; cc < clipboardData.cellCols; cc++) {
-        const destCol = cellLeft + cc;
-        const destRow = cellTop + cr;
-        if (destCol < 0 || destCol >= SCREEN.CHAR_COLS || destRow < 0 || destRow >= SCREEN.CHAR_ROWS) continue;
-        const destAddr = destCol + destRow * 32;
-        screenData[destAddr] = clipboardData.attrs[cr * clipboardData.cellCols + cc];
+    // .53c: write attributes only (skip for retouch mode since 53c has no bitmap)
+    if (brushPaintMode !== 'retouch') {
+      const cellLeft = Math.floor(x / 8);
+      const cellTop = Math.floor(y / 8);
+      for (let cr = 0; cr < clipboardData.cellRows; cr++) {
+        for (let cc = 0; cc < clipboardData.cellCols; cc++) {
+          const destCol = cellLeft + cc;
+          const destRow = cellTop + cr;
+          if (destCol < 0 || destCol >= SCREEN.CHAR_COLS || destRow < 0 || destRow >= SCREEN.CHAR_ROWS) continue;
+          const destAddr = destCol + destRow * 32;
+          screenData[destAddr] = clipboardData.attrs[cr * clipboardData.cellCols + cc];
+        }
       }
     }
   }
@@ -869,7 +4392,7 @@ function drawSelectionPreview(x0, y0, x1, y1) {
   const w = right - left + 1;
   const h = bottom - top + 1;
 
-  ctx.strokeStyle = 'rgba(0, 255, 255, 0.9)';
+  ctx.strokeStyle = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.SELECTION_COLOR) || 'rgba(0, 255, 255, 0.9)';
   ctx.lineWidth = Math.max(1, zoom / 2);
   ctx.setLineDash([4, 4]);
   ctx.strokeRect(
@@ -893,7 +4416,7 @@ function drawFinalizedSelectionOverlay() {
 
   const borderPixels = getMainScreenOffset();
 
-  ctx.strokeStyle = 'rgba(0, 255, 255, 0.9)';
+  ctx.strokeStyle = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.SELECTION_COLOR) || 'rgba(0, 255, 255, 0.9)';
   ctx.lineWidth = Math.max(1, zoom / 2);
   ctx.setLineDash([4, 4]);
   ctx.strokeRect(
@@ -922,7 +4445,8 @@ function drawPastePreview(x, y) {
 
   const borderPixels = getMainScreenOffset();
 
-  ctx.globalAlpha = 0.5;
+  ctx.save();
+  ctx.globalAlpha = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.PASTE_PREVIEW_OPACITY) || 0.5;
 
   if (clipboardData.format === 'scr' && clipboardData.bitmap) {
     // Draw bitmap pixels
@@ -957,7 +4481,18 @@ function drawPastePreview(x, y) {
   } else if (clipboardData.format === '53c') {
     // Draw attribute cells as colored blocks
     const select = /** @type {HTMLSelectElement|null} */ (document.getElementById('pattern53cSelect'));
-    const pattern = select?.value || 'checker';
+    const patternName = select?.value || 'checker';
+
+    // Get pattern array from config (8 bytes, one per row, MSB = leftmost pixel)
+    let patternArray;
+    if (patternName === 'stripes') {
+      patternArray = APP_CONFIG.PATTERN_53C_STRIPES;
+    } else if (patternName === 'dd77') {
+      patternArray = APP_CONFIG.PATTERN_53C_DD77;
+    } else {
+      patternArray = APP_CONFIG.PATTERN_53C_CHECKER;
+    }
+
     for (let cr = 0; cr < clipboardData.cellRows; cr++) {
       for (let cc = 0; cc < clipboardData.cellCols; cc++) {
         const cellX = x + cc * 8;
@@ -966,20 +4501,13 @@ function drawPastePreview(x, y) {
         const { inkRgb, paperRgb } = getColorsRgb(attr);
 
         for (let py = 0; py < 8; py++) {
+          const patternByte = patternArray[py];
           for (let px = 0; px < 8; px++) {
             const dx = cellX + px;
             const dy = cellY + py;
             if (dx < 0 || dx >= SCREEN.WIDTH || dy < 0 || dy >= SCREEN.HEIGHT) continue;
 
-            let isInk;
-            if (pattern === 'stripes') {
-              isInk = (Math.floor(px / 2) % 2 + py % 2) % 2 === 0;
-            } else if (pattern === 'dd77') {
-              const patternByte = (py % 2 === 0) ? 0xDD : 0x77;
-              isInk = (patternByte & (1 << (7 - px))) !== 0;
-            } else {
-              isInk = (px + py) % 2 === 0;
-            }
+            const isInk = (patternByte & (1 << (7 - px))) !== 0;
             const rgb = isInk ? inkRgb : paperRgb;
 
             ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
@@ -995,13 +4523,13 @@ function drawPastePreview(x, y) {
     }
   }
 
-  ctx.globalAlpha = 1.0;
+  ctx.restore();
 
   // Draw outline around paste region
   const pw = clipboardData.format === 'scr' ? clipboardData.width : clipboardData.cellCols * 8;
   const ph = clipboardData.format === 'scr' ? clipboardData.height : clipboardData.cellRows * 8;
 
-  ctx.strokeStyle = 'rgba(0, 255, 255, 0.9)';
+  ctx.strokeStyle = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.SELECTION_COLOR) || 'rgba(0, 255, 255, 0.9)';
   ctx.lineWidth = Math.max(1, zoom / 2);
   ctx.setLineDash([4, 4]);
   ctx.strokeRect(
@@ -1058,8 +4586,13 @@ function handleEditorMouseDown(event) {
   if (!editorActive) return;
   event.preventDefault();
 
-  // BSC dispatch: route to main screen or border handler
-  if (isBscEditor()) {
+  // Ensure canvas has focus for keyboard shortcuts
+  if (screenCanvas && document.activeElement !== screenCanvas) {
+    screenCanvas.focus();
+  }
+
+  // BSC/BMC4 dispatch: route to main screen or border handler
+  if (isBorderFormatEditor()) {
     const bsc = canvasToBscCoords(screenCanvas, event);
     if (!bsc) return;
 
@@ -1068,7 +4601,8 @@ function handleEditorMouseDown(event) {
       // Fall through to existing SCR logic with translated coords
       const coords = { x: bsc.x, y: bsc.y };
       _handleEditorMouseDownCoords(event, coords);
-    } else {
+    } else if (isBorderEditable()) {
+      // Border editing for BSC and BMC4
       bscDrawRegion = 'border';
       handleBorderMouseDown(event, bsc);
     }
@@ -1108,13 +4642,35 @@ function _handleEditorMouseDownCoords(event, coords) {
     return;
   }
 
-  // Select tool: start selection drag (works in both .scr and .53c)
-  if (currentTool === EDITOR.TOOL_SELECT) {
-    selectionStartPoint = { x: coords.x, y: coords.y };
+  // Text tool: click to stamp text
+  if (currentTool === EDITOR.TOOL_TEXT && isPlacingText) {
+    const input = /** @type {HTMLInputElement|null} */ (document.getElementById('textToolInput'));
+    textToolInput = input?.value || '';
+    if (textToolInput.length > 0) {
+      stampText(coords.x, coords.y);
+    }
+    return;
+  }
+
+  // Transform tab selection mode: start selection drag
+  if (transformSelectActive) {
+    const snapped = transformSnapToGrid ? { x: Math.floor(coords.x / 8) * 8, y: Math.floor(coords.y / 8) * 8 } : coords;
+    selectionStartPoint = { x: snapped.x, y: snapped.y };
     selectionEndPoint = null;
     isSelecting = true;
     editorRender();
-    updateEditorInfo(coords.x, coords.y);
+    return;
+  }
+
+  // Select tool: start selection drag (works in both .scr and .53c)
+  if (currentTool === EDITOR.TOOL_SELECT) {
+    // Snap selection to grid when snap is active
+    const snapped = isSnapActive() ? { x: Math.floor(coords.x / 8) * 8, y: Math.floor(coords.y / 8) * 8 } : coords;
+    selectionStartPoint = { x: snapped.x, y: snapped.y };
+    selectionEndPoint = null;
+    isSelecting = true;
+    editorRender();
+    updateEditorInfo(snapped.x, snapped.y);
     return;
   }
 
@@ -1128,10 +4684,22 @@ function _handleEditorMouseDownCoords(event, coords) {
     return;
   }
 
+  // Auto-show hidden layer when drawing on it
+  if (layersEnabled && layers.length > 0 && layers[activeLayerIndex] && !layers[activeLayerIndex].visible) {
+    layers[activeLayerIndex].visible = true;
+    updateLayerPanel();
+    flattenLayersToScreen();
+  }
+
   saveUndoState();
   isDrawing = true;
 
   const snapped = snapDrawCoords(coords.x, coords.y);
+
+  // Set stroke origin for masked+ mode
+  if (brushPaintMode === 'masked+') {
+    maskStrokeOrigin = { x: snapped.x, y: snapped.y };
+  }
   lastDrawnPixel = snapped;
 
   // Left click = ink, Right click = paper
@@ -1140,6 +4708,8 @@ function _handleEditorMouseDownCoords(event, coords) {
   switch (currentTool) {
     case EDITOR.TOOL_LINE:
     case EDITOR.TOOL_RECT:
+    case EDITOR.TOOL_CIRCLE:
+    case EDITOR.TOOL_GRADIENT:
       toolStartPoint = snapped;
       break;
 
@@ -1153,9 +4723,33 @@ function _handleEditorMouseDownCoords(event, coords) {
       editorRender();
       break;
 
+    case EDITOR.TOOL_FLOOD_FILL:
+      floodFill(coords.x, coords.y, isInk);
+      editorRender();
+      break;
+
     case EDITOR.TOOL_RECOLOR:
       recolorCell(coords.x, coords.y);
       editorRender();
+      break;
+
+    case EDITOR.TOOL_ERASER:
+      drawEraser(snapped.x, snapped.y);
+      editorRender();
+      break;
+
+    case EDITOR.TOOL_AIRBRUSH:
+      drawAirbrush(snapped.x, snapped.y, isInk);
+      editorRender();
+      // Start continuous spray interval
+      airbrushCurrentPos = { x: snapped.x, y: snapped.y, isInk };
+      if (airbrushIntervalId) clearInterval(airbrushIntervalId);
+      airbrushIntervalId = setInterval(() => {
+        if (airbrushCurrentPos) {
+          drawAirbrush(airbrushCurrentPos.x, airbrushCurrentPos.y, airbrushCurrentPos.isInk);
+          scheduleRender();
+        }
+      }, 50);
       break;
   }
 
@@ -1168,8 +4762,8 @@ function _handleEditorMouseDownCoords(event, coords) {
 function handleEditorMouseMove(event) {
   if (!editorActive) return;
 
-  // BSC dispatch
-  if (isBscEditor()) {
+  // BSC/BMC4 dispatch
+  if (isBorderFormatEditor()) {
     const bsc = canvasToBscCoords(screenCanvas, event);
     if (!bsc) return;
 
@@ -1187,7 +4781,19 @@ function handleEditorMouseMove(event) {
         updateBscEditorInfo(bsc);
         return;
       }
-      handleBorderMouseMove(event, bsc);
+      // Border handling for BSC and BMC4
+      if (isBorderEditable()) {
+        handleBorderMouseMove(event, bsc);
+      }
+      // Handle brush preview on border
+      if (brushPreviewMode) {
+        brushPreviewPos = null;
+        borderPreviewPos = { frameX: bsc.frameX, frameY: bsc.frameY };
+        if (event.buttons === 0) {
+          editorRender();
+          drawBorderBrushPreview();
+        }
+      }
     }
     return;
   }
@@ -1205,12 +4811,40 @@ function _handleEditorMouseMoveCoords(event, coords) {
   if (coords) {
     updateEditorInfo(coords.x, coords.y);
     pasteCursorPos = { x: coords.x, y: coords.y };
+    brushPreviewPos = { x: coords.x, y: coords.y };
+    borderPreviewPos = null;  // Clear border preview when on main area
+  } else if (brushPreviewMode) {
+    // Cursor moved outside main screen area - clear brush preview
+    brushPreviewPos = null;
+    editorRender();  // Clear stale preview
+  }
+
+  // Brush preview mode: show overlay when no buttons pressed
+  if (brushPreviewMode && coords && event.buttons === 0) {
+    // No buttons pressed - show preview, reset any stuck isDrawing state
+    stopAirbrushInterval();
+    isDrawing = false;
+    editorRender();
+    drawBrushPreview();
+    return;
   }
 
   // Paste preview: redraw with paste overlay at cursor
   if (isPasting && coords) {
     editorRender();
     drawPastePreview(coords.x, coords.y);
+    return;
+  }
+
+  // Text tool preview: show text at cursor position
+  if (currentTool === EDITOR.TOOL_TEXT && isPlacingText && coords) {
+    const input = /** @type {HTMLInputElement|null} */ (document.getElementById('textToolInput'));
+    textToolInput = input?.value || '';
+    textPreviewPos = { x: coords.x, y: coords.y };
+    editorRender();
+    if (textToolInput.length > 0) {
+      drawTextPreview(coords.x, coords.y);
+    }
     return;
   }
 
@@ -1221,10 +4855,18 @@ function _handleEditorMouseMoveCoords(event, coords) {
     return;
   }
 
-  // Selection drag: update preview
+  // Selection drag: update preview (for both Edit tab select tool and Transform tab selection)
   if (isSelecting && selectionStartPoint && coords) {
     editorRender();
-    drawSelectionPreview(selectionStartPoint.x, selectionStartPoint.y, coords.x, coords.y);
+    // Use transform snap setting when in transform mode, otherwise use Edit tab snap
+    const useSnap = transformSelectActive ? transformSnapToGrid : isSnapActive();
+    if (useSnap) {
+      const endX = Math.ceil((coords.x + 1) / 8) * 8 - 1;
+      const endY = Math.ceil((coords.y + 1) / 8) * 8 - 1;
+      drawSelectionPreview(selectionStartPoint.x, selectionStartPoint.y, endX, endY);
+    } else {
+      drawSelectionPreview(selectionStartPoint.x, selectionStartPoint.y, coords.x, coords.y);
+    }
     return;
   }
 
@@ -1234,7 +4876,7 @@ function _handleEditorMouseMoveCoords(event, coords) {
   if (isAttrEditor() && currentTool !== EDITOR.TOOL_SELECT) {
     if (isDrawing) {
       recolorCell53c(coords.x, coords.y);
-      editorRender();
+      scheduleRender();
     }
     return;
   }
@@ -1246,13 +4888,14 @@ function _handleEditorMouseMoveCoords(event, coords) {
 
   switch (currentTool) {
     case EDITOR.TOOL_PIXEL:
-      // When snap is active, only stamp at discrete snapped positions
+      // When snap is active and NOT in masked mode, only stamp at discrete snapped positions
       // (drawLine's Bresenham would stamp at intermediate pixels, overwriting previous stamps in replace mode)
-      if (isSnapActive()) {
+      // For masked mode, always draw lines for continuous strokes through the mask
+      if (isSnapActive() && brushPaintMode !== 'masked' && brushPaintMode !== 'masked+') {
         if (!lastDrawnPixel || lastDrawnPixel.x !== snapped.x || lastDrawnPixel.y !== snapped.y) {
           drawPixel(snapped.x, snapped.y, isInk);
           lastDrawnPixel = snapped;
-          editorRender();
+          scheduleRender();
         }
       } else {
         // Draw continuous line from last point
@@ -1262,29 +4905,68 @@ function _handleEditorMouseMoveCoords(event, coords) {
           drawPixel(snapped.x, snapped.y, isInk);
         }
         lastDrawnPixel = snapped;
-        editorRender();
+        scheduleRender();
       }
       break;
 
     case EDITOR.TOOL_LINE:
     case EDITOR.TOOL_RECT:
-      // Preview - restore and draw preview
+    case EDITOR.TOOL_CIRCLE:
+    case EDITOR.TOOL_GRADIENT:
+      // Preview - restore and draw preview (needs synchronous render for overlay)
       editorRender();
       if (toolStartPoint) {
-        drawToolPreview(toolStartPoint.x, toolStartPoint.y, snapped.x, snapped.y);
+        drawToolPreview(toolStartPoint.x, toolStartPoint.y, snapped.x, snapped.y, event.ctrlKey, event.altKey);
       }
       break;
 
     case EDITOR.TOOL_FILL_CELL:
       fillCell(coords.x, coords.y, isInk);
-      editorRender();
+      scheduleRender();
       break;
 
     case EDITOR.TOOL_RECOLOR:
       recolorCell(coords.x, coords.y);
-      editorRender();
+      scheduleRender();
+      break;
+
+    case EDITOR.TOOL_ERASER:
+      if (isSnapActive()) {
+        if (!lastDrawnPixel || lastDrawnPixel.x !== snapped.x || lastDrawnPixel.y !== snapped.y) {
+          drawEraser(snapped.x, snapped.y);
+          lastDrawnPixel = snapped;
+          scheduleRender();
+        }
+      } else {
+        // Draw continuous eraser line from last point
+        if (lastDrawnPixel) {
+          drawEraserLine(lastDrawnPixel.x, lastDrawnPixel.y, snapped.x, snapped.y);
+        } else {
+          drawEraser(snapped.x, snapped.y);
+        }
+        lastDrawnPixel = snapped;
+        scheduleRender();
+      }
+      break;
+
+    case EDITOR.TOOL_AIRBRUSH:
+      // Update position for continuous spray interval
+      airbrushCurrentPos = { x: snapped.x, y: snapped.y, isInk };
+      drawAirbrush(snapped.x, snapped.y, isInk);
+      scheduleRender();
       break;
   }
+}
+
+/**
+ * Stops the airbrush continuous spray interval
+ */
+function stopAirbrushInterval() {
+  if (airbrushIntervalId) {
+    clearInterval(airbrushIntervalId);
+    airbrushIntervalId = null;
+  }
+  airbrushCurrentPos = null;
 }
 
 /**
@@ -1293,14 +4975,14 @@ function _handleEditorMouseMoveCoords(event, coords) {
 function handleEditorMouseUp(event) {
   if (!editorActive) return;
 
-  // BSC dispatch
-  if (isBscEditor()) {
-    if (bscDrawRegion === 'border') {
+  // BSC/BMC4 dispatch
+  if (isBorderFormatEditor()) {
+    if (bscDrawRegion === 'border' && isBorderEditable()) {
       handleBorderMouseUp();
       bscDrawRegion = null;
       return;
     }
-    // BSC main area or no region — fall through to normal logic
+    // Main area or no region — fall through to normal logic
     bscDrawRegion = null;
     const bsc = canvasToBscCoords(screenCanvas, event);
     const coords = (bsc && bsc.type === 'main') ? { x: bsc.x, y: bsc.y } : null;
@@ -1318,13 +5000,27 @@ function handleEditorMouseUp(event) {
  * @param {{x:number, y:number}|null} coords
  */
 function _handleEditorMouseUpCoords(event, coords) {
-  // Finalize selection rectangle on mouse release — auto-copy
+  // Finalize selection rectangle on mouse release
   if (isSelecting && selectionStartPoint) {
     if (coords) {
-      selectionEndPoint = { x: coords.x, y: coords.y };
+      // Use transform snap setting when in transform mode, otherwise use Edit tab snap
+      const useSnap = transformSelectActive ? transformSnapToGrid : isSnapActive();
+      if (useSnap) {
+        const endX = Math.ceil((coords.x + 1) / 8) * 8 - 1;
+        const endY = Math.ceil((coords.y + 1) / 8) * 8 - 1;
+        selectionEndPoint = { x: endX, y: endY };
+      } else {
+        selectionEndPoint = { x: coords.x, y: coords.y };
+      }
     }
     isSelecting = false;
-    copySelection();
+
+    // Handle transform tab selection vs regular edit tab selection
+    if (transformSelectActive) {
+      completeTransformSelection();
+    } else {
+      copySelection();
+    }
     editorRender();
     return;
   }
@@ -1333,6 +5029,7 @@ function _handleEditorMouseUpCoords(event, coords) {
 
   // .53c attribute editor: just reset drawing state
   if (isAttrEditor()) {
+    stopAirbrushInterval();
     isDrawing = false;
     return;
   }
@@ -1344,47 +5041,115 @@ function _handleEditorMouseUpCoords(event, coords) {
     switch (currentTool) {
       case EDITOR.TOOL_LINE:
         drawLine(toolStartPoint.x, toolStartPoint.y, snapped.x, snapped.y, isInk);
-        editorRender();
         break;
 
-      case EDITOR.TOOL_RECT:
-        drawRect(toolStartPoint.x, toolStartPoint.y, snapped.x, snapped.y, isInk);
-        editorRender();
+      case EDITOR.TOOL_RECT: {
+        // Apply shape modifiers (Ctrl = square, Alt = from center)
+        const mod = applyShapeModifiers(toolStartPoint.x, toolStartPoint.y, snapped.x, snapped.y, event.ctrlKey, event.altKey);
+        drawRect(mod.x0, mod.y0, mod.x1, mod.y1, isInk);
+        break;
+      }
+
+      case EDITOR.TOOL_CIRCLE: {
+        // Apply shape modifiers (Ctrl = circle, Alt = from center)
+        const mod = applyShapeModifiers(toolStartPoint.x, toolStartPoint.y, snapped.x, snapped.y, event.ctrlKey, event.altKey);
+        drawCircle(mod.x0, mod.y0, mod.x1, mod.y1, isInk);
+        break;
+      }
+
+      case EDITOR.TOOL_GRADIENT:
+        drawGradient(toolStartPoint.x, toolStartPoint.y, snapped.x, snapped.y, isInk);
         break;
     }
   }
 
+  // Always do a full render (with preview) when drawing ends
+  editorRender();
+
+  // Stop airbrush continuous spray
+  stopAirbrushInterval();
+
   isDrawing = false;
   toolStartPoint = null;
   lastDrawnPixel = null;
+  maskStrokeOrigin = null;
 }
 
 /**
- * Draws preview for line/rect tools
+ * Applies shape modifier keys (Ctrl = square/circle, Alt = from center)
+ * @param {number} x0 - Start X
+ * @param {number} y0 - Start Y
+ * @param {number} x1 - End X
+ * @param {number} y1 - End Y
+ * @param {boolean} ctrlKey - Constrain to 1:1 aspect ratio
+ * @param {boolean} altKey - Draw from center instead of corner
+ * @returns {{x0: number, y0: number, x1: number, y1: number}}
+ */
+function applyShapeModifiers(x0, y0, x1, y1, ctrlKey, altKey) {
+  let dx = x1 - x0;
+  let dy = y1 - y0;
+
+  // Ctrl: constrain to square (equal width and height)
+  if (ctrlKey) {
+    const maxDim = Math.max(Math.abs(dx), Math.abs(dy));
+    dx = maxDim * Math.sign(dx) || maxDim;
+    dy = maxDim * Math.sign(dy) || maxDim;
+    x1 = x0 + dx;
+    y1 = y0 + dy;
+  }
+
+  // Alt: draw from center (x0,y0 becomes center)
+  if (altKey) {
+    x0 = x0 - dx;
+    y0 = y0 - dy;
+    // x1, y1 stay the same (they define the opposite corner from the new x0, y0)
+  }
+
+  return { x0, y0, x1, y1 };
+}
+
+/**
+ * Draws preview for line/rect/circle tools
  * @param {number} x0
  * @param {number} y0
  * @param {number} x1
  * @param {number} y1
+ * @param {boolean} [ctrlKey] - Constrain to 1:1 aspect ratio
+ * @param {boolean} [altKey] - Draw from center
  */
-function drawToolPreview(x0, y0, x1, y1) {
+function drawToolPreview(x0, y0, x1, y1, ctrlKey, altKey) {
   const ctx = screenCtx || (screenCanvas && screenCanvas.getContext('2d'));
   if (!ctx) return;
 
   const borderPixels = getMainScreenOffset();
 
-  ctx.strokeStyle = 'rgba(255, 255, 0, 0.8)';
+  ctx.strokeStyle = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.TOOL_PREVIEW_COLOR) || 'rgba(255, 255, 0, 0.8)';
   ctx.lineWidth = Math.max(1, zoom / 2);
 
   ctx.beginPath();
-  if (currentTool === EDITOR.TOOL_LINE) {
+  if (currentTool === EDITOR.TOOL_LINE || currentTool === EDITOR.TOOL_GRADIENT) {
     ctx.moveTo(borderPixels + x0 * zoom + zoom / 2, borderPixels + y0 * zoom + zoom / 2);
     ctx.lineTo(borderPixels + x1 * zoom + zoom / 2, borderPixels + y1 * zoom + zoom / 2);
   } else if (currentTool === EDITOR.TOOL_RECT) {
-    const left = Math.min(x0, x1);
-    const top = Math.min(y0, y1);
-    const width = Math.abs(x1 - x0) + 1;
-    const height = Math.abs(y1 - y0) + 1;
+    // Apply shape modifiers (Ctrl = square, Alt = from center)
+    const mod = applyShapeModifiers(x0, y0, x1, y1, ctrlKey, altKey);
+    const left = Math.min(mod.x0, mod.x1);
+    const top = Math.min(mod.y0, mod.y1);
+    const width = Math.abs(mod.x1 - mod.x0) + 1;
+    const height = Math.abs(mod.y1 - mod.y0) + 1;
     ctx.rect(borderPixels + left * zoom, borderPixels + top * zoom, width * zoom, height * zoom);
+  } else if (currentTool === EDITOR.TOOL_CIRCLE) {
+    // Apply shape modifiers (Ctrl = circle, Alt = from center)
+    const mod = applyShapeModifiers(x0, y0, x1, y1, ctrlKey, altKey);
+    const left = Math.min(mod.x0, mod.x1);
+    const top = Math.min(mod.y0, mod.y1);
+    const width = Math.abs(mod.x1 - mod.x0) + 1;
+    const height = Math.abs(mod.y1 - mod.y0) + 1;
+    const cx = borderPixels + left * zoom + width * zoom / 2;
+    const cy = borderPixels + top * zoom + height * zoom / 2;
+    const rx = width * zoom / 2;
+    const ry = height * zoom / 2;
+    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
   }
   ctx.stroke();
 }
@@ -1405,8 +5170,12 @@ function handleContextMenu(event) {
 
 function saveUndoState() {
   if (screenData && isFormatEditable()) {
-    // Push current state to undo stack
-    undoStack.push(new Uint8Array(screenData));
+    // Push current state to undo stack (screenData + layers)
+    undoStack.push({
+      screenData: new Uint8Array(screenData),
+      layers: deepCloneLayers(layers),
+      activeLayerIndex: activeLayerIndex
+    });
 
     // Limit stack size
     if (undoStack.length > MAX_UNDO_LEVELS) {
@@ -1415,6 +5184,9 @@ function saveUndoState() {
 
     // Clear redo stack on new action
     redoStack = [];
+
+    // Mark picture as modified
+    markPictureModified();
   }
 }
 
@@ -1422,12 +5194,19 @@ function undo() {
   if (undoStack.length === 0) return;
 
   // Save current state to redo stack
-  redoStack.push(new Uint8Array(screenData));
+  redoStack.push({
+    screenData: new Uint8Array(screenData),
+    layers: deepCloneLayers(layers),
+    activeLayerIndex: activeLayerIndex
+  });
 
   // Restore previous state
   const previousState = undoStack.pop();
   if (previousState) {
-    screenData.set(previousState);
+    screenData.set(previousState.screenData);
+    layers = previousState.layers;
+    activeLayerIndex = previousState.activeLayerIndex;
+    updateLayerPanel();
     editorRender();
   }
 }
@@ -1436,12 +5215,19 @@ function redo() {
   if (redoStack.length === 0) return;
 
   // Save current state to undo stack
-  undoStack.push(new Uint8Array(screenData));
+  undoStack.push({
+    screenData: new Uint8Array(screenData),
+    layers: deepCloneLayers(layers),
+    activeLayerIndex: activeLayerIndex
+  });
 
   // Restore redo state
   const redoState = redoStack.pop();
   if (redoState) {
-    screenData.set(redoState);
+    screenData.set(redoState.screenData);
+    layers = redoState.layers;
+    activeLayerIndex = redoState.activeLayerIndex;
+    updateLayerPanel();
     editorRender();
   }
 }
@@ -1464,22 +5250,89 @@ function clearScreen() {
     return;
   }
 
-  // SCR / BSC: Clear all bitmap data (all pixels become paper)
+  // Monochrome formats: just clear bitmap, no attributes
+  if (currentFormat === FORMAT.MONO_FULL || currentFormat === FORMAT.MONO_2_3 || currentFormat === FORMAT.MONO_1_3) {
+    const bitmapSize = currentFormat === FORMAT.MONO_1_3 ? 2048 :
+                       currentFormat === FORMAT.MONO_2_3 ? 4096 : 6144;
+    for (let i = 0; i < bitmapSize; i++) {
+      screenData[i] = 0;
+    }
+    if (layersEnabled) initLayers();
+    editorRender();
+    return;
+  }
+
+  // RGB3: clear all 3 bitmaps to paper color
+  if (currentFormat === FORMAT.RGB3) {
+    const paperColor = editorPaperColor;
+    const redByte = (paperColor & 2) ? 0xFF : 0x00;
+    const greenByte = (paperColor & 4) ? 0xFF : 0x00;
+    const blueByte = (paperColor & 1) ? 0xFF : 0x00;
+    for (let i = 0; i < RGB3.BITMAP_SIZE; i++) {
+      screenData[RGB3.RED_OFFSET + i] = redByte;
+      screenData[RGB3.GREEN_OFFSET + i] = greenByte;
+      screenData[RGB3.BLUE_OFFSET + i] = blueByte;
+    }
+    if (layersEnabled) initLayers();
+    editorRender();
+    return;
+  }
+
+  // SCR / BSC / IFL / MLT / BMC4: Clear all bitmap data (all pixels become paper)
   for (let i = 0; i < SCREEN.BITMAP_SIZE; i++) {
     screenData[i] = 0;
   }
 
   // Set all attributes to current ink/paper/bright/flash
   const attr = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
-  for (let i = SCREEN.BITMAP_SIZE; i < SCREEN.TOTAL_SIZE; i++) {
-    screenData[i] = attr;
+  if (currentFormat === FORMAT.MLT) {
+    // MLT: 6144 attribute bytes (192 rows × 32 columns)
+    for (let i = MLT.BITMAP_SIZE; i < MLT.TOTAL_SIZE; i++) {
+      screenData[i] = attr;
+    }
+  } else if (currentFormat === FORMAT.IFL) {
+    // IFL: 3072 attribute bytes (96 rows × 32 columns)
+    for (let i = IFL.BITMAP_SIZE; i < IFL.TOTAL_SIZE; i++) {
+      screenData[i] = attr;
+    }
+  } else if (currentFormat === FORMAT.BMC4) {
+    // BMC4: 768 + 768 attribute bytes (attr1 and attr2)
+    for (let i = BMC4.ATTR1_OFFSET; i < BMC4.ATTR1_OFFSET + BMC4.ATTR1_SIZE; i++) {
+      screenData[i] = attr;
+    }
+    for (let i = BMC4.ATTR2_OFFSET; i < BMC4.ATTR2_OFFSET + BMC4.ATTR1_SIZE; i++) {
+      screenData[i] = attr;
+    }
+  } else {
+    // SCR / BSC: 768 attribute bytes (24 rows × 32 columns)
+    for (let i = SCREEN.BITMAP_SIZE; i < SCREEN.TOTAL_SIZE; i++) {
+      screenData[i] = attr;
+    }
   }
 
-  // BSC: clear border data to zeros (all black)
+  // BSC: clear border data to selected border color
   if (currentFormat === FORMAT.BSC) {
+    // Border bytes have two 3-bit colors: bits 0-2 and bits 3-5
+    // Use borderColor from screen_viewer.js (0-7), default to 0 if not defined
+    const bc = (typeof borderColor !== 'undefined') ? (borderColor & 0x07) : 0;
+    const borderByte = bc | (bc << 3); // Same color in both slots
     for (let i = BSC.BORDER_OFFSET; i < BSC.TOTAL_SIZE; i++) {
-      screenData[i] = 0;
+      screenData[i] = borderByte;
     }
+  }
+
+  // BMC4: clear border data to selected border color
+  if (currentFormat === FORMAT.BMC4) {
+    const bc = (typeof borderColor !== 'undefined') ? (borderColor & 0x07) : 0;
+    const borderByte = bc | (bc << 3);
+    for (let i = BMC4.BORDER_OFFSET; i < BMC4.TOTAL_SIZE; i++) {
+      screenData[i] = borderByte;
+    }
+  }
+
+  // Reinitialize layers to match cleared screenData
+  if (layersEnabled) {
+    initLayers();
   }
 
   editorRender();
@@ -1515,9 +5368,17 @@ function renderPreview() {
   if (currentFormat === FORMAT.ATTR_53C && screenData.length >= SCREEN.ATTR_SIZE) {
     // .53c: render attribute pattern
     const select = /** @type {HTMLSelectElement|null} */ (document.getElementById('pattern53cSelect'));
-    const pattern = select?.value || 'checker';
-    const patternDD = 0xDD;
-    const pattern77 = 0x77;
+    const patternName = select?.value || 'checker';
+
+    // Get pattern array from config (8 bytes, one per row, MSB = leftmost pixel)
+    let patternArray;
+    if (patternName === 'stripes') {
+      patternArray = APP_CONFIG.PATTERN_53C_STRIPES;
+    } else if (patternName === 'dd77') {
+      patternArray = APP_CONFIG.PATTERN_53C_DD77;
+    } else {
+      patternArray = APP_CONFIG.PATTERN_53C_CHECKER;
+    }
 
     for (let row = 0; row < SCREEN.CHAR_ROWS; row++) {
       for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
@@ -1525,16 +5386,9 @@ function renderPreview() {
         const { inkRgb, paperRgb } = getColorsRgb(attr);
 
         for (let py = 0; py < 8; py++) {
+          const patternByte = patternArray[py];
           for (let px = 0; px < 8; px++) {
-            let isInk;
-            if (pattern === 'stripes') {
-              isInk = (Math.floor(px / 2) % 2 + py % 2) % 2 === 0;
-            } else if (pattern === 'dd77') {
-              const patternByte = (py % 2 === 0) ? patternDD : pattern77;
-              isInk = (patternByte & (1 << (7 - px))) !== 0;
-            } else {
-              isInk = (px + py) % 2 === 0;
-            }
+            const isInk = (patternByte & (1 << (7 - px))) !== 0;
             const rgb = isInk ? inkRgb : paperRgb;
             const pixelIndex = (((row * 8 + py) * SCREEN.WIDTH) + col * 8 + px) * 4;
             data[pixelIndex] = rgb[0];
@@ -1542,6 +5396,276 @@ function renderPreview() {
             data[pixelIndex + 2] = rgb[2];
             data[pixelIndex + 3] = 255;
           }
+        }
+      }
+    }
+  } else if (currentFormat === FORMAT.IFL && screenData.length >= IFL.TOTAL_SIZE) {
+    // IFL: render bitmap with 8×2 multicolor attributes
+    const sections = [
+      { bitmapAddr: 0, yOffset: 0 },
+      { bitmapAddr: 2048, yOffset: 64 },
+      { bitmapAddr: 4096, yOffset: 128 }
+    ];
+
+    for (const section of sections) {
+      for (let line = 0; line < 8; line++) {
+        for (let row = 0; row < 8; row++) {
+          for (let col = 0; col < 32; col++) {
+            const bitmapOffset = section.bitmapAddr + col + row * 32 + line * 256;
+            const byte = screenData[bitmapOffset];
+
+            const x = col * 8;
+            const y = section.yOffset + row * 8 + line;
+
+            // IFL: attribute per 8×2 block (96 rows total)
+            const attrRow = Math.floor(y / 2);
+            const attrOffset = IFL.BITMAP_SIZE + attrRow * 32 + col;
+            const attr = screenData[attrOffset];
+
+            let inkIndex = attr & 0x07;
+            let paperIndex = (attr >> 3) & 0x07;
+            const isBright = (attr & 0x40) !== 0;
+            const isFlash = (attr & 0x80) !== 0;
+
+            if (isFlash && flashPhase && flashEnabled) {
+              const tmp = inkIndex;
+              inkIndex = paperIndex;
+              paperIndex = tmp;
+            }
+
+            const palette = isBright ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
+
+            for (let bit = 0; bit < 8; bit++) {
+              const px = x + bit;
+              const maskIdx = y * SCREEN.WIDTH + px;
+              const pixelIndex = maskIdx * 4;
+              if (typeof isPixelTransparent === 'function' && isPixelTransparent(maskIdx)) {
+                const checker = getCheckerboardColor(px, y);
+                data[pixelIndex] = checker[0];
+                data[pixelIndex + 1] = checker[1];
+                data[pixelIndex + 2] = checker[2];
+              } else {
+                const isSet = (byte & (0x80 >> bit)) !== 0;
+                const rgb = isSet ? palette[inkIndex] : palette[paperIndex];
+                data[pixelIndex] = rgb[0];
+                data[pixelIndex + 1] = rgb[1];
+                data[pixelIndex + 2] = rgb[2];
+              }
+              data[pixelIndex + 3] = 255;
+            }
+          }
+        }
+      }
+    }
+  } else if (currentFormat === FORMAT.MLT && screenData.length >= MLT.TOTAL_SIZE) {
+    // MLT: render bitmap with 8×1 multicolor attributes (one per pixel line)
+    const sections = [
+      { bitmapAddr: 0, yOffset: 0 },
+      { bitmapAddr: 2048, yOffset: 64 },
+      { bitmapAddr: 4096, yOffset: 128 }
+    ];
+
+    for (const section of sections) {
+      for (let line = 0; line < 8; line++) {
+        for (let row = 0; row < 8; row++) {
+          for (let col = 0; col < 32; col++) {
+            const bitmapOffset = section.bitmapAddr + col + row * 32 + line * 256;
+            const byte = screenData[bitmapOffset];
+
+            const x = col * 8;
+            const y = section.yOffset + row * 8 + line;
+
+            // MLT: attribute per 8×1 block (192 rows total, one per pixel line)
+            const attrOffset = MLT.BITMAP_SIZE + y * 32 + col;
+            const attr = screenData[attrOffset];
+
+            let inkIndex = attr & 0x07;
+            let paperIndex = (attr >> 3) & 0x07;
+            const isBright = (attr & 0x40) !== 0;
+            const isFlash = (attr & 0x80) !== 0;
+
+            if (isFlash && flashPhase && flashEnabled) {
+              const tmp = inkIndex;
+              inkIndex = paperIndex;
+              paperIndex = tmp;
+            }
+
+            const palette = isBright ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
+
+            for (let bit = 0; bit < 8; bit++) {
+              const px = x + bit;
+              const maskIdx = y * SCREEN.WIDTH + px;
+              const pixelIndex = maskIdx * 4;
+              if (typeof isPixelTransparent === 'function' && isPixelTransparent(maskIdx)) {
+                const checker = getCheckerboardColor(px, y);
+                data[pixelIndex] = checker[0];
+                data[pixelIndex + 1] = checker[1];
+                data[pixelIndex + 2] = checker[2];
+              } else {
+                const isSet = (byte & (0x80 >> bit)) !== 0;
+                const rgb = isSet ? palette[inkIndex] : palette[paperIndex];
+                data[pixelIndex] = rgb[0];
+                data[pixelIndex + 1] = rgb[1];
+                data[pixelIndex + 2] = rgb[2];
+              }
+              data[pixelIndex + 3] = 255;
+            }
+          }
+        }
+      }
+    }
+  } else if (currentFormat === FORMAT.BMC4 && screenData.length >= BMC4.TOTAL_SIZE) {
+    // BMC4: render bitmap with 8×4 multicolor attributes
+    const sections = [
+      { bitmapAddr: 0, yOffset: 0 },
+      { bitmapAddr: 2048, yOffset: 64 },
+      { bitmapAddr: 4096, yOffset: 128 }
+    ];
+
+    for (const section of sections) {
+      for (let line = 0; line < 8; line++) {
+        for (let row = 0; row < 8; row++) {
+          for (let col = 0; col < 32; col++) {
+            const bitmapOffset = section.bitmapAddr + col + row * 32 + line * 256;
+            const byte = screenData[bitmapOffset];
+
+            const x = col * 8;
+            const y = section.yOffset + row * 8 + line;
+
+            // BMC4: attribute per 8×4 block (lines 0-3 use attr1, lines 4-7 use attr2)
+            const charRow = Math.floor(y / 8);
+            const pixelLine = y % 8;
+            const attrOffset = (pixelLine < 4) ? BMC4.ATTR1_OFFSET : BMC4.ATTR2_OFFSET;
+            const attr = screenData[attrOffset + charRow * 32 + col];
+
+            let inkIndex = attr & 0x07;
+            let paperIndex = (attr >> 3) & 0x07;
+            const isBright = (attr & 0x40) !== 0;
+            const isFlash = (attr & 0x80) !== 0;
+
+            if (isFlash && flashPhase && flashEnabled) {
+              const tmp = inkIndex;
+              inkIndex = paperIndex;
+              paperIndex = tmp;
+            }
+
+            const palette = isBright ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
+
+            for (let bit = 0; bit < 8; bit++) {
+              const px = x + bit;
+              const maskIdx = y * SCREEN.WIDTH + px;
+              const pixelIndex = maskIdx * 4;
+              if (typeof isPixelTransparent === 'function' && isPixelTransparent(maskIdx)) {
+                const checker = getCheckerboardColor(px, y);
+                data[pixelIndex] = checker[0];
+                data[pixelIndex + 1] = checker[1];
+                data[pixelIndex + 2] = checker[2];
+              } else {
+                const isSet = (byte & (0x80 >> bit)) !== 0;
+                const rgb = isSet ? palette[inkIndex] : palette[paperIndex];
+                data[pixelIndex] = rgb[0];
+                data[pixelIndex + 1] = rgb[1];
+                data[pixelIndex + 2] = rgb[2];
+              }
+              data[pixelIndex + 3] = 255;
+            }
+          }
+        }
+      }
+    }
+  } else if (currentFormat === FORMAT.RGB3 && screenData.length >= RGB3.TOTAL_SIZE) {
+    // RGB3: render tricolor bitmap (R, G, B channels combined)
+    const sections = [
+      { bitmapAddr: 0, yOffset: 0 },
+      { bitmapAddr: 2048, yOffset: 64 },
+      { bitmapAddr: 4096, yOffset: 128 }
+    ];
+
+    for (const section of sections) {
+      for (let line = 0; line < 8; line++) {
+        for (let row = 0; row < 8; row++) {
+          for (let col = 0; col < 32; col++) {
+            const bitmapOffset = section.bitmapAddr + col + row * 32 + line * 256;
+            const redByte = screenData[RGB3.RED_OFFSET + bitmapOffset];
+            const greenByte = screenData[RGB3.GREEN_OFFSET + bitmapOffset];
+            const blueByte = screenData[RGB3.BLUE_OFFSET + bitmapOffset];
+
+            const x = col * 8;
+            const y = section.yOffset + row * 8 + line;
+
+            for (let bit = 0; bit < 8; bit++) {
+              const px = x + bit;
+              const maskIdx = y * SCREEN.WIDTH + px;
+              const pixelIndex = maskIdx * 4;
+              if (typeof isPixelTransparent === 'function' && isPixelTransparent(maskIdx)) {
+                const checker = getCheckerboardColor(px, y);
+                data[pixelIndex] = checker[0];
+                data[pixelIndex + 1] = checker[1];
+                data[pixelIndex + 2] = checker[2];
+              } else {
+                data[pixelIndex] = (redByte & (0x80 >> bit)) ? 255 : 0;
+                data[pixelIndex + 1] = (greenByte & (0x80 >> bit)) ? 255 : 0;
+                data[pixelIndex + 2] = (blueByte & (0x80 >> bit)) ? 255 : 0;
+              }
+              data[pixelIndex + 3] = 255;
+            }
+          }
+        }
+      }
+    }
+  } else if (currentFormat === FORMAT.MONO_FULL || currentFormat === FORMAT.MONO_2_3 || currentFormat === FORMAT.MONO_1_3) {
+    // Monochrome: render bitmap only (no attributes), use editor's selected colors
+    const thirds = currentFormat === FORMAT.MONO_1_3 ? 1 : (currentFormat === FORMAT.MONO_2_3 ? 2 : 3);
+    const palette = editorBright ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
+    const ink = palette[editorInkColor];
+    const paper = palette[editorPaperColor];
+
+    for (let third = 0; third < thirds; third++) {
+      const bitmapAddr = third * 2048;
+      const yOffset = third * 64;
+
+      for (let line = 0; line < 8; line++) {
+        for (let row = 0; row < 8; row++) {
+          for (let col = 0; col < 32; col++) {
+            const bitmapOffset = bitmapAddr + col + row * 32 + line * 256;
+            const byte = screenData[bitmapOffset];
+
+            const x = col * 8;
+            const y = yOffset + row * 8 + line;
+
+            for (let bit = 0; bit < 8; bit++) {
+              const px = x + bit;
+              const maskIdx = y * SCREEN.WIDTH + px;
+              const pixelIndex = maskIdx * 4;
+              if (typeof isPixelTransparent === 'function' && isPixelTransparent(maskIdx)) {
+                const checker = getCheckerboardColor(px, y);
+                data[pixelIndex] = checker[0];
+                data[pixelIndex + 1] = checker[1];
+                data[pixelIndex + 2] = checker[2];
+              } else {
+                const isSet = (byte & (0x80 >> bit)) !== 0;
+                const rgb = isSet ? ink : paper;
+                data[pixelIndex] = rgb[0];
+                data[pixelIndex + 1] = rgb[1];
+                data[pixelIndex + 2] = rgb[2];
+              }
+              data[pixelIndex + 3] = 255;
+            }
+          }
+        }
+      }
+    }
+
+    // Fill remaining area with paper for partial screens
+    if (thirds < 3) {
+      const startY = thirds * 64;
+      for (let y = startY; y < 192; y++) {
+        for (let x = 0; x < 256; x++) {
+          const pixelIndex = (y * SCREEN.WIDTH + x) * 4;
+          data[pixelIndex] = paper[0];
+          data[pixelIndex + 1] = paper[1];
+          data[pixelIndex + 2] = paper[2];
+          data[pixelIndex + 3] = 255;
         }
       }
     }
@@ -1580,12 +5704,22 @@ function renderPreview() {
             const y = section.yOffset + row * 8 + line;
 
             for (let bit = 0; bit < 8; bit++) {
-              const isSet = (byte & (0x80 >> bit)) !== 0;
-              const rgb = isSet ? palette[inkIndex] : palette[paperIndex];
-              const pixelIndex = ((y * SCREEN.WIDTH) + x + bit) * 4;
-              data[pixelIndex] = rgb[0];
-              data[pixelIndex + 1] = rgb[1];
-              data[pixelIndex + 2] = rgb[2];
+              const px = x + bit;
+              const maskIdx = y * SCREEN.WIDTH + px;
+              const pixelIndex = maskIdx * 4;
+              // Check for transparency
+              if (typeof isPixelTransparent === 'function' && isPixelTransparent(maskIdx)) {
+                const checker = getCheckerboardColor(px, y);
+                data[pixelIndex] = checker[0];
+                data[pixelIndex + 1] = checker[1];
+                data[pixelIndex + 2] = checker[2];
+              } else {
+                const isSet = (byte & (0x80 >> bit)) !== 0;
+                const rgb = isSet ? palette[inkIndex] : palette[paperIndex];
+                data[pixelIndex] = rgb[0];
+                data[pixelIndex + 1] = rgb[1];
+                data[pixelIndex + 2] = rgb[2];
+              }
               data[pixelIndex + 3] = 255;
             }
           }
@@ -1759,6 +5893,46 @@ function hidePreviewPanel() {
   if (panel) panel.classList.remove('active');
 }
 
+/**
+ * Toggles preview panel visibility
+ */
+function togglePreviewPanel() {
+  previewVisible = !previewVisible;
+  const panel = document.getElementById('editorPreviewPanel');
+  const checkbox = document.getElementById('showPreviewCheckbox');
+
+  if (panel) {
+    if (previewVisible) {
+      panel.classList.add('active');
+      renderPreview();
+    } else {
+      panel.classList.remove('active');
+    }
+  }
+
+  if (checkbox) {
+    /** @type {HTMLInputElement} */ (checkbox).checked = previewVisible;
+  }
+}
+
+/**
+ * Sets preview panel visibility
+ * @param {boolean} visible
+ */
+function setPreviewVisible(visible) {
+  previewVisible = visible;
+  const panel = document.getElementById('editorPreviewPanel');
+
+  if (panel) {
+    if (previewVisible) {
+      panel.classList.add('active');
+      renderPreview();
+    } else {
+      panel.classList.remove('active');
+    }
+  }
+}
+
 // ============================================================================
 // Preview Panel Dragging
 // ============================================================================
@@ -1792,12 +5966,14 @@ function initPreviewDrag() {
     const x = e.clientX - dragOffset.x;
     const y = e.clientY - dragOffset.y;
 
-    // Keep panel within viewport
-    const maxX = window.innerWidth - panel.offsetWidth;
-    const maxY = window.innerHeight - panel.offsetHeight;
+    // Allow panel to go 3/4 outside viewport (keep 1/4 visible)
+    const minX = -panel.offsetWidth * 0.75;
+    const minY = -panel.offsetHeight * 0.75;
+    const maxX = window.innerWidth - panel.offsetWidth * 0.25;
+    const maxY = window.innerHeight - panel.offsetHeight * 0.25;
 
-    panel.style.left = Math.max(0, Math.min(x, maxX)) + 'px';
-    panel.style.top = Math.max(0, Math.min(y, maxY)) + 'px';
+    panel.style.left = Math.max(minX, Math.min(x, maxX)) + 'px';
+    panel.style.top = Math.max(minY, Math.min(y, maxY)) + 'px';
     panel.style.right = 'auto';
     panel.style.bottom = 'auto';
   });
@@ -1807,13 +5983,245 @@ function initPreviewDrag() {
   });
 }
 
+// ============================================================================
+// Fullscreen Editor Mode
+// ============================================================================
+
+/** @type {boolean} */
+let isDraggingPalette = false;
+
+/** @type {{x: number, y: number}} */
+let paletteDragOffset = { x: 0, y: 0 };
+
+/**
+ * Toggles fullscreen editor mode
+ */
+function toggleFullscreenEditor() {
+  if (!editorActive) return;
+
+  fullscreenMode = !fullscreenMode;
+
+  if (fullscreenMode) {
+    enterFullscreenEditor();
+  } else {
+    exitFullscreenEditor();
+  }
+}
+
+/**
+ * Enters fullscreen editor mode
+ */
+function enterFullscreenEditor() {
+  fullscreenMode = true;
+  document.body.classList.add('fullscreen-editor');
+
+  // Request browser fullscreen
+  if (document.documentElement.requestFullscreen) {
+    document.documentElement.requestFullscreen().catch(() => {});
+  }
+
+  // Show floating palette
+  const palette = document.getElementById('floatingPalette');
+  if (palette) palette.classList.add('active');
+
+  // Initialize floating palette colors
+  updateFloatingPalette();
+
+  // Re-render with new canvas size
+  editorRender();
+}
+
+/**
+ * Toggles floating palette visibility in fullscreen mode
+ */
+function toggleFloatingPalette() {
+  if (!fullscreenMode) return;
+  const palette = document.getElementById('floatingPalette');
+  if (palette) {
+    palette.classList.toggle('active');
+  }
+}
+
+/**
+ * Exits fullscreen editor mode
+ */
+function exitFullscreenEditor() {
+  fullscreenMode = false;
+  document.body.classList.remove('fullscreen-editor');
+
+  // Exit browser fullscreen
+  if (document.fullscreenElement && document.exitFullscreen) {
+    document.exitFullscreen().catch(() => {});
+  }
+
+  // Hide floating palette
+  const palette = document.getElementById('floatingPalette');
+  if (palette) palette.classList.remove('active');
+
+  // Re-render
+  editorRender();
+}
+
+/**
+ * Updates the floating palette to match current editor state
+ */
+function updateFloatingPalette() {
+  // Update tool selection
+  const floatingTools = document.querySelectorAll('.floating-tool');
+  floatingTools.forEach(btn => {
+    const tool = btn.getAttribute('data-tool');
+    btn.classList.toggle('selected', tool === currentTool);
+  });
+
+  // Update color palette
+  const colorsContainer = document.getElementById('floatingColors');
+  if (colorsContainer && colorsContainer.children.length === 0) {
+    // Initialize color buttons
+    for (let i = 0; i < 8; i++) {
+      const colorBtn = document.createElement('div');
+      colorBtn.className = 'floating-palette-color';
+      colorBtn.dataset.color = String(i);
+      colorBtn.title = COLOR_NAMES[i];
+      colorsContainer.appendChild(colorBtn);
+
+      colorBtn.addEventListener('click', (e) => {
+        editorInkColor = i;
+        updateColorPreview();
+        updateFloatingPalette();
+      });
+
+      colorBtn.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        editorPaperColor = i;
+        updateColorPreview();
+        updateFloatingPalette();
+      });
+    }
+  }
+
+  // Update color button styles and markers based on current palette
+  // Show bright color on top half, normal color on bottom half
+  const colorBtns = colorsContainer?.querySelectorAll('.floating-palette-color');
+  colorBtns?.forEach((btn, i) => {
+    const normalRgb = ZX_PALETTE_RGB.REGULAR[i];
+    const brightRgb = ZX_PALETTE_RGB.BRIGHT[i];
+    const normalColor = `rgb(${normalRgb[0]},${normalRgb[1]},${normalRgb[2]})`;
+    const brightColor = `rgb(${brightRgb[0]},${brightRgb[1]},${brightRgb[2]})`;
+    /** @type {HTMLElement} */ (btn).style.background =
+      `linear-gradient(to bottom, ${brightColor} 0%, ${brightColor} 50%, ${normalColor} 50%, ${normalColor} 100%)`;
+
+    // Remove existing markers
+    const existing = btn.querySelectorAll('.editor-palette-marker');
+    existing.forEach(m => m.remove());
+
+    // Add I/P markers
+    if (i === editorInkColor) {
+      const m = document.createElement('span');
+      m.className = 'editor-palette-marker ink-marker';
+      m.textContent = 'I';
+      btn.appendChild(m);
+    }
+    if (i === editorPaperColor) {
+      const m = document.createElement('span');
+      m.className = 'editor-palette-marker paper-marker';
+      m.textContent = 'P';
+      btn.appendChild(m);
+    }
+  });
+
+  // Update bright checkbox
+  const brightCheckbox = /** @type {HTMLInputElement} */ (document.getElementById('floatingBright'));
+  if (brightCheckbox) brightCheckbox.checked = editorBright;
+}
+
+/**
+ * Initializes floating palette interactions
+ */
+function initFloatingPalette() {
+  const palette = document.getElementById('floatingPalette');
+  const header = palette?.querySelector('.floating-palette-header');
+
+  if (!palette || !header) return;
+
+  // Drag functionality
+  header.addEventListener('mousedown', (e) => {
+    if (/** @type {HTMLElement} */ (e.target).tagName === 'BUTTON') return;
+    isDraggingPalette = true;
+    const rect = palette.getBoundingClientRect();
+    paletteDragOffset.x = e.clientX - rect.left;
+    paletteDragOffset.y = e.clientY - rect.top;
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!isDraggingPalette) return;
+
+    const x = e.clientX - paletteDragOffset.x;
+    const y = e.clientY - paletteDragOffset.y;
+
+    // Keep palette within viewport
+    const maxX = window.innerWidth - palette.offsetWidth;
+    const maxY = window.innerHeight - palette.offsetHeight;
+
+    palette.style.left = Math.max(0, Math.min(x, maxX)) + 'px';
+    palette.style.top = Math.max(0, Math.min(y, maxY)) + 'px';
+  });
+
+  document.addEventListener('mouseup', () => {
+    isDraggingPalette = false;
+  });
+
+  // Exit fullscreen button
+  const exitBtn = document.getElementById('exitFullscreenBtn');
+  exitBtn?.addEventListener('click', exitFullscreenEditor);
+
+  // Tool buttons
+  const toolBtns = document.querySelectorAll('.floating-tool');
+  toolBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const tool = btn.getAttribute('data-tool');
+      if (tool === 'cut') {
+        if (selectionStartPoint && selectionEndPoint) cutSelection();
+        updateFloatingPalette();
+      } else if (tool === 'paste') {
+        startPasteMode();
+        updateFloatingPalette();
+      } else if (tool === 'invert') {
+        if (selectionStartPoint && selectionEndPoint) invertSelection();
+        updateFloatingPalette();
+      } else if (tool) {
+        setEditorTool(tool);
+        // setEditorTool already calls updateFloatingPalette if in fullscreen
+      }
+    });
+  });
+
+  // Bright checkbox
+  const brightCheckbox = document.getElementById('floatingBright');
+  brightCheckbox?.addEventListener('change', () => {
+    editorBright = /** @type {HTMLInputElement} */ (brightCheckbox).checked;
+    updateColorPreview();
+    updateFloatingPalette();
+  });
+}
+
 /**
  * Renders main screen and updates preview if editor is active
+ * @param {boolean} [skipPreview=false] - Skip preview rendering for performance during continuous drawing
  */
-function editorRender() {
+function editorRender(skipPreview = false) {
+  // Cancel any pending scheduled render to avoid overwriting this render
+  if (!skipPreview && pendingRenderFrame !== null) {
+    cancelAnimationFrame(pendingRenderFrame);
+    pendingRenderFrame = null;
+  }
+
   renderScreen();
+
   if (editorActive) {
-    renderPreview();
+    if (!skipPreview) {
+      renderPreview();
+    }
     updateFlashTimer();
 
     // Draw selection overlay (finalized selection rectangle)
@@ -1825,7 +6233,135 @@ function editorRender() {
     if (isPasting && clipboardData) {
       drawPastePreview(pasteCursorPos.x, pasteCursorPos.y);
     }
+
+    // Draw brush preview at cursor position
+    if (brushPreviewMode && brushPreviewPos && !isPasting && !isSelecting) {
+      drawBrushPreview();
+    }
+
+    // Draw border brush preview
+    if (brushPreviewMode && borderPreviewPos && !isPasting && !isSelecting) {
+      drawBorderBrushPreview();
+    }
   }
+}
+
+/**
+ * Draws reference image overlay on the canvas
+ */
+function drawReferenceOverlay() {
+  if (!referenceImage) return;
+
+  const canvas = /** @type {HTMLCanvasElement|null} */ (document.getElementById('screenCanvas'));
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const formatWidth = getFormatWidth();
+  const formatHeight = getFormatHeight();
+
+  // Use custom size or default to format size (including border)
+  const canvasWidth = canvas.width / zoom;
+  const canvasHeight = canvas.height / zoom;
+  const drawWidth = (referenceWidth !== null ? referenceWidth : canvasWidth) * zoom;
+  const drawHeight = (referenceHeight !== null ? referenceHeight : canvasHeight) * zoom;
+
+  // Apply offset (scaled by zoom) - starts from canvas origin to cover border too
+  const drawX = referenceOffsetX * zoom;
+  const drawY = referenceOffsetY * zoom;
+
+  ctx.save();
+  ctx.globalAlpha = referenceOpacity;
+  ctx.drawImage(
+    referenceImage,
+    0, 0, referenceImage.width, referenceImage.height,
+    drawX, drawY, drawWidth, drawHeight
+  );
+  ctx.restore();
+}
+
+/**
+ * Loads a reference image from a file
+ * @param {File} file
+ */
+function loadReferenceImage(file) {
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const img = new Image();
+    img.onload = function() {
+      referenceImage = img;
+      showReference = true;
+      updateReferenceUI();
+      editorRender();
+    };
+    img.src = /** @type {string} */ (e.target?.result);
+  };
+  reader.readAsDataURL(file);
+}
+
+/**
+ * Clears the reference image
+ */
+function clearReferenceImage() {
+  referenceImage = null;
+  showReference = false;
+  referenceOffsetX = 0;
+  referenceOffsetY = 0;
+  referenceWidth = null;
+  referenceHeight = null;
+  updateReferenceUI();
+  editorRender();
+}
+
+/**
+ * Gets reference image as data URL for saving
+ * @returns {string|null}
+ */
+function getReferenceImageDataURL() {
+  if (!referenceImage) return null;
+
+  // Draw image to canvas to get data URL
+  const canvas = document.createElement('canvas');
+  canvas.width = referenceImage.width;
+  canvas.height = referenceImage.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  ctx.drawImage(referenceImage, 0, 0);
+  return canvas.toDataURL('image/png');
+}
+
+/**
+ * Loads reference image from data URL
+ * @param {string} dataURL
+ */
+function loadReferenceImageFromDataURL(dataURL) {
+  const img = new Image();
+  img.onload = function() {
+    referenceImage = img;
+    updateReferenceUI();
+    editorRender();
+  };
+  img.src = dataURL;
+}
+
+/**
+ * Updates the reference image UI controls
+ */
+function updateReferenceUI() {
+  const toggle = /** @type {HTMLInputElement|null} */ (document.getElementById('refShowCheckbox'));
+  const opacityEl = /** @type {HTMLInputElement|null} */ (document.getElementById('refOpacitySlider'));
+  const offsetXEl = /** @type {HTMLInputElement|null} */ (document.getElementById('refOffsetX'));
+  const offsetYEl = /** @type {HTMLInputElement|null} */ (document.getElementById('refOffsetY'));
+  const widthEl = /** @type {HTMLInputElement|null} */ (document.getElementById('refWidth'));
+  const heightEl = /** @type {HTMLInputElement|null} */ (document.getElementById('refHeight'));
+
+  if (toggle) toggle.checked = showReference;
+  if (opacityEl) opacityEl.value = String(Math.round(referenceOpacity * 100));
+  if (offsetXEl) offsetXEl.value = String(referenceOffsetX);
+  if (offsetYEl) offsetYEl.value = String(referenceOffsetY);
+  if (widthEl) widthEl.value = referenceWidth !== null ? String(referenceWidth) : '';
+  if (heightEl) heightEl.value = referenceHeight !== null ? String(referenceHeight) : '';
 }
 
 // ============================================================================
@@ -1842,6 +6378,11 @@ function saveScrFile(filename) {
     return;
   }
 
+  // Flatten layers before saving (ensures screenData has final composite)
+  if (layersEnabled && layers.length > 0) {
+    flattenLayersToScreen();
+  }
+
   /** @type {Uint8Array} */
   let saveData;
   /** @type {string} */
@@ -1853,6 +6394,27 @@ function saveScrFile(filename) {
   } else if (currentFormat === FORMAT.BSC) {
     saveData = screenData.slice(0, BSC.TOTAL_SIZE);
     defaultExt = '.bsc';
+  } else if (currentFormat === FORMAT.IFL) {
+    saveData = screenData.slice(0, IFL.TOTAL_SIZE);
+    defaultExt = '.ifl';
+  } else if (currentFormat === FORMAT.MLT) {
+    saveData = screenData.slice(0, MLT.TOTAL_SIZE);
+    defaultExt = '.mlt';
+  } else if (currentFormat === FORMAT.BMC4) {
+    saveData = screenData.slice(0, BMC4.TOTAL_SIZE);
+    defaultExt = '.bmc4';
+  } else if (currentFormat === FORMAT.RGB3) {
+    saveData = screenData.slice(0, RGB3.TOTAL_SIZE);
+    defaultExt = '.3';
+  } else if (currentFormat === FORMAT.MONO_FULL) {
+    saveData = screenData.slice(0, 6144);
+    defaultExt = '.scr';
+  } else if (currentFormat === FORMAT.MONO_2_3) {
+    saveData = screenData.slice(0, 4096);
+    defaultExt = '.scr';
+  } else if (currentFormat === FORMAT.MONO_1_3) {
+    saveData = screenData.slice(0, 2048);
+    defaultExt = '.scr';
   } else {
     saveData = screenData.slice(0, SCREEN.TOTAL_SIZE);
     defaultExt = '.scr';
@@ -1870,7 +6432,10 @@ function saveScrFile(filename) {
       filename = baseName + '_edited' + defaultExt;
     } else {
       filename = currentFormat === FORMAT.ATTR_53C ? 'attributes.53c' :
-                 currentFormat === FORMAT.BSC ? 'screen.bsc' : 'screen.scr';
+                 currentFormat === FORMAT.BSC ? 'screen.bsc' :
+                 currentFormat === FORMAT.IFL ? 'screen.ifl' :
+                 currentFormat === FORMAT.MLT ? 'screen.mlt' :
+                 currentFormat === FORMAT.BMC4 ? 'screen.bmc4' : 'screen.scr';
     }
   }
 
@@ -1879,6 +6444,12 @@ function saveScrFile(filename) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+
+  // Reset modified flag after successful save
+  if (activePictureIndex >= 0 && activePictureIndex < openPictures.length) {
+    openPictures[activePictureIndex].modified = false;
+    updatePictureTabBar();
+  }
 }
 
 
@@ -1915,54 +6486,166 @@ function createNewScreen(ink, paper, bright) {
 function createNewPicture(format) {
   // Exit editor first if active
   if (editorActive) {
-    toggleEditorMode();
+    setEditorEnabled(false);
   }
+
+  // Stop any SCA animation and reset state
+  if (typeof resetScaState === 'function') {
+    resetScaState();
+  }
+
+  // Build new screen data
+  let newData;
+  let newFormat;
+  let newFileName;
+
+  // Use current editor colors (with safe defaults for transparent)
+  const newInk = editorInkColor === COLOR_TRANSPARENT ? 0 : editorInkColor;
+  const newPaper = editorPaperColor === COLOR_TRANSPARENT ? 7 : editorPaperColor;
+  const newAttr = buildAttribute(newInk, newPaper, editorBright, editorFlash);
+
+  // Border color for BSC/BMC4 (from screen_viewer.js, default to 7/white)
+  const bc = (typeof borderColor !== 'undefined') ? (borderColor & 0x07) : 7;
+  const borderByte = bc | (bc << 3); // Same color in both slots
 
   switch (format) {
     case 'atr':
-      screenData = new Uint8Array(SCREEN.ATTR_SIZE);
-      const atrAttr = buildAttribute(7, 0, false, false);
+      newData = new Uint8Array(SCREEN.ATTR_SIZE);
       for (let i = 0; i < SCREEN.ATTR_SIZE; i++) {
-        screenData[i] = atrAttr;
+        newData[i] = newAttr;
       }
-      currentFormat = FORMAT.ATTR_53C;
-      currentFileName = 'new_screen.atr';
+      newFormat = FORMAT.ATTR_53C;
+      newFileName = 'new_screen.atr';
       break;
 
     case 'bsc':
-      screenData = new Uint8Array(BSC.TOTAL_SIZE);
-      // Fill attributes (bytes 6144–6911) with white ink on black paper
-      const bscAttr = buildAttribute(7, 0, false, false);
+      newData = new Uint8Array(BSC.TOTAL_SIZE);
+      // Fill attributes with current ink/paper
       for (let i = SCREEN.BITMAP_SIZE; i < SCREEN.TOTAL_SIZE; i++) {
-        screenData[i] = bscAttr;
+        newData[i] = newAttr;
       }
-      // Border data (bytes 6912–11135) starts as zeros (all black)
-      currentFormat = FORMAT.BSC;
-      currentFileName = 'new_screen.bsc';
+      // Fill border with current border color
+      for (let i = BSC.BORDER_OFFSET; i < BSC.TOTAL_SIZE; i++) {
+        newData[i] = borderByte;
+      }
+      newFormat = FORMAT.BSC;
+      newFileName = 'new_screen.bsc';
+      break;
+
+    case 'ifl':
+      newData = new Uint8Array(IFL.TOTAL_SIZE);
+      // Fill attributes with current ink/paper
+      for (let i = IFL.BITMAP_SIZE; i < IFL.TOTAL_SIZE; i++) {
+        newData[i] = newAttr;
+      }
+      newFormat = FORMAT.IFL;
+      newFileName = 'new_screen.ifl';
+      break;
+
+    case 'mlt':
+      newData = new Uint8Array(MLT.TOTAL_SIZE);
+      // Fill attributes with current ink/paper
+      for (let i = MLT.BITMAP_SIZE; i < MLT.TOTAL_SIZE; i++) {
+        newData[i] = newAttr;
+      }
+      newFormat = FORMAT.MLT;
+      newFileName = 'new_screen.mlt';
+      break;
+
+    case 'bmc4':
+      newData = new Uint8Array(BMC4.TOTAL_SIZE);
+      // Fill attr1 and attr2 with current ink/paper
+      for (let i = BMC4.ATTR1_OFFSET; i < BMC4.ATTR1_OFFSET + BMC4.ATTR1_SIZE; i++) {
+        newData[i] = newAttr;
+      }
+      for (let i = BMC4.ATTR2_OFFSET; i < BMC4.ATTR2_OFFSET + BMC4.ATTR2_SIZE; i++) {
+        newData[i] = newAttr;
+      }
+      // Fill border with current border color
+      for (let i = BMC4.BORDER_OFFSET; i < BMC4.TOTAL_SIZE; i++) {
+        newData[i] = borderByte;
+      }
+      newFormat = FORMAT.BMC4;
+      newFileName = 'new_screen.bmc4';
+      break;
+
+    case 'mono_full':
+      newData = new Uint8Array(6144);
+      newFormat = FORMAT.MONO_FULL;
+      newFileName = 'new_screen.scr';
+      break;
+
+    case 'mono_2_3':
+      newData = new Uint8Array(4096);
+      newFormat = FORMAT.MONO_2_3;
+      newFileName = 'new_screen.scr';
+      break;
+
+    case 'mono_1_3':
+      newData = new Uint8Array(2048);
+      newFormat = FORMAT.MONO_1_3;
+      newFileName = 'new_screen.scr';
+      break;
+
+    case 'rgb3':
+      // RGB3: 3 separate bitmaps for R, G, B channels
+      // All zeros = black screen
+      newData = new Uint8Array(RGB3.TOTAL_SIZE);
+      newFormat = FORMAT.RGB3;
+      newFileName = 'new_screen.3';
       break;
 
     case 'scr':
     default:
-      screenData = new Uint8Array(SCREEN.TOTAL_SIZE);
-      const scrAttr = buildAttribute(7, 0, false, false);
+      newData = new Uint8Array(SCREEN.TOTAL_SIZE);
       for (let i = SCREEN.BITMAP_SIZE; i < SCREEN.TOTAL_SIZE; i++) {
-        screenData[i] = scrAttr;
+        newData[i] = newAttr;
       }
-      currentFormat = FORMAT.SCR;
-      currentFileName = 'new_screen.scr';
+      newFormat = FORMAT.SCR;
+      newFileName = 'new_screen.scr';
       break;
   }
 
+  // Use multi-picture system
+  const result = addPicture(newFileName, newFormat, newData);
+  if (result < 0) {
+    // Max pictures reached - still update globals for direct use
+    screenData = newData;
+    currentFormat = newFormat;
+    currentFileName = newFileName;
+  }
+
+  // Reset undo/redo stacks (addPicture creates fresh state, but ensure clean)
+  undoStack = [];
+  redoStack = [];
+
+  // Reset layer system (start fresh with no layers)
+  layers = [];
+  activeLayerIndex = 0;
+  layersEnabled = false;
+
+  if (typeof toggleScaControlsVisibility === 'function') {
+    toggleScaControlsVisibility();
+  }
   if (typeof toggleFormatControlsVisibility === 'function') {
     toggleFormatControlsVisibility();
   }
   if (typeof updateFileInfo === 'function') {
     updateFileInfo();
   }
-  renderScreen();
 
-  // Enter editor
-  toggleEditorMode();
+  toggleLayerSectionVisibility();
+  updateLayerPanel();
+  renderScreen();
+  updatePictureTabBar();
+
+  // Apply current zoom (already loaded from settings)
+  if (typeof setZoom === 'function') {
+    setZoom(zoom);
+  }
+
+  // Enable editor for new picture
+  updateEditorState();
 }
 
 // ============================================================================
@@ -1995,6 +6678,51 @@ function updateEditorInfo(x, y) {
     }
     const addr = cellX + cellY * 32;
     attr = screenData[addr];
+  } else if (currentFormat === FORMAT.IFL) {
+    if (screenData.length < IFL.TOTAL_SIZE) {
+      infoEl.textContent = 'No screen loaded';
+      return;
+    }
+    attr = screenData[getIflAttributeAddress(x, y)];
+  } else if (currentFormat === FORMAT.MLT) {
+    if (screenData.length < MLT.TOTAL_SIZE) {
+      infoEl.textContent = 'No screen loaded';
+      return;
+    }
+    attr = screenData[getMltAttributeAddress(x, y)];
+  } else if (currentFormat === FORMAT.BMC4) {
+    if (screenData.length < BMC4.TOTAL_SIZE) {
+      infoEl.textContent = 'No screen loaded';
+      return;
+    }
+    attr = screenData[getBmc4AttributeAddress(x, y)];
+  } else if (currentFormat === FORMAT.MONO_FULL || currentFormat === FORMAT.MONO_2_3 || currentFormat === FORMAT.MONO_1_3) {
+    // Monochrome: no attributes, just show pixel info
+    const maxY = currentFormat === FORMAT.MONO_1_3 ? 64 : (currentFormat === FORMAT.MONO_2_3 ? 128 : 192);
+    const pixelValue = y < maxY ? getPixel(screenData, x, y) : false;
+    infoEl.innerHTML =
+      `Pos: (${x}, ${y}) Cell: (${cellX}, ${cellY})<br>` +
+      `Monochrome<br>` +
+      `Pixel: ${pixelValue ? 'set' : 'clear'}`;
+    return;
+  } else if (currentFormat === FORMAT.RGB3) {
+    // RGB3: show pixel color from R, G, B channels
+    if (screenData.length < RGB3.TOTAL_SIZE) {
+      infoEl.textContent = 'No screen loaded';
+      return;
+    }
+    const bitmapAddr = getBitmapAddress(x, y);
+    const bit = getBitPosition(x);
+    const hasRed = (screenData[RGB3.RED_OFFSET + bitmapAddr] & (1 << bit)) !== 0;
+    const hasGreen = (screenData[RGB3.GREEN_OFFSET + bitmapAddr] & (1 << bit)) !== 0;
+    const hasBlue = (screenData[RGB3.BLUE_OFFSET + bitmapAddr] & (1 << bit)) !== 0;
+    // ZX color index: bit0=Blue, bit1=Red, bit2=Green
+    const colorIndex = (hasBlue ? 1 : 0) | (hasRed ? 2 : 0) | (hasGreen ? 4 : 0);
+    infoEl.innerHTML =
+      `Pos: (${x}, ${y}) Cell: (${cellX}, ${cellY})<br>` +
+      `RGB3 Tricolor<br>` +
+      `Pixel: ${COLOR_NAMES[colorIndex]}`;
+    return;
   } else {
     if (screenData.length < SCREEN.TOTAL_SIZE) {
       infoEl.textContent = 'No screen loaded';
@@ -2011,6 +6739,32 @@ function updateEditorInfo(x, y) {
       `Pos: (${x}, ${y}) Cell: (${cellX}, ${cellY})<br>` +
       `Cell: ${COLOR_NAMES[parsed.ink]}/${COLOR_NAMES[parsed.paper]}` +
       `${parsed.bright ? ' BRIGHT' : ''}`;
+  } else if (currentFormat === FORMAT.IFL) {
+    // IFL: 8×2 blocks
+    const attrRow = Math.floor(y / 2);
+    const pixelValue = getPixel(screenData, x, y);
+    infoEl.innerHTML =
+      `Pos: (${x}, ${y}) Block: (${cellX}, ${attrRow})<br>` +
+      `8\u00d72: ${COLOR_NAMES[parsed.ink]}/${COLOR_NAMES[parsed.paper]}` +
+      `${parsed.bright ? ' BRIGHT' : ''}<br>` +
+      `Pixel: ${pixelValue ? 'ink' : 'paper'}`;
+  } else if (currentFormat === FORMAT.MLT) {
+    // MLT: 8×1 blocks (one per pixel line)
+    const pixelValue = getPixel(screenData, x, y);
+    infoEl.innerHTML =
+      `Pos: (${x}, ${y}) Block: (${cellX}, ${y})<br>` +
+      `8\u00d71: ${COLOR_NAMES[parsed.ink]}/${COLOR_NAMES[parsed.paper]}` +
+      `${parsed.bright ? ' BRIGHT' : ''}<br>` +
+      `Pixel: ${pixelValue ? 'ink' : 'paper'}`;
+  } else if (currentFormat === FORMAT.BMC4) {
+    // BMC4: 8×4 blocks
+    const blockY = Math.floor(y / 4);
+    const pixelValue = getPixel(screenData, x, y);
+    infoEl.innerHTML =
+      `Pos: (${x}, ${y}) Block: (${cellX}, ${blockY})<br>` +
+      `8\u00d74: ${COLOR_NAMES[parsed.ink]}/${COLOR_NAMES[parsed.paper]}` +
+      `${parsed.bright ? ' BRIGHT' : ''}<br>` +
+      `Pixel: ${pixelValue ? 'ink' : 'paper'}`;
   } else {
     const pixelValue = getPixel(screenData, x, y);
     infoEl.innerHTML =
@@ -2019,6 +6773,187 @@ function updateEditorInfo(x, y) {
       `${parsed.bright ? ' BRIGHT' : ''}<br>` +
       `Pixel: ${pixelValue ? 'ink' : 'paper'}`;
   }
+}
+
+// ============================================================================
+// Brush Preview Cursor
+// ============================================================================
+
+/**
+ * Toggles brush preview cursor mode
+ */
+function toggleBrushPreview() {
+  brushPreviewMode = !brushPreviewMode;
+
+  if (screenCanvas) {
+    screenCanvas.style.cursor = brushPreviewMode ? 'none' : 'crosshair';
+  }
+
+  editorRender();
+}
+
+/**
+ * Draws the brush preview overlay at the current cursor position
+ */
+function drawBrushPreview() {
+  // Use brushPreviewPos, fall back to pasteCursorPos if not set yet
+  const pos = brushPreviewPos || pasteCursorPos;
+  if (!brushPreviewMode || !pos || !screenCanvas) return;
+
+  const ctx = screenCanvas.getContext('2d');
+  if (!ctx) return;
+
+  const opacity = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.BRUSH_PREVIEW_OPACITY) || 0.5;
+  const borderPixels = getMainScreenOffset();
+
+  // Apply snap mode to preview position
+  const snapped = snapDrawCoords(pos.x, pos.y);
+  const x = snapped.x;
+  const y = snapped.y;
+
+  ctx.save();
+  ctx.globalAlpha = opacity;
+
+  // Determine brush color (use ink color, or red tint for transparent/eraser)
+  const isTransparent = editorInkColor === COLOR_TRANSPARENT;
+  const color = isTransparent ? '#ff4444' :
+    (editorBright ? ZX_PALETTE.BRIGHT[editorInkColor] : ZX_PALETTE.REGULAR[editorInkColor]);
+
+  // Check for custom brush
+  if (brushShape === 'custom' && activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
+    const brush = customBrushes[activeCustomBrush];
+    const hw = Math.floor(brush.width / 2);
+    const hh = Math.floor(brush.height / 2);
+    const hasMask = brush.mask && brush.mask.length > 0;
+
+    for (let by = 0; by < brush.height; by++) {
+      for (let bx = 0; bx < brush.width; bx++) {
+        const byteIdx = by * Math.ceil(brush.width / 8) + Math.floor(bx / 8);
+        const bitIdx = 7 - (bx % 8);
+        const isSet = (brush.data[byteIdx] & (1 << bitIdx)) !== 0;
+        const isVisible = hasMask ? (brush.mask[byteIdx] & (1 << bitIdx)) !== 0 : true;
+
+        // Only show visible ink pixels in cursor preview
+        if (isVisible && isSet) {
+          const px = x - hw + bx;
+          const py = y - hh + by;
+          ctx.fillStyle = color;
+          ctx.fillRect(borderPixels + px * zoom, borderPixels + py * zoom, zoom, zoom);
+        }
+      }
+    }
+  } else if (brushSize <= 1) {
+    // Single pixel brush
+    ctx.fillStyle = color;
+    ctx.fillRect(borderPixels + x * zoom, borderPixels + y * zoom, zoom, zoom);
+  } else {
+    // Built-in brush shapes
+    const n = brushSize;
+    // Center brush on cursor (for odd sizes: exact center; for even: cursor at center-bottom-right)
+    const half = Math.floor(n / 2);
+
+    if (brushShape === 'stroke' || brushShape === 'bstroke') {
+      // Diagonal line brushes
+      const dx = brushShape === 'stroke' ? 1 : -1;
+      for (let i = 0; i < n; i++) {
+        const px = x - half + i * dx;
+        const py = y - half + i;
+        ctx.fillStyle = color;
+        ctx.fillRect(borderPixels + px * zoom, borderPixels + py * zoom, zoom, zoom);
+      }
+    } else if (brushShape === 'hline') {
+      // Horizontal line
+      for (let i = 0; i < n; i++) {
+        ctx.fillStyle = color;
+        ctx.fillRect(borderPixels + (x - half + i) * zoom, borderPixels + y * zoom, zoom, zoom);
+      }
+    } else if (brushShape === 'vline') {
+      // Vertical line
+      for (let i = 0; i < n; i++) {
+        ctx.fillStyle = color;
+        ctx.fillRect(borderPixels + x * zoom, borderPixels + (y - half + i) * zoom, zoom, zoom);
+      }
+    } else if (brushShape === 'round') {
+      // Circle brush
+      const r = half;
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (dx * dx + dy * dy <= r * r) {
+            ctx.fillStyle = color;
+            ctx.fillRect(borderPixels + (x + dx) * zoom, borderPixels + (y + dy) * zoom, zoom, zoom);
+          }
+        }
+      }
+    } else {
+      // Square brush (default)
+      for (let dy = 0; dy < n; dy++) {
+        for (let dx = 0; dx < n; dx++) {
+          ctx.fillStyle = color;
+          ctx.fillRect(borderPixels + (x - half + dx) * zoom, borderPixels + (y - half + dy) * zoom, zoom, zoom);
+        }
+      }
+    }
+  }
+
+  ctx.restore();
+}
+
+/**
+ * Draws border brush preview overlay for BSC/BMC4 formats
+ */
+function drawBorderBrushPreview() {
+  if (!brushPreviewMode || !borderPreviewPos || !screenCanvas) return;
+  if (!isBorderFormatEditor()) return;
+
+  const ctx = screenCanvas.getContext('2d');
+  if (!ctx) return;
+
+  const frameX = borderPreviewPos.frameX;
+  const frameY = borderPreviewPos.frameY;
+
+  // Calculate which cells would be painted (same logic as paintBscBorderCell)
+  const snappedX = Math.floor(frameX / 8) * 8;
+  const bounds = getBorderRegionBounds(frameY, frameX);
+
+  const leftCell = bounds.left / 8;
+  const rightCell = bounds.right / 8;
+  const cellCount = rightCell - leftCell;
+  const clickedCell = Math.floor(snappedX / 8) - leftCell;
+  const pixelInCell = frameX % 8;
+
+  // Use sub-cell position at edges to allow 8/16/24px options
+  let paintStartCell, paintEndCell;
+  if (clickedCell === 0 && pixelInCell < 6) {
+    // Left edge, most of cell 0 → 8px
+    paintStartCell = 0;
+    paintEndCell = 0;
+  } else if (clickedCell === 1 && pixelInCell < 6) {
+    // Left edge, most of cell 1 → 16px
+    paintStartCell = 0;
+    paintEndCell = 1;
+  } else {
+    // Normal 24px brush, clamped to bounds
+    paintStartCell = clickedCell;
+    paintEndCell = Math.min(clickedCell + 2, cellCount - 1);
+  }
+
+  const opacity = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.BRUSH_PREVIEW_OPACITY) || 0.5;
+  const isTransparent = editorInkColor === COLOR_TRANSPARENT;
+  const color = isTransparent ? '#ff4444' :
+    (editorBright ? ZX_PALETTE.BRIGHT[editorInkColor] : ZX_PALETTE.REGULAR[editorInkColor]);
+
+  ctx.save();
+  ctx.globalAlpha = opacity;
+  ctx.fillStyle = color;
+
+  // Draw preview for each cell that would be painted
+  for (let i = paintStartCell; i <= paintEndCell; i++) {
+    const cellX = bounds.left + i * 8;
+    // Draw 8px wide rectangle at frame position
+    ctx.fillRect(cellX * zoom, frameY * zoom, 8 * zoom, zoom);
+  }
+
+  ctx.restore();
 }
 
 /**
@@ -2032,11 +6967,40 @@ function setEditorTool(tool) {
     isSelecting = false;
     isPasting = false;
   }
+  // Hide text tool section when switching away
+  if (currentTool === EDITOR.TOOL_TEXT && tool !== EDITOR.TOOL_TEXT) {
+    showTextToolSection(false);
+  }
+  // Hide airbrush section when switching away
+  if (currentTool === EDITOR.TOOL_AIRBRUSH && tool !== EDITOR.TOOL_AIRBRUSH) {
+    showAirbrushSection(false);
+  }
+  // Hide gradient section when switching away
+  if (currentTool === EDITOR.TOOL_GRADIENT && tool !== EDITOR.TOOL_GRADIENT) {
+    showGradientSection(false);
+  }
   currentTool = tool;
   (editorToolButtons || document.querySelectorAll('.editor-tool-btn[data-tool]')).forEach(btn => {
     btn.classList.toggle('selected', /** @type {HTMLElement} */(btn).dataset.tool === tool);
   });
+  // Show text tool section when switching to text
+  if (tool === EDITOR.TOOL_TEXT) {
+    showTextToolSection(true);
+  }
+  // Show airbrush section when switching to airbrush
+  if (tool === EDITOR.TOOL_AIRBRUSH) {
+    showAirbrushSection(true);
+  }
+  // Show gradient section when switching to gradient
+  if (tool === EDITOR.TOOL_GRADIENT) {
+    showGradientSection(true);
+  }
   editorRender();
+
+  // Update floating palette if in fullscreen mode
+  if (fullscreenMode) {
+    updateFloatingPalette();
+  }
 }
 
 /**
@@ -2047,6 +7011,17 @@ function setBrushSize(size) {
   brushSize = Math.max(1, Math.min(16, size));
   const sel = /** @type {HTMLSelectElement|null} */ (document.getElementById('editorBrushSize'));
   if (sel) sel.value = String(brushSize);
+
+  // Update brush preview if active
+  if (brushPreviewMode && brushPreviewPos) {
+    editorRender();
+    drawBrushPreview();
+  }
+
+  // Update floating palette if in fullscreen mode
+  if (fullscreenMode) {
+    updateFloatingPalette();
+  }
 }
 
 /**
@@ -2055,43 +7030,115 @@ function setBrushSize(size) {
  */
 function setBrushShape(shape) {
   brushShape = shape;
-  activeCustomBrush = -1;
+  // In masked mode, preserve activeCustomBrush as the mask pattern source
+  if (brushPaintMode !== 'masked' && brushPaintMode !== 'masked+') {
+    activeCustomBrush = -1;
+    // Deselect custom brush slots only when not in masked mode
+    (customBrushSlots || document.querySelectorAll('.custom-brush-slot')).forEach(el => {
+      el.classList.remove('selected');
+    });
+  }
   (editorShapeButtons || document.querySelectorAll('.editor-shape-btn')).forEach(btn => {
     btn.classList.toggle('selected', /** @type {HTMLElement} */(btn).dataset.shape === shape);
   });
-  // Deselect custom brush slots
-  (customBrushSlots || document.querySelectorAll('.custom-brush-slot')).forEach(el => {
-    el.classList.remove('selected');
-  });
+}
+
+/**
+ * Sets airbrush spray radius (4-32)
+ * @param {number} r
+ */
+function setAirbrushRadius(r) {
+  airbrushRadius = Math.max(4, Math.min(32, r));
+  const sel = /** @type {HTMLSelectElement|null} */ (document.getElementById('airbrushRadiusSelect'));
+  if (sel) sel.value = String(airbrushRadius);
+}
+
+/**
+ * Sets airbrush density (0.03-1.0)
+ * @param {number} d
+ */
+function setAirbrushDensity(d) {
+  airbrushDensity = Math.max(0.03, Math.min(1.0, d));
+  const sel = /** @type {HTMLSelectElement|null} */ (document.getElementById('airbrushDensitySelect'));
+  if (sel) sel.value = String(airbrushDensity);
+}
+
+/**
+ * Sets airbrush falloff (1 = uniform, higher = more center-concentrated)
+ * @param {number} f
+ */
+function setAirbrushFalloff(f) {
+  airbrushFalloff = Math.max(1, Math.min(5, f));
+  const sel = /** @type {HTMLSelectElement|null} */ (document.getElementById('airbrushFalloffSelect'));
+  if (sel) sel.value = String(airbrushFalloff);
+}
+
+/**
+ * Sets gradient type
+ * @param {string} type
+ */
+function setGradientType(type) {
+  gradientType = type;
+  const sel = /** @type {HTMLSelectElement|null} */ (document.getElementById('gradientTypeSelect'));
+  if (sel) sel.value = type;
+}
+
+/**
+ * Sets dithering method
+ * @param {string} method
+ */
+function setDitherMethod(method) {
+  ditherMethod = method;
+  const sel = /** @type {HTMLSelectElement|null} */ (document.getElementById('ditherMethodSelect'));
+  if (sel) sel.value = method;
+}
+
+/**
+ * Sets gradient reverse option
+ * @param {boolean} reverse
+ */
+function setGradientReverse(reverse) {
+  gradientReverse = reverse;
+  const cb = /** @type {HTMLInputElement|null} */ (document.getElementById('gradientReverseCheckbox'));
+  if (cb) cb.checked = reverse;
 }
 
 function updateColorPreview() {
-  const pal = editorBright ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
-  const inkRgb = pal[editorInkColor];
-  const paperRgb = pal[editorPaperColor];
-
   // Update palette cell backgrounds and selection markers
   const container = document.getElementById('editorPalette');
   if (container) {
     const cells = container.querySelectorAll('.editor-palette-cell');
-    cells.forEach((cell, i) => {
-      const rgb = pal[i];
-      /** @type {HTMLElement} */ (cell).style.background = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+    cells.forEach((cell) => {
+      const colorIdx = parseInt(/** @type {HTMLElement} */ (cell).dataset.color || '0', 10);
+      const isTransparent = colorIdx === COLOR_TRANSPARENT;
 
-      cell.classList.toggle('ink-selected', i === editorInkColor);
-      cell.classList.toggle('paper-selected', i === editorPaperColor);
+      // Set background color (skip for transparent cell - it has CSS background)
+      // Show bright color on top half, normal color on bottom half
+      if (!isTransparent) {
+        const normalRgb = ZX_PALETTE_RGB.REGULAR[colorIdx];
+        const brightRgb = ZX_PALETTE_RGB.BRIGHT[colorIdx];
+        if (normalRgb && brightRgb) {
+          const normalColor = `rgb(${normalRgb[0]},${normalRgb[1]},${normalRgb[2]})`;
+          const brightColor = `rgb(${brightRgb[0]},${brightRgb[1]},${brightRgb[2]})`;
+          /** @type {HTMLElement} */ (cell).style.background =
+            `linear-gradient(to bottom, ${brightColor} 0%, ${brightColor} 50%, ${normalColor} 50%, ${normalColor} 100%)`;
+        }
+      }
+
+      cell.classList.toggle('ink-selected', colorIdx === editorInkColor);
+      cell.classList.toggle('paper-selected', colorIdx === editorPaperColor);
 
       // Update markers
       const existing = cell.querySelectorAll('.editor-palette-marker');
       existing.forEach(m => m.remove());
 
-      if (i === editorInkColor) {
+      if (colorIdx === editorInkColor) {
         const m = document.createElement('span');
         m.className = 'editor-palette-marker ink-marker';
         m.textContent = 'I';
         cell.appendChild(m);
       }
-      if (i === editorPaperColor) {
+      if (colorIdx === editorPaperColor) {
         const m = document.createElement('span');
         m.className = 'editor-palette-marker paper-marker';
         m.textContent = 'P';
@@ -2109,6 +7156,11 @@ function updateColorSelectors() {
   if (flashCb) flashCb.checked = editorFlash;
 
   updateColorPreview();
+
+  // Update floating palette if in fullscreen mode
+  if (fullscreenMode) {
+    updateFloatingPalette();
+  }
 }
 
 /**
@@ -2130,6 +7182,7 @@ function buildPalette() {
     cell.addEventListener('click', (e) => {
       e.preventDefault();
       editorInkColor = i;
+      localStorage.setItem('spectraLabInkColor', String(i));
       updateColorPreview();
     });
 
@@ -2137,11 +7190,33 @@ function buildPalette() {
     cell.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       editorPaperColor = i;
+      localStorage.setItem('spectraLabPaperColor', String(i));
       updateColorPreview();
     });
 
     container.appendChild(cell);
   }
+
+  // Add transparent color cell
+  const transCell = document.createElement('div');
+  transCell.className = 'editor-palette-cell transparent-cell';
+  transCell.dataset.color = String(COLOR_TRANSPARENT);
+  transCell.title = 'Transparent (erases on non-background layers)';
+  transCell.innerHTML = '<span style="font-size:9px;color:#888;">T</span>';
+
+  transCell.addEventListener('click', (e) => {
+    e.preventDefault();
+    editorInkColor = COLOR_TRANSPARENT;
+    updateColorPreview();
+  });
+
+  transCell.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    editorPaperColor = COLOR_TRANSPARENT;
+    updateColorPreview();
+  });
+
+  container.appendChild(transCell);
 
   updateColorPreview();
 }
@@ -2154,6 +7229,13 @@ function isFormatEditable() {
   if (currentFormat === FORMAT.SCR && screenData && screenData.length >= SCREEN.TOTAL_SIZE) return true;
   if (currentFormat === FORMAT.ATTR_53C && screenData && screenData.length >= 768) return true;
   if (currentFormat === FORMAT.BSC && screenData && screenData.length >= BSC.TOTAL_SIZE) return true;
+  if (currentFormat === FORMAT.IFL && screenData && screenData.length >= IFL.TOTAL_SIZE) return true;
+  if (currentFormat === FORMAT.MLT && screenData && screenData.length >= MLT.TOTAL_SIZE) return true;
+  if (currentFormat === FORMAT.BMC4 && screenData && screenData.length >= BMC4.TOTAL_SIZE) return true;
+  if (currentFormat === FORMAT.RGB3 && screenData && screenData.length >= RGB3.TOTAL_SIZE) return true;
+  if (currentFormat === FORMAT.MONO_FULL && screenData && screenData.length >= 6144) return true;
+  if (currentFormat === FORMAT.MONO_2_3 && screenData && screenData.length >= 4096) return true;
+  if (currentFormat === FORMAT.MONO_1_3 && screenData && screenData.length >= 2048) return true;
   return false;
 }
 
@@ -2174,13 +7256,31 @@ function isBscEditor() {
 }
 
 /**
+ * Checks if we're editing a format with border (BSC or BMC4)
+ * These formats use the same frame dimensions and need border coordinate conversion
+ * @returns {boolean}
+ */
+function isBorderFormatEditor() {
+  return editorActive && (currentFormat === FORMAT.BSC || currentFormat === FORMAT.BMC4);
+}
+
+/**
+ * Checks if border editing is supported for the current format
+ * Both BSC and BMC4 have the same border data structure
+ * @returns {boolean}
+ */
+function isBorderEditable() {
+  return editorActive && (currentFormat === FORMAT.BSC || currentFormat === FORMAT.BMC4);
+}
+
+/**
  * Returns the canvas pixel offset for the main screen area.
  * BSC: 64 * zoom (border is the content, no padding).
  * SCR/53c: borderSize * zoom (user-configured border padding).
  * @returns {number}
  */
 function getMainScreenOffset() {
-  if (currentFormat === FORMAT.BSC) {
+  if (currentFormat === FORMAT.BSC || currentFormat === FORMAT.BMC4) {
     return BSC.BORDER_LEFT_PX * zoom;
   }
   return borderSize * zoom;
@@ -2195,6 +7295,9 @@ let bscDrawRegion = null;
 
 /** @type {boolean} - Is border drawing in progress */
 let isBorderDrawing = false;
+
+/** @type {{frameX: number, frameY: number}|null} - Last border drawing position for interpolation */
+let lastBorderPos = null;
 
 /**
  * Converts canvas mouse event to BSC coordinates.
@@ -2238,41 +7341,55 @@ function canvasToBscCoords(canvas, event) {
 }
 
 /**
+ * Gets the border data offset for the current format (BSC or BMC4).
+ * @returns {number} Border offset in screenData
+ */
+function getBorderDataOffset() {
+  return currentFormat === FORMAT.BMC4 ? BMC4.BORDER_OFFSET : BSC.BORDER_OFFSET;
+}
+
+/**
  * Maps frame pixel coords to border data byte offset + halfIndex.
+ * Works for both BSC and BMC4 formats (same border structure, different offset).
  * halfIndex: 0 = bits 0–2 (first color), 1 = bits 3–5 (second color).
  * @param {number} frameX - Frame X coordinate (0–383)
  * @param {number} frameY - Frame Y coordinate (0–303)
  * @returns {{byteOffset:number, halfIndex:number, region:string}|null}
  */
-function getBscBorderByteInfo(frameX, frameY) {
+function getBorderByteInfo(frameX, frameY) {
+  const borderOffset = getBorderDataOffset();
+
   if (frameY < 64) {
     // Top border: full 384px width, 64 lines
-    const byteOffset = BSC.BORDER_OFFSET + frameY * BSC.BYTES_PER_FULL_LINE + Math.floor(frameX / 16);
+    const byteOffset = borderOffset + frameY * BSC.BYTES_PER_FULL_LINE + Math.floor(frameX / 16);
     const halfIndex = Math.floor((frameX % 16) / 8);
     return { byteOffset, halfIndex, region: 'top' };
   } else if (frameY < 256) {
     // Side borders (main screen Y range)
     if (frameX < 64) {
       // Left side
-      const byteOffset = BSC.BORDER_OFFSET + 64 * BSC.BYTES_PER_FULL_LINE + (frameY - 64) * BSC.BYTES_PER_SIDE_LINE + Math.floor(frameX / 16);
+      const byteOffset = borderOffset + 64 * BSC.BYTES_PER_FULL_LINE + (frameY - 64) * BSC.BYTES_PER_SIDE_LINE + Math.floor(frameX / 16);
       const halfIndex = Math.floor((frameX % 16) / 8);
       return { byteOffset, halfIndex, region: 'left' };
     } else if (frameX >= 320) {
       // Right side
-      const byteOffset = BSC.BORDER_OFFSET + 64 * BSC.BYTES_PER_FULL_LINE + (frameY - 64) * BSC.BYTES_PER_SIDE_LINE + 4 + Math.floor((frameX - 320) / 16);
+      const byteOffset = borderOffset + 64 * BSC.BYTES_PER_FULL_LINE + (frameY - 64) * BSC.BYTES_PER_SIDE_LINE + 4 + Math.floor((frameX - 320) / 16);
       const halfIndex = Math.floor(((frameX - 320) % 16) / 8);
       return { byteOffset, halfIndex, region: 'right' };
     }
     return null; // Inside main screen area — not border
   } else if (frameY < 304) {
     // Bottom border: full 384px width, 48 lines
-    const bottomOffset = BSC.BORDER_OFFSET + 64 * BSC.BYTES_PER_FULL_LINE + 192 * BSC.BYTES_PER_SIDE_LINE;
+    const bottomOffset = borderOffset + 64 * BSC.BYTES_PER_FULL_LINE + 192 * BSC.BYTES_PER_SIDE_LINE;
     const byteOffset = bottomOffset + (frameY - 256) * BSC.BYTES_PER_FULL_LINE + Math.floor(frameX / 16);
     const halfIndex = Math.floor((frameX % 16) / 8);
     return { byteOffset, halfIndex, region: 'bottom' };
   }
   return null;
 }
+
+// Alias for backward compatibility
+const getBscBorderByteInfo = getBorderByteInfo;
 
 /**
  * Writes a 3-bit color (0–7) into the appropriate half of a border byte.
@@ -2283,6 +7400,8 @@ function getBscBorderByteInfo(frameX, frameY) {
 function setBscBorderColor(byteOffset, halfIndex, color) {
   if (!screenData || byteOffset >= screenData.length) return;
   const c = color & 0x07;
+
+  // Update screenData
   let byte = screenData[byteOffset];
   if (halfIndex === 0) {
     byte = (byte & 0xF8) | c;         // Clear bits 0–2, set color
@@ -2290,6 +7409,38 @@ function setBscBorderColor(byteOffset, halfIndex, color) {
     byte = (byte & 0xC7) | (c << 3);  // Clear bits 3–5, set color
   }
   screenData[byteOffset] = byte;
+
+  // Also update active layer's border data if layers are enabled
+  if (layersEnabled && layers.length > 0) {
+    const layer = layers[activeLayerIndex];
+    if (layer && layer.borderData && layer.borderMask) {
+      const borderOffset = getBorderDataOffset();
+      const relativeOffset = byteOffset - borderOffset;
+
+      if (relativeOffset >= 0 && relativeOffset < layer.borderData.length) {
+        // Update layer border data
+        let layerByte = layer.borderData[relativeOffset];
+        if (halfIndex === 0) {
+          layerByte = (layerByte & 0xF8) | c;
+        } else {
+          layerByte = (layerByte & 0xC7) | (c << 3);
+        }
+        layer.borderData[relativeOffset] = layerByte;
+
+        // Mark this slot as visible in mask (2 slots per byte)
+        const maskIdx = relativeOffset * 2 + halfIndex;
+
+        // Only update transparency mask if this is actually new content on this layer
+        const wasEmpty = !layer.borderMask[maskIdx];
+        layer.borderMask[maskIdx] = 1;
+
+        // Also update border transparency mask for rendering (only for new content)
+        if (wasEmpty && borderTransparencyMask && maskIdx < borderTransparencyMask.length) {
+          borderTransparencyMask[maskIdx] = 1;
+        }
+      }
+    }
+  }
 }
 
 /**
@@ -2324,6 +7475,73 @@ function getBorderCellColor(px, frameY) {
 }
 
 /**
+ * Sets the color of a single 8px border cell.
+ * @param {number} cellX - Cell X (pixel X / 8)
+ * @param {number} frameY - Frame Y coordinate
+ * @param {number} color - Color value (0–7)
+ */
+function setBorderCellColor(cellX, frameY, color) {
+  const px = cellX * 8;
+  const info = getBscBorderByteInfo(px, frameY);
+  if (!info) return;
+  setBscBorderColor(info.byteOffset, info.halfIndex, color);
+}
+
+/**
+ * Flood fill on border area - fills all connected 8px cells with same color.
+ * @param {number} startFrameX - Starting frame X coordinate
+ * @param {number} startFrameY - Starting frame Y coordinate
+ * @param {number} fillColor - Color to fill with (0–7)
+ */
+function floodFillBorder(startFrameX, startFrameY, fillColor) {
+  if (!screenData) return;
+
+  // Get starting cell coordinates (8px units)
+  const startCellX = Math.floor(startFrameX / 8);
+  const startCellY = startFrameY;
+
+  // Get the target color we're replacing
+  const targetColor = getBorderCellColor(startCellX * 8, startCellY);
+  if (targetColor === -1 || targetColor === fillColor) return;
+
+  // Use a set to track visited cells (key = "cellX,cellY")
+  const visited = new Set();
+  const stack = [[startCellX, startCellY]];
+
+  // Border bounds in cell coordinates
+  const frameWidthCells = BSC.FRAME_WIDTH / 8; // 48 cells
+
+  while (stack.length > 0) {
+    const [cellX, cellY] = stack.pop();
+    const key = `${cellX},${cellY}`;
+
+    if (visited.has(key)) continue;
+
+    // Check if this cell is in border area
+    const info = getBscBorderByteInfo(cellX * 8, cellY);
+    if (!info) continue;
+
+    // Check if cell has target color
+    const cellColor = getBorderCellColor(cellX * 8, cellY);
+    if (cellColor !== targetColor) continue;
+
+    visited.add(key);
+
+    // Fill this cell
+    setBorderCellColor(cellX, cellY, fillColor);
+
+    // Add neighbors based on border region
+    // Vertical neighbors (same X, Y±1)
+    stack.push([cellX, cellY - 1]);
+    stack.push([cellX, cellY + 1]);
+
+    // Horizontal neighbors (X±1, same Y)
+    if (cellX > 0) stack.push([cellX - 1, cellY]);
+    if (cellX < frameWidthCells - 1) stack.push([cellX + 1, cellY]);
+  }
+}
+
+/**
  * Paints a 24px-wide border cell with orphan segment validation.
  * After painting, checks if neighboring segments become orphaned (< 24px and not
  * touching a boundary). Orphaned segments are consumed by extending the painted color.
@@ -2332,6 +7550,19 @@ function getBorderCellColor(px, frameY) {
  * @param {number} color - Color value (0–7)
  */
 function paintBscBorderCell(frameX, frameY, color) {
+  // Clamp frameX to valid border regions to prevent bleeding into main area
+  if (frameY >= 64 && frameY < 256) {
+    // Side border Y range - clamp to nearest border edge
+    if (frameX >= 64 && frameX < 320) {
+      // In main screen X range - clamp to nearest border
+      if (frameX < 192) {
+        frameX = 63;  // Clamp to left border edge
+      } else {
+        frameX = 320; // Clamp to right border edge
+      }
+    }
+  }
+
   const snappedX = Math.floor(frameX / 8) * 8;
   const bounds = getBorderRegionBounds(frameY, frameX);
 
@@ -2342,26 +7573,31 @@ function paintBscBorderCell(frameX, frameY, color) {
 
   // Read current colors for all cells in this region
   const cellColors = [];
+  const originalColors = [];
   for (let i = 0; i < cellCount; i++) {
-    cellColors[i] = getBorderCellColor(bounds.left + i * 8, frameY);
+    const col = getBorderCellColor(bounds.left + i * 8, frameY);
+    cellColors[i] = col;
+    originalColors[i] = col;
   }
 
-  // Determine which cells we're painting with edge proximity detection
+  // Determine which cells we're painting
+  // Use sub-cell position at edges to allow 8/16/24px options
   const clickedCell = Math.floor(snappedX / 8) - leftCell;
+  const pixelInCell = frameX % 8;  // 0-7 position within the 8px cell
   let paintStartCell, paintEndCell;
 
-  if (clickedCell <= 1) {
-    // Near left boundary - paint from left edge to clicked cell (8px or 16px)
+  if (clickedCell === 0 && pixelInCell < 6) {
+    // Left edge, most of cell 0 → 8px touching left edge
     paintStartCell = 0;
-    paintEndCell = clickedCell;
-  } else if (clickedCell >= cellCount - 2) {
-    // Near right boundary - paint from clicked cell to right edge (8px or 16px)
-    paintStartCell = clickedCell;
-    paintEndCell = cellCount - 1;
+    paintEndCell = 0;
+  } else if (clickedCell === 1 && pixelInCell < 6) {
+    // Left edge, most of cell 1 → 16px touching left edge
+    paintStartCell = 0;
+    paintEndCell = 1;
   } else {
-    // Middle area - normal 24px brush
+    // Normal 24px brush starting from clicked cell, clamped to bounds
     paintStartCell = clickedCell;
-    paintEndCell = clickedCell + 2;
+    paintEndCell = Math.min(clickedCell + 2, cellCount - 1);
   }
 
   // Apply paint to target cells
@@ -2427,13 +7663,33 @@ function paintBscBorderCell(frameX, frameY, color) {
     }
   }
 
-  // Write back all cells to screen data
+  // Write back only cells that actually changed
   for (let i = 0; i < cellCount; i++) {
-    const px = bounds.left + i * 8;
-    const info = getBscBorderByteInfo(px, frameY);
-    if (info) {
-      setBscBorderColor(info.byteOffset, info.halfIndex, cellColors[i]);
+    if (cellColors[i] !== originalColors[i]) {
+      const px = bounds.left + i * 8;
+      const info = getBscBorderByteInfo(px, frameY);
+      if (info) {
+        setBscBorderColor(info.byteOffset, info.halfIndex, cellColors[i]);
+      }
     }
+  }
+}
+
+/**
+ * Paints border area using current brush size.
+ * Width is always 24px (3 cells), height = brushSize pixels.
+ * @param {number} frameX - Center X coordinate
+ * @param {number} frameY - Center Y coordinate
+ * @param {number} color - Color value (0–7)
+ */
+function paintBorderWithBrush(frameX, frameY, color) {
+  const halfHeight = Math.floor(brushSize / 2);
+
+  // Paint multiple rows based on brush size
+  for (let dy = -halfHeight; dy < brushSize - halfHeight; dy++) {
+    const y = frameY + dy;
+    // Use the original 24px-wide painting function for each row
+    paintBscBorderCell(frameX, y, color);
   }
 }
 
@@ -2444,23 +7700,70 @@ function paintBscBorderCell(frameX, frameY, color) {
  */
 function handleBorderMouseDown(event, bscCoords) {
   saveUndoState();
-  isBorderDrawing = true;
   // Left click = ink color, Right click = paper color
   const color = event.button !== 2 ? editorInkColor : editorPaperColor;
-  paintBscBorderCell(bscCoords.frameX, bscCoords.frameY, color);
+
+  // Handle flood fill on border
+  if (currentTool === EDITOR.TOOL_FLOOD_FILL) {
+    floodFillBorder(bscCoords.frameX, bscCoords.frameY, color);
+    editorRender();
+    updateBscEditorInfo(bscCoords);
+    return;
+  }
+
+  // Normal drawing mode - use brush size
+  isBorderDrawing = true;
+  lastBorderPos = { frameX: bscCoords.frameX, frameY: bscCoords.frameY };
+  paintBorderWithBrush(bscCoords.frameX, bscCoords.frameY, color);
   editorRender();
   updateBscEditorInfo(bscCoords);
 }
 
 /**
  * Handles mouse move on BSC border area during drawing.
+ * Uses Bresenham-style interpolation for smooth lines.
  * @param {MouseEvent} event
  * @param {{type:'border', frameX:number, frameY:number, region:string, byteOffset:number, halfIndex:number}} bscCoords
  */
 function handleBorderMouseMove(event, bscCoords) {
   if (isBorderDrawing) {
     const color = (event.buttons & 2) !== 0 ? editorPaperColor : editorInkColor;
-    paintBscBorderCell(bscCoords.frameX, bscCoords.frameY, color);
+
+    if (lastBorderPos) {
+      // Interpolate between last position and current position
+      const x0 = lastBorderPos.frameX;
+      const y0 = lastBorderPos.frameY;
+      const x1 = bscCoords.frameX;
+      const y1 = bscCoords.frameY;
+
+      const dx = Math.abs(x1 - x0);
+      const dy = Math.abs(y1 - y0);
+      const sx = x0 < x1 ? 1 : -1;
+      const sy = y0 < y1 ? 1 : -1;
+      let err = dx - dy;
+      let x = x0;
+      let y = y0;
+
+      while (true) {
+        paintBorderWithBrush(x, y, color);
+
+        if (x === x1 && y === y1) break;
+
+        const e2 = 2 * err;
+        if (e2 > -dy) {
+          err -= dy;
+          x += sx;
+        }
+        if (e2 < dx) {
+          err += dx;
+          y += sy;
+        }
+      }
+    } else {
+      paintBorderWithBrush(bscCoords.frameX, bscCoords.frameY, color);
+    }
+
+    lastBorderPos = { frameX: bscCoords.frameX, frameY: bscCoords.frameY };
     editorRender();
   }
   updateBscEditorInfo(bscCoords);
@@ -2471,6 +7774,7 @@ function handleBorderMouseMove(event, bscCoords) {
  */
 function handleBorderMouseUp() {
   isBorderDrawing = false;
+  lastBorderPos = null;
 }
 
 /**
@@ -2489,35 +7793,51 @@ function updateBscEditorInfo(bscCoords) {
     `Border: ${bscCoords.region} — ${COLOR_NAMES[segColor]}`;
 }
 
-function toggleEditorMode() {
-  if (!editorActive) {
-    if (!screenData || screenData.length === 0) {
-      if (confirm('No screen loaded. Create a new blank screen?')) {
-        createNewScreen(7, 0, false);
-      } else {
-        return;
-      }
-    } else if (!isFormatEditable()) {
-      alert('Editor only supports .scr (6912 bytes), .53c/.atr (768 bytes) and .bsc (11136 bytes) formats.\nCurrent format: ' + currentFormat);
-      return;
-    }
-  }
+/**
+ * Enables or disables the editor based on picture state and format.
+ * Called automatically when pictures are loaded or created.
+ */
+function updateEditorState() {
+  const canEdit = screenData && screenData.length > 0 && isFormatEditable();
 
-  editorActive = !editorActive;
+  if (canEdit && !editorActive) {
+    setEditorEnabled(true);
+  } else if (!canEdit && editorActive) {
+    setEditorEnabled(false);
+  }
+}
+
+/**
+ * Sets the editor enabled state directly.
+ * @param {boolean} active - Whether to enable the editor
+ */
+function setEditorEnabled(active) {
+  if (active === editorActive) return;
+
+  editorActive = active;
 
   const overlay = document.getElementById('scrEditorOverlay');
   if (overlay) overlay.classList.toggle('active', editorActive);
 
-  const btn = document.getElementById('scrEditBtn');
-  if (btn) btn.style.display = editorActive ? 'none' : '';
+  const inactiveHint = document.getElementById('editorInactiveHint');
+  if (inactiveHint) inactiveHint.style.display = editorActive ? 'none' : '';
+
+  // Transform tab controls
+  const transformControls = document.getElementById('transformControls');
+  const transformInactiveHint = document.getElementById('transformInactiveHint');
+  if (transformControls) transformControls.style.display = editorActive ? '' : 'none';
+  if (transformInactiveHint) transformInactiveHint.style.display = editorActive ? 'none' : '';
 
   if (screenCanvas) {
-    screenCanvas.style.cursor = editorActive ? 'crosshair' : 'default';
+    if (editorActive) {
+      screenCanvas.style.cursor = brushPreviewMode ? 'none' : 'crosshair';
+    } else {
+      screenCanvas.style.cursor = 'default';
+      brushPreviewMode = false;  // Reset brush preview when editor disabled
+      brushPreviewPos = null;
+      borderPreviewPos = null;
+    }
   }
-
-  // Hide/show file info panel
-  const infoPanel = document.querySelector('.info-panel');
-  if (infoPanel) infoPanel.style.display = editorActive ? 'none' : '';
 
   const toolsSection = document.getElementById('editorToolsSection');
   const brushSection = document.getElementById('editorBrushSection');
@@ -2529,6 +7849,9 @@ function toggleEditorMode() {
     screenCanvas.addEventListener('mouseup', handleEditorMouseUp);
     screenCanvas.addEventListener('mouseleave', handleEditorMouseUp);
     screenCanvas.addEventListener('contextmenu', handleContextMenu);
+
+    // Update palette swatches with current palette colors
+    updateColorPreview();
 
     // Clipboard section: always visible when editor is active
     if (clipboardSection) clipboardSection.style.display = '';
@@ -2558,6 +7881,13 @@ function toggleEditorMode() {
     isSelecting = false;
     isPasting = false;
 
+    // Clear transform selection state
+    transformSelectActive = false;
+    transformSelectionRect = null;
+    const transformSelectBtn = document.getElementById('transformSelectBtn');
+    if (transformSelectBtn) transformSelectBtn.classList.remove('selected');
+    updateTransformSectionsVisibility();
+
     screenCanvas.removeEventListener('mousedown', handleEditorMouseDown);
     screenCanvas.removeEventListener('mousemove', handleEditorMouseMove);
     screenCanvas.removeEventListener('mouseup', handleEditorMouseUp);
@@ -2580,7 +7910,7 @@ function toggleEditorMode() {
 
 /**
  * Starts capturing a rectangular region from the screen into a custom brush slot
- * @param {number} slot - Slot index (0-4)
+ * @param {number} slot - Slot index (0-11)
  */
 function startBrushCapture(slot) {
   capturingBrush = true;
@@ -2600,7 +7930,7 @@ function startBrushCapture(slot) {
  * @param {number} y1 - Second corner Y
  */
 function finishBrushCapture(x0, y0, x1, y1) {
-  if (!screenData || screenData.length < SCREEN.TOTAL_SIZE) return;
+  if (!screenData || !isFormatEditable()) return;
 
   // Normalize rectangle
   let left = Math.min(x0, x1);
@@ -2609,10 +7939,12 @@ function finishBrushCapture(x0, y0, x1, y1) {
   let bottom = Math.max(y0, y1);
 
   // Clamp to screen bounds
+  const width = getFormatWidth();
+  const height = getFormatHeight();
   left = Math.max(0, left);
   top = Math.max(0, top);
-  right = Math.min(SCREEN.WIDTH - 1, right);
-  bottom = Math.min(SCREEN.HEIGHT - 1, bottom);
+  right = Math.min(width - 1, right);
+  bottom = Math.min(height - 1, bottom);
 
   // Limit to 64x64
   let bw = right - left + 1;
@@ -2622,23 +7954,56 @@ function finishBrushCapture(x0, y0, x1, y1) {
 
   const bytesPerRow = Math.ceil(bw / 8);
   const data = new Uint8Array(bytesPerRow * bh);
+  const mask = new Uint8Array(bytesPerRow * bh);
+
+  // Check if we should capture from active layer with transparency
+  const useLayerMask = layersEnabled && layers.length > 0 && activeLayerIndex > 0 && layers[activeLayerIndex];
+  const layer = useLayerMask ? layers[activeLayerIndex] : null;
 
   for (let r = 0; r < bh; r++) {
     for (let c = 0; c < bw; c++) {
-      if (getPixel(screenData, left + c, top + r)) {
-        const byteIdx = r * bytesPerRow + Math.floor(c / 8);
-        const bitIdx = 7 - (c % 8);
-        data[byteIdx] |= (1 << bitIdx);
+      const px = left + c;
+      const py = top + r;
+      const byteIdx = r * bytesPerRow + Math.floor(c / 8);
+      const bitIdx = 7 - (c % 8);
+
+      if (useLayerMask && layer) {
+        // Capture from layer with transparency
+        const maskIdx = py * width + px;
+        const bitmapAddr = getBitmapAddress(px, py);
+        const bitmapBit = 0x80 >> (px % 8);
+
+        // Copy bitmap bit
+        if (layer.bitmap[bitmapAddr] & bitmapBit) {
+          data[byteIdx] |= (1 << bitIdx);
+        }
+        // Copy mask bit (visible = 1)
+        if (layer.mask[maskIdx]) {
+          mask[byteIdx] |= (1 << bitIdx);
+        }
+      } else {
+        // Capture from merged screen (no transparency, all visible)
+        if (getPixel(screenData, px, py)) {
+          data[byteIdx] |= (1 << bitIdx);
+        }
+        // All pixels visible when capturing from background or merged screen
+        mask[byteIdx] |= (1 << bitIdx);
       }
     }
   }
 
-  customBrushes[captureSlot] = { width: bw, height: bh, data: data };
+  // Only include mask if it has transparent pixels
+  const hasTransparency = mask.some((byte, i) => byte !== 0xFF && (i < bytesPerRow * bh));
+  customBrushes[captureSlot] = hasTransparency
+    ? { width: bw, height: bh, data: data, mask: mask }
+    : { width: bw, height: bh, data: data };
+
   capturingBrush = false;
   captureStartPoint = null;
   selectCustomBrush(captureSlot);
   renderCustomBrushPreview(captureSlot);
   saveCustomBrushes();
+  updateCustomBrushIndicator();
 }
 
 /**
@@ -2658,7 +8023,7 @@ function drawCapturePreview(x0, y0, x1, y1) {
   const w = Math.min(Math.abs(x1 - x0) + 1, 64);
   const h = Math.min(Math.abs(y1 - y0) + 1, 64);
 
-  ctx.strokeStyle = 'rgba(0, 255, 128, 0.9)';
+  ctx.strokeStyle = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.BRUSH_CAPTURE_COLOR) || 'rgba(0, 255, 128, 0.9)';
   ctx.lineWidth = Math.max(1, zoom / 2);
   ctx.setLineDash([4, 4]);
   ctx.strokeRect(
@@ -2684,18 +8049,24 @@ function rotateCustomBrush() {
   const nh = ow;
   const newBpr = Math.ceil(nw / 8);
   const newData = new Uint8Array(newBpr * nh);
+  const hasMask = brush.mask && brush.mask.length > 0;
+  const newMask = hasMask ? new Uint8Array(newBpr * nh) : null;
 
   for (let r = 0; r < oh; r++) {
     for (let c = 0; c < ow; c++) {
       const oldIdx = r * oldBpr + Math.floor(c / 8);
       const oldBit = 7 - (c % 8);
+      // (r, c) -> (c, oh - 1 - r)
+      const nr = c;
+      const nc = oh - 1 - r;
+      const newIdx = nr * newBpr + Math.floor(nc / 8);
+      const newBit = 7 - (nc % 8);
+
       if (brush.data[oldIdx] & (1 << oldBit)) {
-        // (r, c) -> (c, oh - 1 - r)
-        const nr = c;
-        const nc = oh - 1 - r;
-        const newIdx = nr * newBpr + Math.floor(nc / 8);
-        const newBit = 7 - (nc % 8);
         newData[newIdx] |= (1 << newBit);
+      }
+      if (hasMask && newMask && (brush.mask[oldIdx] & (1 << oldBit))) {
+        newMask[newIdx] |= (1 << newBit);
       }
     }
   }
@@ -2703,6 +8074,9 @@ function rotateCustomBrush() {
   brush.width = nw;
   brush.height = nh;
   brush.data = newData;
+  if (hasMask && newMask) {
+    brush.mask = newMask;
+  }
   renderCustomBrushPreview(activeCustomBrush);
   saveCustomBrushes();
 }
@@ -2717,21 +8091,30 @@ function mirrorCustomBrushH() {
   const bh = brush.height;
   const bpr = Math.ceil(bw / 8);
   const newData = new Uint8Array(bpr * bh);
+  const hasMask = brush.mask && brush.mask.length > 0;
+  const newMask = hasMask ? new Uint8Array(bpr * bh) : null;
 
   for (let r = 0; r < bh; r++) {
     for (let c = 0; c < bw; c++) {
       const oldIdx = r * bpr + Math.floor(c / 8);
       const oldBit = 7 - (c % 8);
+      const nc = bw - 1 - c;
+      const newIdx = r * bpr + Math.floor(nc / 8);
+      const newBit = 7 - (nc % 8);
+
       if (brush.data[oldIdx] & (1 << oldBit)) {
-        const nc = bw - 1 - c;
-        const newIdx = r * bpr + Math.floor(nc / 8);
-        const newBit = 7 - (nc % 8);
         newData[newIdx] |= (1 << newBit);
+      }
+      if (hasMask && newMask && (brush.mask[oldIdx] & (1 << oldBit))) {
+        newMask[newIdx] |= (1 << newBit);
       }
     }
   }
 
   brush.data = newData;
+  if (hasMask && newMask) {
+    brush.mask = newMask;
+  }
   renderCustomBrushPreview(activeCustomBrush);
   saveCustomBrushes();
 }
@@ -2746,21 +8129,30 @@ function mirrorCustomBrushV() {
   const bh = brush.height;
   const bpr = Math.ceil(bw / 8);
   const newData = new Uint8Array(bpr * bh);
+  const hasMask = brush.mask && brush.mask.length > 0;
+  const newMask = hasMask ? new Uint8Array(bpr * bh) : null;
 
   for (let r = 0; r < bh; r++) {
     for (let c = 0; c < bw; c++) {
       const oldIdx = r * bpr + Math.floor(c / 8);
       const oldBit = 7 - (c % 8);
+      const nr = bh - 1 - r;
+      const newIdx = nr * bpr + Math.floor(c / 8);
+      const newBit = 7 - (c % 8);
+
       if (brush.data[oldIdx] & (1 << oldBit)) {
-        const nr = bh - 1 - r;
-        const newIdx = nr * bpr + Math.floor(c / 8);
-        const newBit = 7 - (c % 8);
         newData[newIdx] |= (1 << newBit);
+      }
+      if (hasMask && newMask && (brush.mask[oldIdx] & (1 << oldBit))) {
+        newMask[newIdx] |= (1 << newBit);
       }
     }
   }
 
   brush.data = newData;
+  if (hasMask && newMask) {
+    brush.mask = newMask;
+  }
   renderCustomBrushPreview(activeCustomBrush);
   saveCustomBrushes();
 }
@@ -2930,9 +8322,516 @@ function mirrorClipboardV() {
   editorRender();
 }
 
+// ============================================================================
+// Transform Tab Selection & Export
+// ============================================================================
+
+/**
+ * Enters transform selection mode - user can drag to select area on canvas
+ */
+function enterTransformSelectMode() {
+  transformSelectActive = true;
+  selectionStartPoint = null;
+  selectionEndPoint = null;
+  transformSelectionRect = null;
+  clipboardData = null;
+
+  // Update UI
+  const btn = document.getElementById('transformSelectBtn');
+  if (btn) btn.classList.add('selected');
+
+  const infoEl = document.getElementById('transformSelectionInfo');
+  if (infoEl) infoEl.textContent = 'Drag on canvas to select area';
+
+  // Hide transform/export sections until selection is made
+  updateTransformSectionsVisibility();
+
+  editorRender();
+}
+
+/**
+ * Exits transform selection mode
+ */
+function exitTransformSelectMode() {
+  transformSelectActive = false;
+
+  const btn = document.getElementById('transformSelectBtn');
+  if (btn) btn.classList.remove('selected');
+}
+
+/**
+ * Updates visibility of transform and export sections based on selection state
+ */
+function updateTransformSectionsVisibility() {
+  const hasSelection = clipboardData && transformSelectionRect;
+  const opsSection = document.getElementById('transformOpsSection');
+  const exportSection = document.getElementById('transformExportSection');
+
+  if (opsSection) opsSection.style.display = hasSelection ? '' : 'none';
+  if (exportSection) exportSection.style.display = hasSelection ? '' : 'none';
+}
+
+/**
+ * Gets selection rect for transform mode (respects transform-specific snap setting)
+ * @returns {{left:number, top:number, right:number, bottom:number, width:number, height:number}|null}
+ */
+function getTransformSelectionRect() {
+  if (!selectionStartPoint || !selectionEndPoint) return null;
+
+  let left = Math.min(selectionStartPoint.x, selectionEndPoint.x);
+  let top = Math.min(selectionStartPoint.y, selectionEndPoint.y);
+  let right = Math.max(selectionStartPoint.x, selectionEndPoint.x);
+  let bottom = Math.max(selectionStartPoint.y, selectionEndPoint.y);
+
+  if (transformSnapToGrid) {
+    left = Math.floor(left / 8) * 8;
+    top = Math.floor(top / 8) * 8;
+    right = Math.floor(right / 8) * 8 + 7;
+    bottom = Math.floor(bottom / 8) * 8 + 7;
+  }
+
+  // Clamp to screen bounds
+  const maxHeight = getFormatHeight();
+  left = Math.max(0, left);
+  top = Math.max(0, top);
+  right = Math.min(SCREEN.WIDTH - 1, right);
+  bottom = Math.min(maxHeight - 1, bottom);
+
+  const width = right - left + 1;
+  const height = bottom - top + 1;
+  if (width <= 0 || height <= 0) return null;
+
+  return { left, top, right, bottom, width, height };
+}
+
+/**
+ * Completes transform selection - copies data to clipboard and shows options
+ */
+function completeTransformSelection() {
+  // Use transform-specific rect calculation
+  const rect = getTransformSelectionRect();
+  if (!rect) {
+    const infoEl = document.getElementById('transformSelectionInfo');
+    if (infoEl) infoEl.textContent = 'Selection too small';
+    return;
+  }
+
+  // Store the rect for later operations
+  transformSelectionRect = { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+
+  // Copy to clipboard using existing function
+  copySelection();
+
+  // Update info display
+  const infoEl = document.getElementById('transformSelectionInfo');
+  if (infoEl) {
+    const cellCols = Math.ceil(rect.width / 8);
+    const cellRows = Math.ceil(rect.height / 8);
+    infoEl.textContent = `${rect.width}×${rect.height} px (${cellCols}×${cellRows} cells)`;
+  }
+
+  // Show transform/export sections
+  updateTransformSectionsVisibility();
+
+  // Exit selection mode but keep selection visible
+  exitTransformSelectMode();
+}
+
+/**
+ * Transforms selection in place: rotate 90° CW
+ */
+function transformRotateSelection() {
+  if (!clipboardData || !transformSelectionRect) return;
+
+  saveUndoState();
+
+  // Store original position
+  const origLeft = transformSelectionRect.left;
+  const origTop = transformSelectionRect.top;
+
+  // Rotate the clipboard data
+  rotateClipboard();
+
+  // Paste back at original position
+  executePasteAt(origLeft, origTop);
+
+  // Update selection rect for new dimensions
+  if (clipboardData) {
+    transformSelectionRect = {
+      left: origLeft,
+      top: origTop,
+      right: origLeft + (clipboardData.width || clipboardData.cellCols * 8) - 1,
+      bottom: origTop + (clipboardData.height || clipboardData.cellRows * 8) - 1
+    };
+
+    // Update selection points to match
+    selectionStartPoint = { x: transformSelectionRect.left, y: transformSelectionRect.top };
+    selectionEndPoint = { x: transformSelectionRect.right, y: transformSelectionRect.bottom };
+  }
+
+  // Update info
+  const infoEl = document.getElementById('transformSelectionInfo');
+  if (infoEl && clipboardData) {
+    const w = clipboardData.width || clipboardData.cellCols * 8;
+    const h = clipboardData.height || clipboardData.cellRows * 8;
+    infoEl.textContent = `${w}×${h} px (${clipboardData.cellCols}×${clipboardData.cellRows} cells)`;
+  }
+
+  editorRender();
+}
+
+/**
+ * Transforms selection in place: mirror horizontal
+ */
+function transformMirrorSelectionH() {
+  if (!clipboardData || !transformSelectionRect) return;
+
+  saveUndoState();
+
+  // Mirror the clipboard data
+  mirrorClipboardH();
+
+  // Paste back at original position
+  executePasteAt(transformSelectionRect.left, transformSelectionRect.top);
+
+  editorRender();
+}
+
+/**
+ * Transforms selection in place: mirror vertical
+ */
+function transformMirrorSelectionV() {
+  if (!clipboardData || !transformSelectionRect) return;
+
+  saveUndoState();
+
+  // Mirror the clipboard data
+  mirrorClipboardV();
+
+  // Paste back at original position
+  executePasteAt(transformSelectionRect.left, transformSelectionRect.top);
+
+  editorRender();
+}
+
+/**
+ * Pastes clipboard at specific coordinates without entering paste mode
+ * @param {number} x
+ * @param {number} y
+ */
+function executePasteAt(x, y) {
+  if (!clipboardData || !screenData) return;
+
+  if (clipboardData.format === 'scr' && clipboardData.bitmap) {
+    // Write bitmap pixels
+    const bitmapBytesPerRow = Math.ceil(clipboardData.width / 8);
+    for (let py = 0; py < clipboardData.height; py++) {
+      for (let px = 0; px < clipboardData.width; px++) {
+        const dx = x + px;
+        const dy = y + py;
+        if (dx < 0 || dx >= SCREEN.WIDTH || dy < 0 || dy >= getFormatHeight()) continue;
+
+        const byteIdx = py * bitmapBytesPerRow + Math.floor(px / 8);
+        const bitIdx = 7 - (px % 8);
+        const clipBit = (clipboardData.bitmap[byteIdx] & (1 << bitIdx)) !== 0;
+
+        const bitmapAddr = getBitmapAddress(dx, dy);
+        const bit = getBitPosition(dx);
+
+        if (clipBit) {
+          screenData[bitmapAddr] |= (1 << bit);
+        } else {
+          screenData[bitmapAddr] &= ~(1 << bit);
+        }
+      }
+    }
+
+    // Write attributes
+    const cellLeft = Math.floor(x / 8);
+    const cellTop = Math.floor(y / 8);
+    for (let cr = 0; cr < clipboardData.cellRows; cr++) {
+      for (let cc = 0; cc < clipboardData.cellCols; cc++) {
+        const destCol = cellLeft + cc;
+        const destRow = cellTop + cr;
+        if (destCol < 0 || destCol >= SCREEN.CHAR_COLS || destRow < 0 || destRow >= SCREEN.CHAR_ROWS) continue;
+        const destAddr = SCREEN.BITMAP_SIZE + destCol + destRow * 32;
+        screenData[destAddr] = clipboardData.attrs[cr * clipboardData.cellCols + cc];
+      }
+    }
+  } else if (clipboardData.format === '53c') {
+    // Attribute-only paste
+    const cellLeft = Math.floor(x / 8);
+    const cellTop = Math.floor(y / 8);
+    for (let cr = 0; cr < clipboardData.cellRows; cr++) {
+      for (let cc = 0; cc < clipboardData.cellCols; cc++) {
+        const destCol = cellLeft + cc;
+        const destRow = cellTop + cr;
+        if (destCol < 0 || destCol >= 32 || destRow < 0 || destRow >= 24) continue;
+        const destAddr = destCol + destRow * 32;
+        screenData[destAddr] = clipboardData.attrs[cr * clipboardData.cellCols + cc];
+      }
+    }
+  }
+}
+
+/**
+ * Formats a byte value according to the specified numeric base
+ * Uses sjasmplus-compatible prefixes: #XX for hex, 0qXXX for octal
+ * @param {number} value - Byte value (0-255)
+ * @param {string} base - 'hex', 'dec', or 'oct'
+ * @returns {string}
+ */
+function formatAsmByte(value, base) {
+  switch (base) {
+    case 'dec':
+      return value.toString(10);
+    case 'oct':
+      return '0q' + value.toString(8).padStart(3, '0');
+    case 'hex':
+    default:
+      return '#' + value.toString(16).toUpperCase().padStart(2, '0');
+  }
+}
+
+/**
+ * Applies direction transformation to a row of bytes
+ * @param {number[]} bytes - Array of byte values
+ * @param {string} direction - 'lr', 'rl', 'zigzag-lr', 'zigzag-rl'
+ * @param {number} rowIndex - Current row index (for zigzag)
+ * @returns {number[]}
+ */
+function applyRowDirection(bytes, direction, rowIndex) {
+  const shouldReverse =
+    direction === 'rl' ||
+    (direction === 'zigzag-lr' && rowIndex % 2 === 1) ||
+    (direction === 'zigzag-rl' && rowIndex % 2 === 0);
+
+  return shouldReverse ? [...bytes].reverse() : bytes;
+}
+
+/**
+ * Splits an array into chunks of specified size
+ * @param {number[]} arr - Array to split
+ * @param {number} size - Chunk size
+ * @returns {number[][]}
+ */
+function chunkArray(arr, size) {
+  const chunks = [];
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
+  return chunks;
+}
+
+/**
+ * Converts an array of bytes to visual binary representation
+ * @param {number[]} bytes - Array of byte values
+ * @returns {string} Visual representation using █ for 1 and · for 0
+ */
+function bytesToVisual(bytes) {
+  return bytes.map(b => {
+    let visual = '';
+    for (let bit = 7; bit >= 0; bit--) {
+      visual += (b & (1 << bit)) ? '\u2588' : '\u00B7';
+    }
+    return visual;
+  }).join('');
+}
+
+/**
+ * Generates ASM export text from current selection
+ * @returns {string|null}
+ */
+function generateSelectionAsmText() {
+  if (!clipboardData) {
+    return null;
+  }
+
+  const includePalette = /** @type {HTMLInputElement} */ (document.getElementById('exportIncludePalette'))?.checked ?? true;
+  const paletteMode = /** @type {HTMLSelectElement} */ (document.getElementById('exportPaletteMode'))?.value || 'after';
+  const lineMode = /** @type {HTMLSelectElement} */ (document.getElementById('exportLineMode'))?.value || 'line';
+  const direction = /** @type {HTMLSelectElement} */ (document.getElementById('exportDirection'))?.value || 'lr';
+  const visualComments = /** @type {HTMLInputElement} */ (document.getElementById('exportVisualComments'))?.checked ?? false;
+
+  // Get numeric bases from config
+  const bitmapBase = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.ASM_BITMAP_BASE) || 'hex';
+  const attrBase = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.ASM_ATTR_BASE) || 'hex';
+
+  const asmLines = [];
+  asmLines.push('; Selection export');
+
+  const w = clipboardData.width || clipboardData.cellCols * 8;
+  const h = clipboardData.height || clipboardData.cellRows * 8;
+  asmLines.push(`; Size: ${w}x${h} pixels`);
+  asmLines.push(`; ${clipboardData.cellCols}x${clipboardData.cellRows} cells`);
+  asmLines.push('');
+
+  /**
+   * Outputs bytes as DEFB lines according to lineMode setting
+   * @param {number[]} bytes - Bytes to output
+   * @param {string} base - Numeric base
+   * @param {string} [comment] - Optional comment for the line
+   * @param {boolean} [isBitmap] - Whether this is bitmap data (for visual comments)
+   */
+  const outputDefbLines = (bytes, base, comment, isBitmap = false) => {
+    if (lineMode === 'block') {
+      // Split into chunks of 8 bytes
+      const chunks = chunkArray(bytes, 8);
+      chunks.forEach((chunk, idx) => {
+        const formatted = chunk.map(b => formatAsmByte(b, base)).join(',');
+        let lineComment = '';
+        if (visualComments && isBitmap) {
+          lineComment = bytesToVisual(chunk);
+        }
+        if (comment && idx === chunks.length - 1) {
+          lineComment = lineComment ? lineComment + ' ' + comment : comment;
+        }
+        if (lineComment) {
+          asmLines.push('  DEFB ' + formatted + ' ; ' + lineComment);
+        } else {
+          asmLines.push('  DEFB ' + formatted);
+        }
+      });
+    } else {
+      // Line-based: all bytes on one line
+      const formatted = bytes.map(b => formatAsmByte(b, base)).join(',');
+      let lineComment = '';
+      if (visualComments && isBitmap) {
+        lineComment = bytesToVisual(bytes);
+      }
+      if (comment) {
+        lineComment = lineComment ? lineComment + ' ' + comment : comment;
+      }
+      if (lineComment) {
+        asmLines.push('  DEFB ' + formatted + ' ; ' + lineComment);
+      } else {
+        asmLines.push('  DEFB ' + formatted);
+      }
+    }
+  };
+
+  // For attribute-only formats, just export attrs
+  if (clipboardData.format === '53c' || !clipboardData.bitmap) {
+    asmLines.push('attrs:');
+    for (let row = 0; row < clipboardData.cellRows; row++) {
+      const attrBytes = [];
+      for (let col = 0; col < clipboardData.cellCols; col++) {
+        attrBytes.push(clipboardData.attrs[row * clipboardData.cellCols + col]);
+      }
+      const orderedBytes = applyRowDirection(attrBytes, direction, row);
+      outputDefbLines(orderedBytes, attrBase);
+    }
+  } else if (paletteMode === 'interleaved' && includePalette) {
+    // Output: 8 bitmap rows per cell row, then attrs for that row
+    let globalRowIndex = 0;
+    for (let cellRow = 0; cellRow < clipboardData.cellRows; cellRow++) {
+      // 8 pixel rows per cell row
+      for (let pixelRow = 0; pixelRow < 8; pixelRow++) {
+        const y = cellRow * 8 + pixelRow;
+        if (y >= (clipboardData.height || 0)) break;
+
+        const rowBytes = [];
+        const byteOffset = y * clipboardData.cellCols;
+        for (let col = 0; col < clipboardData.cellCols; col++) {
+          rowBytes.push(clipboardData.bitmap[byteOffset + col]);
+        }
+        const orderedBytes = applyRowDirection(rowBytes, direction, globalRowIndex);
+        outputDefbLines(orderedBytes, bitmapBase, undefined, true);
+        globalRowIndex++;
+      }
+      // Attrs for this cell row
+      const attrBytes = [];
+      for (let col = 0; col < clipboardData.cellCols; col++) {
+        attrBytes.push(clipboardData.attrs[cellRow * clipboardData.cellCols + col]);
+      }
+      const orderedAttrs = applyRowDirection(attrBytes, direction, globalRowIndex);
+      outputDefbLines(orderedAttrs, attrBase, 'attrs', false);
+      globalRowIndex++;
+    }
+  } else {
+    // Bitmap first, then attributes
+    asmLines.push('bitmap:');
+    for (let y = 0; y < (clipboardData.height || 0); y++) {
+      const rowBytes = [];
+      for (let col = 0; col < clipboardData.cellCols; col++) {
+        rowBytes.push(clipboardData.bitmap[y * clipboardData.cellCols + col]);
+      }
+      const orderedBytes = applyRowDirection(rowBytes, direction, y);
+      outputDefbLines(orderedBytes, bitmapBase, undefined, true);
+    }
+
+    if (includePalette) {
+      asmLines.push('');
+      asmLines.push('attrs:');
+      for (let row = 0; row < clipboardData.cellRows; row++) {
+        const attrBytes = [];
+        for (let col = 0; col < clipboardData.cellCols; col++) {
+          attrBytes.push(clipboardData.attrs[row * clipboardData.cellCols + col]);
+        }
+        const orderedAttrs = applyRowDirection(attrBytes, direction, row);
+        outputDefbLines(orderedAttrs, attrBase, undefined, false);
+      }
+    }
+  }
+
+  return asmLines.join('\n');
+}
+
+/**
+ * Exports the current selection to ASM file (DEFB format)
+ */
+function exportSelectionAsm() {
+  const asmText = generateSelectionAsmText();
+  if (!asmText) {
+    const infoEl = document.getElementById('transformSelectionInfo');
+    if (infoEl) infoEl.textContent = 'No selection to export';
+    return;
+  }
+
+  // Download as .asm file
+  const blob = new Blob([asmText], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'selection.asm';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Copies the current selection ASM to clipboard
+ */
+function copySelectionAsmToClipboard() {
+  const asmText = generateSelectionAsmText();
+  if (!asmText) {
+    const infoEl = document.getElementById('transformSelectionInfo');
+    if (infoEl) infoEl.textContent = 'No selection to copy';
+    return;
+  }
+
+  navigator.clipboard.writeText(asmText).then(() => {
+    const infoEl = document.getElementById('transformSelectionInfo');
+    if (infoEl) {
+      const origText = infoEl.textContent;
+      infoEl.textContent = 'Copied to clipboard!';
+      setTimeout(() => {
+        if (infoEl.textContent === 'Copied to clipboard!') {
+          infoEl.textContent = origText || '';
+        }
+      }, 1500);
+    }
+  }).catch(err => {
+    console.error('Failed to copy ASM to clipboard:', err);
+    const infoEl = document.getElementById('transformSelectionInfo');
+    if (infoEl) infoEl.textContent = 'Copy failed - try Save file';
+  });
+}
+
 /**
  * Clears a custom brush slot
- * @param {number} slot - Slot index (0-4)
+ * @param {number} slot - Slot index (0-11)
  */
 function clearCustomBrush(slot) {
   customBrushes[slot] = null;
@@ -2947,11 +8846,12 @@ function clearCustomBrush(slot) {
   const el = document.getElementById('customBrush' + slot);
   if (el) el.classList.remove('selected');
   saveCustomBrushes();
+  updateCustomBrushIndicator();
 }
 
 /**
  * Selects a custom brush slot for painting
- * @param {number} slot - Slot index (0-3)
+ * @param {number} slot - Slot index (0-11)
  */
 function selectCustomBrush(slot) {
   if (!customBrushes[slot]) {
@@ -2973,7 +8873,7 @@ function selectCustomBrush(slot) {
       el.classList.toggle('selected', i === slot);
     });
   } else {
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 12; i++) {
       const el = document.getElementById('customBrush' + i);
       if (el) el.classList.toggle('selected', i === slot);
     }
@@ -2982,7 +8882,7 @@ function selectCustomBrush(slot) {
 
 /**
  * Renders a custom brush preview into its canvas
- * @param {number} slot - Slot index (0-4)
+ * @param {number} slot - Slot index (0-11)
  */
 function renderCustomBrushPreview(slot) {
   const canvas = /** @type {HTMLCanvasElement|null} */ (document.getElementById('customBrush' + slot));
@@ -3012,23 +8912,40 @@ function renderCustomBrushPreview(slot) {
     const bw = brush.width;
     const bh = brush.height;
     const bytesPerRow = Math.ceil(bw / 8);
+    const hasMask = brush.mask && brush.mask.length > 0;
     // Scale to fit canvas, integer scale preferred
     const scale = Math.max(1, Math.min(Math.floor(cw / bw), Math.floor(ch / bh)));
     const ox = Math.floor((cw - bw * scale) / 2);
     const oy = Math.floor((ch - bh * scale) / 2);
 
+    // Draw checkerboard background for transparency
     ctx.fillStyle = '#1a1a1a';
     ctx.fillRect(0, 0, cw, ch);
+    if (hasMask) {
+      // Draw checkerboard in brush area to show transparency
+      const checkSize = Math.max(2, scale);
+      for (let y = oy; y < oy + bh * scale; y += checkSize) {
+        for (let x = ox; x < ox + bw * scale; x += checkSize) {
+          const isLight = ((Math.floor((x - ox) / checkSize) + Math.floor((y - oy) / checkSize)) % 2) === 0;
+          ctx.fillStyle = isLight ? '#2a2a2a' : '#1a1a1a';
+          ctx.fillRect(x, y, checkSize, checkSize);
+        }
+      }
+    }
 
     for (let r = 0; r < bh; r++) {
       for (let c = 0; c < bw; c++) {
         const byteIdx = r * bytesPerRow + Math.floor(c / 8);
         const bitIdx = 7 - (c % 8);
         const isSet = (brush.data[byteIdx] & (1 << bitIdx)) !== 0;
-        if (isSet) {
-          ctx.fillStyle = '#e0e0e0';
+        const isVisible = hasMask ? (brush.mask[byteIdx] & (1 << bitIdx)) !== 0 : true;
+
+        if (isVisible) {
+          // Visible pixel: ink (light) or paper (darker)
+          ctx.fillStyle = isSet ? '#e0e0e0' : '#505050';
           ctx.fillRect(ox + c * scale, oy + r * scale, scale, scale);
         }
+        // Transparent pixels show through to checkerboard background
       }
     }
   }
@@ -3038,7 +8955,7 @@ function renderCustomBrushPreview(slot) {
  * Renders all custom brush preview canvases
  */
 function renderAllCustomBrushPreviews() {
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 12; i++) {
     renderCustomBrushPreview(i);
   }
 }
@@ -3049,38 +8966,158 @@ function renderAllCustomBrushPreviews() {
 function saveCustomBrushes() {
   const arr = customBrushes.map(b => {
     if (!b) return null;
-    return {
+    const obj = {
       w: b.width,
       h: b.height,
       d: btoa(String.fromCharCode(...b.data))
     };
+    // Include mask if brush has transparency
+    if (b.mask && b.mask.length > 0) {
+      obj.m = btoa(String.fromCharCode(...b.mask));
+    }
+    return obj;
   });
   localStorage.setItem('spectraLabCustomBrushes', JSON.stringify(arr));
 }
 
 /**
- * Loads custom brushes from localStorage (with backward compatibility for old 16×16 format)
+ * Parses brush array data (shared by localStorage and file loading)
+ * @param {Array} arr
+ */
+function parseBrushArray(arr) {
+  for (let i = 0; i < 12; i++) {
+    if (!arr[i]) {
+      customBrushes[i] = null;
+    } else if (typeof arr[i] === 'string') {
+      // Old format: base64 string of 32-byte Uint8Array (16×16)
+      const data = new Uint8Array([...atob(arr[i])].map(c => c.charCodeAt(0)));
+      customBrushes[i] = { width: 16, height: 16, data: data };
+    } else {
+      // New format: {w, h, d, m?}
+      const data = new Uint8Array([...atob(arr[i].d)].map(c => c.charCodeAt(0)));
+      const brush = { width: arr[i].w, height: arr[i].h, data: data };
+      // Load mask if present
+      if (arr[i].m) {
+        brush.mask = new Uint8Array([...atob(arr[i].m)].map(c => c.charCodeAt(0)));
+      }
+      customBrushes[i] = brush;
+    }
+  }
+}
+
+/**
+ * Loads custom brushes from localStorage, or from brushes/brushes.slb if localStorage is empty
  */
 function loadCustomBrushes() {
   const raw = localStorage.getItem('spectraLabCustomBrushes');
-  if (!raw) return;
-  try {
-    const arr = JSON.parse(raw);
-    for (let i = 0; i < 5; i++) {
-      if (!arr[i]) {
-        customBrushes[i] = null;
-      } else if (typeof arr[i] === 'string') {
-        // Old format: base64 string of 32-byte Uint8Array (16×16)
-        const data = new Uint8Array([...atob(arr[i])].map(c => c.charCodeAt(0)));
-        customBrushes[i] = { width: 16, height: 16, data: data };
-      } else {
-        // New format: {w, h, d}
-        const data = new Uint8Array([...atob(arr[i].d)].map(c => c.charCodeAt(0)));
-        customBrushes[i] = { width: arr[i].w, height: arr[i].h, data: data };
-      }
+  if (raw) {
+    // Load from localStorage
+    try {
+      const arr = JSON.parse(raw);
+      parseBrushArray(arr);
+    } catch (e) {
+      // Ignore corrupt data
     }
-  } catch (e) {
-    // Ignore corrupt data
+    updateCustomBrushIndicator();
+  } else {
+    // Try to load default brushes from file
+    fetch('brushes/brushes.slb')
+      .then(response => {
+        if (!response.ok) throw new Error('Not found');
+        return response.text();
+      })
+      .then(text => {
+        const arr = JSON.parse(text);
+        parseBrushArray(arr);
+        renderAllCustomBrushPreviews();
+        updateCustomBrushIndicator();
+      })
+      .catch(() => {
+        // No default brushes file, that's fine
+        updateCustomBrushIndicator();
+      });
+  }
+}
+
+/**
+ * Exports custom brushes to a .slb file
+ */
+function exportBrushesToFile() {
+  const arr = customBrushes.map(b => {
+    if (!b) return null;
+    const obj = {
+      w: b.width,
+      h: b.height,
+      d: btoa(String.fromCharCode(...b.data))
+    };
+    // Include mask if brush has transparency
+    if (b.mask && b.mask.length > 0) {
+      obj.m = btoa(String.fromCharCode(...b.mask));
+    }
+    return obj;
+  });
+
+  // Check if there are any brushes to save
+  if (arr.every(b => b === null)) {
+    alert('No custom brushes to save.');
+    return;
+  }
+
+  const json = JSON.stringify(arr);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'brushes.slb';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Imports custom brushes from a .slb file
+ * @param {File} file
+ */
+function importBrushesFromFile(file) {
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const arr = JSON.parse(/** @type {string} */ (e.target?.result));
+      parseBrushArray(arr);
+      saveCustomBrushes(); // Persist to localStorage
+      renderAllCustomBrushPreviews();
+      updateCustomBrushIndicator();
+    } catch (err) {
+      alert('Failed to load brushes file.');
+    }
+  };
+  reader.readAsText(file);
+}
+
+/**
+ * Updates the custom brush section indicator and auto-expands if brushes exist
+ */
+function updateCustomBrushIndicator() {
+  const indicator = document.getElementById('customBrushIndicator');
+  const controls = document.getElementById('customBrushControls');
+  const icon = document.getElementById('customBrushExpandIcon');
+
+  const count = customBrushes.filter(b => b !== null).length;
+
+  if (indicator) {
+    indicator.textContent = count > 0 ? `${count} defined` : 'None';
+  }
+
+  // Auto-expand if any brushes are defined, collapse if none
+  if (controls && icon) {
+    if (count > 0) {
+      controls.style.display = '';
+      icon.textContent = '▼';
+    } else {
+      controls.style.display = 'none';
+      icon.textContent = '▶';
+    }
   }
 }
 
@@ -3158,12 +9195,17 @@ function convertScrToAttr() {
   undoStack = [];
   redoStack = [];
 
+  // Mark picture as modified and sync state
+  markPictureModified();
+  saveCurrentPictureState();
+
   // Update UI
   if (typeof toggleFormatControlsVisibility === 'function') {
     toggleFormatControlsVisibility();
   }
   updateConvertOptions();
   updateFileInfo();
+  updatePictureTabBar();
   renderScreen();
   editorRender();
 }
@@ -3239,12 +9281,17 @@ function convertAttrToScr(patternId = 'empty') {
   undoStack = [];
   redoStack = [];
 
+  // Mark picture as modified and sync state
+  markPictureModified();
+  saveCurrentPictureState();
+
   // Update UI
   if (typeof toggleFormatControlsVisibility === 'function') {
     toggleFormatControlsVisibility();
   }
   updateConvertOptions();
   updateFileInfo();
+  updatePictureTabBar();
   renderScreen();
   editorRender();
 }
@@ -3285,6 +9332,10 @@ function convertAttrToBsc(patternId, borderColor) {
   undoStack = [];
   redoStack = [];
 
+  // Mark picture as modified and sync state
+  markPictureModified();
+  saveCurrentPictureState();
+
   // Update UI
   if (typeof toggleFormatControlsVisibility === 'function') {
     toggleFormatControlsVisibility();
@@ -3294,6 +9345,7 @@ function convertAttrToBsc(patternId, borderColor) {
   if (exportAsmBtn) exportAsmBtn.style.display = '';
   updateConvertOptions();
   updateFileInfo();
+  updatePictureTabBar();
   renderScreen();
   editorRender();
 }
@@ -3439,6 +9491,10 @@ function convertBscToScr() {
   undoStack = [];
   redoStack = [];
 
+  // Mark picture as modified and sync state
+  markPictureModified();
+  saveCurrentPictureState();
+
   // Update UI
   if (typeof toggleFormatControlsVisibility === 'function') {
     toggleFormatControlsVisibility();
@@ -3448,6 +9504,7 @@ function convertBscToScr() {
   if (exportAsmBtn) exportAsmBtn.style.display = 'none';
   updateConvertOptions();
   updateFileInfo();
+  updatePictureTabBar();
   renderScreen();
   editorRender();
 }
@@ -3484,6 +9541,10 @@ function convertScrToBsc(borderColor) {
   undoStack = [];
   redoStack = [];
 
+  // Mark picture as modified and sync state
+  markPictureModified();
+  saveCurrentPictureState();
+
   // Update UI
   if (typeof toggleFormatControlsVisibility === 'function') {
     toggleFormatControlsVisibility();
@@ -3493,6 +9554,7 @@ function convertScrToBsc(borderColor) {
   if (exportAsmBtn) exportAsmBtn.style.display = '';
   updateConvertOptions();
   updateFileInfo();
+  updatePictureTabBar();
   renderScreen();
   editorRender();
 }
@@ -3556,6 +9618,577 @@ function showBorderColorPicker() {
 }
 
 // ============================================================================
+// Text Tool
+// ============================================================================
+
+/**
+ * Initializes text tool with ROM font data
+ */
+function initTextTool() {
+  // Copy ROM font data from screen_viewer.js if available
+  if (typeof fontData !== 'undefined' && fontData.length >= 768) {
+    textFont768Data = fontData.slice(0, 768);
+    textFont768Name = typeof currentFontName !== 'undefined' ? currentFontName : 'ROM';
+  }
+  // Add ROM font to loaded fonts list
+  if (loaded768Fonts.length === 0) {
+    loaded768Fonts.push({ name: 'ROM', data: textFont768Data });
+  }
+  updateTextFontSelect();
+}
+
+/**
+ * Updates the font select dropdown with available fonts
+ */
+function updateTextFontSelect() {
+  const select = /** @type {HTMLSelectElement|null} */ (document.getElementById('textFontSelect'));
+  if (!select) return;
+
+  select.innerHTML = '';
+
+  // Add .768 fonts
+  for (const font of loaded768Fonts) {
+    const option = document.createElement('option');
+    option.value = `spectrum:${font.name}`;
+    option.textContent = `${font.name} (Spectrum)`;
+    select.appendChild(option);
+  }
+
+  // Add TTF fonts
+  for (const fontName of loadedTTFFonts) {
+    const option = document.createElement('option');
+    option.value = `ttf:${fontName}`;
+    option.textContent = `${fontName} (TTF)`;
+    select.appendChild(option);
+  }
+
+  // Add system fonts
+  const systemFonts = ['Arial', 'Courier New', 'Times New Roman', 'Georgia', 'Verdana'];
+  for (const fontName of systemFonts) {
+    if (!loadedTTFFonts.includes(fontName)) {
+      const option = document.createElement('option');
+      option.value = `ttf:${fontName}`;
+      option.textContent = `${fontName} (System)`;
+      select.appendChild(option);
+    }
+  }
+
+  updateTextFontIndicator();
+}
+
+/**
+ * Updates the text font indicator
+ */
+function updateTextFontIndicator() {
+  const indicator = document.getElementById('textToolFontIndicator');
+  if (indicator) {
+    indicator.textContent = textFontType === 'spectrum' ? textFont768Name : `${textFontTTF} ${textFontSize}px`;
+  }
+}
+
+/**
+ * Loads a .768 Spectrum font file
+ * @param {File} file
+ */
+function loadFont768File(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const buffer = e.target?.result;
+    if (buffer instanceof ArrayBuffer) {
+      const data = new Uint8Array(buffer);
+      if (data.length >= 768) {
+        const fontData = data.slice(0, 768);
+        const fontName = file.name.replace(/\.(768|ch8|bin)$/i, '');
+
+        // Check if font already loaded
+        const existing = loaded768Fonts.findIndex(f => f.name === fontName);
+        if (existing >= 0) {
+          loaded768Fonts[existing].data = fontData;
+        } else {
+          loaded768Fonts.push({ name: fontName, data: fontData });
+        }
+
+        // Select this font
+        textFontType = 'spectrum';
+        textFont768Data = fontData;
+        textFont768Name = fontName;
+        updateTextFontSelect();
+
+        // Set dropdown to this font
+        const select = /** @type {HTMLSelectElement|null} */ (document.getElementById('textFontSelect'));
+        if (select) select.value = `spectrum:${fontName}`;
+      } else {
+        alert(`Invalid font file: expected at least 768 bytes, got ${data.length}`);
+      }
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+/**
+ * Loads a TTF/OTF font file
+ * @param {File} file
+ */
+async function loadFontTTFFile(file) {
+  try {
+    const fontName = file.name.replace(/\.(ttf|otf|woff2?)$/i, '');
+    const buffer = await file.arrayBuffer();
+    const font = new FontFace(fontName, buffer);
+    await font.load();
+    document.fonts.add(font);
+
+    if (!loadedTTFFonts.includes(fontName)) {
+      loadedTTFFonts.push(fontName);
+    }
+
+    // Select this font
+    textFontType = 'ttf';
+    textFontTTF = fontName;
+    updateTextFontSelect();
+
+    // Set dropdown to this font
+    const select = /** @type {HTMLSelectElement|null} */ (document.getElementById('textFontSelect'));
+    if (select) select.value = `ttf:${fontName}`;
+
+    // Show size selector for TTF
+    const sizeSelect = document.getElementById('textFontSizeSelect');
+    if (sizeSelect) sizeSelect.style.display = '';
+  } catch (err) {
+    alert(`Failed to load font: ${err}`);
+  }
+}
+
+/**
+ * Renders text using .768 Spectrum font to a bitmap array
+ * @param {string} text - Text to render
+ * @returns {{width: number, height: number, data: Uint8Array}} - Bitmap data
+ */
+function renderText768(text) {
+  const charWidth = 8;
+  const charHeight = 8;
+  const width = text.length * charWidth;
+  const height = charHeight;
+  const bytesPerRow = Math.ceil(width / 8);
+  const data = new Uint8Array(bytesPerRow * height);
+
+  for (let i = 0; i < text.length; i++) {
+    let charCode = text.charCodeAt(i);
+    // Spectrum font starts at char 32 (space)
+    if (charCode < 32 || charCode > 127) charCode = 32;
+    const glyphIndex = charCode - 32;
+    const glyphOffset = glyphIndex * 8;
+
+    for (let row = 0; row < 8; row++) {
+      const glyphByte = textFont768Data[glyphOffset + row] || 0;
+      const destX = i * 8;
+
+      for (let bit = 0; bit < 8; bit++) {
+        if (glyphByte & (0x80 >> bit)) {
+          const x = destX + bit;
+          const byteIdx = row * bytesPerRow + Math.floor(x / 8);
+          const bitIdx = 7 - (x % 8);
+          data[byteIdx] |= (1 << bitIdx);
+        }
+      }
+    }
+  }
+
+  return { width, height, data };
+}
+
+/**
+ * Renders text using TTF font to a bitmap array
+ * @param {string} text - Text to render
+ * @returns {{width: number, height: number, data: Uint8Array}} - Bitmap data
+ */
+function renderTextTTF(text) {
+  // Create temporary canvas to render text
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return { width: 0, height: 0, data: new Uint8Array(0) };
+
+  // Measure text
+  ctx.font = `${textFontSize}px "${textFontTTF}"`;
+  const metrics = ctx.measureText(text);
+  const width = Math.ceil(metrics.width);
+  const height = textFontSize + 4; // Add some padding
+
+  canvas.width = width;
+  canvas.height = height;
+
+  // Render text
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = '#fff';
+  ctx.font = `${textFontSize}px "${textFontTTF}"`;
+  ctx.textBaseline = 'top';
+  ctx.fillText(text, 0, 2);
+
+  // Convert to 1-bit bitmap
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const bytesPerRow = Math.ceil(width / 8);
+  const data = new Uint8Array(bytesPerRow * height);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 4;
+      const brightness = imageData.data[idx]; // Use red channel
+      if (brightness > 127) {
+        const byteIdx = y * bytesPerRow + Math.floor(x / 8);
+        const bitIdx = 7 - (x % 8);
+        data[byteIdx] |= (1 << bitIdx);
+      }
+    }
+  }
+
+  return { width, height, data };
+}
+
+/**
+ * Renders the current text to bitmap data
+ * @returns {{width: number, height: number, data: Uint8Array}|null}
+ */
+function renderCurrentText() {
+  if (!textToolInput || textToolInput.length === 0) return null;
+
+  if (textFontType === 'spectrum') {
+    return renderText768(textToolInput);
+  } else {
+    return renderTextTTF(textToolInput);
+  }
+}
+
+/**
+ * Draws text preview on the canvas
+ * @param {number} x - X position
+ * @param {number} y - Y position
+ */
+function drawTextPreview(x, y) {
+  if (!screenCtx || !editorActive) return;
+
+  const textBitmap = renderCurrentText();
+  if (!textBitmap || textBitmap.width === 0) return;
+
+  const { mainLeft, mainTop } = getMainScreenOffset();
+
+  // Draw semi-transparent preview
+  const previewColor = 'rgba(255, 255, 0, 0.6)';
+  screenCtx.fillStyle = previewColor;
+
+  for (let ty = 0; ty < textBitmap.height; ty++) {
+    for (let tx = 0; tx < textBitmap.width; tx++) {
+      const byteIdx = ty * Math.ceil(textBitmap.width / 8) + Math.floor(tx / 8);
+      const bitIdx = 7 - (tx % 8);
+      if (textBitmap.data[byteIdx] & (1 << bitIdx)) {
+        const px = x + tx;
+        const py = y + ty;
+        if (px >= 0 && px < getFormatWidth() && py >= 0 && py < getFormatHeight()) {
+          screenCtx.fillRect(
+            (mainLeft + px) * zoom,
+            (mainTop + py) * zoom,
+            zoom,
+            zoom
+          );
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Stamps text onto the screen data
+ * @param {number} x - X position
+ * @param {number} y - Y position
+ */
+function stampText(x, y) {
+  if (!screenData) return;
+
+  const textBitmap = renderCurrentText();
+  if (!textBitmap || textBitmap.width === 0) return;
+
+  saveUndoState();
+
+  for (let ty = 0; ty < textBitmap.height; ty++) {
+    for (let tx = 0; tx < textBitmap.width; tx++) {
+      const byteIdx = ty * Math.ceil(textBitmap.width / 8) + Math.floor(tx / 8);
+      const bitIdx = 7 - (tx % 8);
+      const isSet = (textBitmap.data[byteIdx] & (1 << bitIdx)) !== 0;
+
+      const px = x + tx;
+      const py = y + ty;
+
+      if (px >= 0 && px < getFormatWidth() && py >= 0 && py < getFormatHeight()) {
+        // Use current brush paint mode
+        if (brushPaintMode === 'recolor') {
+          if (isSet) setPixelAttributeOnly(screenData, px, py);
+        } else if (brushPaintMode === 'retouch') {
+          if (isSet) setPixelBitmapOnly(screenData, px, py, true);
+        } else {
+          // Normal mode: set ink pixels
+          if (isSet) {
+            setPixel(screenData, px, py, true);
+          }
+        }
+      }
+    }
+  }
+
+  editorRender();
+}
+
+/**
+ * Shows/hides the text tool section
+ * @param {boolean} show
+ */
+function showTextToolSection(show) {
+  const section = document.getElementById('editorTextSection');
+  if (section) {
+    section.style.display = show ? '' : 'none';
+  }
+  if (show) {
+    isPlacingText = true;
+    const input = /** @type {HTMLInputElement|null} */ (document.getElementById('textToolInput'));
+    if (input) input.focus();
+  } else {
+    isPlacingText = false;
+    textPreviewPos = null;
+  }
+}
+
+/**
+ * Shows/hides the airbrush options section
+ * @param {boolean} show
+ */
+function showAirbrushSection(show) {
+  const section = document.getElementById('editorAirbrushSection');
+  if (section) {
+    section.style.display = show ? '' : 'none';
+  }
+}
+
+/**
+ * Shows/hides the gradient options section
+ * @param {boolean} show
+ */
+function showGradientSection(show) {
+  const section = document.getElementById('editorGradientSection');
+  if (section) {
+    section.style.display = show ? '' : 'none';
+  }
+}
+
+// ============================================================================
+// QR Code Generation
+// ============================================================================
+
+/** @type {Object|null} - Cached QR code data */
+let qrCodeData = null;
+
+/**
+ * Opens the QR code generation dialog
+ */
+function openQrDialog() {
+  const dialog = document.getElementById('qrCodeDialog');
+  const input = document.getElementById('qrTextInput');
+  if (dialog) {
+    dialog.style.display = '';
+    if (input) input.focus();
+    updateQrPreview();
+  }
+}
+
+/**
+ * Closes the QR code dialog
+ */
+function closeQrDialog() {
+  const dialog = document.getElementById('qrCodeDialog');
+  if (dialog) dialog.style.display = 'none';
+}
+
+/**
+ * Updates the QR code preview
+ */
+function updateQrPreview() {
+  const input = /** @type {HTMLInputElement|null} */ (document.getElementById('qrTextInput'));
+  const moduleSizeSelect = /** @type {HTMLSelectElement|null} */ (document.getElementById('qrModuleSize'));
+  const versionSelect = /** @type {HTMLSelectElement|null} */ (document.getElementById('qrVersionSelect'));
+  const canvas = /** @type {HTMLCanvasElement|null} */ (document.getElementById('qrPreviewCanvas'));
+  const hint = document.getElementById('qrPreviewHint');
+  const info = document.getElementById('qrInfo');
+  const applyBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById('qrApplyBtn'));
+
+  const text = input?.value?.trim() || '';
+
+  if (!text) {
+    if (canvas) canvas.style.display = 'none';
+    if (hint) {
+      hint.style.display = '';
+      hint.textContent = 'Enter text to preview';
+    }
+    if (info) info.textContent = '';
+    if (applyBtn) applyBtn.disabled = true;
+    qrCodeData = null;
+    return;
+  }
+
+  try {
+    // Get module size (1, 2, 4, or 8 pixels - all divide evenly into 8x8 character cells)
+    const defaultModuleSize = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.QR_DEFAULT_MODULE_SIZE) || 4;
+    const moduleSize = parseInt(moduleSizeSelect?.value || String(defaultModuleSize), 10);
+    // Get version (0 = auto, 1-20 = forced)
+    const versionValue = versionSelect?.value || 'auto';
+    const forceVersion = versionValue === 'auto' ? 0 : parseInt(versionValue, 10);
+
+    // Check if forced version fits with selected module size
+    if (forceVersion > 0) {
+      const versionModules = 17 + forceVersion * 4;
+      const requiredSize = versionModules * moduleSize;
+      if (requiredSize > 192) {
+        throw new Error(`V${forceVersion} needs ${requiredSize}px at ${moduleSize}px/module (max 192). Use smaller module size.`);
+      }
+    }
+
+    // @ts-ignore - generateQR is defined in qrcode.js
+    const qrResult = generateQR(text, moduleSize, 192, forceVersion);
+
+    if (!qrResult) {
+      throw new Error('Text too long for selected size');
+    }
+
+    const { modules, moduleCount, actualSize, version } = qrResult;
+
+    // Draw to preview canvas
+    if (canvas) {
+      canvas.width = actualSize;
+      canvas.height = actualSize;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, actualSize, actualSize);
+        ctx.fillStyle = '#000000';
+
+        for (let row = 0; row < moduleCount; row++) {
+          for (let col = 0; col < moduleCount; col++) {
+            if (modules[row][col]) {
+              ctx.fillRect(col * moduleSize, row * moduleSize, moduleSize, moduleSize);
+            }
+          }
+        }
+      }
+
+      canvas.style.display = '';
+      if (hint) hint.style.display = 'none';
+    }
+
+    // Store QR data for apply
+    qrCodeData = {
+      modules: modules,
+      moduleCount: moduleCount,
+      moduleSize: moduleSize,
+      size: actualSize
+    };
+
+    if (info) info.textContent = `${actualSize}×${actualSize} px (v${version}, ${moduleCount}×${moduleCount} modules, ${moduleSize}px each)`;
+    if (applyBtn) applyBtn.disabled = false;
+
+  } catch (e) {
+    if (canvas) canvas.style.display = 'none';
+    if (hint) {
+      hint.style.display = '';
+      hint.textContent = 'Error: ' + (e instanceof Error ? e.message : String(e));
+    }
+    if (info) info.textContent = '';
+    if (applyBtn) applyBtn.disabled = true;
+    qrCodeData = null;
+  }
+}
+
+/**
+ * Applies the QR code to the canvas
+ */
+function applyQrCode() {
+  if (!qrCodeData || !screenData) return;
+
+  const posX = parseInt(/** @type {HTMLInputElement} */ (document.getElementById('qrPosX'))?.value || '0', 10);
+  const posY = parseInt(/** @type {HTMLInputElement} */ (document.getElementById('qrPosY'))?.value || '0', 10);
+  const { modules, moduleCount, moduleSize } = qrCodeData;
+
+  // Save undo state
+  saveUndoState();
+
+  // Draw QR code to screen data
+  // QR black = ink (1), QR white = paper (0)
+  for (let row = 0; row < moduleCount; row++) {
+    for (let col = 0; col < moduleCount; col++) {
+      const isDark = modules[row][col];
+      const startX = posX + col * moduleSize;
+      const startY = posY + row * moduleSize;
+
+      // Fill module rectangle
+      for (let py = 0; py < moduleSize; py++) {
+        for (let px = 0; px < moduleSize; px++) {
+          const x = startX + px;
+          const y = startY + py;
+          if (x >= 0 && x < 256 && y >= 0 && y < 192) {
+            setPixel(screenData, x, y, isDark);
+          }
+        }
+      }
+    }
+  }
+
+  closeQrDialog();
+  editorRender();
+}
+
+/**
+ * Initializes QR dialog event handlers
+ */
+function initQrDialog() {
+  const dialog = document.getElementById('qrCodeDialog');
+  const input = document.getElementById('qrTextInput');
+  const moduleSizeSelect = document.getElementById('qrModuleSize');
+  const versionSelect = document.getElementById('qrVersionSelect');
+  const cancelBtn = document.getElementById('qrCancelBtn');
+  const applyBtn = document.getElementById('qrApplyBtn');
+  const generateBtn = document.getElementById('qrGenerateBtn');
+
+  // Open dialog button
+  generateBtn?.addEventListener('click', openQrDialog);
+
+  // Convert input to uppercase (QR alphanumeric mode only supports uppercase)
+  input?.addEventListener('input', function() {
+    const start = this.selectionStart;
+    const end = this.selectionEnd;
+    this.value = this.value.toUpperCase();
+    this.setSelectionRange(start, end);
+    updateQrPreview();
+  });
+
+  // Update preview on settings change
+  moduleSizeSelect?.addEventListener('change', updateQrPreview);
+  versionSelect?.addEventListener('change', updateQrPreview);
+
+  // Cancel button
+  cancelBtn?.addEventListener('click', closeQrDialog);
+
+  // Apply button
+  applyBtn?.addEventListener('click', applyQrCode);
+
+  // Close on Escape
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && dialog?.style.display !== 'none') {
+      closeQrDialog();
+    }
+  });
+
+  // Close on overlay click
+  dialog?.addEventListener('click', (e) => {
+    if (e.target === dialog) closeQrDialog();
+  });
+}
+
+// ============================================================================
 // Initialization
 // ============================================================================
 
@@ -3611,11 +10244,6 @@ function initEditor() {
     });
   });
 
-  // Brush rotate/mirror buttons
-  document.getElementById('brushRotateBtn')?.addEventListener('click', rotateCustomBrush);
-  document.getElementById('brushMirrorHBtn')?.addEventListener('click', mirrorCustomBrushH);
-  document.getElementById('brushMirrorVBtn')?.addEventListener('click', mirrorCustomBrushV);
-
   // Brush paint mode select
   const paintModeSelect = /** @type {HTMLSelectElement|null} */ (document.getElementById('brushPaintMode'));
   if (paintModeSelect) {
@@ -3626,9 +10254,252 @@ function initEditor() {
     });
   }
 
+  // Airbrush radius select
+  const airbrushRadiusSelect = document.getElementById('airbrushRadiusSelect');
+  if (airbrushRadiusSelect) {
+    airbrushRadiusSelect.addEventListener('change', (e) => {
+      setAirbrushRadius(parseInt(/** @type {HTMLSelectElement} */ (e.target).value, 10));
+    });
+  }
+
+  // Airbrush density select
+  const airbrushDensitySelect = document.getElementById('airbrushDensitySelect');
+  if (airbrushDensitySelect) {
+    airbrushDensitySelect.addEventListener('change', (e) => {
+      setAirbrushDensity(parseFloat(/** @type {HTMLSelectElement} */ (e.target).value));
+    });
+  }
+
+  // Airbrush falloff select
+  const airbrushFalloffSelect = document.getElementById('airbrushFalloffSelect');
+  if (airbrushFalloffSelect) {
+    airbrushFalloffSelect.addEventListener('change', (e) => {
+      setAirbrushFalloff(parseFloat(/** @type {HTMLSelectElement} */ (e.target).value));
+    });
+  }
+
+  // Gradient type select
+  const gradientTypeSelect = document.getElementById('gradientTypeSelect');
+  if (gradientTypeSelect) {
+    gradientTypeSelect.addEventListener('change', (e) => {
+      setGradientType(/** @type {HTMLSelectElement} */ (e.target).value);
+    });
+  }
+
+  // Dither method select
+  const ditherMethodSelect = document.getElementById('ditherMethodSelect');
+  if (ditherMethodSelect) {
+    ditherMethodSelect.addEventListener('change', (e) => {
+      setDitherMethod(/** @type {HTMLSelectElement} */ (e.target).value);
+    });
+  }
+
+  // Gradient reverse checkbox
+  const gradientReverseCheckbox = document.getElementById('gradientReverseCheckbox');
+  if (gradientReverseCheckbox) {
+    gradientReverseCheckbox.addEventListener('change', (e) => {
+      setGradientReverse(/** @type {HTMLInputElement} */ (e.target).checked);
+    });
+  }
+
   // Load custom brushes from localStorage and render previews
   loadCustomBrushes();
   renderAllCustomBrushPreviews();
+
+  // Text tool initialization
+  initTextTool();
+
+  // QR code dialog initialization
+  initQrDialog();
+
+  // Helper function to setup collapsible with localStorage persistence
+  /**
+   * @param {string} headerId - ID of the header element
+   * @param {string} contentId - ID of the content element
+   * @param {string} iconId - ID of the expand icon element
+   * @param {string} storageKey - localStorage key for this collapsible
+   * @param {boolean} [defaultExpanded=false] - Default state if not in localStorage
+   */
+  function setupCollapsible(headerId, contentId, iconId, storageKey, defaultExpanded = false) {
+    const header = document.getElementById(headerId);
+    const content = document.getElementById(contentId);
+    const icon = document.getElementById(iconId);
+    if (!header || !content || !icon) return;
+
+    // Restore state from localStorage
+    const savedState = localStorage.getItem(storageKey);
+    const isExpanded = savedState !== null ? savedState === 'true' : defaultExpanded;
+    content.style.display = isExpanded ? 'block' : 'none';
+    icon.textContent = isExpanded ? '▼' : '▶';
+
+    // Add click handler
+    header.addEventListener('click', () => {
+      const nowHidden = content.style.display === 'none';
+      content.style.display = nowHidden ? 'block' : 'none';
+      icon.textContent = nowHidden ? '▼' : '▶';
+      localStorage.setItem(storageKey, String(nowHidden));
+    });
+  }
+
+  // Setup all collapsible sections
+  setupCollapsible('textToolHeader', 'textToolControls', 'textToolExpandIcon', 'spectralab_collapse_textTool', true);
+  setupCollapsible('refHeader', 'refControlsContent', 'refExpandIcon', 'spectralab_collapse_reference');
+  setupCollapsible('viewSettingsHeader', 'viewSettingsContent', 'viewSettingsExpandIcon', 'spectralab_collapse_viewSettings');
+  setupCollapsible('fileInfoHeader', 'fileInfoContent', 'fileInfoExpandIcon', 'spectralab_collapse_fileInfo');
+  setupCollapsible('layerHeader', 'layerControls', 'layerExpandIcon', 'spectralab_collapse_layers');
+  setupCollapsible('customBrushHeader', 'customBrushControls', 'customBrushExpandIcon', 'spectralab_collapse_customBrush');
+
+  const textToolInput = /** @type {HTMLInputElement|null} */ (document.getElementById('textToolInput'));
+  textToolInput?.addEventListener('input', (e) => {
+    textToolInput.value = /** @type {HTMLInputElement} */ (e.target).value;
+    if (textPreviewPos) editorRender();
+  });
+  // Prevent keyboard shortcuts while typing in text input
+  textToolInput?.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Escape') {
+      textToolInput.blur();
+    }
+  });
+
+  const textFontSelect = /** @type {HTMLSelectElement|null} */ (document.getElementById('textFontSelect'));
+  textFontSelect?.addEventListener('change', (e) => {
+    const value = /** @type {HTMLSelectElement} */ (e.target).value;
+    const [type, name] = value.split(':');
+    if (type === 'spectrum') {
+      textFontType = 'spectrum';
+      const font = loaded768Fonts.find(f => f.name === name);
+      if (font) {
+        textFont768Data = font.data;
+        textFont768Name = name;
+      }
+      const sizeSelect = document.getElementById('textFontSizeSelect');
+      if (sizeSelect) sizeSelect.style.display = 'none';
+    } else {
+      textFontType = 'ttf';
+      textFontTTF = name;
+      const sizeSelect = document.getElementById('textFontSizeSelect');
+      if (sizeSelect) sizeSelect.style.display = '';
+    }
+    updateTextFontIndicator();
+    if (textPreviewPos) editorRender();
+  });
+
+  const textFontSizeSelect = /** @type {HTMLSelectElement|null} */ (document.getElementById('textFontSizeSelect'));
+  textFontSizeSelect?.addEventListener('change', (e) => {
+    textFontSize = parseInt(/** @type {HTMLSelectElement} */ (e.target).value, 10);
+    updateTextFontIndicator();
+    if (textPreviewPos) editorRender();
+  });
+
+  const font768FileInput = /** @type {HTMLInputElement|null} */ (document.getElementById('font768FileInput'));
+  document.getElementById('loadFont768Btn')?.addEventListener('click', () => {
+    font768FileInput?.click();
+  });
+  font768FileInput?.addEventListener('change', (e) => {
+    const file = /** @type {HTMLInputElement} */ (e.target).files?.[0];
+    if (file) loadFont768File(file);
+    /** @type {HTMLInputElement} */ (e.target).value = '';
+  });
+
+  const fontTTFFileInput = /** @type {HTMLInputElement|null} */ (document.getElementById('fontTTFFileInput'));
+  document.getElementById('loadFontTTFBtn')?.addEventListener('click', () => {
+    fontTTFFileInput?.click();
+  });
+  fontTTFFileInput?.addEventListener('change', (e) => {
+    const file = /** @type {HTMLInputElement} */ (e.target).files?.[0];
+    if (file) loadFontTTFFile(file);
+    /** @type {HTMLInputElement} */ (e.target).value = '';
+  });
+
+  // Reference image controls
+  const refFileInput = /** @type {HTMLInputElement|null} */ (document.getElementById('refFileInput'));
+  document.getElementById('refLoadBtn')?.addEventListener('click', () => {
+    refFileInput?.click();
+  });
+  refFileInput?.addEventListener('change', (e) => {
+    const target = /** @type {HTMLInputElement} */ (e.target);
+    const file = target.files?.[0];
+    if (file) {
+      loadReferenceImage(file);
+    }
+    target.value = '';  // Allow reloading same file
+  });
+  document.getElementById('refShowCheckbox')?.addEventListener('change', (e) => {
+    showReference = /** @type {HTMLInputElement} */ (e.target).checked;
+    editorRender();
+  });
+  const refOpacitySlider = /** @type {HTMLInputElement|null} */ (document.getElementById('refOpacitySlider'));
+  const refOpacityValue = document.getElementById('refOpacityValue');
+  // Set slider range from config
+  if (refOpacitySlider) {
+    const minOpacity = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.REFERENCE_MIN_OPACITY) || 5;
+    const maxOpacity = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.REFERENCE_MAX_OPACITY) || 80;
+    refOpacitySlider.min = String(minOpacity);
+    refOpacitySlider.max = String(maxOpacity);
+    refOpacitySlider.value = String(Math.round(referenceOpacity * 100));
+  }
+  refOpacitySlider?.addEventListener('input', (e) => {
+    const val = parseInt(/** @type {HTMLInputElement} */ (e.target).value, 10);
+    referenceOpacity = val / 100;
+    if (refOpacityValue) refOpacityValue.textContent = val + '%';
+    editorRender();
+  });
+
+  // Reference image clear button
+  document.getElementById('refClearBtn')?.addEventListener('click', () => {
+    clearReferenceImage();
+  });
+
+  // Reference image position/size controls
+  const refOffsetX = /** @type {HTMLInputElement|null} */ (document.getElementById('refOffsetX'));
+  const refOffsetY = /** @type {HTMLInputElement|null} */ (document.getElementById('refOffsetY'));
+  const refWidth = /** @type {HTMLInputElement|null} */ (document.getElementById('refWidth'));
+  const refHeight = /** @type {HTMLInputElement|null} */ (document.getElementById('refHeight'));
+
+  refOffsetX?.addEventListener('input', (e) => {
+    const val = parseInt(/** @type {HTMLInputElement} */ (e.target).value, 10);
+    referenceOffsetX = isNaN(val) ? 0 : val;
+    editorRender();
+  });
+  refOffsetY?.addEventListener('input', (e) => {
+    const val = parseInt(/** @type {HTMLInputElement} */ (e.target).value, 10);
+    referenceOffsetY = isNaN(val) ? 0 : val;
+    editorRender();
+  });
+  // When mousedown on empty width/height fields, populate with current canvas size before spin action
+  refWidth?.addEventListener('mousedown', (e) => {
+    const input = /** @type {HTMLInputElement} */ (e.target);
+    if (input.value === '' && referenceWidth === null) {
+      const canvas = document.getElementById('screenCanvas');
+      if (canvas) {
+        const size = Math.round(/** @type {HTMLCanvasElement} */ (canvas).width / zoom);
+        input.value = String(size);
+        referenceWidth = size;
+      }
+    }
+  });
+  refHeight?.addEventListener('mousedown', (e) => {
+    const input = /** @type {HTMLInputElement} */ (e.target);
+    if (input.value === '' && referenceHeight === null) {
+      const canvas = document.getElementById('screenCanvas');
+      if (canvas) {
+        const size = Math.round(/** @type {HTMLCanvasElement} */ (canvas).height / zoom);
+        input.value = String(size);
+        referenceHeight = size;
+      }
+    }
+  });
+  refWidth?.addEventListener('input', (e) => {
+    const val = parseInt(/** @type {HTMLInputElement} */ (e.target).value, 10);
+    referenceWidth = isNaN(val) || val <= 0 ? null : val;
+    editorRender();
+  });
+  refHeight?.addEventListener('input', (e) => {
+    const val = parseInt(/** @type {HTMLInputElement} */ (e.target).value, 10);
+    referenceHeight = isNaN(val) || val <= 0 ? null : val;
+    editorRender();
+  });
 
   // Build color palette
   buildPalette();
@@ -3659,9 +10530,49 @@ function initEditor() {
     });
   }
 
+  // Cut button
+  document.getElementById('editorCutBtn')?.addEventListener('click', () => {
+    if (selectionStartPoint && selectionEndPoint) {
+      cutSelection();
+    }
+  });
+
+  // Invert button
+  document.getElementById('editorInvertBtn')?.addEventListener('click', () => {
+    if (selectionStartPoint && selectionEndPoint) {
+      invertSelection();
+    }
+  });
+
   // Paste button
   document.getElementById('editorPasteBtn')?.addEventListener('click', () => {
     startPasteMode();
+  });
+
+  // Clipboard/brush transform buttons (auto-detect target)
+  document.getElementById('clipboardRotateBtn')?.addEventListener('click', () => {
+    if (isPasting && clipboardData) {
+      rotateClipboard();
+      editorRender();
+    } else if (activeCustomBrush >= 0) {
+      rotateCustomBrush();
+    }
+  });
+  document.getElementById('clipboardFlipHBtn')?.addEventListener('click', () => {
+    if (isPasting && clipboardData) {
+      mirrorClipboardH();
+      editorRender();
+    } else if (activeCustomBrush >= 0) {
+      mirrorCustomBrushH();
+    }
+  });
+  document.getElementById('clipboardFlipVBtn')?.addEventListener('click', () => {
+    if (isPasting && clipboardData) {
+      mirrorClipboardV();
+      editorRender();
+    } else if (activeCustomBrush >= 0) {
+      mirrorCustomBrushV();
+    }
   });
 
   // Action buttons
@@ -3683,8 +10594,62 @@ function initEditor() {
   document.getElementById('editorUndoBtn')?.addEventListener('click', undo);
   document.getElementById('editorRedoBtn')?.addEventListener('click', redo);
   document.getElementById('editorClearBtn')?.addEventListener('click', clearScreen);
-  document.getElementById('scrEditBtn')?.addEventListener('click', toggleEditorMode);
-  document.getElementById('scrExitBtn')?.addEventListener('click', toggleEditorMode);
+
+  // Reset to defaults button
+  document.getElementById('resetSettingsBtn')?.addEventListener('click', () => {
+    if (confirm('Reset all settings to defaults?\n\nThis will clear saved settings, brushes, and reload the page.')) {
+      // Clear all SpectraLab keys from localStorage
+      const keysToRemove = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('spectraLab')) {
+          keysToRemove.push(key);
+        }
+      }
+      keysToRemove.forEach(key => localStorage.removeItem(key));
+      // Reload page
+      location.reload();
+    }
+  });
+
+  // Transform tab selection and export buttons
+  document.getElementById('transformSelectBtn')?.addEventListener('click', () => {
+    if (transformSelectActive) {
+      exitTransformSelectMode();
+      selectionStartPoint = null;
+      selectionEndPoint = null;
+      transformSelectionRect = null;
+      clipboardData = null;
+      updateTransformSectionsVisibility();
+      editorRender();
+    } else {
+      enterTransformSelectMode();
+    }
+  });
+
+  const transformSnapCheckbox = /** @type {HTMLInputElement|null} */ (document.getElementById('transformSnapCheckbox'));
+  if (transformSnapCheckbox) {
+    transformSnapCheckbox.checked = transformSnapToGrid;
+    transformSnapCheckbox.addEventListener('change', () => {
+      transformSnapToGrid = transformSnapCheckbox.checked;
+    });
+  }
+
+  document.getElementById('transformRotateBtn')?.addEventListener('click', () => {
+    transformRotateSelection();
+  });
+  document.getElementById('transformMirrorHBtn')?.addEventListener('click', () => {
+    transformMirrorSelectionH();
+  });
+  document.getElementById('transformMirrorVBtn')?.addEventListener('click', () => {
+    transformMirrorSelectionV();
+  });
+  document.getElementById('transformExportAsmBtn')?.addEventListener('click', () => {
+    exportSelectionAsm();
+  });
+  document.getElementById('transformCopyAsmBtn')?.addEventListener('click', () => {
+    copySelectionAsmToClipboard();
+  });
 
   // Preview zoom buttons
   document.getElementById('previewZoomIn')?.addEventListener('click', () => setPreviewZoom(previewZoom + 1));
@@ -3693,24 +10658,167 @@ function initEditor() {
   // Initialize preview drag
   initPreviewDrag();
 
+  // Initialize floating palette for fullscreen mode
+  initFloatingPalette();
+
+  // Sync fullscreen state when browser fullscreen changes
+  document.addEventListener('fullscreenchange', () => {
+    if (!document.fullscreenElement && fullscreenMode) {
+      // Browser exited fullscreen, sync our state
+      fullscreenMode = false;
+      document.body.classList.remove('fullscreen-editor');
+      const palette = document.getElementById('floatingPalette');
+      if (palette) palette.classList.remove('active');
+      editorRender();
+    }
+  });
+
+  // Layer panel buttons
+  document.getElementById('addLayerBtn')?.addEventListener('click', () => {
+    if (layersEnabled) {
+      addLayer();
+    } else if (isFormatEditable() && screenData && screenData.length > 0) {
+      // Initialize layers if not already enabled
+      initLayers();
+      addLayer();
+      toggleLayerSectionVisibility();
+    }
+    // Auto-expand layer controls when adding layers
+    const controls = document.getElementById('layerControls');
+    const icon = document.getElementById('layerExpandIcon');
+    if (controls && controls.style.display === 'none') {
+      controls.style.display = '';
+      if (icon) icon.textContent = '▼';
+    }
+  });
+  document.getElementById('removeLayerBtn')?.addEventListener('click', removeLayer);
+  document.getElementById('moveLayerUpBtn')?.addEventListener('click', moveLayerUp);
+  document.getElementById('moveLayerDownBtn')?.addEventListener('click', moveLayerDown);
+  document.getElementById('flattenLayersBtn')?.addEventListener('click', () => {
+    if (layersEnabled && layers.length > 1) {
+      saveUndoState();
+      flattenAllLayers();
+      editorRender();
+    }
+  });
+
+  // Layer list click delegation
+  const layerList = document.getElementById('layerList');
+  if (layerList) {
+    layerList.addEventListener('click', (e) => {
+      const target = /** @type {HTMLElement} */ (e.target);
+      // Check if visibility toggle was clicked
+      if (target.classList.contains('layer-visibility')) {
+        const index = parseInt(target.dataset.index || '', 10);
+        if (!isNaN(index)) {
+          toggleLayerVisibility(index);
+        }
+        return;
+      }
+      // Check if layer item was clicked
+      const layerItem = target.closest('.layer-item');
+      if (layerItem) {
+        const index = parseInt(/** @type {HTMLElement} */ (layerItem).dataset.index || '', 10);
+        if (!isNaN(index)) {
+          setActiveLayer(index);
+        }
+      }
+    });
+
+    // Double-click to rename layer
+    layerList.addEventListener('dblclick', (e) => {
+      const target = /** @type {HTMLElement} */ (e.target);
+      // Only trigger on layer-name span or layer-item itself
+      const layerItem = target.closest('.layer-item');
+      if (!layerItem) return;
+
+      const index = parseInt(/** @type {HTMLElement} */ (layerItem).dataset.index || '', 10);
+      if (isNaN(index) || !layers[index]) return;
+
+      const currentName = layers[index].name;
+      const newName = prompt('Rename layer:', currentName);
+      if (newName !== null && newName.trim() !== '') {
+        layers[index].name = newName.trim();
+        updateLayerPanel();
+      }
+    });
+  }
+
+  // Project save/load buttons (stopPropagation to prevent collapsing header)
+  document.getElementById('saveProjectBtn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    saveProject();
+  });
+
+  const projectFileInput = /** @type {HTMLInputElement|null} */ (document.getElementById('projectFileInput'));
+  document.getElementById('loadProjectBtn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    projectFileInput?.click();
+  });
+  projectFileInput?.addEventListener('change', (e) => {
+    const file = /** @type {HTMLInputElement} */ (e.target).files?.[0];
+    if (file) {
+      loadProject(file);
+    }
+    // Reset so same file can be loaded again
+    if (projectFileInput) projectFileInput.value = '';
+  });
+
+  // Workspace save/load buttons
+  document.getElementById('saveWorkspaceBtn')?.addEventListener('click', saveWorkspace);
+
+  const workspaceFileInput = /** @type {HTMLInputElement|null} */ (document.getElementById('workspaceFileInput'));
+  document.getElementById('loadWorkspaceBtn')?.addEventListener('click', () => {
+    workspaceFileInput?.click();
+  });
+  workspaceFileInput?.addEventListener('change', (e) => {
+    const file = /** @type {HTMLInputElement} */ (e.target).files?.[0];
+    if (file) {
+      loadWorkspace(file);
+    }
+    // Reset so same file can be loaded again
+    if (workspaceFileInput) workspaceFileInput.value = '';
+  });
+
+  // Brushes save/load buttons (stopPropagation to prevent collapsing header)
+  document.getElementById('saveBrushesBtn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    exportBrushesToFile();
+  });
+
+  const brushesFileInput = /** @type {HTMLInputElement|null} */ (document.getElementById('brushesFileInput'));
+  document.getElementById('loadBrushesBtn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    brushesFileInput?.click();
+  });
+  brushesFileInput?.addEventListener('change', (e) => {
+    const file = /** @type {HTMLInputElement} */ (e.target).files?.[0];
+    if (file) {
+      importBrushesFromFile(file);
+    }
+    // Reset so same file can be loaded again
+    if (brushesFileInput) brushesFileInput.value = '';
+  });
+
   // Keyboard shortcuts
   document.addEventListener('keydown', (e) => {
     if (!editorActive) return;
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
 
-    if (e.ctrlKey && e.key === 'z') {
+    // Use e.code for Ctrl+key combinations (layout-independent)
+    if (e.ctrlKey && e.code === 'KeyZ') {
       e.preventDefault();
       undo();
     }
-    if (e.ctrlKey && e.key === 'y') {
+    if (e.ctrlKey && e.code === 'KeyY') {
       e.preventDefault();
       redo();
     }
-    if (e.ctrlKey && e.key === 's') {
+    if (e.ctrlKey && e.code === 'KeyS') {
       e.preventDefault();
       saveScrFile();
     }
-    if (e.ctrlKey && e.key === 'c') {
+    if (e.ctrlKey && e.code === 'KeyC') {
       e.preventDefault();
       copySelection();
       // Clear selection visuals after manual copy
@@ -3719,16 +10827,35 @@ function initEditor() {
       isSelecting = false;
       editorRender();
     }
-    if (e.ctrlKey && e.key === 'v') {
+    if (e.ctrlKey && e.code === 'KeyX') {
+      e.preventDefault();
+      if (selectionStartPoint && selectionEndPoint) {
+        cutSelection();
+        // Clear selection visuals after cut
+        selectionStartPoint = null;
+        selectionEndPoint = null;
+        isSelecting = false;
+      }
+    }
+    if (e.ctrlKey && e.code === 'KeyV') {
       e.preventDefault();
       startPasteMode();
     }
 
+    // Brush preview toggle (configurable hotkey, default backtick)
+    const brushPreviewKey = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.BRUSH_PREVIEW_HOTKEY) || '`';
+    if (!e.ctrlKey && !e.altKey && e.key === brushPreviewKey) {
+      e.preventDefault();
+      toggleBrushPreview();
+      return;  // Don't process further key handlers
+    }
+
+    // Use e.code for layout-independent shortcuts (works with non-Latin keyboards)
     if (!e.ctrlKey && !e.altKey) {
-      switch (e.key.toLowerCase()) {
-        case 'p': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_PIXEL); break;
-        case 'l': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_LINE); break;
-        case 'r':
+      switch (e.code) {
+        case 'KeyP': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_PIXEL); break;
+        case 'KeyL': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_LINE); break;
+        case 'KeyR':
           if (isPasting && clipboardData) {
             rotateClipboard();
           } else if (activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
@@ -3737,36 +10864,79 @@ function initEditor() {
             setEditorTool(EDITOR.TOOL_RECT);
           }
           break;
-        case 'h':
+        case 'KeyH':
           if (isPasting && clipboardData) {
             mirrorClipboardH();
           } else if (activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
             mirrorCustomBrushH();
           }
           break;
-        case 'v':
+        case 'KeyV':
           if (isPasting && clipboardData) {
             mirrorClipboardV();
           } else if (activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
             mirrorCustomBrushV();
           }
           break;
-        case 'c': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_FILL_CELL); break;
-        case 'a': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_RECOLOR); break;
-        case 's': setEditorTool(EDITOR.TOOL_SELECT); break;
-        case 'b':
+        case 'KeyC': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_FILL_CELL); break;
+        case 'KeyA': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_RECOLOR); break;
+        case 'KeyO': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_CIRCLE); break;
+        case 'KeyI': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_FLOOD_FILL); break;
+        case 'KeyG': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_AIRBRUSH); break;
+        case 'KeyD': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_GRADIENT); break;
+        case 'KeyE': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_ERASER); break;
+        case 'KeyT': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_TEXT); break;
+        case 'KeyN':
+          if (selectionStartPoint && selectionEndPoint) {
+            invertSelection();
+          }
+          break;
+        case 'KeyS': setEditorTool(EDITOR.TOOL_SELECT); break;
+        case 'KeyB':
           editorBright = !editorBright;
           updateColorSelectors();
           break;
-        case 'f':
+        case 'KeyF':
           editorFlash = !editorFlash;
+          updateColorSelectors();
+          break;
+        case 'KeyX':
+          // Swap ink and paper colors
+          const tempColor = editorInkColor;
+          editorInkColor = editorPaperColor;
+          editorPaperColor = tempColor;
           updateColorSelectors();
           break;
       }
     }
 
-    // Escape: cancel paste/selection first (higher priority), then brush capture
+    // F11: Toggle fullscreen editor mode
+    if (e.key === 'F11') {
+      e.preventDefault();
+      toggleFullscreenEditor();
+      return;
+    }
+
+    // Tab: Toggle floating palette in fullscreen mode
+    if (e.key === 'Tab' && fullscreenMode) {
+      e.preventDefault();
+      toggleFloatingPalette();
+      return;
+    }
+
+    // ~: Toggle preview panel
+    if (e.key === '~') {
+      togglePreviewPanel();
+      return;
+    }
+
+    // Escape: exit fullscreen first, then cancel paste/selection, then brush capture
     if (e.key === 'Escape') {
+      if (fullscreenMode) {
+        e.preventDefault();
+        exitFullscreenEditor();
+        return;
+      }
       if (isPasting || selectionStartPoint || selectionEndPoint || isSelecting) {
         e.preventDefault();
         cancelSelection();

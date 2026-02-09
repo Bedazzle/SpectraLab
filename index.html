@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.21.0 -->
+<!-- SpectraLab v1.38.0 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -179,26 +179,23 @@
     align-items: center;
   }
 
-  /* Info Panel */
-  .info-panel {
-  }
-
-  .info-panel .info-row {
+  /* Info Panel / File Info Section */
+  .info-row {
     display: flex;
     justify-content: space-between;
     margin-bottom: 6px;
     font-size: 12px;
   }
 
-  .info-panel .info-row:last-child {
+  .info-row:last-child {
     margin-bottom: 0;
   }
 
-  .info-panel .info-label {
+  .info-label {
     color: var(--text-tertiary);
   }
 
-  .info-panel .info-value {
+  .info-value {
     color: var(--text-primary);
     text-align: right;
   }
@@ -455,17 +452,101 @@
     display: block;
   }
 
-  .editor-tool-btn {
-    padding: 4px 8px;
+  /* Panel Tabs */
+  .panel-tabs {
+    display: flex;
+    gap: 2px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 4px;
+  }
+
+  .panel-tab {
+    padding: 4px 12px;
     font-size: 11px;
-    margin-right: 4px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-bottom: none;
+    cursor: pointer;
+    color: var(--text-secondary);
+    border-radius: 4px 4px 0 0;
+  }
+
+  .panel-tab:hover {
+    background: var(--bg-hover);
+  }
+
+  .panel-tab.active {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border-color: var(--border-color);
+  }
+
+  .panel-tab-content {
+    display: none;
+  }
+
+  .panel-tab-content.active {
+    display: block;
+  }
+
+  .editor-tool-btn {
+    padding: 4px 6px;
+    font-size: 14px;
+    margin-right: 3px;
     margin-bottom: 4px;
+    min-width: 26px;
+    text-align: center;
   }
 
   .editor-tool-btn.selected {
     background: #4a9eff;
     color: #fff;
     border-color: #4a9eff;
+  }
+
+  .layer-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    cursor: pointer;
+    font-size: 11px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .layer-item:last-child {
+    border-bottom: none;
+  }
+
+  .layer-item:hover {
+    background: var(--bg-hover);
+  }
+
+  .layer-item.active {
+    background: var(--bg-active);
+    font-weight: 500;
+    border-left: 3px solid #4a9eff;
+    padding-left: 3px;
+  }
+
+  .layer-visibility {
+    cursor: pointer;
+    opacity: 0.6;
+    font-size: 12px;
+    width: 16px;
+    text-align: center;
+  }
+
+  .layer-visibility.visible {
+    opacity: 1;
+  }
+
+  .layer-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .editor-color-row {
@@ -489,18 +570,20 @@
 
   .editor-palette {
     display: flex;
-    gap: 2px;
+    gap: 1px;
     margin-bottom: 6px;
+    margin-left: -4px;
   }
 
   .editor-palette-cell {
     flex: 1;
     aspect-ratio: 1;
-    border: 2px solid var(--border-secondary);
+    border: 1px solid var(--border-secondary);
     border-radius: 2px;
     cursor: pointer;
     position: relative;
     min-width: 0;
+    min-height: 23px;
   }
 
   .editor-palette-cell:hover {
@@ -519,6 +602,13 @@
   .editor-palette-cell.ink-selected.paper-selected {
     border-color: #fff;
     border-style: solid;
+  }
+
+  .editor-palette-cell.transparent-cell {
+    background: repeating-conic-gradient(#444 0% 25%, #222 0% 50%) 50% / 8px 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .editor-palette-marker {
@@ -599,12 +689,59 @@
     display: block;
   }
 
+  /* Picture tab bar for multi-picture editing */
+  #pictureTabBar {
+    display: none;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-secondary);
+    padding: 4px 8px;
+  }
+  #pictureTabList {
+    display: flex;
+    gap: 2px;
+    overflow-x: auto;
+  }
+  .picture-tab {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 4px 4px 0 0;
+    cursor: pointer;
+    font-size: 11px;
+    max-width: 150px;
+  }
+  .picture-tab.active {
+    background: var(--bg-primary);
+    border-bottom-color: var(--bg-primary);
+  }
+  .picture-tab-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .picture-tab-close {
+    opacity: 0.6;
+    cursor: pointer;
+    padding: 0 2px;
+    font-size: 13px;
+  }
+  .picture-tab-close:hover {
+    opacity: 1;
+  }
+  .picture-tab.modified .picture-tab-name::after {
+    content: ' \2022';
+    color: var(--text-secondary);
+  }
+
   /* Editor preview panel */
   .editor-preview-panel {
     display: none;
     position: fixed;
-    bottom: 20px;
-    right: 20px;
+    bottom: 10px;
+    right: 10px;
     background: var(--bg-secondary);
     border: 1px solid var(--border-primary);
     border-radius: 4px;
@@ -629,9 +766,9 @@
   }
 
   .editor-preview-container {
-    width: 280px;
-    height: 216px;
-    overflow: auto;
+    width: fit-content;
+    height: fit-content;
+    overflow: hidden;
     background: #000;
     border: 1px solid var(--border-secondary);
   }
@@ -661,14 +798,15 @@
 
   /* Custom brush slots */
   .custom-brush-slot {
-    width: 32px;
-    height: 32px;
-    border: 2px solid var(--border-secondary);
+    width: 31px;
+    height: 31px;
+    border: 1px solid var(--border-secondary);
     border-radius: 2px;
     cursor: pointer;
     image-rendering: pixelated;
     image-rendering: crisp-edges;
     background: var(--bg-tertiary);
+    flex-shrink: 0;
   }
   .custom-brush-slot:hover {
     border-color: var(--border-primary);
@@ -683,6 +821,104 @@
     border: 2px solid #ff0;
     pointer-events: none;
     box-sizing: border-box;
+  }
+
+  /* Fullscreen editor mode */
+  body.fullscreen-editor .main-container,
+  body.fullscreen-editor #sidePanel,
+  body.fullscreen-editor .main-header {
+    display: none !important;
+  }
+
+  body.fullscreen-editor {
+    overflow: hidden;
+  }
+
+  body.fullscreen-editor #canvasContainer {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    max-width: none !important;
+    max-height: none !important;
+    overflow: auto !important;
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    background: #1a1a1a;
+    z-index: 50;
+  }
+
+  body.fullscreen-editor #screenCanvas {
+    flex-shrink: 0;
+    margin: 20px;
+  }
+
+  /* Floating editor palette */
+  .floating-palette {
+    display: none;
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    padding: 8px;
+    z-index: 200;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.6);
+    min-width: 180px;
+  }
+
+  .floating-palette.active {
+    display: block;
+  }
+
+  .floating-palette-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border-secondary);
+    font-size: 11px;
+    color: var(--text-secondary);
+    cursor: move;
+    user-select: none;
+  }
+
+  .floating-palette-section {
+    margin-bottom: 8px;
+  }
+
+  .floating-palette-section:last-child {
+    margin-bottom: 0;
+  }
+
+  .floating-palette-tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+  }
+
+  .floating-palette-colors {
+    display: flex;
+    gap: 2px;
+  }
+
+  .floating-palette-color {
+    width: 20px;
+    height: 20px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 2px;
+    cursor: pointer;
+    position: relative;
+  }
+
+  .floating-palette-color:hover {
+    border-color: var(--border-primary);
   }
 
   /* Modal dialog */
@@ -710,6 +946,24 @@
     font-weight: bold;
     margin-bottom: 12px;
   }
+  .help-tab {
+    padding: 4px 12px;
+    font-size: 11px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+  .help-tab:hover {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+  }
+  .help-tab.active {
+    background: var(--accent-color);
+    border-color: var(--accent-color);
+    color: white;
+  }
 </style>
 </head>
 <body>
@@ -720,114 +974,383 @@
     <!-- Controls Panel -->
     <div class="panel controls-panel">
       <div class="panel-content">
+        <!-- File input -->
         <div class="control-group">
-          <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.ifl,.bmc4,.mlt,.mc,.3,.mem,.specscii,.sca,.zip,application/zip,application/x-zip-compressed,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
-          <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px;">
-            <a href="../index.html" id="appTitle" style="text-decoration: none; color: var(--text-secondary); font-size: 11px;">SpectraLab v1.21.0</a>
-            <button id="helpBtn" style="padding: 2px 6px; font-size: 10px;" title="Help">?</button>
-          </div>
+          <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.bmc4,.ifl,.mlt,.mc,.3,.specscii,.sca,.slp,.slw,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
         </div>
-        <div class="control-group">
-          <div class="control-group-title">Display</div>
-          <label>
-            Zoom:
-            <select id="zoomSelect" style="width: 80px; min-width: 80px; flex: none;">
-              <option value="1">x1</option>
-              <option value="2" selected>x2</option>
-              <option value="3">x3</option>
-              <option value="4">x4</option>
-              <option value="5">x5</option>
-              <option value="6">x6</option>
-              <option value="8">x8</option>
-              <option value="10">x10</option>
-            </select>
-          </label>
-          <div style="display: flex; align-items: center; gap: 4px;">
-            <label style="margin-bottom: 0;">
-              Border:
-              <select id="borderColorSelect" style="width: 80px; min-width: 80px; flex: none;">
-                <option value="0" selected>Black</option>
-                <option value="1">Blue</option>
-                <option value="2">Red</option>
-                <option value="3">Magenta</option>
-                <option value="4">Green</option>
-                <option value="5">Cyan</option>
-                <option value="6">Yellow</option>
-                <option value="7">White</option>
+
+        <!-- New and Save buttons -->
+        <div class="control-group" style="display: flex; gap: 4px;">
+          <button id="newPictureBtn" style="flex: 1; padding: 4px 10px; font-size: 12px;" title="New Picture">New</button>
+          <button id="editorSaveBtn" style="flex: 1; padding: 4px 10px; font-size: 12px;" title="Save (Ctrl+S)">Save</button>
+        </div>
+
+        <!-- Tab buttons -->
+        <div class="panel-tabs">
+          <button class="panel-tab active" data-tab="view">View</button>
+          <button class="panel-tab" data-tab="edit">Edit</button>
+          <button class="panel-tab" data-tab="transform">Transform</button>
+        </div>
+
+        <!-- View Tab Content -->
+        <div id="tabView" class="panel-tab-content active">
+          <div class="control-group">
+            <label>
+              Zoom:
+              <select id="zoomSelect" style="width: 80px; min-width: 80px; flex: none;">
+                <option value="1">x1</option>
+                <option value="2" selected>x2</option>
+                <option value="3">x3</option>
+                <option value="4">x4</option>
+                <option value="5">x5</option>
+                <option value="6">x6</option>
+                <option value="8">x8</option>
+                <option value="10">x10</option>
+                <option value="20">x20</option>
               </select>
             </label>
-            <select id="borderSizeSelect" style="width: 80px; min-width: 80px; flex: none;">
-              <option value="16">Small</option>
-              <option value="32" selected>Medium</option>
-              <option value="0">None</option>
-            </select>
           </div>
-          <label>
-            Palette:
-            <select id="paletteSelect" style="width: 160px; min-width: 160px; flex: none;">
-              <option value="default" selected>Default</option>
-            </select>
-          </label>
-          <div class="checkbox-row">
+          <div class="control-group" id="viewSettingsSection">
+            <div id="viewSettingsHeader" class="collapsible-header" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 2px 0;">
+              <div style="display: flex; align-items: center; gap: 4px;">
+                <span id="viewSettingsExpandIcon" style="font-size: 10px; width: 12px;">▶</span>
+                <span class="control-group-title" style="margin: 0;">View Settings</span>
+              </div>
+            </div>
+            <div id="viewSettingsContent" style="display: none;">
+              <div style="display: flex; align-items: center; gap: 4px; margin-top: 4px;">
+                <label style="margin-bottom: 0;">
+                  Border:
+                  <select id="borderColorSelect" style="width: 80px; min-width: 80px; flex: none;">
+                    <option value="0" selected>Black</option>
+                    <option value="1">Blue</option>
+                    <option value="2">Red</option>
+                    <option value="3">Magenta</option>
+                    <option value="4">Green</option>
+                    <option value="5">Cyan</option>
+                    <option value="6">Yellow</option>
+                    <option value="7">White</option>
+                  </select>
+                </label>
+                <select id="borderSizeSelect" style="width: 80px; min-width: 80px; flex: none;">
+                  <option value="32" selected>Medium</option>
+                  <option value="16">Small</option>
+                  <option value="0">None</option>
+                </select>
+              </div>
+              <label style="margin-top: 4px;">
+                Palette:
+                <select id="paletteSelect" style="width: 160px; min-width: 160px; flex: none;">
+                  <option value="default" selected>Default</option>
+                </select>
+              </label>
+              <div class="checkbox-row" style="margin-top: 4px;">
+                <label>
+                  <input type="checkbox" id="flashCheckbox" checked>
+                  Flash
+                </label>
+                <label>
+                  <input type="checkbox" id="showAttrsCheckbox" checked>
+                  Attrs
+                </label>
+                <label title="Toggle preview (P)">
+                  <input type="checkbox" id="showPreviewCheckbox" checked>
+                  Preview
+                </label>
+              </div>
+              <div style="display: flex; align-items: center; gap: 6px; margin-top: 4px;">
+                <span style="font-size: 11px; min-width: 60px;">Paper grid:</span>
+                <label style="display: flex; align-items: center; gap: 2px;">
+                  <select id="gridSizeSelect" style="font-size: 11px; padding: 1px 2px;">
+                    <option value="0">None</option>
+                    <option value="8" selected>8px</option>
+                    <option value="16">16px</option>
+                    <option value="24">24px</option>
+                    <option value="32">32px</option>
+                  </select>
+                </label>
+                <label style="display: flex; align-items: center; gap: 2px;">
+                  <select id="subgridSizeSelect" style="font-size: 11px; padding: 1px 2px;">
+                    <option value="0" selected>None</option>
+                    <option value="1">1px</option>
+                    <option value="2">2px</option>
+                    <option value="4">4px</option>
+                    <option value="8">8px</option>
+                    <option value="16">16px</option>
+                  </select>
+                </label>
+              </div>
+              <div style="display: flex; align-items: center; gap: 6px; margin-top: 4px;">
+                <span style="font-size: 11px; min-width: 60px;">Border grid:</span>
+                <label style="display: flex; align-items: center; gap: 2px;">
+                  <select id="borderGridSizeSelect" style="font-size: 11px; padding: 1px 2px;">
+                    <option value="0" selected>None</option>
+                    <option value="8">8px</option>
+                    <option value="16">16px</option>
+                    <option value="24">24px</option>
+                    <option value="32">32px</option>
+                  </select>
+                </label>
+                <label style="display: flex; align-items: center; gap: 2px;">
+                  <select id="borderSubgridSizeSelect" style="font-size: 11px; padding: 1px 2px;">
+                    <option value="0" selected>None</option>
+                    <option value="1">1px</option>
+                    <option value="2">2px</option>
+                    <option value="4">4px</option>
+                    <option value="8">8px</option>
+                    <option value="16">16px</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+          </div>
+          <div class="control-group" id="pattern53cControls">
             <label>
-              <input type="checkbox" id="flashCheckbox" checked>
-              Flash
-            </label>
-            <label>
-              <input type="checkbox" id="showGrid">
-              Grid
-            </label>
-            <label>
-              <input type="checkbox" id="showAttrsCheckbox" checked>
-              Attrs
+              Pattern:
+              <select id="pattern53cSelect">
+                <option value="checker" selected>Checker</option>
+                <option value="stripes">Stripes</option>
+                <option value="dd77">Pattern</option>
+              </select>
             </label>
           </div>
+          <div class="control-group" id="fontControls">
+            <div class="control-group-title">Font</div>
+            <label style="flex-wrap: wrap;">
+              <button id="fontBrowseBtn" style="padding: 3px 8px; font-size: 11px;">Browse</button>
+              <span id="fontInfo" class="file-info" style="min-width: auto;">ROM</span>
+            </label>
+            <input type="file" id="fontFile" accept=".bin,.SpecCHR" style="display: none;">
+          </div>
+          <div class="control-group" id="referenceControls">
+            <div id="refHeader" class="collapsible-header" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 2px 0;">
+              <div style="display: flex; align-items: center; gap: 4px;">
+                <span id="refExpandIcon" style="font-size: 10px; width: 12px;">▶</span>
+                <span class="control-group-title" style="margin: 0;">Reference Image</span>
+              </div>
+            </div>
+            <div id="refControlsContent" style="display: none;">
+              <div style="display: flex; gap: 4px; align-items: center; flex-wrap: wrap; margin-top: 4px;">
+                <button id="refLoadBtn" style="padding: 3px 8px; font-size: 11px;">Load</button>
+                <button id="refClearBtn" style="padding: 3px 8px; font-size: 11px;">Clear</button>
+                <label style="font-size: 11px; display: flex; align-items: center; gap: 2px;">
+                  <input type="checkbox" id="refShowCheckbox" checked> Show
+                </label>
+              </div>
+              <div style="display: flex; gap: 4px; align-items: center; margin-top: 4px;">
+                <label style="font-size: 11px; min-width: auto;">Opacity:</label>
+                <input type="range" id="refOpacitySlider" min="5" max="80" value="30" style="flex: 1; max-width: 100px;">
+                <span id="refOpacityValue" style="font-size: 10px; min-width: 28px;">30%</span>
+              </div>
+              <div style="display: flex; gap: 4px; align-items: center; margin-top: 4px; flex-wrap: wrap;">
+                <label style="font-size: 11px; min-width: auto;">X:</label>
+                <input type="number" id="refOffsetX" value="0" style="width: 50px; font-size: 11px; padding: 2px 4px;">
+                <label style="font-size: 11px; min-width: auto;">Y:</label>
+                <input type="number" id="refOffsetY" value="0" style="width: 50px; font-size: 11px; padding: 2px 4px;">
+              </div>
+              <div style="display: flex; gap: 4px; align-items: center; margin-top: 4px; flex-wrap: wrap;">
+                <label style="font-size: 11px; min-width: auto;">W:</label>
+                <input type="number" id="refWidth" placeholder="auto" min="1" style="width: 50px; font-size: 11px; padding: 2px 4px;">
+                <label style="font-size: 11px; min-width: auto;">H:</label>
+                <input type="number" id="refHeight" placeholder="auto" min="1" style="width: 50px; font-size: 11px; padding: 2px 4px;">
+              </div>
+            </div>
+            <input type="file" id="refFileInput" accept="image/*" style="display: none;">
+          </div>
+          <div class="control-group" id="fileInfoSection" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-color);">
+            <div id="fileInfoHeader" class="collapsible-header" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 2px 0;">
+              <div style="display: flex; align-items: center; gap: 4px;">
+                <span id="fileInfoExpandIcon" style="font-size: 10px; width: 12px;">▶</span>
+                <span class="control-group-title" style="margin: 0;">File Info</span>
+              </div>
+            </div>
+            <div id="fileInfoContent" style="display: none;">
+              <div id="fileInfoPanel" style="margin-top: 4px;">
+                <div class="info-row">
+                  <span class="info-label">Name:</span>
+                  <span class="info-value" id="infoFileName">-</span>
+                </div>
+                <div class="info-row">
+                  <span class="info-label">Size:</span>
+                  <span class="info-value" id="infoFileSize">-</span>
+                </div>
+                <div class="info-row">
+                  <span class="info-label">Format:</span>
+                  <span class="info-value" id="infoFormat">-</span>
+                </div>
+                <div class="info-row">
+                  <span class="info-label">Dimensions:</span>
+                  <span class="info-value" id="infoDimensions">-</span>
+                </div>
+                <div id="infoAnimSection" style="display: none;">
+                  <div class="info-row">
+                    <span class="info-label">Frames:</span>
+                    <span class="info-value" id="infoFrameCount">-</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">Type:</span>
+                    <span class="info-value" id="infoPayloadType">-</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">Delay:</span>
+                    <span class="info-value" id="infoFrameDelay">-</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="control-group" style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-color);">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <a href="../index.html" id="appTitle" style="text-decoration: none; color: var(--text-secondary); font-size: 11px;">SpectraLab v1.38.0</a>
+              <button id="helpBtn" style="padding: 2px 6px; font-size: 10px;" title="Help">?</button>
+            </div>
+          </div>
         </div>
-        <div class="control-group" id="pattern53cControls">
-          <label>
-            Pattern:
-            <select id="pattern53cSelect">
-              <option value="checker" selected>Checker</option>
-              <option value="stripes">Stripes</option>
-              <option value="dd77">Pattern</option>
-            </select>
-          </label>
-        </div>
-        <div class="control-group" id="fontControls">
-          <div class="control-group-title">Font</div>
-          <label style="flex-wrap: wrap;">
-            <button id="fontBrowseBtn" style="padding: 3px 8px; font-size: 11px;">Browse</button>
-            <span id="fontInfo" class="file-info" style="min-width: auto;">ROM</span>
-          </label>
-          <input type="file" id="fontFile" accept=".bin,.SpecCHR" style="display: none;">
-        </div>
-        <div class="control-group">
-          <button id="newPictureBtn" style="padding: 5px 12px; font-size: 11px; width: 100%;">New Picture</button>
-        </div>
-        <div class="control-group" id="scrEditorControls">
-          <button id="scrEditBtn" style="padding: 5px 12px; font-size: 11px; width: 100%;">Edit Screen</button>
+
+        <!-- Edit Tab Content -->
+        <div id="tabEdit" class="panel-tab-content">
+          <div id="editorInactiveHint" style="color: var(--text-secondary); font-size: 11px; padding: 8px 0;">
+            Load a picture or click this tab again to create a new one.
+          </div>
           <div id="scrEditorOverlay" class="scr-editor-panel">
-            <button id="scrExitBtn" style="padding: 4px 16px; font-size: 11px; width: 100%; margin-bottom: 8px; display: block;">Exit Editor</button>
+            <div id="editorPalette" class="editor-palette"></div>
+            <div class="editor-color-row" style="margin-bottom: 8px;">
+              <label style="min-width: auto;"><input type="checkbox" id="editorBrightCheckbox"> Bright (B)</label>
+              <label style="min-width: auto;"><input type="checkbox" id="editorFlashCheckbox"> Flash (F)</label>
+            </div>
             <div id="editorToolsSection" style="margin-bottom: 8px;">
-              <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">TOOLS</div>
-              <button class="editor-tool-btn selected" data-tool="pixel" title="Pixel (P)">Pixel</button>
-              <button class="editor-tool-btn" data-tool="line" title="Line (L)">Line</button>
-              <button class="editor-tool-btn" data-tool="rect" title="Rectangle (R)">Rect</button>
-              <button class="editor-tool-btn" data-tool="fillcell" title="Fill Cell (C)">Cell</button>
-              <button class="editor-tool-btn" data-tool="recolor" title="Recolor (A)">Color</button>
+              <button class="editor-tool-btn selected" data-tool="pixel" title="Pixel (P)">✎</button>
+              <button class="editor-tool-btn" data-tool="line" title="Line (L)">╱</button>
+              <button class="editor-tool-btn" data-tool="rect" title="Rectangle (R)">□</button>
+              <button class="editor-tool-btn" data-tool="circle" title="Circle/Ellipse (O)">○</button>
+              <button class="editor-tool-btn" data-tool="airbrush" title="Airbrush (G)">░</button>
+              <button class="editor-tool-btn" data-tool="gradient" title="Gradient (D)">▤</button>
+              <button class="editor-tool-btn" data-tool="floodfill" title="Flood Fill (I)">◉</button>
+              <button class="editor-tool-btn" data-tool="fillcell" title="Fill Cell (C)">▦</button>
+              <button class="editor-tool-btn" data-tool="eraser" title="Eraser (E) - makes transparent on non-BG layers">⌫</button>
+              <button class="editor-tool-btn" data-tool="text" title="Text (T)">T</button>
+            </div>
+            <div id="editorAirbrushSection" style="margin-bottom: 8px; display: none;">
+              <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">AIRBRUSH</div>
+              <div class="editor-color-row" style="gap: 8px; flex-wrap: wrap;">
+                <label style="min-width: auto; display: flex; align-items: center; gap: 4px;">
+                  Radius:
+                  <select id="airbrushRadiusSelect" style="width: 50px; flex: none; font-size: 11px; padding: 2px;">
+                    <option value="4">4</option>
+                    <option value="8" selected>8</option>
+                    <option value="12">12</option>
+                    <option value="16">16</option>
+                    <option value="24">24</option>
+                    <option value="32">32</option>
+                  </select>
+                </label>
+                <label style="min-width: auto; display: flex; align-items: center; gap: 4px;">
+                  Density:
+                  <select id="airbrushDensitySelect" style="width: 55px; flex: none; font-size: 11px; padding: 2px;">
+                    <option value="0.03">0.03</option>
+                    <option value="0.05">0.05</option>
+                    <option value="0.08">0.08</option>
+                    <option value="0.1">0.1</option>
+                    <option value="0.2">0.2</option>
+                    <option value="0.3" selected>0.3</option>
+                    <option value="0.5">0.5</option>
+                    <option value="0.7">0.7</option>
+                    <option value="1.0">1.0</option>
+                  </select>
+                </label>
+                <label style="min-width: auto; display: flex; align-items: center; gap: 4px;">
+                  Falloff:
+                  <select id="airbrushFalloffSelect" style="width: 65px; flex: none; font-size: 11px; padding: 2px;">
+                    <option value="1" selected>Uniform</option>
+                    <option value="2">Soft</option>
+                    <option value="3">Medium</option>
+                    <option value="4">Hard</option>
+                    <option value="5">Very Hard</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div id="editorGradientSection" style="margin-bottom: 8px; display: none;">
+              <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">GRADIENT</div>
+              <div class="editor-color-row" style="gap: 8px; flex-wrap: wrap;">
+                <label style="min-width: auto; display: flex; align-items: center; gap: 4px;">
+                  Type:
+                  <select id="gradientTypeSelect" style="width: 70px; flex: none; font-size: 11px; padding: 2px;">
+                    <option value="linear" selected>Linear</option>
+                    <option value="radial">Radial</option>
+                    <option value="diamond">Diamond</option>
+                    <option value="conical">Conical</option>
+                    <option value="square">Square</option>
+                    <option value="spiral">Spiral</option>
+                  </select>
+                </label>
+                <label style="min-width: auto; display: flex; align-items: center; gap: 4px;">
+                  Dither:
+                  <select id="ditherMethodSelect" style="width: 60px; flex: none; font-size: 11px; padding: 2px;">
+                    <option value="bayer" selected>Bayer</option>
+                    <option value="noise">Noise</option>
+                  </select>
+                </label>
+                <label style="min-width: auto; display: flex; align-items: center; gap: 4px;">
+                  <input type="checkbox" id="gradientReverseCheckbox"> Reverse
+                </label>
+              </div>
+              <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 4px;">Drag from start to end point</div>
+            </div>
+            <div id="editorTextSection" style="margin-bottom: 8px; display: none;">
+              <div id="textToolHeader" class="collapsible-header" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 2px 0;">
+                <div style="display: flex; align-items: center; gap: 4px;">
+                  <span id="textToolExpandIcon" style="font-size: 10px; width: 12px;">▼</span>
+                  <span style="font-size: 10px; color: var(--text-tertiary);">TEXT</span>
+                </div>
+                <div id="textToolFontIndicator" style="font-size: 10px; color: var(--text-secondary);">ROM</div>
+              </div>
+              <div id="textToolControls">
+                <input type="text" id="textToolInput" placeholder="Type text here..." style="width: 100%; font-size: 11px; padding: 4px; margin: 4px 0; box-sizing: border-box;">
+                <div style="display: flex; gap: 2px; align-items: center; margin-bottom: 4px;">
+                  <select id="textFontSelect" style="font-size: 11px; flex: 1; min-width: 0; padding: 2px;">
+                    <option value="spectrum:ROM">ROM (Spectrum)</option>
+                  </select>
+                  <select id="textFontSizeSelect" style="font-size: 10px; width: 44px; max-width: 44px; padding: 0; flex-shrink: 0;">
+                    <option value="8">8</option>
+                    <option value="12">12</option>
+                    <option value="16">16</option>
+                    <option value="20">20</option>
+                    <option value="24">24</option>
+                    <option value="32">32</option>
+                  </select>
+                </div>
+                <div style="display: flex; gap: 4px; flex-wrap: wrap;">
+                  <button id="loadFont768Btn" class="editor-tool-btn" title="Load .768/.ch8 Spectrum font" style="font-size: 10px; padding: 2px 6px;">.768</button>
+                  <button id="loadFontTTFBtn" class="editor-tool-btn" title="Load TrueType font (.ttf/.otf)" style="font-size: 10px; padding: 2px 6px;">TTF</button>
+                  <input type="file" id="font768FileInput" accept=".768,.ch8,.bin" style="display: none;">
+                  <input type="file" id="fontTTFFileInput" accept=".ttf,.otf,.woff,.woff2" style="display: none;">
+                </div>
+                <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 4px;">Click canvas to place text</div>
+              </div>
             </div>
             <div id="editorClipboardSection" style="margin-bottom: 8px;">
-              <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">CLIPBOARD</div>
-              <div style="display: flex; gap: 4px; align-items: center;">
-                <button class="editor-tool-btn" data-tool="select" title="Select (S)">Select</button>
-                <button id="editorPasteBtn" class="editor-tool-btn" title="Paste (Ctrl+V)">Paste</button>
-                <label style="font-size: 11px; margin-bottom: 0; margin-left: 4px; display: flex; align-items: center; gap: 3px;">
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <label style="font-size: 11px; margin-bottom: 0; display: flex; align-items: center; gap: 3px;">
                   Snap:
                   <select id="editorSnapMode" style="font-size: 11px; padding: 2px;">
                     <option value="grid" selected>Grid</option>
+                    <option value="subgrid">Subgrid</option>
                     <option value="zero">Zero</option>
                     <option value="brush">Brush</option>
                     <option value="off">Off</option>
+                  </select>
+                </label>
+                <label style="font-size: 11px; margin-bottom: 0; display: flex; align-items: center; gap: 3px;">
+                  Mode:
+                  <select id="brushPaintMode" style="font-size: 11px; padding: 2px;" title="Brush paint mode">
+                    <option value="set">Set</option>
+                    <option value="invert">Invert</option>
+                    <option value="replace" selected>Replace</option>
+                    <option value="recolor">Recolor</option>
+                    <option value="retouch">Retouch</option>
+                    <option value="masked">Masked</option>
+                    <option value="masked+">Masked+</option>
                   </select>
                 </label>
               </div>
@@ -863,50 +1386,181 @@
                 <button class="editor-tool-btn editor-shape-btn" data-shape="stroke" title="Stroke brush (/)">/</button>
                 <button class="editor-tool-btn editor-shape-btn" data-shape="bstroke" title="Back stroke brush (\)">\</button>
               </div>
-              <div style="display: flex; gap: 4px; align-items: center; margin-top: 4px;">
-                <canvas id="customBrush0" class="custom-brush-slot" width="64" height="64" data-slot="0" title="Custom brush 1 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
-                <canvas id="customBrush1" class="custom-brush-slot" width="64" height="64" data-slot="1" title="Custom brush 2 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
-                <canvas id="customBrush2" class="custom-brush-slot" width="64" height="64" data-slot="2" title="Custom brush 3 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
-                <canvas id="customBrush3" class="custom-brush-slot" width="64" height="64" data-slot="3" title="Custom brush 4 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
-                <canvas id="customBrush4" class="custom-brush-slot" width="64" height="64" data-slot="4" title="Custom brush 5 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+              <div id="customBrushSection" style="margin-top: 4px;">
+                <div id="customBrushHeader" class="collapsible-header" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 2px 0;">
+                  <div style="display: flex; align-items: center; gap: 4px;">
+                    <span id="customBrushExpandIcon" style="font-size: 10px; width: 12px;">▶</span>
+                    <span style="font-size: 10px; color: var(--text-tertiary);">CUSTOM BRUSHES</span>
+                  </div>
+                  <div style="display: flex; gap: 2px;">
+                    <button id="saveBrushesBtn" class="editor-tool-btn" title="Save custom brushes (.slb)" style="padding: 1px 4px; font-size: 10px;">💾</button>
+                    <button id="loadBrushesBtn" class="editor-tool-btn" title="Load custom brushes (.slb)" style="padding: 1px 4px; font-size: 10px;">📂</button>
+                  </div>
+                </div>
+                <input type="file" id="brushesFileInput" accept=".slb" style="display: none;">
+                <div id="customBrushControls" style="display: none;">
+                  <div style="display: flex; gap: 2px; margin-top: 4px;">
+                    <canvas id="customBrush0" class="custom-brush-slot" width="64" height="64" data-slot="0" title="Custom brush 1 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                    <canvas id="customBrush1" class="custom-brush-slot" width="64" height="64" data-slot="1" title="Custom brush 2 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                    <canvas id="customBrush2" class="custom-brush-slot" width="64" height="64" data-slot="2" title="Custom brush 3 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                    <canvas id="customBrush3" class="custom-brush-slot" width="64" height="64" data-slot="3" title="Custom brush 4 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                    <canvas id="customBrush4" class="custom-brush-slot" width="64" height="64" data-slot="4" title="Custom brush 5 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                    <canvas id="customBrush5" class="custom-brush-slot" width="64" height="64" data-slot="5" title="Custom brush 6 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                  </div>
+                  <div style="display: flex; gap: 2px; margin-top: 2px;">
+                    <canvas id="customBrush6" class="custom-brush-slot" width="64" height="64" data-slot="6" title="Custom brush 7 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                    <canvas id="customBrush7" class="custom-brush-slot" width="64" height="64" data-slot="7" title="Custom brush 8 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                    <canvas id="customBrush8" class="custom-brush-slot" width="64" height="64" data-slot="8" title="Custom brush 9 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                    <canvas id="customBrush9" class="custom-brush-slot" width="64" height="64" data-slot="9" title="Custom brush 10 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                    <canvas id="customBrush10" class="custom-brush-slot" width="64" height="64" data-slot="10" title="Custom brush 11 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                    <canvas id="customBrush11" class="custom-brush-slot" width="64" height="64" data-slot="11" title="Custom brush 12 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                  </div>
+                </div>
               </div>
-              <div style="display: flex; gap: 2px; margin-top: 4px;">
-                <button id="brushRotateBtn" class="editor-tool-btn" title="Rotate 90° CW (R)">&#8635;</button>
-                <button id="brushMirrorHBtn" class="editor-tool-btn" title="Mirror horizontal (H)">&#8596;</button>
-                <button id="brushMirrorVBtn" class="editor-tool-btn" title="Mirror vertical (V)">&#8597;</button>
-              </div>
-              <div class="editor-color-row" style="margin-top: 4px;">
-                <label style="min-width: auto;">Mode:</label>
-                <select id="brushPaintMode" style="width: 80px; flex: none; font-size: 11px; padding: 2px;" title="Custom brush paint mode">
-                  <option value="set">Set</option>
-                  <option value="invert">Invert</option>
-                  <option value="replace" selected>Replace</option>
-                </select>
-              </div>
-            </div>
-            <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">COLORS (LMB=ink, RMB=paper)</div>
-            <div id="editorPalette" class="editor-palette"></div>
-            <div class="editor-color-row">
-              <label style="min-width: auto;"><input type="checkbox" id="editorBrightCheckbox"> Bright (B)</label>
-              <label style="min-width: auto;"><input type="checkbox" id="editorFlashCheckbox"> Flash (F)</label>
             </div>
             <div id="editorPositionInfo" class="editor-position-info">
               Move cursor over screen
             </div>
-            <div class="editor-actions">
-              <button id="editorUndoBtn" title="Undo (Ctrl+Z)">Undo</button>
-              <button id="editorRedoBtn" title="Redo (Ctrl+Y)">Redo</button>
-              <button id="editorClearBtn" title="Clear screen">Clear</button>
-            </div>
-            <div class="editor-actions">
-              <button id="editorSaveBtn" title="Save (Ctrl+S)">Save</button>
-              <select id="editorConvertSelect" title="Convert to different format" style="padding: 2px 4px; font-size: 11px;">
-                <option value="" disabled selected>Convert...</option>
-              </select>
-              <button id="editorExportAsmBtn" title="Export ASM (Pentagon border)" style="display:none;">Export ASM</button>
+            <div id="layerSection" style="margin-top: 8px; display: none;">
+              <div id="layerHeader" class="collapsible-header" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 4px 0;">
+                <div style="display: flex; align-items: center; gap: 4px;">
+                  <span id="layerExpandIcon" style="font-size: 10px; width: 12px;">▶</span>
+                  <span style="font-size: 10px; color: var(--text-tertiary);">LAYERS</span>
+                </div>
+                <div style="display: flex; gap: 2px;">
+                  <button id="saveProjectBtn" class="editor-tool-btn" title="Save project with layers (.slp)" style="padding: 1px 4px; font-size: 10px;" disabled>💾</button>
+                  <button id="loadProjectBtn" class="editor-tool-btn" title="Load project file (.slp)" style="padding: 1px 4px; font-size: 10px;">📂</button>
+                </div>
+              </div>
+              <input type="file" id="projectFileInput" accept=".slp" style="display: none;">
+              <div id="layerControls" style="display: none;">
+                <div id="layerList" style="max-height: 120px; overflow-y: auto; border: 1px solid var(--border); border-radius: 3px; margin-bottom: 4px;">
+                  <div style="color: var(--text-tertiary); font-size: 10px; padding: 4px;">Click "+ Add" to create layers</div>
+                </div>
+                <div style="display: flex; gap: 1px;">
+                  <button id="addLayerBtn" class="editor-tool-btn" title="Add new layer (creates Background + new layer)" style="padding: 2px 4px;">＋</button>
+                  <button id="removeLayerBtn" class="editor-tool-btn" title="Remove selected layer" style="padding: 2px 4px;" disabled>－</button>
+                  <button id="moveLayerUpBtn" class="editor-tool-btn" title="Move layer up" style="padding: 2px 4px;" disabled>↑</button>
+                  <button id="moveLayerDownBtn" class="editor-tool-btn" title="Move layer down" style="padding: 2px 4px;" disabled>↓</button>
+                  <button id="flattenLayersBtn" class="editor-tool-btn" title="Flatten all layers" style="padding: 2px 4px;" disabled>⊟</button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
+
+        <!-- Transform Tab Content -->
+        <div id="tabTransform" class="panel-tab-content">
+          <div id="transformInactiveHint" style="color: var(--text-secondary); font-size: 11px; padding: 8px 0;">
+            Load or create a picture to use transform tools.
+          </div>
+          <div id="transformControls" style="display: none;">
+            <div class="control-group">
+              <div class="control-group-title">History</div>
+              <div class="editor-actions">
+                <button id="editorUndoBtn" title="Undo (Ctrl+Z)">Undo</button>
+                <button id="editorRedoBtn" title="Redo (Ctrl+Y)">Redo</button>
+                <button id="editorClearBtn" title="Clear screen">Clear</button>
+              </div>
+            </div>
+            <div class="control-group">
+              <div class="editor-actions">
+                <button id="saveWorkspaceBtn" title="Save all open pictures (.slw)" style="flex: 1;">Save Workspace</button>
+                <button id="loadWorkspaceBtn" title="Load workspace file (.slw)" style="flex: 1;">Load Workspace</button>
+                <input type="file" id="workspaceFileInput" accept=".slw" style="display: none;">
+              </div>
+              <div class="editor-actions" style="margin-top: 4px;">
+                <select id="editorConvertSelect" title="Convert to different format" style="padding: 2px 4px; font-size: 11px; flex: 1;">
+                  <option value="" disabled selected>Convert to...</option>
+                </select>
+              </div>
+              <div class="editor-actions" style="margin-top: 4px;">
+                <button id="editorExportAsmBtn" title="Export ASM (Pentagon border)" style="display:none; width: 100%;">Export ASM</button>
+              </div>
+            </div>
+
+            <!-- Generate section -->
+            <div class="control-group">
+              <div class="control-group-title">Generate</div>
+              <div class="editor-actions">
+                <button id="qrGenerateBtn" title="Generate QR code">QR Code</button>
+              </div>
+            </div>
+
+            <!-- Clipboard section -->
+            <div class="control-group">
+              <div class="control-group-title">Clipboard</div>
+              <div style="display: flex; gap: 2px; align-items: center;">
+                <button id="transformSelectBtn" class="editor-tool-btn" data-tool="select" title="Select (S)">⬚</button>
+                <button id="editorCutBtn" class="editor-tool-btn" title="Cut (Ctrl+X)">✂</button>
+                <button id="editorPasteBtn" class="editor-tool-btn" title="Paste (Ctrl+V)">⧉</button>
+                <button id="editorInvertBtn" class="editor-tool-btn" title="Invert (N)">◐</button>
+                <button id="clipboardRotateBtn" class="editor-tool-btn" title="Rotate 90° - clipboard (pasting) or custom brush (R)" style="min-width: 24px; padding: 2px 4px;">↻</button>
+                <button id="clipboardFlipHBtn" class="editor-tool-btn" title="Flip horizontal - clipboard (pasting) or custom brush (H)" style="min-width: 24px; padding: 2px 4px;">↔</button>
+                <button id="clipboardFlipVBtn" class="editor-tool-btn" title="Flip vertical - clipboard (pasting) or custom brush (V)" style="min-width: 24px; padding: 2px 4px;">↕</button>
+              </div>
+              <div style="display: flex; gap: 4px; flex-wrap: wrap; align-items: center; margin-top: 4px;">
+                <label style="font-size: 11px; display: flex; align-items: center; gap: 3px;">
+                  <input type="checkbox" id="transformSnapCheckbox" checked>
+                  Snap to grid
+                </label>
+              </div>
+              <div id="transformSelectionInfo" style="font-size: 10px; color: var(--text-secondary); margin-top: 4px;"></div>
+            </div>
+
+            <!-- Transform section (shown when selection active) -->
+            <div id="transformOpsSection" class="control-group" style="display: none;">
+              <div class="control-group-title">Transform Selection</div>
+              <div style="display: flex; gap: 4px;">
+                <button id="transformRotateBtn" title="Rotate 90° CW">↻ Rotate</button>
+                <button id="transformMirrorHBtn" title="Mirror horizontal">↔ Mirror H</button>
+                <button id="transformMirrorVBtn" title="Mirror vertical">↕ Mirror V</button>
+              </div>
+            </div>
+
+            <!-- ASM Export section (shown when selection active) -->
+            <div id="transformExportSection" class="control-group" style="display: none;">
+              <div class="control-group-title">Export Selection to ASM</div>
+              <div style="display: flex; flex-direction: column; gap: 4px;">
+                <label style="font-size: 11px; display: flex; align-items: center; gap: 3px;">
+                  <input type="checkbox" id="exportIncludePalette" checked>
+                  Include attributes
+                </label>
+                <select id="exportPaletteMode" style="font-size: 11px;">
+                  <option value="after">Attributes after bitmap</option>
+                  <option value="interleaved">Interleaved (byte + attr)</option>
+                </select>
+                <select id="exportLineMode" style="font-size: 11px;">
+                  <option value="line">Line-based (full row per DEFB)</option>
+                  <option value="block">Block-based (8 bytes per DEFB)</option>
+                </select>
+                <select id="exportDirection" style="font-size: 11px;">
+                  <option value="lr">Left to right</option>
+                  <option value="rl">Right to left</option>
+                  <option value="zigzag-lr">Zigzag (start L-R)</option>
+                  <option value="zigzag-rl">Zigzag (start R-L)</option>
+                </select>
+                <label style="font-size: 11px; display: flex; align-items: center; gap: 3px;">
+                  <input type="checkbox" id="exportVisualComments">
+                  Visual comments (█·)
+                </label>
+                <div style="display: flex; gap: 4px;">
+                  <button id="transformExportAsmBtn" style="flex: 1;">Save ASM file</button>
+                  <button id="transformCopyAsmBtn" title="Copy to clipboard">Copy</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Reset settings -->
+            <div class="control-group">
+              <div class="editor-actions">
+                <button id="resetSettingsBtn" title="Clear all saved settings and reload" style="flex: 1;">Reset to Defaults</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- SCA Animation Controls (always outside tabs) -->
         <div class="control-group" id="scaControls" style="display: none; flex-direction: column;">
           <div class="control-group-title" style="display: block; width: 100%; margin-bottom: 6px;">Animation</div>
           <div style="display: flex; gap: 4px; width: 100%;">
@@ -918,71 +1572,18 @@
             <input type="range" id="scaFrameSlider" min="0" max="0" value="0" style="width: 100%; display: block;">
           </div>
           <div id="scaFrameInfo" class="file-info" style="text-align: center; margin-top: 6px; width: 100%;">Frame 1/1</div>
-          <button id="scaEditBtn" style="margin-top: 8px; padding: 5px 12px; font-size: 11px; width: 100%;">Edit / Trim</button>
         </div>
       </div>
     </div>
 
-    <!-- Info Panel -->
-    <div class="panel info-panel">
-      <div class="panel-header">File Info</div>
-      <div class="panel-content" id="fileInfoPanel">
-        <div class="info-section">
-          <div class="info-section-title">File</div>
-          <div class="info-row">
-            <span class="info-label">Name:</span>
-            <span class="info-value" id="infoFileName">-</span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">Size:</span>
-            <span class="info-value" id="infoFileSize">-</span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">Format:</span>
-            <span class="info-value" id="infoFormat">-</span>
-          </div>
-        </div>
-        <div class="info-section">
-          <div class="info-section-title">Dimensions</div>
-          <div class="info-row">
-            <span class="info-label">Width:</span>
-            <span class="info-value" id="infoDimWidth">-</span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">Height:</span>
-            <span class="info-value" id="infoDimHeight">-</span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">Pixels:</span>
-            <span class="info-value" id="infoDimPixels">-</span>
-          </div>
-        </div>
-        <div class="info-section" id="infoAnimSection" style="display: none;">
-          <div class="info-section-title">Animation</div>
-          <div class="info-row">
-            <span class="info-label">Version:</span>
-            <span class="info-value" id="infoScaVersion">-</span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">Frames:</span>
-            <span class="info-value" id="infoFrameCount">-</span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">Current:</span>
-            <span class="info-value" id="infoCurrentFrame">-</span>
-          </div>
-          <div class="info-row">
-            <span class="info-label">Delay:</span>
-            <span class="info-value" id="infoFrameDelay">-</span>
-          </div>
-        </div>
-      </div>
-    </div>
   </div>
 
   <!-- Preview Panel -->
   <div class="panel preview-panel">
     <div class="panel-content">
+      <div id="pictureTabBar">
+        <div id="pictureTabList"></div>
+      </div>
       <div id="canvasContainer" class="editor-canvas-container">
         <canvas id="screenCanvas" width="512" height="384" tabindex="0"></canvas>
       </div>
@@ -1005,6 +1606,38 @@
   </div>
 </div>
 
+<!-- Floating Palette (fullscreen mode) -->
+<div id="floatingPalette" class="floating-palette">
+  <div class="floating-palette-header">
+    <span title="Drag to move">&#9776;</span>
+    <button id="exitFullscreenBtn" title="Exit fullscreen (F11 or Esc)" style="padding: 2px 8px; font-size: 10px;">✕</button>
+  </div>
+  <div class="floating-palette-section">
+    <div class="floating-palette-tools" id="floatingTools">
+      <button class="editor-tool-btn floating-tool" data-tool="pixel" title="Pixel (P)">✎</button>
+      <button class="editor-tool-btn floating-tool" data-tool="line" title="Line (L)">╱</button>
+      <button class="editor-tool-btn floating-tool" data-tool="rect" title="Rectangle (R)">□</button>
+      <button class="editor-tool-btn floating-tool" data-tool="circle" title="Circle (O)">○</button>
+      <button class="editor-tool-btn floating-tool" data-tool="airbrush" title="Airbrush (G)">░</button>
+      <button class="editor-tool-btn floating-tool" data-tool="gradient" title="Gradient (D)">▤</button>
+      <button class="editor-tool-btn floating-tool" data-tool="fill" title="Fill (I)">◉</button>
+      <button class="editor-tool-btn floating-tool" data-tool="cell" title="Cell (C)">▦</button>
+      <button class="editor-tool-btn floating-tool" data-tool="eraser" title="Eraser (E)">⌫</button>
+      <button class="editor-tool-btn floating-tool" data-tool="text" title="Text (T)">T</button>
+    </div>
+    <div class="floating-palette-tools" style="margin-top: 2px;">
+      <button class="editor-tool-btn floating-tool" data-tool="select" title="Select (S)">⬚</button>
+      <button class="editor-tool-btn floating-tool" data-tool="cut" title="Cut selection">✂</button>
+      <button class="editor-tool-btn floating-tool" data-tool="paste" title="Paste (V)">⧉</button>
+      <button class="editor-tool-btn floating-tool" data-tool="invert" title="Invert (I)">◐</button>
+    </div>
+  </div>
+  <div class="floating-palette-section" style="display: flex; align-items: center; gap: 6px;">
+    <div class="floating-palette-colors" id="floatingColors"></div>
+    <label style="font-size: 10px;"><input type="checkbox" id="floatingBright"> B</label>
+  </div>
+</div>
+
 <!-- SCA Edit Mode Overlay -->
 <div id="editModeOverlay" class="edit-mode-overlay">
   <div class="edit-header">
@@ -1012,6 +1645,7 @@
     <span class="edit-header-title" id="editFileName">animation.sca</span>
     <button id="editSaveBtn" style="padding: 5px 12px; font-size: 11px;">Save As...</button>
     <button id="exportScrBtn" style="padding: 5px 12px; font-size: 11px;">Export SCR...</button>
+    <button id="export53cBtn" style="padding: 5px 12px; font-size: 11px;">Export 53c...</button>
   </div>
 
   <div class="filmstrip-container">
@@ -1161,7 +1795,14 @@
         Format:
         <select id="newPictureFormat" style="width: 100%; margin-top: 4px; padding: 4px; font-size: 12px;">
           <option value="scr" selected>Screen (.scr) — 256×192, bitmap + attributes</option>
+          <option value="ifl">IFL (.ifl) — 256×192, 8×2 multicolor attributes</option>
+          <option value="mlt">MLT (.mlt) — 256×192, 8×1 multicolor attributes</option>
           <option value="bsc">Border Screen (.bsc) — 384×304, bitmap + attributes + border</option>
+          <option value="bmc4">BMC4 (.bmc4) — 384×304, 8×4 multicolor + border</option>
+          <option value="rgb3">RGB3 (.3) — 256×192, tricolor RGB (8 colors)</option>
+          <option value="mono_full">Monochrome (.scr) — 256×192, bitmap only</option>
+          <option value="mono_2_3">Monochrome 2/3 (.scr) — 256×128, bitmap only</option>
+          <option value="mono_1_3">Monochrome 1/3 (.scr) — 256×64, bitmap only</option>
           <option value="atr">Attributes (.atr) — 32×24 color cells</option>
         </select>
       </label>
@@ -1169,6 +1810,207 @@
     <div style="display: flex; gap: 8px; justify-content: flex-end;">
       <button id="newPictureCancelBtn" style="padding: 5px 16px; font-size: 12px;">Cancel</button>
       <button id="newPictureOkBtn" style="padding: 5px 16px; font-size: 12px;">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Help Dialog -->
+<div id="helpDialog" class="modal-overlay" style="display:none;">
+  <div class="modal-dialog" style="width: 480px; max-height: 80vh; display: flex; flex-direction: column;">
+    <div class="modal-title" style="display: flex; justify-content: space-between; align-items: center;">
+      <span>Help</span>
+      <button id="helpCloseBtn" style="padding: 2px 8px; font-size: 12px;">×</button>
+    </div>
+    <div style="display: flex; gap: 4px; margin-bottom: 8px; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">
+      <button class="help-tab active" data-tab="viewer">Viewer</button>
+      <button class="help-tab" data-tab="editor">Editor</button>
+      <button class="help-tab" data-tab="formats">Formats</button>
+      <button class="help-tab" data-tab="about">About</button>
+    </div>
+    <div style="overflow-y: auto; flex: 1; font-size: 11px; line-height: 1.5;">
+      <!-- Viewer Tab -->
+      <div id="helpTab-viewer" class="help-tab-content">
+        <div style="font-weight: bold; margin-bottom: 6px;">Keyboard Shortcuts</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td style="width: 90px; color: var(--text-secondary);">1-5</td><td>Set zoom level</td></tr>
+          <tr><td style="color: var(--text-secondary);">Ctrl+Wheel</td><td>Zoom in/out</td></tr>
+          <tr><td style="color: var(--text-secondary);">Arrows</td><td>Pan canvas when zoomed</td></tr>
+          <tr><td style="color: var(--text-secondary);">F</td><td>Toggle flash animation</td></tr>
+          <tr><td style="color: var(--text-secondary);">G</td><td>Cycle grid size (None/8/16/24px)</td></tr>
+          <tr><td style="color: var(--text-secondary);">~</td><td>Toggle preview panel</td></tr>
+          <tr><td style="color: var(--text-secondary);">Space</td><td>Play/Pause (SCA animation)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Left/Right</td><td>Prev/Next frame (SCA)</td></tr>
+        </table>
+        <div style="font-weight: bold; margin: 12px 0 6px;">Mouse</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td style="width: 90px; color: var(--text-secondary);">Drag</td><td>Pan canvas (when zoomed)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Drop file</td><td>Load image</td></tr>
+        </table>
+      </div>
+      <!-- Editor Tab -->
+      <div id="helpTab-editor" class="help-tab-content" style="display: none;">
+        <div style="font-weight: bold; margin-bottom: 6px;">Tools</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td style="width: 90px; color: var(--text-secondary);">P</td><td>Pixel tool</td></tr>
+          <tr><td style="color: var(--text-secondary);">L</td><td>Line tool</td></tr>
+          <tr><td style="color: var(--text-secondary);">R</td><td>Rectangle tool</td></tr>
+          <tr><td style="color: var(--text-secondary);">O</td><td>Circle/ellipse tool</td></tr>
+          <tr><td style="color: var(--text-secondary);">G</td><td>Airbrush tool</td></tr>
+          <tr><td style="color: var(--text-secondary);">D</td><td>Dithered gradient tool</td></tr>
+          <tr><td style="color: var(--text-secondary);">I</td><td>Flood fill tool</td></tr>
+          <tr><td style="color: var(--text-secondary);">C</td><td>Fill cell tool</td></tr>
+          <tr><td style="color: var(--text-secondary);">A</td><td>Recolor (attribute only)</td></tr>
+          <tr><td style="color: var(--text-secondary);">E</td><td>Eraser tool</td></tr>
+          <tr><td style="color: var(--text-secondary);">T</td><td>Text tool</td></tr>
+          <tr><td style="color: var(--text-secondary);">S</td><td>Select tool</td></tr>
+        </table>
+        <div style="font-weight: bold; margin: 12px 0 6px;">Drawing</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td style="width: 90px; color: var(--text-secondary);">Left click</td><td>Draw with ink</td></tr>
+          <tr><td style="color: var(--text-secondary);">Right click</td><td>Draw with paper (erase)</td></tr>
+          <tr><td style="color: var(--text-secondary);">B</td><td>Toggle bright</td></tr>
+          <tr><td style="color: var(--text-secondary);">F</td><td>Toggle flash attribute</td></tr>
+          <tr><td style="color: var(--text-secondary);">X</td><td>Swap ink/paper colors</td></tr>
+          <tr><td style="color: var(--text-secondary);">[ / ]</td><td>Decrease/Increase brush</td></tr>
+          <tr><td style="color: var(--text-secondary);">` (backtick)</td><td>Toggle brush preview mode</td></tr>
+        </table>
+        <div style="font-weight: bold; margin: 12px 0 6px;">Editing</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td style="width: 90px; color: var(--text-secondary);">Ctrl+C</td><td>Copy selection</td></tr>
+          <tr><td style="color: var(--text-secondary);">Ctrl+X</td><td>Cut selection (copy + erase)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Ctrl+V</td><td>Paste</td></tr>
+          <tr><td style="color: var(--text-secondary);">R / H / V</td><td>Rotate/Mirror clipboard (while pasting)</td></tr>
+          <tr><td style="color: var(--text-secondary);">N</td><td>Invert selection (swap ink ↔ paper)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Ctrl+Z</td><td>Undo</td></tr>
+          <tr><td style="color: var(--text-secondary);">Ctrl+Y</td><td>Redo</td></tr>
+          <tr><td style="color: var(--text-secondary);">Ctrl+S</td><td>Save</td></tr>
+          <tr><td style="color: var(--text-secondary);">F11</td><td>Toggle fullscreen editor</td></tr>
+          <tr><td style="color: var(--text-secondary);">Tab</td><td>Toggle floating palette (in fullscreen)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Escape</td><td>Cancel selection/paste, exit fullscreen</td></tr>
+        </table>
+        <div style="font-weight: bold; margin: 12px 0 6px;">Shape Modifiers (Rect/Circle)</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td style="width: 90px; color: var(--text-secondary);">Ctrl</td><td>Constrain to square/circle (1:1 ratio)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Alt</td><td>Draw from center instead of corner</td></tr>
+          <tr><td style="color: var(--text-secondary);">Ctrl+Alt</td><td>Both: square/circle from center</td></tr>
+        </table>
+        <div style="font-weight: bold; margin: 12px 0 6px;">Custom Brushes</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td style="width: 90px; color: var(--text-secondary);">Click slot</td><td>Select (empty starts capture)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Shift+click</td><td>Capture from screen</td></tr>
+          <tr><td style="color: var(--text-secondary);">Ctrl+click</td><td>Clear slot</td></tr>
+        </table>
+        <p style="font-size: 11px; margin: 4px 0 0;">↻↔↕ buttons: transform clipboard while pasting, otherwise custom brush.</p>
+        <div style="font-weight: bold; margin: 12px 0 6px;">Paint Modes</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td style="width: 90px; color: var(--text-secondary);">Set</td><td>Draw ink or paper based on button</td></tr>
+          <tr><td style="color: var(--text-secondary);">Invert</td><td>Toggle pixels (ink↔paper)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Replace</td><td>Overwrite all pixels under brush</td></tr>
+          <tr><td style="color: var(--text-secondary);">Recolor</td><td>Change attributes only, keep bitmap</td></tr>
+          <tr><td style="color: var(--text-secondary);">Retouch</td><td>Change bitmap only, keep attributes</td></tr>
+          <tr><td style="color: var(--text-secondary);">Masked</td><td>Use custom brush as tiled mask pattern (fixed origin)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Masked+</td><td>Use custom brush as tiled mask (stroke-relative origin)</td></tr>
+        </table>
+        <p style="font-size: 11px; margin: 4px 0 0;">Masked modes: select a custom brush for pattern, then choose any brush shape/size for drawing.</p>
+        <div style="font-weight: bold; margin: 12px 0 6px;">Text Tool</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td style="width: 90px; color: var(--text-secondary);">.768 fonts</td><td>ZX Spectrum 8×8 bitmap fonts</td></tr>
+          <tr><td style="color: var(--text-secondary);">TTF fonts</td><td>TrueType/OpenType (any size)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Click canvas</td><td>Place text at position</td></tr>
+        </table>
+        <div style="font-weight: bold; margin: 12px 0 6px;">QR Code Generator</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td style="width: 90px; color: var(--text-secondary);">Version</td><td>V1-V20 (20 to 970 letters max)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Module size</td><td>1, 2, 3, 4, or 8 pixels</td></tr>
+          <tr><td style="color: var(--text-secondary);">Auto uppercase</td><td>For maximum capacity</td></tr>
+          <tr><td style="color: var(--text-secondary);">Click canvas</td><td>Place QR code at position</td></tr>
+        </table>
+        <div style="font-weight: bold; margin: 12px 0 6px;">Airbrush Tool (G)</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td style="width: 90px; color: var(--text-secondary);">Radius</td><td>Spray area size (4-32 pixels)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Density</td><td>Particles per spray (0.03-1.0)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Falloff</td><td>Uniform to Very Hard (center bias)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Hold button</td><td>Continuous spray while held</td></tr>
+          <tr><td style="color: var(--text-secondary);">Masked mode</td><td>Spray through stencil pattern (ink only)</td></tr>
+        </table>
+        <div style="font-weight: bold; margin: 12px 0 6px;">Gradient Tool (D)</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td style="width: 90px; color: var(--text-secondary);">Types</td><td>Linear, Radial, Diamond, Conical, Square, Spiral</td></tr>
+          <tr><td style="color: var(--text-secondary);">Dither</td><td>Bayer (ordered) or Noise (blue noise)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Reverse</td><td>Swap ink/paper direction</td></tr>
+          <tr><td style="color: var(--text-secondary);">Drag</td><td>From start to end point</td></tr>
+        </table>
+        <div style="font-weight: bold; margin: 12px 0 6px;">Reference Image</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td style="width: 60px; color: var(--text-secondary);">Load/Clear</td><td>Load or remove reference image</td></tr>
+          <tr><td style="color: var(--text-secondary);">Show</td><td>Toggle visibility</td></tr>
+          <tr><td style="color: var(--text-secondary);">Opacity</td><td>Adjust transparency (5-80%)</td></tr>
+          <tr><td style="color: var(--text-secondary);">X/Y</td><td>Position offset (can be negative)</td></tr>
+          <tr><td style="color: var(--text-secondary);">W/H</td><td>Custom size (empty = fit to format)</td></tr>
+        </table>
+        <p style="font-size: 11px; margin: 4px 0 0;">Reference image is saved in workspace files.</p>
+        <div style="font-weight: bold; margin: 12px 0 6px;">Snap Mode</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td style="width: 50px; color: var(--text-secondary);">Grid</td><td>Snap to grid size (from View tab)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Subgrid</td><td>Snap to subgrid size (from View tab)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Zero</td><td>Snap to clipboard-sized grid from origin</td></tr>
+          <tr><td style="color: var(--text-secondary);">Brush</td><td>Snap to clipboard-sized grid from first paste</td></tr>
+          <tr><td style="color: var(--text-secondary);">Off</td><td>Pixel-precise placement</td></tr>
+        </table>
+        <p style="font-size: 11px; margin: 4px 0 0;">Grid/Subgrid use paper grid sizes from View tab settings.</p>
+        <div style="font-weight: bold; margin: 12px 0 6px;">Note</div>
+        <p style="font-size: 11px; margin: 0;">Keyboard shortcuts work with any keyboard layout (Russian, German, etc.) — based on physical key position.</p>
+      </div>
+      <!-- Formats Tab -->
+      <div id="helpTab-formats" class="help-tab-content" style="display: none;">
+        <div style="font-weight: bold; margin-bottom: 6px;">Editable Formats</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td style="width: 70px; color: var(--text-secondary);">.scr</td><td>6912b</td><td>Standard screen</td></tr>
+          <tr><td style="color: var(--text-secondary);">.scr</td><td>6144b</td><td>Monochrome full</td></tr>
+          <tr><td style="color: var(--text-secondary);">.scr</td><td>4096b</td><td>Monochrome 2/3</td></tr>
+          <tr><td style="color: var(--text-secondary);">.scr</td><td>2048b</td><td>Monochrome 1/3</td></tr>
+          <tr><td style="color: var(--text-secondary);">.53c/.atr</td><td>768b</td><td>Attributes only</td></tr>
+          <tr><td style="color: var(--text-secondary);">.bsc</td><td>11136b</td><td>Border screen</td></tr>
+          <tr><td style="color: var(--text-secondary);">.ifl</td><td>9216b</td><td>8×2 multicolor</td></tr>
+          <tr><td style="color: var(--text-secondary);">.mlt/.mc</td><td>12288b</td><td>8×1 multicolor</td></tr>
+          <tr><td style="color: var(--text-secondary);">.bmc4</td><td>11904b</td><td>8×4 + border</td></tr>
+          <tr><td style="color: var(--text-secondary);">.3</td><td>18432b</td><td>Tricolor RGB</td></tr>
+          <tr><td style="color: var(--text-secondary);">.sca</td><td>var</td><td>Animation (full/attr-only)</td></tr>
+        </table>
+        <div style="font-weight: bold; margin: 12px 0 6px;">View-Only Formats</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td style="width: 70px; color: var(--text-secondary);">.specscii</td><td>var</td><td>Text mode</td></tr>
+          <tr><td style="color: var(--text-secondary);">.zip</td><td>var</td><td>Archive (auto-extract)</td></tr>
+        </table>
+        <div style="font-weight: bold; margin: 12px 0 6px;">Import (convert to ZX)</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td colspan="3">.png, .gif, .jpg, .webp, .bmp</td></tr>
+        </table>
+      </div>
+      <!-- About Tab -->
+      <div id="helpTab-about" class="help-tab-content" style="display: none;">
+        <div style="text-align: center; padding: 20px 0;">
+          <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.38.0</div>
+          <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
+          <div style="margin-bottom: 8px;">
+            <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">
+              github.com/Bedazzle/SpectraLab
+            </a>
+          </div>
+          <div style="margin-bottom: 20px;">
+            <a href="https://github.com/Bedazzle/SpectraLab?tab=MIT-1-ov-file" target="_blank" style="color: var(--accent-color); font-size: 10px;">
+              MIT License
+            </a>
+          </div>
+          <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 12px;">
+            Thanks to <b>#zxgfx</b> and <b>#zxcoding</b> Telegram groups
+          </div>
+          <div style="font-size: 12px; font-style: italic; color: var(--text-secondary);">
+            Keep Speccy alive!
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -1192,85 +2034,129 @@
       <button id="importTabAdjust" class="import-tab" style="padding: 4px 16px; font-size: 11px; border: 1px solid var(--border-secondary); border-bottom: none; background: var(--bg-secondary); cursor: pointer; margin-bottom: -1px; margin-left: -1px;">Adjustments</button>
     </div>
     <!-- Image tab content -->
-    <div id="importPanelImage" style="display: flex; gap: 16px; margin-bottom: 12px; height: 150px;">
-      <div style="flex: 1;">
-        <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">SOURCE REGION</div>
-        <div style="display: flex; gap: 3px; margin-bottom: 4px; font-size: 10px;">
-          <label>X:<input type="number" id="importCropX" value="0" min="0" style="width: 42px; padding: 1px; font-size: 10px;"></label>
-          <label>Y:<input type="number" id="importCropY" value="0" min="0" style="width: 42px; padding: 1px; font-size: 10px;"></label>
-          <label>W:<input type="number" id="importCropW" value="256" min="1" style="width: 42px; padding: 1px; font-size: 10px;"></label>
-          <label>H:<input type="number" id="importCropH" value="192" min="1" style="width: 42px; padding: 1px; font-size: 10px;"></label>
+    <div id="importPanelImage" style="display: flex; gap: 12px; margin-bottom: 12px;">
+      <!-- SOURCE group -->
+      <div style="flex: 0 0 auto; padding: 8px; border: 1px solid var(--border-secondary); border-radius: 4px;">
+        <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 6px; font-weight: 500;">SOURCE</div>
+        <div style="display: grid; grid-template-columns: auto auto; gap: 4px 8px; font-size: 10px; margin-bottom: 8px;">
+          <label style="display: flex; align-items: center; gap: 2px;">X:<input type="number" id="importCropX" value="0" min="0" style="width: 48px; padding: 2px; font-size: 10px;"></label>
+          <label style="display: flex; align-items: center; gap: 2px;">Y:<input type="number" id="importCropY" value="0" min="0" style="width: 48px; padding: 2px; font-size: 10px;"></label>
+          <label style="display: flex; align-items: center; gap: 2px;">W:<input type="number" id="importCropW" value="256" min="1" style="width: 48px; padding: 2px; font-size: 10px;"></label>
+          <label style="display: flex; align-items: center; gap: 2px;">H:<input type="number" id="importCropH" value="192" min="1" style="width: 48px; padding: 2px; font-size: 10px;"></label>
         </div>
-        <div style="display: flex; gap: 3px; align-items: center;">
-          <button id="importCropReset" style="padding: 2px 6px; font-size: 10px;">Reset</button>
-          <button id="importCropFull" style="padding: 2px 6px; font-size: 10px;">Full</button>
-          <button id="importCropDetect" style="padding: 2px 6px; font-size: 10px;" title="Detect 256x192 region">Detect</button>
-          <label style="font-size: 10px; margin-left: 4px;" title="Lock 4:3 aspect ratio"><input type="checkbox" id="importCropLock43" checked style="margin: 0 2px 0 0; vertical-align: middle;">4:3</label>
+        <div style="display: flex; gap: 4px; align-items: center; flex-wrap: wrap;">
+          <button id="importCropReset" style="padding: 3px 8px; font-size: 10px;">Reset</button>
+          <button id="importCropFull" style="padding: 3px 8px; font-size: 10px;">Full</button>
+          <button id="importCropDetect" style="padding: 3px 8px; font-size: 10px;" title="Detect 256x192 region">Detect</button>
+          <label style="font-size: 10px; margin-left: 4px;" title="Lock 4:3 aspect ratio"><input type="checkbox" id="importCropLock43" checked style="margin: 0 3px 0 0; vertical-align: middle;">4:3</label>
         </div>
       </div>
-      <div style="flex: 0 0 auto;">
-        <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">SCALING</div>
-        <label style="font-size: 11px; display: block; margin-bottom: 4px;">Fit:
-          <select id="importFitMode" style="width: 90px; padding: 2px; font-size: 11px;">
-            <option value="stretch" selected>Stretch</option>
-            <option value="fit">Letterbox</option>
-            <option value="fill">Fill/crop</option>
-            <option value="fit-width">Fit width</option>
-            <option value="fit-height">Fit height</option>
-          </select>
-        </label>
-        <label style="font-size: 11px; display: block;">Dither:
-          <select id="importDithering" style="width: 90px; padding: 2px; font-size: 11px;">
-            <optgroup label="Cell-Aware">
-              <option value="cell-floyd" selected>Cell Floyd</option>
-              <option value="cell-atkinson">Cell Atkinson</option>
-              <option value="cell-serpentine">Cell Serpentine</option>
-              <option value="cell-sierra2">Cell Sierra 2</option>
-              <option value="cell-riemersma">Cell Riemersma</option>
-              <option value="cell-ordered">Cell Ordered</option>
-              <option value="cell-blue-noise">Cell Blue Noise</option>
-              <option value="cell-pattern">Cell Pattern</option>
-              <option value="cell-none">Cell None</option>
-            </optgroup>
-            <optgroup label="Global (classic)">
-              <option value="floyd-steinberg">Floyd-Steinb.</option>
-              <option value="jarvis">Jarvis</option>
-              <option value="stucki">Stucki</option>
-              <option value="burkes">Burkes</option>
-              <option value="sierra">Sierra</option>
-              <option value="sierra-lite">Sierra Lite</option>
-              <option value="sierra2">Sierra 2-Row</option>
-              <option value="serpentine">Serpentine</option>
-              <option value="riemersma">Riemersma</option>
-              <option value="atkinson">Atkinson</option>
-              <option value="ordered">Ordered 4x4</option>
-              <option value="ordered8">Ordered 8x8</option>
-              <option value="blue-noise">Blue Noise</option>
-              <option value="pattern">Pattern</option>
-              <option value="noise">Noise</option>
-              <option value="none">None</option>
-            </optgroup>
-          </select>
-        </label>
-        <label style="font-size: 11px; display: block; margin-top: 4px;" title="Use LAB color space for more accurate perceptual color matching">
-          <input type="checkbox" id="importUseLab" checked style="margin: 0 4px 0 0; vertical-align: middle;">LAB colors
-        </label>
-        <label style="font-size: 11px; display: block; margin-top: 4px;" title="Output black and white only (no colors)">
-          <input type="checkbox" id="importMonoOutput" style="margin: 0 4px 0 0; vertical-align: middle;">Mono output
-        </label>
+      <!-- TRANSFORM group -->
+      <div style="flex: 0 0 auto; padding: 8px; border: 1px solid var(--border-secondary); border-radius: 4px;">
+        <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 6px; font-weight: 500;">TRANSFORM</div>
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;">
+            <span style="width: 36px;">Fit:</span>
+            <select id="importFitMode" style="width: 100px; padding: 2px; font-size: 11px;">
+              <option value="stretch" selected>Stretch</option>
+              <option value="fit">Letterbox</option>
+              <option value="fill">Fill/crop</option>
+              <option value="fit-width">Fit width</option>
+              <option value="fit-height">Fit height</option>
+            </select>
+          </label>
+          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;">
+            <span style="width: 36px;">Dither:</span>
+            <select id="importDithering" style="width: 100px; padding: 2px; font-size: 11px;">
+              <optgroup label="Cell-Aware">
+                <option value="cell-floyd" selected>Cell Floyd</option>
+                <option value="cell-atkinson">Cell Atkinson</option>
+                <option value="cell-serpentine">Cell Serpentine</option>
+                <option value="cell-sierra2">Cell Sierra 2</option>
+                <option value="cell-riemersma">Cell Riemersma</option>
+                <option value="cell-ordered">Cell Ordered</option>
+                <option value="cell-blue-noise">Cell Blue Noise</option>
+                <option value="cell-pattern">Cell Pattern</option>
+                <option value="cell-none">Cell None</option>
+              </optgroup>
+              <optgroup label="Global (classic)">
+                <option value="floyd-steinberg">Floyd-Steinb.</option>
+                <option value="jarvis">Jarvis</option>
+                <option value="stucki">Stucki</option>
+                <option value="burkes">Burkes</option>
+                <option value="sierra">Sierra</option>
+                <option value="sierra-lite">Sierra Lite</option>
+                <option value="sierra2">Sierra 2-Row</option>
+                <option value="serpentine">Serpentine</option>
+                <option value="riemersma">Riemersma</option>
+                <option value="atkinson">Atkinson</option>
+                <option value="ordered">Ordered 4x4</option>
+                <option value="ordered8">Ordered 8x8</option>
+                <option value="blue-noise">Blue Noise</option>
+                <option value="pattern">Pattern</option>
+                <option value="noise">Noise</option>
+                <option value="none">None</option>
+              </optgroup>
+            </select>
+          </label>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-secondary);">
+          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Use LAB color space for more accurate perceptual color matching">
+            <input type="checkbox" id="importUseLab" checked style="margin: 0;">LAB colors
+          </label>
+          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Convert to grayscale before processing">
+            <input type="checkbox" id="importGrayscale" style="margin: 0;">Grayscale
+          </label>
+          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Output black and white only (no colors)">
+            <input type="checkbox" id="importMonoOutput" style="margin: 0;">Mono output
+          </label>
+        </div>
       </div>
-      <div style="flex: 0 0 auto;">
-        <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">OUTPUT</div>
-        <label style="font-size: 11px; display: block; margin-bottom: 4px;">Palette:
-          <select id="importPalette" style="width: 90px; padding: 2px; font-size: 11px;"></select>
-        </label>
-        <label style="font-size: 11px; display: block; margin-bottom: 4px;">Format:
-          <select id="importFormat" style="width: 90px; padding: 2px; font-size: 11px;">
-            <option value="scr" selected>SCR</option>
-            <option value="bsc">BSC</option>
-          </select>
-        </label>
-        <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;"><input type="checkbox" id="importGrayscale"> Grayscale</label>
+      <!-- OUTPUT group -->
+      <div style="flex: 0 0 auto; padding: 8px; border: 1px solid var(--border-secondary); border-radius: 4px;">
+        <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 6px; font-weight: 500;">OUTPUT</div>
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;">
+            <span style="width: 44px;">Format:</span>
+            <select id="importFormat" style="width: 90px; padding: 2px; font-size: 11px;">
+              <option value="scr" selected>SCR</option>
+              <option value="53c">53c (attr)</option>
+              <option value="ifl">IFL (8×2)</option>
+              <option value="bmc4">BMC4 (8×4)</option>
+              <option value="mlt">MLT (8×1)</option>
+              <option value="bsc">BSC</option>
+              <option value="rgb3">RGB3</option>
+              <option value="mono_full">Mono</option>
+              <option value="mono_2_3">Mono 2/3</option>
+              <option value="mono_1_3">Mono 1/3</option>
+            </select>
+          </label>
+          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;">
+            <span style="width: 44px;">Palette:</span>
+            <select id="importPalette" style="width: 90px; padding: 2px; font-size: 11px;"></select>
+          </label>
+          <label id="import53cPatternRow" style="font-size: 11px; display: none; align-items: center; gap: 4px;">
+            <span style="width: 44px;">Pattern:</span>
+            <select id="import53cPattern" style="width: 90px; padding: 2px; font-size: 11px;">
+              <option value="checker" selected>Checker</option>
+              <option value="stripes">Stripes</option>
+              <option value="dd77">DD/77</option>
+            </select>
+          </label>
+        </div>
+        <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-secondary);">
+          <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">Position</div>
+          <div style="display: flex; gap: 8px; font-size: 10px; margin-bottom: 6px;">
+            <label style="display: flex; align-items: center; gap: 2px;">X:<input type="number" id="importOffsetX" value="0" min="0" max="248" style="width: 44px; padding: 2px; font-size: 10px;"></label>
+            <label style="display: flex; align-items: center; gap: 2px;">Y:<input type="number" id="importOffsetY" value="0" min="0" max="184" style="width: 44px; padding: 2px; font-size: 10px;"></label>
+          </div>
+          <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">Size</div>
+          <div style="display: flex; gap: 8px; font-size: 10px; align-items: center;">
+            <label style="display: flex; align-items: center; gap: 2px;">W:<input type="number" id="importSizeW" value="256" min="8" max="384" style="width: 44px; padding: 2px; font-size: 10px;"></label>
+            <label style="display: flex; align-items: center; gap: 2px;">H:<input type="number" id="importSizeH" value="192" min="8" max="304" style="width: 44px; padding: 2px; font-size: 10px;"></label>
+            <label style="font-size: 11px; display: flex; align-items: center;" title="Lock aspect ratio"><input type="checkbox" id="importLockAspect" style="margin: 0 2px 0 0;">🔗</label>
+          </div>
+        </div>
       </div>
     </div>
     <!-- Adjustments tab content -->
@@ -1303,17 +2189,102 @@
       </div>
     </div>
     <div style="display: flex; gap: 8px; justify-content: space-between; align-items: center;">
-      <div style="display: flex; align-items: center; gap: 4px;">
-        <span style="font-size: 11px; color: var(--text-secondary);">Zoom:</span>
-        <select id="importZoom" style="padding: 2px 4px; font-size: 11px;">
-          <option value="1">x1</option>
-          <option value="2" selected>x2</option>
-        </select>
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <div style="display: flex; align-items: center; gap: 4px;">
+          <span style="font-size: 11px; color: var(--text-secondary);">Zoom:</span>
+          <select id="importZoom" style="padding: 2px 4px; font-size: 11px;">
+            <option value="1">x1</option>
+            <option value="2" selected>x2</option>
+            <option value="3">x3</option>
+          </select>
+        </div>
+        <label style="font-size: 11px; display: flex; align-items: center; gap: 2px;" title="Show 8x8 grid on output preview">
+          <input type="checkbox" id="importShowGrid" style="margin: 0;">Grid
+        </label>
       </div>
       <div style="display: flex; gap: 8px;">
         <button id="importCancelBtn" style="padding: 5px 16px; font-size: 12px;">Cancel</button>
         <button id="importOkBtn" style="padding: 5px 16px; font-size: 12px;">Import</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- QR Code Generator Dialog -->
+<div id="qrCodeDialog" class="modal-overlay" style="display:none;">
+  <div class="modal-dialog" style="min-width: 340px;">
+    <div class="modal-title">Generate QR Code</div>
+
+    <div style="margin-bottom: 12px;">
+      <label style="font-size: 11px; display: block; margin-bottom: 4px;">Text or URL:</label>
+      <input type="text" id="qrTextInput" placeholder="HTTPS://EXAMPLE.COM"
+             style="width: 100%; padding: 6px; font-size: 12px; box-sizing: border-box; text-transform: uppercase;">
+    </div>
+
+    <div style="margin-bottom: 12px;">
+      <label style="font-size: 11px; display: block; margin-bottom: 4px;">Size (version, dimensions, max chars):</label>
+      <select id="qrVersionSelect" style="width: 100%; padding: 4px; font-size: 11px;">
+        <option value="auto" selected>Auto (smallest fitting)</option>
+        <option value="1">V1: 21×21 — 20 letters</option>
+        <option value="2">V2: 25×25 — 38 letters</option>
+        <option value="3">V3: 29×29 — 61 letters</option>
+        <option value="4">V4: 33×33 — 90 letters</option>
+        <option value="5">V5: 37×37 — 122 letters</option>
+        <option value="6">V6: 41×41 — 154 letters</option>
+        <option value="7">V7: 45×45 — 178 letters (max 4px)</option>
+        <option value="8">V8: 49×49 — 221 letters</option>
+        <option value="9">V9: 53×53 — 262 letters</option>
+        <option value="10">V10: 57×57 — 311 letters</option>
+        <option value="11">V11: 61×61 — 366 letters (max 3px)</option>
+        <option value="12">V12: 65×65 — 419 letters</option>
+        <option value="13">V13: 69×69 — 483 letters</option>
+        <option value="14">V14: 73×73 — 528 letters</option>
+        <option value="15">V15: 77×77 — 600 letters</option>
+        <option value="16">V16: 81×81 — 656 letters</option>
+        <option value="17">V17: 85×85 — 734 letters</option>
+        <option value="18">V18: 89×89 — 816 letters</option>
+        <option value="19">V19: 93×93 — 909 letters (max 2px)</option>
+        <option value="20">V20: 97×97 — 970 letters</option>
+      </select>
+    </div>
+
+    <div style="display: flex; gap: 12px; margin-bottom: 12px;">
+      <div style="flex: 1;">
+        <label style="font-size: 11px; display: block; margin-bottom: 4px;">Module size:</label>
+        <select id="qrModuleSize" style="width: 100%; padding: 4px; font-size: 11px;">
+          <option value="8">8 px (largest)</option>
+          <option value="4" selected>4 px</option>
+          <option value="3">3 px</option>
+          <option value="2">2 px</option>
+          <option value="1">1 px (smallest)</option>
+        </select>
+      </div>
+      <div style="flex: 1;">
+        <label style="font-size: 11px; display: block; margin-bottom: 4px;">Position:</label>
+        <div style="display: flex; gap: 4px; align-items: center;">
+          <input type="number" id="qrPosX" value="0" min="0" max="255" step="8"
+                 style="width: 40%; padding: 4px; font-size: 11px;" placeholder="X">
+          <input type="number" id="qrPosY" value="0" min="0" max="191" step="8"
+                 style="width: 40%; padding: 4px; font-size: 11px;" placeholder="Y">
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-bottom: 12px;">
+      <label style="font-size: 11px; display: block; margin-bottom: 4px;">Preview:</label>
+      <div id="qrPreviewContainer" style="border: 1px solid var(--border-secondary);
+                                          padding: 8px; background: #fff; text-align: center;
+                                          min-height: 80px; display: flex; align-items: center;
+                                          justify-content: center;">
+        <span id="qrPreviewHint" style="color: #999; font-size: 11px;">Enter text to preview</span>
+        <canvas id="qrPreviewCanvas" style="display: none;"></canvas>
+      </div>
+      <div id="qrInfo" style="font-size: 10px; color: var(--text-secondary); margin-top: 4px;"></div>
+    </div>
+
+    <div style="display: flex; gap: 8px; justify-content: flex-end;">
+      <button id="qrCancelBtn" style="padding: 5px 16px; font-size: 12px;">Cancel</button>
+      <button id="qrApplyBtn" style="padding: 5px 16px; font-size: 12px;" disabled>Apply</button>
     </div>
   </div>
 </div>
@@ -1328,6 +2299,7 @@
 <script src="js/bsc_asm_export.js"></script>
 <script src="js/screen_viewer_ui.js"></script>
 <script src="js/sca_editor.js"></script>
+<script src="js/qrcode.js"></script>
 <script src="js/screen_editor.js"></script>
 </body>
 </html>

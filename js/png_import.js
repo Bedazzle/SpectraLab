@@ -1,4 +1,4 @@
-// SpectraLab v1.21.0 - PNG/GIF Image Import
+// SpectraLab v1.38.0 - PNG/GIF Image Import
 // @ts-check
 "use strict";
 
@@ -1210,7 +1210,9 @@ function ditherCellOrdered(pixels, cellX, cellY, width, inkRgb, paperRgb) {
 
   for (let dy = 0; dy < 8; dy++) {
     for (let dx = 0; dx < 8; dx++) {
-      const srcIdx = ((cellY * 8 + dy) * width + (cellX * 8 + dx)) * 3;
+      const globalX = cellX * 8 + dx;
+      const globalY = cellY * 8 + dy;
+      const srcIdx = (globalY * width + globalX) * 3;
       const r = pixels[srcIdx];
       const g = pixels[srcIdx + 1];
       const b = pixels[srcIdx + 2];
@@ -1225,8 +1227,8 @@ function ditherCellOrdered(pixels, cellX, cellY, width, inkRgb, paperRgb) {
       let t = range > 0 ? (pixelLum - Math.min(inkLum, paperLum)) / range : 0.5;
       t = Math.max(0, Math.min(1, t));
 
-      // Apply Bayer threshold
-      const threshold = (BAYER_4X4[dy % 4][dx % 4] + 0.5) / 16;
+      // Apply Bayer threshold using GLOBAL coordinates for seamless pattern across cells
+      const threshold = (BAYER_4X4[globalY % 4][globalX % 4] + 0.5) / 16;
       const useInk = inkLum < paperLum ? (t < threshold) : (t >= (1 - threshold));
 
       if (useInk) {
@@ -1517,6 +1519,11 @@ function ditherCellBlueNoise(pixels, cellX, cellY, width, inkRgb, paperRgb) {
 function ditherCellPattern(pixels, cellX, cellY, width, inkRgb, paperRgb) {
   const bitmap = new Uint8Array(8);
 
+  // Add phase shift based on cell position to break up grid pattern
+  // Use co-prime multipliers to ensure good distribution
+  const phaseX = (cellX * 3) % 8;
+  const phaseY = (cellY * 5) % 8;
+
   for (let dy = 0; dy < 8; dy++) {
     for (let dx = 0; dx < 8; dx++) {
       const srcIdx = ((cellY * 8 + dy) * width + (cellX * 8 + dx)) * 3;
@@ -1532,8 +1539,10 @@ function ditherCellPattern(pixels, cellX, cellY, width, inkRgb, paperRgb) {
       let t = range > 0 ? (pixelLum - Math.min(inkLum, paperLum)) / range : 0.5;
       t = Math.max(0, Math.min(1, t));
 
-      // Use clustered dot pattern
-      const threshold = (CLUSTER_8X8[dy][dx] + 0.5) / 64;
+      // Use clustered dot pattern with phase shift to avoid grid effect
+      const patternY = (dy + phaseY) % 8;
+      const patternX = (dx + phaseX) % 8;
+      const threshold = (CLUSTER_8X8[patternY][patternX] + 0.5) / 64;
       const useInk = inkLum < paperLum ? (t < threshold) : (t >= (1 - threshold));
 
       if (useInk) {
@@ -1689,12 +1698,13 @@ function analyzeCell(pixels, cellX, cellY, width) {
 
 /**
  * Analyze cell for mono output (black ink on white paper)
+ * Uses luminance (perceived brightness) for better results with colored images
  * @param {Float32Array} pixels - Float array of RGB values
  * @param {number} cellX - Cell X position (0-31)
  * @param {number} cellY - Cell Y position (0-23)
  * @param {number} width - Image width
- * @param {number[]} inkRgb - Ink color (black)
- * @param {number[]} paperRgb - Paper color (white)
+ * @param {number[]} inkRgb - Ink color (black) - unused, kept for API compatibility
+ * @param {number[]} paperRgb - Paper color (white) - unused, kept for API compatibility
  * @returns {{ink: number, paper: number, bright: boolean, bitmap: Uint8Array}}
  */
 function analyzeCellMono(pixels, cellX, cellY, width, inkRgb, paperRgb) {
@@ -1705,11 +1715,17 @@ function analyzeCellMono(pixels, cellX, cellY, width, inkRgb, paperRgb) {
       const px = cellX * 8 + dx;
       const py = cellY * 8 + dy;
       const idx = (py * width + px) * 3;
-      const color = [pixels[idx], pixels[idx + 1], pixels[idx + 2]];
+      const r = pixels[idx];
+      const g = pixels[idx + 1];
+      const b = pixels[idx + 2];
 
-      const inkDist = colorDistance(color, inkRgb);
-      const paperDist = colorDistance(color, paperRgb);
+      // After dithering, pixels should be either ink (black) or paper (white)
+      // Compare directly to determine which color the pixel is closer to
+      // This avoids threshold issues with intermediate values
+      const inkDist = (r - inkRgb[0]) ** 2 + (g - inkRgb[1]) ** 2 + (b - inkRgb[2]) ** 2;
+      const paperDist = (r - paperRgb[0]) ** 2 + (g - paperRgb[1]) ** 2 + (b - paperRgb[2]) ** 2;
 
+      // If closer to ink (black), set as ink
       if (inkDist < paperDist) {
         bitmap[dy] |= (0x80 >> dx);
       }
@@ -1801,6 +1817,12 @@ function convertToScr(sourceCanvas, dithering, brightness, contrast, saturation 
     applySharpening(pixels, 256, 192, sharpness);
   }
 
+  // For mono output, convert to grayscale BEFORE dithering
+  // This ensures dithering works on luminance values, not colors
+  if (monoOutput && !grayscale) {
+    applyGrayscale(pixels);
+  }
+
   // Convert to float array for dithering
   const floatPixels = new Float32Array(256 * 192 * 3);
   for (let i = 0; i < 256 * 192; i++) {
@@ -1831,55 +1853,91 @@ function convertToScr(sourceCanvas, dithering, brightness, contrast, saturation 
       inkRgb: palette.bright[0], paperRgb: palette.bright[7]
     } : null;
 
-    for (let cellY = 0; cellY < 24; cellY++) {
-      for (let cellX = 0; cellX < 32; cellX++) {
-        // Find best ink/paper combination (or use mono if enabled)
-        const colors = monoColors || findCellColors(floatPixels, cellX, cellY, 256, palette);
+    // For mono output with error diffusion methods, use GLOBAL dithering first
+    // to avoid visible cell seams (since there's no attribute clash concern)
+    const errorDiffusionMethods = ['floyd', 'atkinson', 'sierra2', 'serpentine', 'riemersma'];
+    const useGlobalDitherForMono = monoOutput && errorDiffusionMethods.includes(cellDitherMethod);
 
-        // Apply cell-local dithering
-        let bitmap;
-        switch (cellDitherMethod) {
-          case 'floyd':
-            bitmap = ditherCellFloydSteinberg(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
-            break;
-          case 'atkinson':
-            bitmap = ditherCellAtkinson(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
-            break;
-          case 'ordered':
-            bitmap = ditherCellOrdered(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
-            break;
-          case 'sierra2':
-            bitmap = ditherCellSierra2(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
-            break;
-          case 'serpentine':
-            bitmap = ditherCellSerpentine(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
-            break;
-          case 'riemersma':
-            bitmap = ditherCellRiemersma(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
-            break;
-          case 'blue-noise':
-            bitmap = ditherCellBlueNoise(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
-            break;
-          case 'pattern':
-            bitmap = ditherCellPattern(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
-            break;
-          default: // 'none' or unknown
-            bitmap = ditherCellNone(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
-            break;
+    if (useGlobalDitherForMono) {
+      // Apply global dithering with mono palette for seamless results
+      const monoPalette = [palette.bright[0], palette.bright[7]];
+      switch (cellDitherMethod) {
+        case 'floyd': floydSteinbergDither(floatPixels, 256, 192, monoPalette); break;
+        case 'atkinson': atkinsonDither(floatPixels, 256, 192, monoPalette); break;
+        case 'sierra2': sierra2Dither(floatPixels, 256, 192, monoPalette); break;
+        case 'serpentine': serpentineDither(floatPixels, 256, 192, monoPalette); break;
+        case 'riemersma': riemersmaDither(floatPixels, 256, 192, monoPalette); break;
+      }
+
+      // Now just analyze each cell to create bitmap (pixels already dithered)
+      for (let cellY = 0; cellY < 24; cellY++) {
+        for (let cellX = 0; cellX < 32; cellX++) {
+          const cell = analyzeCellMono(floatPixels, cellX, cellY, 256, monoColors.inkRgb, monoColors.paperRgb);
+
+          // Write bitmap bytes
+          for (let line = 0; line < 8; line++) {
+            const y = cellY * 8 + line;
+            const offset = getBitmapOffset(y) + cellX;
+            scr[offset] = cell.bitmap[line];
+          }
+
+          // Write attribute byte (mono: black ink on bright white paper)
+          const attrOffset = 6144 + cellY * 32 + cellX;
+          scr[attrOffset] = (7 << 3) | 0 | 0x40;
         }
+      }
+    } else {
+      // Standard cell-aware dithering (pattern-based or non-mono)
+      for (let cellY = 0; cellY < 24; cellY++) {
+        for (let cellX = 0; cellX < 32; cellX++) {
+          // Find best ink/paper combination (or use mono if enabled)
+          const colors = monoColors || findCellColors(floatPixels, cellX, cellY, 256, palette);
 
-        // Write bitmap bytes
-        for (let line = 0; line < 8; line++) {
-          const y = cellY * 8 + line;
-          const offset = getBitmapOffset(y) + cellX;
-          scr[offset] = bitmap[line];
+          // Apply cell-local dithering
+          let bitmap;
+          switch (cellDitherMethod) {
+            case 'floyd':
+              bitmap = ditherCellFloydSteinberg(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'atkinson':
+              bitmap = ditherCellAtkinson(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'ordered':
+              bitmap = ditherCellOrdered(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'sierra2':
+              bitmap = ditherCellSierra2(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'serpentine':
+              bitmap = ditherCellSerpentine(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'riemersma':
+              bitmap = ditherCellRiemersma(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'blue-noise':
+              bitmap = ditherCellBlueNoise(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'pattern':
+              bitmap = ditherCellPattern(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+              break;
+            default: // 'none' or unknown
+              bitmap = ditherCellNone(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+              break;
+          }
+
+          // Write bitmap bytes
+          for (let line = 0; line < 8; line++) {
+            const y = cellY * 8 + line;
+            const offset = getBitmapOffset(y) + cellX;
+            scr[offset] = bitmap[line];
+          }
+
+          // Write attribute byte
+          const attrOffset = 6144 + cellY * 32 + cellX;
+          let attr = (colors.paper << 3) | colors.ink;
+          if (colors.bright) attr |= 0x40;
+          scr[attrOffset] = attr;
         }
-
-        // Write attribute byte
-        const attrOffset = 6144 + cellY * 32 + cellX;
-        let attr = (colors.paper << 3) | colors.ink;
-        if (colors.bright) attr |= 0x40;
-        scr[attrOffset] = attr;
       }
     }
   } else {
@@ -1961,6 +2019,1400 @@ function convertToScr(sourceCanvas, dithering, brightness, contrast, saturation 
   return scr;
 }
 
+// ============================================================================
+// IFL FORMAT CONVERSION (8×2 multicolor blocks)
+// ============================================================================
+
+/**
+ * Find best ink/paper combination for an 8×2 block
+ * @param {Float32Array} pixels - Float array of RGB values
+ * @param {number} blockX - Block X position (0-31)
+ * @param {number} blockY - Block Y position (0-95)
+ * @param {number} width - Image width
+ * @param {Object} palette - Palette with regular and bright arrays
+ * @returns {{ink: number, paper: number, bright: boolean, inkRgb: number[], paperRgb: number[]}}
+ */
+function findBlockColors2(pixels, blockX, blockY, width, palette) {
+  // Collect all 16 pixel colors from 8×2 block
+  const blockColors = [];
+  for (let dy = 0; dy < 2; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const px = blockX * 8 + dx;
+      const py = blockY * 2 + dy;
+      const idx = (py * width + px) * 3;
+      blockColors.push([pixels[idx], pixels[idx + 1], pixels[idx + 2]]);
+    }
+  }
+
+  let bestError = Infinity;
+  let bestInk = 0;
+  let bestPaper = 7;
+  let bestBright = false;
+
+  // Try all ink/paper combinations for both brightness levels
+  for (let bright = 0; bright <= 1; bright++) {
+    const pal = bright ? palette.bright : palette.regular;
+
+    for (let ink = 0; ink < 8; ink++) {
+      for (let paper = 0; paper < 8; paper++) {
+        let totalError = 0;
+
+        for (let i = 0; i < 16; i++) {
+          const color = blockColors[i];
+          const inkDist = colorDistance(color, pal[ink]);
+          const paperDist = colorDistance(color, pal[paper]);
+          totalError += Math.min(inkDist, paperDist);
+        }
+
+        if (totalError < bestError) {
+          bestError = totalError;
+          bestInk = ink;
+          bestPaper = paper;
+          bestBright = bright === 1;
+        }
+      }
+    }
+  }
+
+  const pal = bestBright ? palette.bright : palette.regular;
+  return {
+    ink: bestInk,
+    paper: bestPaper,
+    bright: bestBright,
+    inkRgb: pal[bestInk],
+    paperRgb: pal[bestPaper]
+  };
+}
+
+/**
+ * Analyze an 8×2 block and return best colors and bitmap
+ * @param {Float32Array} pixels - Float array of RGB values
+ * @param {number} blockX - Block X position (0-31)
+ * @param {number} blockY - Block Y position (0-95)
+ * @param {number} width - Image width
+ * @returns {{ink: number, paper: number, bright: boolean, bitmap: Uint8Array}}
+ */
+function analyzeBlock2(pixels, blockX, blockY, width) {
+  const palette = getCombinedPalette();
+
+  // Collect all 16 pixel colors from 8×2 block
+  const blockColors = [];
+  for (let dy = 0; dy < 2; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const px = blockX * 8 + dx;
+      const py = blockY * 2 + dy;
+      const idx = (py * width + px) * 3;
+      blockColors.push([pixels[idx], pixels[idx + 1], pixels[idx + 2]]);
+    }
+  }
+
+  let bestError = Infinity;
+  let bestInk = 0;
+  let bestPaper = 7;
+  let bestBright = false;
+  let bestBitmap = new Uint8Array(2);
+
+  // Try all ink/paper combinations for both brightness levels
+  for (let bright = 0; bright <= 1; bright++) {
+    const pal = bright ? palette.bright : palette.regular;
+
+    for (let ink = 0; ink < 8; ink++) {
+      for (let paper = 0; paper < 8; paper++) {
+        let totalError = 0;
+        const bitmap = new Uint8Array(2);
+
+        for (let i = 0; i < 16; i++) {
+          const color = blockColors[i];
+          const inkDist = colorDistance(color, pal[ink]);
+          const paperDist = colorDistance(color, pal[paper]);
+
+          const dy = Math.floor(i / 8);
+          const dx = i % 8;
+
+          if (inkDist < paperDist) {
+            totalError += inkDist;
+            bitmap[dy] |= (0x80 >> dx);
+          } else {
+            totalError += paperDist;
+          }
+        }
+
+        if (totalError < bestError) {
+          bestError = totalError;
+          bestInk = ink;
+          bestPaper = paper;
+          bestBright = bright === 1;
+          bestBitmap = bitmap;
+        }
+      }
+    }
+  }
+
+  return {
+    ink: bestInk,
+    paper: bestPaper,
+    bright: bestBright,
+    bitmap: bestBitmap
+  };
+}
+
+/**
+ * Analyze an 8×2 block for mono output using distance to ink/paper colors
+ */
+function analyzeBlock2Mono(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  const bitmap = new Uint8Array(2);
+
+  for (let dy = 0; dy < 2; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const px = blockX * 8 + dx;
+      const py = blockY * 2 + dy;
+      const idx = (py * width + px) * 3;
+      const r = pixels[idx];
+      const g = pixels[idx + 1];
+      const b = pixels[idx + 2];
+
+      // Compare distance to ink and paper colors
+      const inkDist = (r - inkRgb[0]) ** 2 + (g - inkRgb[1]) ** 2 + (b - inkRgb[2]) ** 2;
+      const paperDist = (r - paperRgb[0]) ** 2 + (g - paperRgb[1]) ** 2 + (b - paperRgb[2]) ** 2;
+
+      if (inkDist < paperDist) {
+        bitmap[dy] |= (0x80 >> dx);
+      }
+    }
+  }
+
+  return {
+    ink: 0,
+    paper: 7,
+    bright: true,
+    bitmap: bitmap
+  };
+}
+
+/**
+ * Apply Floyd-Steinberg dithering within an 8×2 block
+ */
+function ditherBlock2FloydSteinberg(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  const blockPixels = new Float32Array(8 * 2 * 3);
+  for (let dy = 0; dy < 2; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const srcIdx = ((blockY * 2 + dy) * width + (blockX * 8 + dx)) * 3;
+      const dstIdx = (dy * 8 + dx) * 3;
+      blockPixels[dstIdx] = pixels[srcIdx];
+      blockPixels[dstIdx + 1] = pixels[srcIdx + 1];
+      blockPixels[dstIdx + 2] = pixels[srcIdx + 2];
+    }
+  }
+
+  const bitmap = new Uint8Array(2);
+  const twoColorPalette = [inkRgb, paperRgb];
+
+  for (let y = 0; y < 2; y++) {
+    for (let x = 0; x < 8; x++) {
+      const idx = (y * 8 + x) * 3;
+      const oldR = blockPixels[idx];
+      const oldG = blockPixels[idx + 1];
+      const oldB = blockPixels[idx + 2];
+
+      const nearest = findNearestPaletteColor([oldR, oldG, oldB], twoColorPalette);
+      const newR = twoColorPalette[nearest][0];
+      const newG = twoColorPalette[nearest][1];
+      const newB = twoColorPalette[nearest][2];
+
+      if (nearest === 0) {
+        bitmap[y] |= (0x80 >> x);
+      }
+
+      const errR = oldR - newR;
+      const errG = oldG - newG;
+      const errB = oldB - newB;
+
+      // Distribute error within block
+      if (x + 1 < 8) {
+        const ni = (y * 8 + x + 1) * 3;
+        blockPixels[ni] += errR * 7 / 16;
+        blockPixels[ni + 1] += errG * 7 / 16;
+        blockPixels[ni + 2] += errB * 7 / 16;
+      }
+      if (y + 1 < 2) {
+        if (x > 0) {
+          const ni = ((y + 1) * 8 + x - 1) * 3;
+          blockPixels[ni] += errR * 3 / 16;
+          blockPixels[ni + 1] += errG * 3 / 16;
+          blockPixels[ni + 2] += errB * 3 / 16;
+        }
+        const ni = ((y + 1) * 8 + x) * 3;
+        blockPixels[ni] += errR * 5 / 16;
+        blockPixels[ni + 1] += errG * 5 / 16;
+        blockPixels[ni + 2] += errB * 5 / 16;
+        if (x + 1 < 8) {
+          const ni2 = ((y + 1) * 8 + x + 1) * 3;
+          blockPixels[ni2] += errR * 1 / 16;
+          blockPixels[ni2 + 1] += errG * 1 / 16;
+          blockPixels[ni2 + 2] += errB * 1 / 16;
+        }
+      }
+    }
+  }
+
+  return bitmap;
+}
+
+/**
+ * Apply ordered dithering within an 8×2 block
+ */
+function ditherBlock2Ordered(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  const bitmap = new Uint8Array(2);
+
+  for (let dy = 0; dy < 2; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const globalX = blockX * 8 + dx;
+      const globalY = blockY * 2 + dy;
+      const idx = (globalY * width + globalX) * 3;
+      const r = pixels[idx];
+      const g = pixels[idx + 1];
+      const b = pixels[idx + 2];
+
+      const inkDist = colorDistance([r, g, b], inkRgb);
+      const paperDist = colorDistance([r, g, b], paperRgb);
+      const totalDist = inkDist + paperDist;
+      const inkRatio = totalDist > 0 ? paperDist / totalDist : 0.5;
+
+      // Use Bayer 4x4 with GLOBAL coordinates for seamless pattern across blocks
+      const t = (BAYER_4X4[globalY % 4][globalX % 4] + 0.5) / 16;
+      if (inkRatio > t) {
+        bitmap[dy] |= (0x80 >> dx);
+      }
+    }
+  }
+
+  return bitmap;
+}
+
+/**
+ * No dithering for 8×2 block - nearest color only
+ */
+function ditherBlock2None(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  const bitmap = new Uint8Array(2);
+
+  for (let dy = 0; dy < 2; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const px = blockX * 8 + dx;
+      const py = blockY * 2 + dy;
+      const idx = (py * width + px) * 3;
+
+      const inkDist = colorDistance([pixels[idx], pixels[idx + 1], pixels[idx + 2]], inkRgb);
+      const paperDist = colorDistance([pixels[idx], pixels[idx + 1], pixels[idx + 2]], paperRgb);
+
+      if (inkDist < paperDist) {
+        bitmap[dy] |= (0x80 >> dx);
+      }
+    }
+  }
+
+  return bitmap;
+}
+
+/**
+ * Convert image to IFL format (8×2 multicolor blocks)
+ */
+function convertToIfl(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, monoOutput = false) {
+  updateColorDistanceMode();
+
+  const ctx = sourceCanvas.getContext('2d');
+  if (!ctx) throw new Error('Cannot get canvas context');
+
+  const imageData = ctx.getImageData(0, 0, 256, 192);
+  const pixels = imageData.data;
+
+  // Apply image adjustments (same as SCR)
+  if (grayscale) {
+    applyGrayscale(pixels);
+  } else {
+    if (saturation !== 0) applySaturation(pixels, saturation);
+    if (balanceR !== 0 || balanceG !== 0 || balanceB !== 0) {
+      applyColorBalance(pixels, balanceR, balanceG, balanceB);
+    }
+  }
+  if (gamma !== 1.0) applyGamma(pixels, gamma);
+  if (blackPoint > 0 || whitePoint < 255) applyLevels(pixels, blackPoint, whitePoint);
+  if (brightness !== 0 || contrast !== 0) applyBrightnessContrast(pixels, brightness, contrast);
+  if (smoothing > 0) applyBilateralFilter(pixels, 256, 192, smoothing);
+  if (sharpness > 0) applySharpening(pixels, 256, 192, sharpness);
+
+  // For mono output, convert to grayscale before dithering
+  if (monoOutput && !grayscale) {
+    applyGrayscale(pixels);
+  }
+
+  // Convert to float array for processing
+  const floatPixels = new Float32Array(256 * 192 * 3);
+  for (let i = 0; i < 256 * 192; i++) {
+    floatPixels[i * 3] = pixels[i * 4];
+    floatPixels[i * 3 + 1] = pixels[i * 4 + 1];
+    floatPixels[i * 3 + 2] = pixels[i * 4 + 2];
+  }
+
+  const palette = getCombinedPalette();
+  const fullPalette = [...palette.regular, ...palette.bright];
+
+  // Create IFL buffer: 6144 bitmap + 3072 attributes = 9216 bytes
+  const ifl = new Uint8Array(9216);
+
+  const isCellAware = dithering.startsWith('cell-');
+
+  if (isCellAware) {
+    const cellDitherMethod = dithering.replace('cell-', '');
+    const monoColors = monoOutput ? {
+      ink: 0, paper: 7, bright: true,
+      inkRgb: palette.bright[0], paperRgb: palette.bright[7]
+    } : null;
+
+    // For mono output with error diffusion, use global dithering for seamless results
+    const useGlobalDitherForMono = monoOutput && cellDitherMethod === 'floyd';
+
+    if (useGlobalDitherForMono) {
+      // Apply global Floyd-Steinberg with mono palette
+      const monoPalette = [palette.bright[0], palette.bright[7]];
+      floydSteinbergDither(floatPixels, 256, 192, monoPalette);
+
+      // Analyze blocks (pixels already dithered)
+      for (let blockY = 0; blockY < 96; blockY++) {
+        for (let blockX = 0; blockX < 32; blockX++) {
+          const block = analyzeBlock2Mono(floatPixels, blockX, blockY, 256, monoColors.inkRgb, monoColors.paperRgb);
+
+          for (let line = 0; line < 2; line++) {
+            const y = blockY * 2 + line;
+            const offset = getBitmapOffset(y) + blockX;
+            ifl[offset] = block.bitmap[line];
+          }
+
+          const attrOffset = 6144 + blockY * 32 + blockX;
+          ifl[attrOffset] = (7 << 3) | 0 | 0x40;
+        }
+      }
+    } else {
+      // Standard cell-aware dithering
+      for (let blockY = 0; blockY < 96; blockY++) {
+        for (let blockX = 0; blockX < 32; blockX++) {
+          const colors = monoColors || findBlockColors2(floatPixels, blockX, blockY, 256, palette);
+
+          let bitmap;
+          switch (cellDitherMethod) {
+            case 'floyd':
+              bitmap = ditherBlock2FloydSteinberg(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'ordered':
+              bitmap = ditherBlock2Ordered(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+              break;
+            default:
+              bitmap = ditherBlock2None(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+              break;
+          }
+
+          for (let line = 0; line < 2; line++) {
+            const y = blockY * 2 + line;
+            const offset = getBitmapOffset(y) + blockX;
+            ifl[offset] = bitmap[line];
+          }
+
+          const attrOffset = 6144 + blockY * 32 + blockX;
+          let attr = (colors.paper << 3) | colors.ink;
+          if (colors.bright) attr |= 0x40;
+          ifl[attrOffset] = attr;
+        }
+      }
+    }
+  } else {
+    // Global dithering
+    const ditherPalette = monoOutput ? [palette.bright[0], palette.bright[7]] : fullPalette;
+
+    switch (dithering) {
+      case 'floyd-steinberg':
+        floydSteinbergDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'jarvis':
+        jarvisDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'stucki':
+        stuckiDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'burkes':
+        burkesDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'sierra':
+        sierraDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'sierra-lite':
+        sierraLiteDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'sierra2':
+        sierra2Dither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'serpentine':
+        serpentineDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'riemersma':
+        riemersmaDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'blue-noise':
+        blueNoiseDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'pattern':
+        patternDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'atkinson':
+        atkinsonDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'ordered':
+        orderedDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'ordered8':
+        ordered8Dither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'noise':
+        noiseDither(floatPixels, 256, 192, ditherPalette);
+        break;
+    }
+
+    // Process 96 attribute rows (8×2 blocks)
+    for (let blockY = 0; blockY < 96; blockY++) {
+      for (let blockX = 0; blockX < 32; blockX++) {
+        const block = monoOutput
+          ? analyzeBlock2Mono(floatPixels, blockX, blockY, 256, palette.bright[0], palette.bright[7])
+          : analyzeBlock2(floatPixels, blockX, blockY, 256);
+
+        // Write 2 bitmap bytes
+        for (let line = 0; line < 2; line++) {
+          const y = blockY * 2 + line;
+          const offset = getBitmapOffset(y) + blockX;
+          ifl[offset] = block.bitmap[line];
+        }
+
+        // Write attribute byte
+        const attrOffset = 6144 + blockY * 32 + blockX;
+        let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((block.paper << 3) | block.ink | (block.bright ? 0x40 : 0));
+        ifl[attrOffset] = attr;
+      }
+    }
+  }
+
+  return ifl;
+}
+
+// ============================================================================
+// MLT FORMAT CONVERSION (8×1 multicolor blocks - per pixel line)
+// ============================================================================
+
+/**
+ * Find best ink/paper combination for an 8×1 block (single pixel row)
+ */
+function findBlockColors1(pixels, blockX, y, width, palette) {
+  // Collect 8 pixel colors from 8×1 block
+  const blockColors = [];
+  for (let dx = 0; dx < 8; dx++) {
+    const px = blockX * 8 + dx;
+    const idx = (y * width + px) * 3;
+    blockColors.push([pixels[idx], pixels[idx + 1], pixels[idx + 2]]);
+  }
+
+  let bestError = Infinity;
+  let bestInk = 0;
+  let bestPaper = 7;
+  let bestBright = false;
+
+  for (let bright = 0; bright <= 1; bright++) {
+    const pal = bright ? palette.bright : palette.regular;
+
+    for (let ink = 0; ink < 8; ink++) {
+      for (let paper = 0; paper < 8; paper++) {
+        let totalError = 0;
+
+        for (let i = 0; i < 8; i++) {
+          const color = blockColors[i];
+          const inkDist = colorDistance(color, pal[ink]);
+          const paperDist = colorDistance(color, pal[paper]);
+          totalError += Math.min(inkDist, paperDist);
+        }
+
+        if (totalError < bestError) {
+          bestError = totalError;
+          bestInk = ink;
+          bestPaper = paper;
+          bestBright = bright === 1;
+        }
+      }
+    }
+  }
+
+  const pal = bestBright ? palette.bright : palette.regular;
+  return {
+    ink: bestInk,
+    paper: bestPaper,
+    bright: bestBright,
+    inkRgb: pal[bestInk],
+    paperRgb: pal[bestPaper]
+  };
+}
+
+/**
+ * Analyze an 8×1 block and return best colors and bitmap byte
+ */
+function analyzeBlock1(pixels, blockX, y, width) {
+  const palette = getCombinedPalette();
+
+  const blockColors = [];
+  for (let dx = 0; dx < 8; dx++) {
+    const px = blockX * 8 + dx;
+    const idx = (y * width + px) * 3;
+    blockColors.push([pixels[idx], pixels[idx + 1], pixels[idx + 2]]);
+  }
+
+  let bestError = Infinity;
+  let bestInk = 0;
+  let bestPaper = 7;
+  let bestBright = false;
+  let bestBitmap = 0;
+
+  for (let bright = 0; bright <= 1; bright++) {
+    const pal = bright ? palette.bright : palette.regular;
+
+    for (let ink = 0; ink < 8; ink++) {
+      for (let paper = 0; paper < 8; paper++) {
+        let totalError = 0;
+        let bitmap = 0;
+
+        for (let dx = 0; dx < 8; dx++) {
+          const color = blockColors[dx];
+          const inkDist = colorDistance(color, pal[ink]);
+          const paperDist = colorDistance(color, pal[paper]);
+
+          if (inkDist < paperDist) {
+            totalError += inkDist;
+            bitmap |= (0x80 >> dx);
+          } else {
+            totalError += paperDist;
+          }
+        }
+
+        if (totalError < bestError) {
+          bestError = totalError;
+          bestInk = ink;
+          bestPaper = paper;
+          bestBright = bright === 1;
+          bestBitmap = bitmap;
+        }
+      }
+    }
+  }
+
+  return {
+    ink: bestInk,
+    paper: bestPaper,
+    bright: bestBright,
+    bitmap: bestBitmap
+  };
+}
+
+/**
+ * Analyze an 8×1 block for mono output using distance to ink/paper colors
+ */
+function analyzeBlock1Mono(pixels, blockX, y, width, inkRgb, paperRgb) {
+  let bitmap = 0;
+
+  for (let dx = 0; dx < 8; dx++) {
+    const px = blockX * 8 + dx;
+    const idx = (y * width + px) * 3;
+    const r = pixels[idx];
+    const g = pixels[idx + 1];
+    const b = pixels[idx + 2];
+
+    // Compare distance to ink and paper colors
+    const inkDist = (r - inkRgb[0]) ** 2 + (g - inkRgb[1]) ** 2 + (b - inkRgb[2]) ** 2;
+    const paperDist = (r - paperRgb[0]) ** 2 + (g - paperRgb[1]) ** 2 + (b - paperRgb[2]) ** 2;
+
+    if (inkDist < paperDist) {
+      bitmap |= (0x80 >> dx);
+    }
+  }
+
+  return {
+    ink: 0,
+    paper: 7,
+    bright: true,
+    bitmap: bitmap
+  };
+}
+
+/**
+ * No dithering for 8×1 block - nearest color only (returns single byte)
+ */
+function ditherBlock1None(pixels, blockX, y, width, inkRgb, paperRgb) {
+  let bitmap = 0;
+
+  for (let dx = 0; dx < 8; dx++) {
+    const px = blockX * 8 + dx;
+    const idx = (y * width + px) * 3;
+
+    const inkDist = colorDistance([pixels[idx], pixels[idx + 1], pixels[idx + 2]], inkRgb);
+    const paperDist = colorDistance([pixels[idx], pixels[idx + 1], pixels[idx + 2]], paperRgb);
+
+    if (inkDist < paperDist) {
+      bitmap |= (0x80 >> dx);
+    }
+  }
+
+  return bitmap;
+}
+
+/**
+ * Ordered dithering for 8×1 block
+ */
+function ditherBlock1Ordered(pixels, blockX, y, width, inkRgb, paperRgb) {
+  let bitmap = 0;
+
+  for (let dx = 0; dx < 8; dx++) {
+    const globalX = blockX * 8 + dx;
+    const idx = (y * width + globalX) * 3;
+    const r = pixels[idx];
+    const g = pixels[idx + 1];
+    const b = pixels[idx + 2];
+
+    const inkDist = colorDistance([r, g, b], inkRgb);
+    const paperDist = colorDistance([r, g, b], paperRgb);
+    const totalDist = inkDist + paperDist;
+    const inkRatio = totalDist > 0 ? paperDist / totalDist : 0.5;
+
+    // Use Bayer 4x4 with GLOBAL coordinates for seamless pattern
+    const t = (BAYER_4X4[y % 4][globalX % 4] + 0.5) / 16;
+    if (inkRatio > t) {
+      bitmap |= (0x80 >> dx);
+    }
+  }
+
+  return bitmap;
+}
+
+/**
+ * Convert image to MLT format (8×1 multicolor blocks - per pixel line)
+ */
+function convertToMlt(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, monoOutput = false) {
+  updateColorDistanceMode();
+
+  const ctx = sourceCanvas.getContext('2d');
+  if (!ctx) throw new Error('Cannot get canvas context');
+
+  const imageData = ctx.getImageData(0, 0, 256, 192);
+  const pixels = imageData.data;
+
+  // Apply image adjustments (same as SCR)
+  if (grayscale) {
+    applyGrayscale(pixels);
+  } else {
+    if (saturation !== 0) applySaturation(pixels, saturation);
+    if (balanceR !== 0 || balanceG !== 0 || balanceB !== 0) {
+      applyColorBalance(pixels, balanceR, balanceG, balanceB);
+    }
+  }
+  if (gamma !== 1.0) applyGamma(pixels, gamma);
+  if (blackPoint > 0 || whitePoint < 255) applyLevels(pixels, blackPoint, whitePoint);
+  if (brightness !== 0 || contrast !== 0) applyBrightnessContrast(pixels, brightness, contrast);
+  if (smoothing > 0) applyBilateralFilter(pixels, 256, 192, smoothing);
+  if (sharpness > 0) applySharpening(pixels, 256, 192, sharpness);
+
+  // For mono output, convert to grayscale before dithering
+  if (monoOutput && !grayscale) {
+    applyGrayscale(pixels);
+  }
+
+  // Convert to float array for processing
+  const floatPixels = new Float32Array(256 * 192 * 3);
+  for (let i = 0; i < 256 * 192; i++) {
+    floatPixels[i * 3] = pixels[i * 4];
+    floatPixels[i * 3 + 1] = pixels[i * 4 + 1];
+    floatPixels[i * 3 + 2] = pixels[i * 4 + 2];
+  }
+
+  const palette = getCombinedPalette();
+  const fullPalette = [...palette.regular, ...palette.bright];
+
+  // Create MLT buffer: 6144 bitmap + 6144 attributes = 12288 bytes
+  const mlt = new Uint8Array(12288);
+
+  const isCellAware = dithering.startsWith('cell-');
+
+  if (isCellAware) {
+    const cellDitherMethod = dithering.replace('cell-', '');
+    const monoColors = monoOutput ? {
+      ink: 0, paper: 7, bright: true,
+      inkRgb: palette.bright[0], paperRgb: palette.bright[7]
+    } : null;
+
+    // Process 192 attribute rows (8×1 blocks - one per pixel line)
+    for (let y = 0; y < 192; y++) {
+      for (let blockX = 0; blockX < 32; blockX++) {
+        const colors = monoColors || findBlockColors1(floatPixels, blockX, y, 256, palette);
+
+        let bitmap;
+        switch (cellDitherMethod) {
+          case 'ordered':
+            bitmap = ditherBlock1Ordered(floatPixels, blockX, y, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          default:
+            bitmap = ditherBlock1None(floatPixels, blockX, y, 256, colors.inkRgb, colors.paperRgb);
+            break;
+        }
+
+        // Write bitmap byte
+        const bitmapOffset = getBitmapOffset(y) + blockX;
+        mlt[bitmapOffset] = bitmap;
+
+        // Write attribute byte
+        const attrOffset = 6144 + y * 32 + blockX;
+        let attr = (colors.paper << 3) | colors.ink;
+        if (colors.bright) attr |= 0x40;
+        mlt[attrOffset] = attr;
+      }
+    }
+  } else {
+    // Global dithering
+    const ditherPalette = monoOutput ? [palette.bright[0], palette.bright[7]] : fullPalette;
+
+    switch (dithering) {
+      case 'floyd-steinberg':
+        floydSteinbergDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'jarvis':
+        jarvisDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'stucki':
+        stuckiDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'burkes':
+        burkesDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'sierra':
+        sierraDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'sierra-lite':
+        sierraLiteDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'sierra2':
+        sierra2Dither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'serpentine':
+        serpentineDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'riemersma':
+        riemersmaDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'blue-noise':
+        blueNoiseDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'pattern':
+        patternDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'atkinson':
+        atkinsonDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'ordered':
+        orderedDither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'ordered8':
+        ordered8Dither(floatPixels, 256, 192, ditherPalette);
+        break;
+      case 'noise':
+        noiseDither(floatPixels, 256, 192, ditherPalette);
+        break;
+    }
+
+    // Process 192 attribute rows (8×1 blocks)
+    for (let y = 0; y < 192; y++) {
+      for (let blockX = 0; blockX < 32; blockX++) {
+        const block = monoOutput
+          ? analyzeBlock1Mono(floatPixels, blockX, y, 256, palette.bright[0], palette.bright[7])
+          : analyzeBlock1(floatPixels, blockX, y, 256);
+
+        // Write bitmap byte
+        const bitmapOffset = getBitmapOffset(y) + blockX;
+        mlt[bitmapOffset] = block.bitmap;
+
+        // Write attribute byte
+        const attrOffset = 6144 + y * 32 + blockX;
+        let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((block.paper << 3) | block.ink | (block.bright ? 0x40 : 0));
+        mlt[attrOffset] = attr;
+      }
+    }
+  }
+
+  return mlt;
+}
+
+// ============================================================================
+// BMC4 FORMAT CONVERSION (8×4 multicolor blocks with border)
+// ============================================================================
+
+/**
+ * Find best ink/paper combination for an 8×4 block
+ */
+function findBlockColors4(pixels, blockX, blockY, width, palette) {
+  // Collect all 32 pixel colors from 8×4 block
+  const blockColors = [];
+  for (let dy = 0; dy < 4; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const px = blockX * 8 + dx;
+      const py = blockY * 4 + dy;
+      const idx = (py * width + px) * 3;
+      blockColors.push([pixels[idx], pixels[idx + 1], pixels[idx + 2]]);
+    }
+  }
+
+  let bestError = Infinity;
+  let bestInk = 0;
+  let bestPaper = 7;
+  let bestBright = false;
+
+  for (let bright = 0; bright <= 1; bright++) {
+    const pal = bright ? palette.bright : palette.regular;
+
+    for (let ink = 0; ink < 8; ink++) {
+      for (let paper = 0; paper < 8; paper++) {
+        let totalError = 0;
+
+        for (let i = 0; i < 32; i++) {
+          const color = blockColors[i];
+          const inkDist = colorDistance(color, pal[ink]);
+          const paperDist = colorDistance(color, pal[paper]);
+          totalError += Math.min(inkDist, paperDist);
+        }
+
+        if (totalError < bestError) {
+          bestError = totalError;
+          bestInk = ink;
+          bestPaper = paper;
+          bestBright = bright === 1;
+        }
+      }
+    }
+  }
+
+  const pal = bestBright ? palette.bright : palette.regular;
+  return {
+    ink: bestInk,
+    paper: bestPaper,
+    bright: bestBright,
+    inkRgb: pal[bestInk],
+    paperRgb: pal[bestPaper]
+  };
+}
+
+/**
+ * Analyze an 8×4 block and return best colors and bitmap
+ */
+function analyzeBlock4(pixels, blockX, blockY, width) {
+  const palette = getCombinedPalette();
+
+  const blockColors = [];
+  for (let dy = 0; dy < 4; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const px = blockX * 8 + dx;
+      const py = blockY * 4 + dy;
+      const idx = (py * width + px) * 3;
+      blockColors.push([pixels[idx], pixels[idx + 1], pixels[idx + 2]]);
+    }
+  }
+
+  let bestError = Infinity;
+  let bestInk = 0;
+  let bestPaper = 7;
+  let bestBright = false;
+  let bestBitmap = new Uint8Array(4);
+
+  for (let bright = 0; bright <= 1; bright++) {
+    const pal = bright ? palette.bright : palette.regular;
+
+    for (let ink = 0; ink < 8; ink++) {
+      for (let paper = 0; paper < 8; paper++) {
+        let totalError = 0;
+        const bitmap = new Uint8Array(4);
+
+        for (let i = 0; i < 32; i++) {
+          const color = blockColors[i];
+          const inkDist = colorDistance(color, pal[ink]);
+          const paperDist = colorDistance(color, pal[paper]);
+
+          const dy = Math.floor(i / 8);
+          const dx = i % 8;
+
+          if (inkDist < paperDist) {
+            totalError += inkDist;
+            bitmap[dy] |= (0x80 >> dx);
+          } else {
+            totalError += paperDist;
+          }
+        }
+
+        if (totalError < bestError) {
+          bestError = totalError;
+          bestInk = ink;
+          bestPaper = paper;
+          bestBright = bright === 1;
+          bestBitmap = bitmap;
+        }
+      }
+    }
+  }
+
+  return {
+    ink: bestInk,
+    paper: bestPaper,
+    bright: bestBright,
+    bitmap: bestBitmap
+  };
+}
+
+/**
+ * Analyze an 8×4 block for mono output using distance to ink/paper colors
+ */
+function analyzeBlock4Mono(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  const bitmap = new Uint8Array(4);
+
+  for (let dy = 0; dy < 4; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const px = blockX * 8 + dx;
+      const py = blockY * 4 + dy;
+      const idx = (py * width + px) * 3;
+      const r = pixels[idx];
+      const g = pixels[idx + 1];
+      const b = pixels[idx + 2];
+
+      // Compare distance to ink and paper colors
+      const inkDist = (r - inkRgb[0]) ** 2 + (g - inkRgb[1]) ** 2 + (b - inkRgb[2]) ** 2;
+      const paperDist = (r - paperRgb[0]) ** 2 + (g - paperRgb[1]) ** 2 + (b - paperRgb[2]) ** 2;
+
+      if (inkDist < paperDist) {
+        bitmap[dy] |= (0x80 >> dx);
+      }
+    }
+  }
+
+  return {
+    ink: 0,
+    paper: 7,
+    bright: true,
+    bitmap: bitmap
+  };
+}
+
+/**
+ * No dithering for 8×4 block
+ */
+function ditherBlock4None(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  const bitmap = new Uint8Array(4);
+
+  for (let dy = 0; dy < 4; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const px = blockX * 8 + dx;
+      const py = blockY * 4 + dy;
+      const idx = (py * width + px) * 3;
+
+      const inkDist = colorDistance([pixels[idx], pixels[idx + 1], pixels[idx + 2]], inkRgb);
+      const paperDist = colorDistance([pixels[idx], pixels[idx + 1], pixels[idx + 2]], paperRgb);
+
+      if (inkDist < paperDist) {
+        bitmap[dy] |= (0x80 >> dx);
+      }
+    }
+  }
+
+  return bitmap;
+}
+
+/**
+ * Convert image to BMC4 format (8×4 multicolor blocks with border)
+ * Note: Border is filled with black (0) - full border support would require BSC-style border sampling
+ */
+function convertToBmc4(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, monoOutput = false) {
+  updateColorDistanceMode();
+
+  const ctx = sourceCanvas.getContext('2d');
+  if (!ctx) throw new Error('Cannot get canvas context');
+
+  const imageData = ctx.getImageData(0, 0, 256, 192);
+  const pixels = imageData.data;
+
+  // Apply image adjustments
+  if (grayscale) {
+    applyGrayscale(pixels);
+  } else {
+    if (saturation !== 0) applySaturation(pixels, saturation);
+    if (balanceR !== 0 || balanceG !== 0 || balanceB !== 0) {
+      applyColorBalance(pixels, balanceR, balanceG, balanceB);
+    }
+  }
+  if (gamma !== 1.0) applyGamma(pixels, gamma);
+  if (blackPoint > 0 || whitePoint < 255) applyLevels(pixels, blackPoint, whitePoint);
+  if (brightness !== 0 || contrast !== 0) applyBrightnessContrast(pixels, brightness, contrast);
+  if (smoothing > 0) applyBilateralFilter(pixels, 256, 192, smoothing);
+  if (sharpness > 0) applySharpening(pixels, 256, 192, sharpness);
+
+  // For mono output, convert to grayscale before dithering
+  if (monoOutput && !grayscale) {
+    applyGrayscale(pixels);
+  }
+
+  const floatPixels = new Float32Array(256 * 192 * 3);
+  for (let i = 0; i < 256 * 192; i++) {
+    floatPixels[i * 3] = pixels[i * 4];
+    floatPixels[i * 3 + 1] = pixels[i * 4 + 1];
+    floatPixels[i * 3 + 2] = pixels[i * 4 + 2];
+  }
+
+  const palette = getCombinedPalette();
+  const fullPalette = [...palette.regular, ...palette.bright];
+
+  // BMC4: 6144 bitmap + 768 attr1 + 768 attr2 + 4224 border = 11904 bytes
+  const bmc4 = new Uint8Array(11904);
+
+  const isCellAware = dithering.startsWith('cell-');
+
+  if (!isCellAware) {
+    // Apply global dithering first
+    const ditherPalette = monoOutput ? [palette.bright[0], palette.bright[7]] : fullPalette;
+    switch (dithering) {
+      case 'floyd-steinberg': floydSteinbergDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'jarvis': jarvisDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'stucki': stuckiDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'burkes': burkesDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'sierra': sierraDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'sierra-lite': sierraLiteDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'sierra2': sierra2Dither(floatPixels, 256, 192, ditherPalette); break;
+      case 'serpentine': serpentineDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'riemersma': riemersmaDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'blue-noise': blueNoiseDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'pattern': patternDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'atkinson': atkinsonDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'ordered': orderedDither(floatPixels, 256, 192, ditherPalette); break;
+      case 'ordered8': ordered8Dither(floatPixels, 256, 192, ditherPalette); break;
+      case 'noise': noiseDither(floatPixels, 256, 192, ditherPalette); break;
+    }
+  }
+
+  // Process 48 attribute blocks (8×4 each, 24 char rows × 2 blocks per char)
+  for (let blockY = 0; blockY < 48; blockY++) {
+    for (let blockX = 0; blockX < 32; blockX++) {
+      let colors, bitmap;
+
+      if (isCellAware) {
+        const cellDitherMethod = dithering.replace('cell-', '');
+        colors = monoOutput ? {
+          ink: 0, paper: 7, bright: true,
+          inkRgb: palette.bright[0], paperRgb: palette.bright[7]
+        } : findBlockColors4(floatPixels, blockX, blockY, 256, palette);
+        bitmap = ditherBlock4None(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+      } else {
+        const block = monoOutput
+          ? analyzeBlock4Mono(floatPixels, blockX, blockY, 256, palette.bright[0], palette.bright[7])
+          : analyzeBlock4(floatPixels, blockX, blockY, 256);
+        colors = block;
+        bitmap = block.bitmap;
+      }
+
+      // Write 4 bitmap bytes
+      for (let line = 0; line < 4; line++) {
+        const y = blockY * 4 + line;
+        const offset = getBitmapOffset(y) + blockX;
+        bmc4[offset] = bitmap[line];
+      }
+
+      // Write attribute byte to appropriate bank
+      // attr1 (6144-6911) for top 4 lines, attr2 (6912-7679) for bottom 4 lines of each char cell
+      const charRow = Math.floor(blockY / 2);
+      const isTopHalf = (blockY % 2) === 0;
+      const attrOffset = isTopHalf ? (6144 + charRow * 32 + blockX) : (6912 + charRow * 32 + blockX);
+      let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((colors.paper << 3) | colors.ink | (colors.bright ? 0x40 : 0));
+      bmc4[attrOffset] = attr;
+    }
+  }
+
+  // Border data (7680-11903) is left as zeros (black)
+
+  return bmc4;
+}
+
+// ============================================================================
+// MONOCHROME FORMAT CONVERSION (bitmap only, no attributes)
+// ============================================================================
+
+/**
+ * Convert image to monochrome format (bitmap only)
+ * @param {number} thirds - Number of screen thirds (1, 2, or 3)
+ */
+function convertToMono(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, thirds = 3) {
+  updateColorDistanceMode();
+
+  const ctx = sourceCanvas.getContext('2d');
+  if (!ctx) throw new Error('Cannot get canvas context');
+
+  const height = thirds * 64;
+  const imageData = ctx.getImageData(0, 0, 256, height);
+  const pixels = imageData.data;
+
+  // Apply image adjustments
+  if (grayscale) {
+    applyGrayscale(pixels);
+  } else {
+    if (saturation !== 0) applySaturation(pixels, saturation);
+    if (balanceR !== 0 || balanceG !== 0 || balanceB !== 0) {
+      applyColorBalance(pixels, balanceR, balanceG, balanceB);
+    }
+  }
+  if (gamma !== 1.0) applyGamma(pixels, gamma);
+  if (blackPoint > 0 || whitePoint < 255) applyLevels(pixels, blackPoint, whitePoint);
+  if (brightness !== 0 || contrast !== 0) applyBrightnessContrast(pixels, brightness, contrast);
+  if (smoothing > 0) applyBilateralFilter(pixels, 256, height, smoothing);
+  if (sharpness > 0) applySharpening(pixels, 256, height, sharpness);
+
+  // For mono format, convert to grayscale before dithering (if not already done)
+  // This ensures dithering works on luminance values, not colors
+  if (!grayscale) {
+    applyGrayscale(pixels);
+  }
+
+  const floatPixels = new Float32Array(256 * height * 3);
+  for (let i = 0; i < 256 * height; i++) {
+    floatPixels[i * 3] = pixels[i * 4];
+    floatPixels[i * 3 + 1] = pixels[i * 4 + 1];
+    floatPixels[i * 3 + 2] = pixels[i * 4 + 2];
+  }
+
+  const palette = getCombinedPalette();
+  // Monochrome uses only black and white
+  const monoPalette = [palette.bright[0], palette.bright[7]];
+
+  // Apply dithering
+  switch (dithering) {
+    case 'floyd-steinberg': floydSteinbergDither(floatPixels, 256, height, monoPalette); break;
+    case 'jarvis': jarvisDither(floatPixels, 256, height, monoPalette); break;
+    case 'stucki': stuckiDither(floatPixels, 256, height, monoPalette); break;
+    case 'burkes': burkesDither(floatPixels, 256, height, monoPalette); break;
+    case 'sierra': sierraDither(floatPixels, 256, height, monoPalette); break;
+    case 'sierra-lite': sierraLiteDither(floatPixels, 256, height, monoPalette); break;
+    case 'sierra2': sierra2Dither(floatPixels, 256, height, monoPalette); break;
+    case 'serpentine': serpentineDither(floatPixels, 256, height, monoPalette); break;
+    case 'riemersma': riemersmaDither(floatPixels, 256, height, monoPalette); break;
+    case 'blue-noise': blueNoiseDither(floatPixels, 256, height, monoPalette); break;
+    case 'pattern': patternDither(floatPixels, 256, height, monoPalette); break;
+    case 'atkinson': atkinsonDither(floatPixels, 256, height, monoPalette); break;
+    case 'ordered': orderedDither(floatPixels, 256, height, monoPalette); break;
+    case 'ordered8': ordered8Dither(floatPixels, 256, height, monoPalette); break;
+    case 'noise': noiseDither(floatPixels, 256, height, monoPalette); break;
+  }
+
+  // Create output buffer
+  const bufferSize = thirds * 2048;
+  const mono = new Uint8Array(bufferSize);
+
+  // Get ink and paper colors for distance comparison
+  const inkRgb = monoPalette[0];    // black
+  const paperRgb = monoPalette[1];  // white
+
+  // Process bitmap - determine if each pixel is ink (black) or paper (white)
+  for (let y = 0; y < height; y++) {
+    const bitmapOffset = getBitmapOffset(y);
+
+    for (let col = 0; col < 32; col++) {
+      let byte = 0;
+
+      for (let bit = 0; bit < 8; bit++) {
+        const x = col * 8 + bit;
+        const idx = (y * 256 + x) * 3;
+        const r = floatPixels[idx];
+        const g = floatPixels[idx + 1];
+        const b = floatPixels[idx + 2];
+
+        // Compare distance to ink and paper colors
+        const inkDist = (r - inkRgb[0]) ** 2 + (g - inkRgb[1]) ** 2 + (b - inkRgb[2]) ** 2;
+        const paperDist = (r - paperRgb[0]) ** 2 + (g - paperRgb[1]) ** 2 + (b - paperRgb[2]) ** 2;
+
+        // If closer to ink (black), set bit
+        if (inkDist < paperDist) {
+          byte |= (0x80 >> bit);
+        }
+      }
+
+      mono[bitmapOffset + col] = byte;
+    }
+  }
+
+  return mono;
+}
+
+// RGB3 format constants
+const RGB3_CONST = {
+  TOTAL_SIZE: 18432,
+  BITMAP_SIZE: 6144,
+  RED_OFFSET: 0,
+  GREEN_OFFSET: 6144,
+  BLUE_OFFSET: 12288
+};
+
+/**
+ * Convert image to RGB3 format (tricolor RGB)
+ * Three separate bitmaps for R, G, B channels
+ * Each pixel can be one of 8 colors (RGB combinations)
+ * @returns {Uint8Array} 18432-byte RGB3 data
+ */
+function convertToRgb3(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0) {
+  updateColorDistanceMode();
+
+  const ctx = sourceCanvas.getContext('2d');
+  if (!ctx) throw new Error('Cannot get canvas context');
+
+  const imageData = ctx.getImageData(0, 0, 256, 192);
+  const pixels = imageData.data;
+
+  // Apply image adjustments
+  if (grayscale) {
+    applyGrayscale(pixels);
+  } else {
+    if (saturation !== 0) applySaturation(pixels, saturation);
+    if (balanceR !== 0 || balanceG !== 0 || balanceB !== 0) {
+      applyColorBalance(pixels, balanceR, balanceG, balanceB);
+    }
+  }
+  if (gamma !== 1.0) applyGamma(pixels, gamma);
+  if (blackPoint > 0 || whitePoint < 255) applyLevels(pixels, blackPoint, whitePoint);
+  if (brightness !== 0 || contrast !== 0) applyBrightnessContrast(pixels, brightness, contrast);
+  if (smoothing > 0) applyBilateralFilter(pixels, 256, 192, smoothing);
+  if (sharpness > 0) applySharpening(pixels, 256, 192, sharpness);
+
+  const floatPixels = new Float32Array(256 * 192 * 3);
+  for (let i = 0; i < 256 * 192; i++) {
+    floatPixels[i * 3] = pixels[i * 4];
+    floatPixels[i * 3 + 1] = pixels[i * 4 + 1];
+    floatPixels[i * 3 + 2] = pixels[i * 4 + 2];
+  }
+
+  // RGB3 uses 8 pure RGB colors (no bright variants)
+  // Index 0=Black, 1=Blue, 2=Red, 3=Magenta, 4=Green, 5=Cyan, 6=Yellow, 7=White
+  const rgb3Palette = [
+    [0, 0, 0],       // 0: Black (000)
+    [0, 0, 255],     // 1: Blue (001)
+    [255, 0, 0],     // 2: Red (010) - note: ZX uses GRB order, bit1=red
+    [255, 0, 255],   // 3: Magenta (011)
+    [0, 255, 0],     // 4: Green (100) - note: bit2=green
+    [0, 255, 255],   // 5: Cyan (101)
+    [255, 255, 0],   // 6: Yellow (110)
+    [255, 255, 255]  // 7: White (111)
+  ];
+
+  // Apply dithering with RGB3 palette
+  switch (dithering) {
+    case 'floyd-steinberg': floydSteinbergDither(floatPixels, 256, 192, rgb3Palette); break;
+    case 'jarvis': jarvisDither(floatPixels, 256, 192, rgb3Palette); break;
+    case 'stucki': stuckiDither(floatPixels, 256, 192, rgb3Palette); break;
+    case 'burkes': burkesDither(floatPixels, 256, 192, rgb3Palette); break;
+    case 'sierra': sierraDither(floatPixels, 256, 192, rgb3Palette); break;
+    case 'sierra-lite': sierraLiteDither(floatPixels, 256, 192, rgb3Palette); break;
+    case 'sierra2': sierra2Dither(floatPixels, 256, 192, rgb3Palette); break;
+    case 'serpentine': serpentineDither(floatPixels, 256, 192, rgb3Palette); break;
+    case 'riemersma': riemersmaDither(floatPixels, 256, 192, rgb3Palette); break;
+    case 'blue-noise': blueNoiseDither(floatPixels, 256, 192, rgb3Palette); break;
+    case 'pattern': patternDither(floatPixels, 256, 192, rgb3Palette); break;
+    case 'atkinson': atkinsonDither(floatPixels, 256, 192, rgb3Palette); break;
+    case 'ordered': orderedDither(floatPixels, 256, 192, rgb3Palette); break;
+    case 'ordered8': ordered8Dither(floatPixels, 256, 192, rgb3Palette); break;
+    case 'noise': noiseDither(floatPixels, 256, 192, rgb3Palette); break;
+  }
+
+  // Create output buffer (3 × 6144 bytes)
+  const rgb3 = new Uint8Array(RGB3_CONST.TOTAL_SIZE);
+
+  // Process each pixel and set bits in R, G, B bitmaps
+  for (let y = 0; y < 192; y++) {
+    const bitmapOffset = getBitmapOffset(y);
+
+    for (let col = 0; col < 32; col++) {
+      let redByte = 0;
+      let greenByte = 0;
+      let blueByte = 0;
+
+      for (let bit = 0; bit < 8; bit++) {
+        const x = col * 8 + bit;
+        const idx = (y * 256 + x) * 3;
+        const r = floatPixels[idx];
+        const g = floatPixels[idx + 1];
+        const b = floatPixels[idx + 2];
+
+        // Find nearest color from RGB3 palette
+        let minDist = Infinity;
+        let nearestIdx = 0;
+        for (let i = 0; i < 8; i++) {
+          const dist = colorDistance([r, g, b], rgb3Palette[i]);
+          if (dist < minDist) {
+            minDist = dist;
+            nearestIdx = i;
+          }
+        }
+
+        // Set bits based on color index
+        // ZX color bits: bit0=Blue, bit1=Red, bit2=Green
+        if (nearestIdx & 1) blueByte |= (0x80 >> bit);   // Blue
+        if (nearestIdx & 2) redByte |= (0x80 >> bit);    // Red
+        if (nearestIdx & 4) greenByte |= (0x80 >> bit);  // Green
+      }
+
+      rgb3[RGB3_CONST.RED_OFFSET + bitmapOffset + col] = redByte;
+      rgb3[RGB3_CONST.GREEN_OFFSET + bitmapOffset + col] = greenByte;
+      rgb3[RGB3_CONST.BLUE_OFFSET + bitmapOffset + col] = blueByte;
+    }
+  }
+
+  return rgb3;
+}
+
+/**
+ * Render RGB3 data to canvas for preview
+ * @param {Uint8Array} rgb3Data - RGB3 screen data
+ * @param {HTMLCanvasElement} canvas - Target canvas
+ */
+function renderRgb3ToCanvas(rgb3Data, canvas) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  canvas.width = 256;
+  canvas.height = 192;
+
+  const imageData = ctx.createImageData(256, 192);
+  const data = imageData.data;
+
+  for (let y = 0; y < 192; y++) {
+    const bitmapOffset = getBitmapOffset(y);
+
+    for (let col = 0; col < 32; col++) {
+      const redByte = rgb3Data[RGB3_CONST.RED_OFFSET + bitmapOffset + col];
+      const greenByte = rgb3Data[RGB3_CONST.GREEN_OFFSET + bitmapOffset + col];
+      const blueByte = rgb3Data[RGB3_CONST.BLUE_OFFSET + bitmapOffset + col];
+
+      for (let bit = 0; bit < 8; bit++) {
+        const x = col * 8 + bit;
+        const r = (redByte & (0x80 >> bit)) ? 255 : 0;
+        const g = (greenByte & (0x80 >> bit)) ? 255 : 0;
+        const b = (blueByte & (0x80 >> bit)) ? 255 : 0;
+
+        const pixelIndex = (y * 256 + x) * 4;
+        data[pixelIndex] = r;
+        data[pixelIndex + 1] = g;
+        data[pixelIndex + 2] = b;
+        data[pixelIndex + 3] = 255;
+      }
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+}
+
 // BSC format constants
 const BSC_CONST = {
   TOTAL_SIZE: 11136,
@@ -2013,6 +3465,150 @@ function getBlockAverageColor(pixels, width, x, y, blockWidth = 32) {
     b += pixels[idx + 2];
   }
   return [r / actualWidth, g / actualWidth, b / actualWidth];
+}
+
+/**
+ * Convert image to 53c format (attributes only, 768 bytes)
+ * Analyzes each 8x8 cell using the specified pattern to separate ink/paper pixels
+ * @param {HTMLCanvasElement} sourceCanvas - Source canvas (256x192)
+ * @param {number} brightness - Brightness adjustment
+ * @param {number} contrast - Contrast adjustment
+ * @param {number} saturation - Saturation adjustment
+ * @param {number} gamma - Gamma correction
+ * @param {boolean} grayscale - Convert to grayscale
+ * @param {number} sharpness - Sharpening amount
+ * @param {number} smoothing - Smoothing amount
+ * @param {number} blackPoint - Levels black point
+ * @param {number} whitePoint - Levels white point
+ * @param {number} balanceR - Red channel adjustment
+ * @param {number} balanceG - Green channel adjustment
+ * @param {number} balanceB - Blue channel adjustment
+ * @param {string} pattern - Pattern type: 'checker', 'stripes', or 'dd77'
+ * @returns {Uint8Array} 768-byte attribute data
+ */
+function convertTo53c(sourceCanvas, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, pattern = 'checker') {
+  // Cache color distance mode setting once at start
+  updateColorDistanceMode();
+
+  const ctx = sourceCanvas.getContext('2d');
+  if (!ctx) throw new Error('Cannot get canvas context');
+
+  const imageData = ctx.getImageData(0, 0, 256, 192);
+  const pixels = imageData.data;
+
+  // Apply adjustments
+  if (grayscale) {
+    applyGrayscale(pixels);
+  }
+  if (smoothing > 0) {
+    applySmoothing(pixels, 256, 192, smoothing);
+  }
+  if (sharpness > 0) {
+    applySharpening(pixels, 256, 192, sharpness);
+  }
+  if (contrast !== 0 || brightness !== 0) {
+    applyBrightnessContrast(pixels, brightness, contrast);
+  }
+  if (saturation !== 0) {
+    applySaturation(pixels, saturation);
+  }
+  if (gamma !== 1.0) {
+    applyGamma(pixels, gamma);
+  }
+  if (blackPoint !== 0 || whitePoint !== 255) {
+    applyLevels(pixels, blackPoint, whitePoint);
+  }
+  if (balanceR !== 0 || balanceG !== 0 || balanceB !== 0) {
+    applyColorBalance(pixels, balanceR, balanceG, balanceB);
+  }
+
+  // Get pattern array from APP_CONFIG
+  let patternArray;
+  if (pattern === 'stripes') {
+    patternArray = APP_CONFIG.PATTERN_53C_STRIPES;
+  } else if (pattern === 'dd77') {
+    patternArray = APP_CONFIG.PATTERN_53C_DD77;
+  } else {
+    patternArray = APP_CONFIG.PATTERN_53C_CHECKER;
+  }
+
+  // Create attribute data (768 bytes = 32 cols x 24 rows)
+  const attrData = new Uint8Array(768);
+
+  // Get combined palette once for all cells (matches rendering palette)
+  const combinedPalette = getCombinedPalette();
+
+  // Process each 8x8 character cell
+  for (let row = 0; row < 24; row++) {
+    for (let col = 0; col < 32; col++) {
+      const cellX = col * 8;
+      const cellY = row * 8;
+
+      // Collect ink and paper pixels based on pattern
+      let inkR = 0, inkG = 0, inkB = 0, inkCount = 0;
+      let paperR = 0, paperG = 0, paperB = 0, paperCount = 0;
+
+      for (let py = 0; py < 8; py++) {
+        const patternByte = patternArray[py];
+        for (let px = 0; px < 8; px++) {
+          const bit = 7 - px; // MSB first
+          const isInk = (patternByte & (1 << bit)) !== 0;
+
+          const pixelIdx = ((cellY + py) * 256 + (cellX + px)) * 4;
+          const r = pixels[pixelIdx];
+          const g = pixels[pixelIdx + 1];
+          const b = pixels[pixelIdx + 2];
+
+          if (isInk) {
+            inkR += r;
+            inkG += g;
+            inkB += b;
+            inkCount++;
+          } else {
+            paperR += r;
+            paperG += g;
+            paperB += b;
+            paperCount++;
+          }
+        }
+      }
+
+      // Calculate average colors
+      const avgInk = inkCount > 0 ? [inkR / inkCount, inkG / inkCount, inkB / inkCount] : [0, 0, 0];
+      const avgPaper = paperCount > 0 ? [paperR / paperCount, paperG / paperCount, paperB / paperCount] : [255, 255, 255];
+
+      // Find best matching ZX colors
+      // Try both regular and bright palettes, pick best overall match
+      let bestInkIdx = 0, bestPaperIdx = 0, bestBright = 0;
+      let bestTotalDist = Infinity;
+
+      for (let bright = 0; bright <= 1; bright++) {
+        const palette = bright ? combinedPalette.bright : combinedPalette.regular;
+
+        for (let inkIdx = 0; inkIdx < 8; inkIdx++) {
+          const inkDist = colorDistance(avgInk, palette[inkIdx]);
+
+          for (let paperIdx = 0; paperIdx < 8; paperIdx++) {
+            const paperDist = colorDistance(avgPaper, palette[paperIdx]);
+            const totalDist = inkDist + paperDist;
+
+            if (totalDist < bestTotalDist) {
+              bestTotalDist = totalDist;
+              bestInkIdx = inkIdx;
+              bestPaperIdx = paperIdx;
+              bestBright = bright;
+            }
+          }
+        }
+      }
+
+      // Build attribute byte: flash(0) | bright | paper(3) | ink(3)
+      const attr = (bestBright << 6) | (bestPaperIdx << 3) | bestInkIdx;
+      attrData[row * 32 + col] = attr;
+    }
+  }
+
+  return attrData;
 }
 
 /**
@@ -2502,6 +4098,279 @@ function renderScrToCanvas(scrData, canvas, zoom = 2) {
   }
 }
 
+/**
+ * Render IFL data to a canvas (8×2 multicolor attributes)
+ */
+function renderIflToCanvas(iflData, canvas, zoom = 2) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  canvas.width = 256 * zoom;
+  canvas.height = 192 * zoom;
+
+  const imageData = ctx.createImageData(256, 192);
+  const pixels = imageData.data;
+  const palette = getCombinedPalette();
+
+  for (let y = 0; y < 192; y++) {
+    const bitmapOffset = getBitmapOffset(y);
+
+    for (let x = 0; x < 256; x++) {
+      const cellX = Math.floor(x / 8);
+      const attrRow = Math.floor(y / 2);  // 96 attribute rows for IFL
+      const bitPos = x % 8;
+
+      const byte = iflData[bitmapOffset + cellX];
+      const attrOffset = 6144 + attrRow * 32 + cellX;
+      const attr = iflData[attrOffset];
+
+      const ink = attr & 0x07;
+      const paper = (attr >> 3) & 0x07;
+      const bright = (attr & 0x40) !== 0;
+
+      const pal = bright ? palette.bright : palette.regular;
+      const isInk = (byte & (0x80 >> bitPos)) !== 0;
+      const color = isInk ? pal[ink] : pal[paper];
+
+      const idx = (y * 256 + x) * 4;
+      pixels[idx] = color[0];
+      pixels[idx + 1] = color[1];
+      pixels[idx + 2] = color[2];
+      pixels[idx + 3] = 255;
+    }
+  }
+
+  const temp = getImportTempCanvas(256, 192);
+  if (temp) {
+    temp.ctx.putImageData(imageData, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(temp.canvas, 0, 0, 256 * zoom, 192 * zoom);
+  }
+}
+
+/**
+ * Render MLT data to a canvas (8×1 multicolor attributes - per pixel line)
+ */
+function renderMltToCanvas(mltData, canvas, zoom = 2) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  canvas.width = 256 * zoom;
+  canvas.height = 192 * zoom;
+
+  const imageData = ctx.createImageData(256, 192);
+  const pixels = imageData.data;
+  const palette = getCombinedPalette();
+
+  for (let y = 0; y < 192; y++) {
+    const bitmapOffset = getBitmapOffset(y);
+
+    for (let x = 0; x < 256; x++) {
+      const cellX = Math.floor(x / 8);
+      const bitPos = x % 8;
+
+      const byte = mltData[bitmapOffset + cellX];
+      const attrOffset = 6144 + y * 32 + cellX;  // One attr row per pixel line for MLT
+      const attr = mltData[attrOffset];
+
+      const ink = attr & 0x07;
+      const paper = (attr >> 3) & 0x07;
+      const bright = (attr & 0x40) !== 0;
+
+      const pal = bright ? palette.bright : palette.regular;
+      const isInk = (byte & (0x80 >> bitPos)) !== 0;
+      const color = isInk ? pal[ink] : pal[paper];
+
+      const idx = (y * 256 + x) * 4;
+      pixels[idx] = color[0];
+      pixels[idx + 1] = color[1];
+      pixels[idx + 2] = color[2];
+      pixels[idx + 3] = 255;
+    }
+  }
+
+  const temp = getImportTempCanvas(256, 192);
+  if (temp) {
+    temp.ctx.putImageData(imageData, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(temp.canvas, 0, 0, 256 * zoom, 192 * zoom);
+  }
+}
+
+/**
+ * Render BMC4 data to a canvas (8×4 multicolor attributes)
+ * Note: Only renders the main 256x192 area, not border
+ */
+function renderBmc4ToCanvas(bmc4Data, canvas, zoom = 2) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  canvas.width = 256 * zoom;
+  canvas.height = 192 * zoom;
+
+  const imageData = ctx.createImageData(256, 192);
+  const pixels = imageData.data;
+  const palette = getCombinedPalette();
+
+  for (let y = 0; y < 192; y++) {
+    const bitmapOffset = getBitmapOffset(y);
+
+    for (let x = 0; x < 256; x++) {
+      const cellX = Math.floor(x / 8);
+      const charRow = Math.floor(y / 8);
+      const pixelLine = y % 8;
+      const bitPos = x % 8;
+
+      const byte = bmc4Data[bitmapOffset + cellX];
+      // attr1 (6144-6911) for lines 0-3, attr2 (6912-7679) for lines 4-7
+      const attrOffset = (pixelLine < 4) ? (6144 + charRow * 32 + cellX) : (6912 + charRow * 32 + cellX);
+      const attr = bmc4Data[attrOffset];
+
+      const ink = attr & 0x07;
+      const paper = (attr >> 3) & 0x07;
+      const bright = (attr & 0x40) !== 0;
+
+      const pal = bright ? palette.bright : palette.regular;
+      const isInk = (byte & (0x80 >> bitPos)) !== 0;
+      const color = isInk ? pal[ink] : pal[paper];
+
+      const idx = (y * 256 + x) * 4;
+      pixels[idx] = color[0];
+      pixels[idx + 1] = color[1];
+      pixels[idx + 2] = color[2];
+      pixels[idx + 3] = 255;
+    }
+  }
+
+  const temp = getImportTempCanvas(256, 192);
+  if (temp) {
+    temp.ctx.putImageData(imageData, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(temp.canvas, 0, 0, 256 * zoom, 192 * zoom);
+  }
+}
+
+/**
+ * Render 53c attribute data to a canvas using pattern from APP_CONFIG
+ * @param {Uint8Array} attrData - 768 bytes of attribute data
+ * @param {HTMLCanvasElement} canvas - Target canvas
+ * @param {number} zoom - Zoom level
+ * @param {string} pattern - Pattern type: 'checker', 'stripes', or 'dd77'
+ */
+function render53cToCanvas(attrData, canvas, zoom = 2, pattern = 'checker') {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  canvas.width = 256 * zoom;
+  canvas.height = 192 * zoom;
+
+  const imageData = ctx.createImageData(256, 192);
+  const pixels = imageData.data;
+  const palette = getCombinedPalette();
+
+  // Get pattern array from APP_CONFIG
+  let patternArray;
+  if (pattern === 'stripes') {
+    patternArray = APP_CONFIG.PATTERN_53C_STRIPES;
+  } else if (pattern === 'dd77') {
+    patternArray = APP_CONFIG.PATTERN_53C_DD77;
+  } else {
+    patternArray = APP_CONFIG.PATTERN_53C_CHECKER;
+  }
+
+  // Render each 8x8 cell
+  for (let row = 0; row < 24; row++) {
+    for (let col = 0; col < 32; col++) {
+      const attr = attrData[row * 32 + col];
+      const ink = attr & 0x07;
+      const paper = (attr >> 3) & 0x07;
+      const bright = (attr & 0x40) !== 0;
+
+      const pal = bright ? palette.bright : palette.regular;
+      const inkColor = pal[ink];
+      const paperColor = pal[paper];
+
+      const cellX = col * 8;
+      const cellY = row * 8;
+
+      for (let py = 0; py < 8; py++) {
+        const patternByte = patternArray[py];
+        for (let px = 0; px < 8; px++) {
+          const bit = 7 - px; // MSB first
+          const isInk = (patternByte & (1 << bit)) !== 0;
+          const color = isInk ? inkColor : paperColor;
+
+          const idx = ((cellY + py) * 256 + (cellX + px)) * 4;
+          pixels[idx] = color[0];
+          pixels[idx + 1] = color[1];
+          pixels[idx + 2] = color[2];
+          pixels[idx + 3] = 255;
+        }
+      }
+    }
+  }
+
+  const temp = getImportTempCanvas(256, 192);
+  if (temp) {
+    temp.ctx.putImageData(imageData, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(temp.canvas, 0, 0, 256 * zoom, 192 * zoom);
+  }
+}
+
+/**
+ * Render monochrome data to a canvas (bitmap only)
+ */
+function renderMonoToCanvas(monoData, canvas, zoom = 2, thirds = 3) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const height = thirds * 64;
+  canvas.width = 256 * zoom;
+  canvas.height = 192 * zoom;  // Always 192 for display
+
+  const imageData = ctx.createImageData(256, 192);
+  const pixels = imageData.data;
+  const palette = getCombinedPalette();
+  const ink = palette.bright[0];   // Black
+  const paper = palette.bright[7]; // White
+
+  // Fill with paper first
+  for (let i = 0; i < 256 * 192 * 4; i += 4) {
+    pixels[i] = paper[0];
+    pixels[i + 1] = paper[1];
+    pixels[i + 2] = paper[2];
+    pixels[i + 3] = 255;
+  }
+
+  // Render the bitmap data
+  for (let y = 0; y < height; y++) {
+    const bitmapOffset = getBitmapOffset(y);
+
+    for (let x = 0; x < 256; x++) {
+      const cellX = Math.floor(x / 8);
+      const bitPos = x % 8;
+
+      const byte = monoData[bitmapOffset + cellX];
+      const isInk = (byte & (0x80 >> bitPos)) !== 0;
+      const color = isInk ? ink : paper;
+
+      const idx = (y * 256 + x) * 4;
+      pixels[idx] = color[0];
+      pixels[idx + 1] = color[1];
+      pixels[idx + 2] = color[2];
+      pixels[idx + 3] = 255;
+    }
+  }
+
+  const temp = getImportTempCanvas(256, 192);
+  if (temp) {
+    temp.ctx.putImageData(imageData, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(temp.canvas, 0, 0, 256 * zoom, 192 * zoom);
+  }
+}
+
 // ============================================================================
 // Reusable Temporary Canvas (for preview rendering)
 // ============================================================================
@@ -2557,6 +4426,12 @@ let importOriginalSize = { width: 0, height: 0 };
 /** @type {{x: number, y: number, w: number, h: number}} - Crop rectangle */
 let importCrop = { x: 0, y: 0, w: 256, h: 192 };
 
+/** @type {{x: number, y: number}} - Output offset (where imported image is placed) */
+let importOffset = { x: 0, y: 0 };
+
+/** @type {{w: number, h: number}} - Output size (dimensions of imported image area) */
+let importSize = { w: 256, h: 192 };
+
 /** @type {string} - Fit mode: 'stretch', 'fit', 'fill' */
 let importFitMode = 'stretch';
 
@@ -2586,6 +4461,7 @@ const importElements = {
   /** @type {HTMLSelectElement|null} */ dithering: null,
   /** @type {HTMLSelectElement|null} */ format: null,
   /** @type {HTMLSelectElement|null} */ palette: null,
+  /** @type {HTMLSelectElement|null} */ pattern53c: null,
   /** @type {HTMLSelectElement|null} */ zoom: null,
   /** @type {HTMLSelectElement|null} */ fitMode: null,
   // Sliders
@@ -2604,6 +4480,14 @@ const importElements = {
   /** @type {HTMLInputElement|null} */ grayscale: null,
   /** @type {HTMLInputElement|null} */ monoOutput: null,
   /** @type {HTMLInputElement|null} */ useLab: null,
+  /** @type {HTMLInputElement|null} */ showGrid: null,
+  // Offset inputs
+  /** @type {HTMLInputElement|null} */ offsetX: null,
+  /** @type {HTMLInputElement|null} */ offsetY: null,
+  // Size inputs
+  /** @type {HTMLInputElement|null} */ sizeW: null,
+  /** @type {HTMLInputElement|null} */ sizeH: null,
+  /** @type {HTMLInputElement|null} */ lockAspect: null,
   // Value labels
   /** @type {HTMLElement|null} */ saturationValue: null,
   /** @type {HTMLElement|null} */ gammaValue: null,
@@ -2624,6 +4508,9 @@ function applyCropAndFit() {
   const ctx = importSourceCanvas.getContext('2d');
   if (!ctx) return;
 
+  // Disable image smoothing to preserve pixel-perfect patterns (important for 53c)
+  ctx.imageSmoothingEnabled = false;
+
   // Clear canvas
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, 256, 192);
@@ -2633,57 +4520,69 @@ function applyCropAndFit() {
   const srcW = importCrop.w;
   const srcH = importCrop.h;
 
-  // Calculate destination based on fit mode
-  let destX = 0, destY = 0, destW = 256, destH = 192;
+  // Use user-specified size (clamped to available area after offset)
+  const availW = Math.min(importSize.w, 256 - importOffset.x);
+  const availH = Math.min(importSize.h, 192 - importOffset.y);
+
+  // Calculate destination based on fit mode (fit within available area)
+  let destX = importOffset.x, destY = importOffset.y, destW = availW, destH = availH;
   const srcAspect = srcW / srcH;
 
   if (importFitMode === 'stretch') {
-    // Stretch source region to fill 256x192
-    destX = 0; destY = 0; destW = 256; destH = 192;
+    // Stretch source region to fill available area
+    destX = importOffset.x; destY = importOffset.y; destW = availW; destH = availH;
   } else if (importFitMode === 'fit') {
-    // Fit source region inside 256x192, maintaining aspect ratio (letterbox)
-    const destAspect = 256 / 192;
+    // Fit source region inside available area, maintaining aspect ratio (letterbox)
+    const destAspect = availW / availH;
     if (srcAspect > destAspect) {
       // Source is wider - fit to width
-      destW = 256;
-      destH = 256 / srcAspect;
-      destX = 0;
-      destY = (192 - destH) / 2;
+      destW = availW;
+      destH = availW / srcAspect;
+      destX = importOffset.x;
+      destY = importOffset.y + (availH - destH) / 2;
     } else {
       // Source is taller - fit to height
-      destH = 192;
-      destW = 192 * srcAspect;
-      destX = (256 - destW) / 2;
-      destY = 0;
+      destH = availH;
+      destW = availH * srcAspect;
+      destX = importOffset.x + (availW - destW) / 2;
+      destY = importOffset.y;
     }
   } else if (importFitMode === 'fill') {
-    // Fill 256x192 with source region, cropping excess (center crop)
-    const destAspect = 256 / 192;
+    // Fill available area with source region, cropping excess (center crop)
+    const destAspect = availW / availH;
     if (srcAspect > destAspect) {
       // Source is wider - fit to height, crop sides
-      destH = 192;
-      destW = 192 * srcAspect;
-      destX = (256 - destW) / 2;
-      destY = 0;
+      destH = availH;
+      destW = availH * srcAspect;
+      destX = importOffset.x + (availW - destW) / 2;
+      destY = importOffset.y;
     } else {
       // Source is taller - fit to width, crop top/bottom
-      destW = 256;
-      destH = 256 / srcAspect;
-      destX = 0;
-      destY = (192 - destH) / 2;
+      destW = availW;
+      destH = availW / srcAspect;
+      destX = importOffset.x;
+      destY = importOffset.y + (availH - destH) / 2;
     }
   } else if (importFitMode === 'fit-width') {
-    // Scale to fit width (256), center vertically
-    destW = 256;
-    destH = 256 / srcAspect;
-    destX = 0;
-    destY = (192 - destH) / 2;
+    // Scale to fit width, clamp height to available area
+    destW = availW;
+    destH = availW / srcAspect;
+    if (destH > availH) {
+      destH = availH;
+      destW = availH * srcAspect;
+    }
+    destX = importOffset.x + (availW - destW) / 2;
+    destY = importOffset.y + (availH - destH) / 2;
   } else if (importFitMode === 'fit-height') {
-    // Scale to fit height (192), center horizontally
-    destH = 192;
-    destW = 192 * srcAspect;
-    destX = (256 - destW) / 2;
-    destY = 0;
+    // Scale to fit height, clamp width to available area
+    destH = availH;
+    destW = availH * srcAspect;
+    if (destW > availW) {
+      destW = availW;
+      destH = availW / srcAspect;
+    }
+    destX = importOffset.x + (availW - destW) / 2;
+    destY = importOffset.y + (availH - destH) / 2;
   }
 
   ctx.drawImage(importImage, srcX, srcY, srcW, srcH, destX, destY, destW, destH);
@@ -2692,49 +4591,66 @@ function applyCropAndFit() {
   if (importSourceCanvasBsc) {
     const ctxBsc = importSourceCanvasBsc.getContext('2d');
     if (ctxBsc) {
+      ctxBsc.imageSmoothingEnabled = false;
       ctxBsc.fillStyle = '#000';
       ctxBsc.fillRect(0, 0, 384, 304);
 
+      // Scale offset and size for BSC dimensions (384x304 vs 256x192)
+      const bscOffsetX = Math.round(importOffset.x * 384 / 256);
+      const bscOffsetY = Math.round(importOffset.y * 304 / 192);
+      const bscSizeW = Math.round(importSize.w * 384 / 256);
+      const bscSizeH = Math.round(importSize.h * 304 / 192);
+      const bscAvailW = Math.min(bscSizeW, 384 - bscOffsetX);
+      const bscAvailH = Math.min(bscSizeH, 304 - bscOffsetY);
+
       // Calculate destination for BSC (384x304 with aspect ratio handling)
-      let destXBsc = 0, destYBsc = 0, destWBsc = 384, destHBsc = 304;
-      const bscAspect = 384 / 304;
+      let destXBsc = bscOffsetX, destYBsc = bscOffsetY, destWBsc = bscAvailW, destHBsc = bscAvailH;
+      const bscAspect = bscAvailW / bscAvailH;
 
       if (importFitMode === 'stretch') {
-        destXBsc = 0; destYBsc = 0; destWBsc = 384; destHBsc = 304;
+        destXBsc = bscOffsetX; destYBsc = bscOffsetY; destWBsc = bscAvailW; destHBsc = bscAvailH;
       } else if (importFitMode === 'fit') {
         if (srcAspect > bscAspect) {
-          destWBsc = 384;
-          destHBsc = 384 / srcAspect;
-          destXBsc = 0;
-          destYBsc = (304 - destHBsc) / 2;
+          destWBsc = bscAvailW;
+          destHBsc = bscAvailW / srcAspect;
+          destXBsc = bscOffsetX;
+          destYBsc = bscOffsetY + (bscAvailH - destHBsc) / 2;
         } else {
-          destHBsc = 304;
-          destWBsc = 304 * srcAspect;
-          destXBsc = (384 - destWBsc) / 2;
-          destYBsc = 0;
+          destHBsc = bscAvailH;
+          destWBsc = bscAvailH * srcAspect;
+          destXBsc = bscOffsetX + (bscAvailW - destWBsc) / 2;
+          destYBsc = bscOffsetY;
         }
       } else if (importFitMode === 'fill') {
         if (srcAspect > bscAspect) {
-          destHBsc = 304;
-          destWBsc = 304 * srcAspect;
-          destXBsc = (384 - destWBsc) / 2;
-          destYBsc = 0;
+          destHBsc = bscAvailH;
+          destWBsc = bscAvailH * srcAspect;
+          destXBsc = bscOffsetX + (bscAvailW - destWBsc) / 2;
+          destYBsc = bscOffsetY;
         } else {
-          destWBsc = 384;
-          destHBsc = 384 / srcAspect;
-          destXBsc = 0;
-          destYBsc = (304 - destHBsc) / 2;
+          destWBsc = bscAvailW;
+          destHBsc = bscAvailW / srcAspect;
+          destXBsc = bscOffsetX;
+          destYBsc = bscOffsetY + (bscAvailH - destHBsc) / 2;
         }
       } else if (importFitMode === 'fit-width') {
-        destWBsc = 384;
-        destHBsc = 384 / srcAspect;
-        destXBsc = 0;
-        destYBsc = (304 - destHBsc) / 2;
+        destWBsc = bscAvailW;
+        destHBsc = bscAvailW / srcAspect;
+        if (destHBsc > bscAvailH) {
+          destHBsc = bscAvailH;
+          destWBsc = bscAvailH * srcAspect;
+        }
+        destXBsc = bscOffsetX + (bscAvailW - destWBsc) / 2;
+        destYBsc = bscOffsetY + (bscAvailH - destHBsc) / 2;
       } else if (importFitMode === 'fit-height') {
-        destHBsc = 304;
-        destWBsc = 304 * srcAspect;
-        destXBsc = (384 - destWBsc) / 2;
-        destYBsc = 0;
+        destHBsc = bscAvailH;
+        destWBsc = bscAvailH * srcAspect;
+        if (destWBsc > bscAvailW) {
+          destWBsc = bscAvailW;
+          destHBsc = bscAvailW / srcAspect;
+        }
+        destXBsc = bscOffsetX + (bscAvailW - destWBsc) / 2;
+        destYBsc = bscOffsetY + (bscAvailH - destHBsc) / 2;
       }
 
       ctxBsc.drawImage(importImage, srcX, srcY, srcW, srcH, destXBsc, destYBsc, destWBsc, destHBsc);
@@ -2754,9 +4670,10 @@ function renderOriginalWithCrop() {
   const w = importImage.naturalWidth;
   const h = importImage.naturalHeight;
 
-  // Calculate scale to fit in canvas while showing full image
-  const maxSize = 256 * importZoom;
-  const scale = Math.min(maxSize / w, maxSize / h, importZoom);
+  // Calculate scale to fit in canvas while showing full image (fixed at x2, independent of preview zoom)
+  const originalZoom = 2;
+  const maxSize = 256 * originalZoom;
+  const scale = Math.min(maxSize / w, maxSize / h, originalZoom);
 
   importOriginalCanvas.width = Math.round(w * scale);
   importOriginalCanvas.height = Math.round(h * scale);
@@ -2820,8 +4737,9 @@ let cropDragInitial = { x: 0, y: 0, w: 0, h: 0 };
 function getOriginalCanvasScale() {
   if (!importImage || !importOriginalCanvas) return 1;
   const w = importImage.naturalWidth;
-  const maxSize = 256 * importZoom;
-  return Math.min(maxSize / w, maxSize / importImage.naturalHeight, importZoom);
+  const originalZoom = 2;
+  const maxSize = 256 * originalZoom;
+  return Math.min(maxSize / w, maxSize / importImage.naturalHeight, originalZoom);
 }
 
 /**
@@ -3044,6 +4962,59 @@ function detectScreenRegion() {
 }
 
 /**
+ * Draw 8x8 grid overlay on import preview canvas
+ * @param {HTMLCanvasElement} canvas - Preview canvas
+ * @param {number} zoom - Current zoom level
+ * @param {string} format - Output format (for BSC which has different dimensions)
+ */
+function drawImportPreviewGrid(canvas, zoom, format) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  // Determine dimensions based on format
+  let width, height;
+  if (format === 'bsc') {
+    width = 384;
+    height = 304;
+  } else if (format === 'mono_2_3') {
+    width = 256;
+    height = 128;
+  } else if (format === 'mono_1_3') {
+    width = 256;
+    height = 64;
+  } else {
+    width = 256;
+    height = 192;
+  }
+
+  const cellSize = 8 * zoom;
+  const canvasW = width * zoom;
+  const canvasH = height * zoom;
+
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255, 165, 0, 0.6)';
+  ctx.lineWidth = 1;
+
+  // Vertical lines
+  ctx.beginPath();
+  for (let x = cellSize; x < canvasW; x += cellSize) {
+    ctx.moveTo(x + 0.5, 0);
+    ctx.lineTo(x + 0.5, canvasH);
+  }
+  ctx.stroke();
+
+  // Horizontal lines
+  ctx.beginPath();
+  for (let y = cellSize; y < canvasH; y += cellSize) {
+    ctx.moveTo(0, y + 0.5);
+    ctx.lineTo(canvasW, y + 0.5);
+  }
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+/**
  * Initialize PNG import dialog
  */
 function initPngImport() {
@@ -3074,6 +5045,7 @@ function initPngImport() {
   importElements.zoom = /** @type {HTMLSelectElement} */ (document.getElementById('importZoom'));
   importElements.palette = /** @type {HTMLSelectElement} */ (document.getElementById('importPalette'));
   importElements.format = /** @type {HTMLSelectElement} */ (document.getElementById('importFormat'));
+  importElements.pattern53c = /** @type {HTMLSelectElement} */ (document.getElementById('import53cPattern'));
   importElements.fitMode = /** @type {HTMLSelectElement} */ (document.getElementById('importFitMode'));
   importElements.grayscale = /** @type {HTMLInputElement} */ (document.getElementById('importGrayscale'));
   importElements.monoOutput = /** @type {HTMLInputElement} */ (document.getElementById('importMonoOutput'));
@@ -3087,6 +5059,12 @@ function initPngImport() {
   importElements.balanceG = /** @type {HTMLInputElement} */ (document.getElementById('importBalanceG'));
   importElements.balanceB = /** @type {HTMLInputElement} */ (document.getElementById('importBalanceB'));
   importElements.useLab = /** @type {HTMLInputElement} */ (document.getElementById('importUseLab'));
+  importElements.showGrid = /** @type {HTMLInputElement} */ (document.getElementById('importShowGrid'));
+  importElements.offsetX = /** @type {HTMLInputElement} */ (document.getElementById('importOffsetX'));
+  importElements.offsetY = /** @type {HTMLInputElement} */ (document.getElementById('importOffsetY'));
+  importElements.sizeW = /** @type {HTMLInputElement} */ (document.getElementById('importSizeW'));
+  importElements.sizeH = /** @type {HTMLInputElement} */ (document.getElementById('importSizeH'));
+  importElements.lockAspect = /** @type {HTMLInputElement} */ (document.getElementById('importLockAspect'));
   importElements.saturationValue = document.getElementById('importSaturationValue');
   importElements.gammaValue = document.getElementById('importGammaValue');
   importElements.sharpnessValue = document.getElementById('importSharpnessValue');
@@ -3153,6 +5131,7 @@ function initPngImport() {
   // Local references for additional controls (from cached elements)
   const grayscaleCheckbox = importElements.grayscale;
   const monoOutputCheckbox = importElements.monoOutput;
+  const showGridCheckbox = importElements.showGrid;
   const saturationSlider = importElements.saturation;
   const gammaSlider = importElements.gamma;
   const sharpnessSlider = importElements.sharpness;
@@ -3163,8 +5142,11 @@ function initPngImport() {
   const balanceGSlider = importElements.balanceG;
   const balanceBSlider = importElements.balanceB;
 
-  // Update preview on control change
-  const updatePreview = () => {
+  // Debounce timer for preview updates
+  let previewDebounceTimer = null;
+
+  // Update preview on control change (debounced to prevent rapid recalculations)
+  const updatePreviewImmediate = () => {
     if (!importSourceCanvas || !importPreviewCanvas) return;
 
     // Apply crop and fit to source canvas
@@ -3185,14 +5167,58 @@ function initPngImport() {
     const balanceG = parseInt(balanceGSlider?.value || '0', 10);
     const balanceB = parseInt(balanceBSlider?.value || '0', 10);
     const format = formatSelect?.value || 'scr';
+    // Read zoom directly from element to ensure latest value for all formats
+    const currentZoom = parseInt(importElements.zoom?.value || '2', 10);
 
-    if (format === 'bsc' && importSourceCanvasBsc) {
+    if (format === '53c') {
+      const pattern = importElements.pattern53c?.value || 'checker';
+      const attrData = convertTo53c(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, pattern);
+      render53cToCanvas(attrData, importPreviewCanvas, currentZoom, pattern);
+    } else if (format === 'bsc' && importSourceCanvasBsc) {
       const bscData = convertToBsc(importSourceCanvasBsc, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
-      renderBscToCanvas(bscData, importPreviewCanvas, importZoom);
+      renderBscToCanvas(bscData, importPreviewCanvas, currentZoom);
+    } else if (format === 'ifl') {
+      const iflData = convertToIfl(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      renderIflToCanvas(iflData, importPreviewCanvas, currentZoom);
+    } else if (format === 'mlt') {
+      const mltData = convertToMlt(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      renderMltToCanvas(mltData, importPreviewCanvas, currentZoom);
+    } else if (format === 'bmc4') {
+      const bmc4Data = convertToBmc4(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      renderBmc4ToCanvas(bmc4Data, importPreviewCanvas, currentZoom);
+    } else if (format === 'rgb3') {
+      const rgb3Data = convertToRgb3(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      renderRgb3ToCanvas(rgb3Data, importPreviewCanvas);
+    } else if (format === 'mono_full') {
+      const monoData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 3);
+      renderMonoToCanvas(monoData, importPreviewCanvas, currentZoom, 3);
+    } else if (format === 'mono_2_3') {
+      const monoData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 2);
+      renderMonoToCanvas(monoData, importPreviewCanvas, currentZoom, 2);
+    } else if (format === 'mono_1_3') {
+      const monoData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 1);
+      renderMonoToCanvas(monoData, importPreviewCanvas, currentZoom, 1);
     } else {
       const scrData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
-      renderScrToCanvas(scrData, importPreviewCanvas, importZoom);
+      renderScrToCanvas(scrData, importPreviewCanvas, currentZoom);
     }
+
+    // Draw grid overlay if enabled
+    if (showGridCheckbox?.checked && importPreviewCanvas) {
+      drawImportPreviewGrid(importPreviewCanvas, currentZoom, format);
+    }
+  };
+
+  // Debounced wrapper - allows UI to update before heavy calculation
+  const updatePreview = () => {
+    if (previewDebounceTimer) {
+      clearTimeout(previewDebounceTimer);
+    }
+    // Small delay allows checkbox/UI to update visually before blocking calculation
+    previewDebounceTimer = setTimeout(() => {
+      previewDebounceTimer = null;
+      updatePreviewImmediate();
+    }, 50);
   };
 
   // Set global reference for mouse handlers
@@ -3201,7 +5227,12 @@ function initPngImport() {
   // Update both canvases (original with crop overlay + preview)
   const updateAll = () => {
     renderOriginalWithCrop();
-    updatePreview();
+    // Force immediate update to ensure changes are applied
+    if (previewDebounceTimer) {
+      clearTimeout(previewDebounceTimer);
+      previewDebounceTimer = null;
+    }
+    updatePreviewImmediate();
   };
 
   // Crop input handlers
@@ -3343,7 +5374,40 @@ function initPngImport() {
   });
 
   ditheringSelect?.addEventListener('change', updatePreview);
-  formatSelect?.addEventListener('change', updatePreview);
+  formatSelect?.addEventListener('change', () => {
+    // Update size defaults based on format
+    const format = formatSelect?.value || 'scr';
+    let defaultW = 256, defaultH = 192;
+    if (format === 'bsc') {
+      defaultW = 384; defaultH = 304;
+    } else if (format === 'mono_2_3') {
+      defaultH = 128;
+    } else if (format === 'mono_1_3') {
+      defaultH = 64;
+    }
+    importSize.w = defaultW;
+    importSize.h = defaultH;
+    if (importElements.sizeW) {
+      importElements.sizeW.value = String(defaultW);
+      importElements.sizeW.max = String(format === 'bsc' ? 384 : 256);
+    }
+    if (importElements.sizeH) {
+      importElements.sizeH.value = String(defaultH);
+      importElements.sizeH.max = String(format === 'bsc' ? 304 : 192);
+    }
+    // Also reset offset for format change
+    importOffset.x = 0;
+    importOffset.y = 0;
+    if (importElements.offsetX) importElements.offsetX.value = '0';
+    if (importElements.offsetY) importElements.offsetY.value = '0';
+    // Show/hide 53c pattern selector
+    const patternRow = document.getElementById('import53cPatternRow');
+    if (patternRow) {
+      patternRow.style.display = format === '53c' ? 'flex' : 'none';
+    }
+    updatePreview();
+  });
+  importElements.pattern53c?.addEventListener('change', updatePreview);
   contrastSlider?.addEventListener('input', updatePreview);
   brightnessSlider?.addEventListener('input', updatePreview);
   saturationSlider?.addEventListener('input', function() {
@@ -3411,13 +5475,89 @@ function initPngImport() {
   });
 
   grayscaleCheckbox?.addEventListener('change', updatePreview);
-  monoOutputCheckbox?.addEventListener('change', updatePreview);
 
-  // Zoom control
+  // Function to update LAB checkbox state based on mono output
+  const updateLabVisibility = () => {
+    const labCheckbox = importElements.useLab;
+    if (labCheckbox) {
+      // Disable LAB checkbox when mono output is enabled (LAB has no effect in mono mode)
+      const isMono = monoOutputCheckbox?.checked || false;
+      labCheckbox.disabled = isMono;
+      if (labCheckbox.parentElement) {
+        labCheckbox.parentElement.style.opacity = isMono ? '0.5' : '';
+      }
+    }
+  };
+
+  monoOutputCheckbox?.addEventListener('change', () => {
+    updateLabVisibility();
+    updatePreview();
+  });
+
+  // Initialize LAB visibility on dialog setup
+  updateLabVisibility();
+
+  // Zoom control (only affects preview, not original)
   zoomSelect?.addEventListener('change', function() {
     importZoom = parseInt(this.value, 10);
-    updateAll();
+    // Force immediate update to ensure zoom changes are applied
+    if (previewDebounceTimer) {
+      clearTimeout(previewDebounceTimer);
+      previewDebounceTimer = null;
+    }
+    updatePreviewImmediate();
   });
+
+  // Grid checkbox
+  showGridCheckbox?.addEventListener('change', updatePreview);
+
+  // Offset controls
+  const onOffsetChange = () => {
+    importOffset.x = Math.max(0, Math.min(248, parseInt(importElements.offsetX?.value || '0', 10) || 0));
+    importOffset.y = Math.max(0, Math.min(184, parseInt(importElements.offsetY?.value || '0', 10) || 0));
+    updateAll();
+  };
+  importElements.offsetX?.addEventListener('change', onOffsetChange);
+  importElements.offsetY?.addEventListener('change', onOffsetChange);
+  importElements.offsetX?.addEventListener('input', onOffsetChange);
+  importElements.offsetY?.addEventListener('input', onOffsetChange);
+
+  // Size controls with aspect ratio lock
+  const getSourceAspect = () => importCrop.w / importCrop.h;
+  const format = () => formatSelect?.value || 'scr';
+  const maxW = () => format() === 'bsc' ? 384 : 256;
+  const maxH = () => format() === 'bsc' ? 304 : 192;
+
+  const onSizeWChange = () => {
+    const newW = Math.max(8, Math.min(maxW(), parseInt(importElements.sizeW?.value || String(maxW()), 10) || maxW()));
+    importSize.w = newW;
+    if (importElements.lockAspect?.checked && importCrop.h > 0) {
+      // Calculate height from width using source aspect ratio
+      const aspect = getSourceAspect();
+      const newH = Math.round(newW / aspect);
+      importSize.h = Math.max(8, Math.min(maxH(), newH));
+      if (importElements.sizeH) importElements.sizeH.value = String(importSize.h);
+    }
+    updateAll();
+  };
+
+  const onSizeHChange = () => {
+    const newH = Math.max(8, Math.min(maxH(), parseInt(importElements.sizeH?.value || String(maxH()), 10) || maxH()));
+    importSize.h = newH;
+    if (importElements.lockAspect?.checked && importCrop.w > 0) {
+      // Calculate width from height using source aspect ratio
+      const aspect = getSourceAspect();
+      const newW = Math.round(newH * aspect);
+      importSize.w = Math.max(8, Math.min(maxW(), newW));
+      if (importElements.sizeW) importElements.sizeW.value = String(importSize.w);
+    }
+    updateAll();
+  };
+
+  importElements.sizeW?.addEventListener('change', onSizeWChange);
+  importElements.sizeH?.addEventListener('change', onSizeHChange);
+  importElements.sizeW?.addEventListener('input', onSizeWChange);
+  importElements.sizeH?.addEventListener('input', onSizeHChange);
 
   // Palette control
   paletteSelect?.addEventListener('change', function() {
@@ -3461,26 +5601,72 @@ function initPngImport() {
     let outputFormat;
     let fileExt;
 
-    if (format === 'bsc' && importSourceCanvasBsc) {
+    if (format === '53c') {
+      const pattern = importElements.pattern53c?.value || 'checker';
+      outputData = convertTo53c(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, pattern);
+      outputFormat = FORMAT.ATTR_53C;
+      fileExt = '.53c';
+    } else if (format === 'bsc' && importSourceCanvasBsc) {
       outputData = convertToBsc(importSourceCanvasBsc, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.BSC;
       fileExt = '.bsc';
+    } else if (format === 'ifl') {
+      outputData = convertToIfl(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      outputFormat = FORMAT.IFL;
+      fileExt = '.ifl';
+    } else if (format === 'mlt') {
+      outputData = convertToMlt(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      outputFormat = FORMAT.MLT;
+      fileExt = '.mlt';
+    } else if (format === 'bmc4') {
+      outputData = convertToBmc4(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      outputFormat = FORMAT.BMC4;
+      fileExt = '.bmc4';
+    } else if (format === 'rgb3') {
+      outputData = convertToRgb3(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputFormat = FORMAT.RGB3;
+      fileExt = '.3';
+    } else if (format === 'mono_full') {
+      outputData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 3);
+      outputFormat = FORMAT.MONO_FULL;
+      fileExt = '.scr';
+    } else if (format === 'mono_2_3') {
+      outputData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 2);
+      outputFormat = FORMAT.MONO_2_3;
+      fileExt = '.scr';
+    } else if (format === 'mono_1_3') {
+      outputData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 1);
+      outputFormat = FORMAT.MONO_1_3;
+      fileExt = '.scr';
     } else {
       outputData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.SCR;
       fileExt = '.scr';
     }
 
-    // Set as current screen data
-    screenData = outputData;
-    currentFormat = outputFormat;
-
     // Generate filename from imported file
+    let newFileName;
     if (importFile) {
       const baseName = importFile.name.replace(/\.[^.]+$/, '');
-      currentFileName = baseName + fileExt;
+      newFileName = baseName + fileExt;
     } else {
-      currentFileName = 'imported' + fileExt;
+      newFileName = 'imported' + fileExt;
+    }
+
+    // Use multi-picture system if available
+    if (typeof addPicture === 'function') {
+      const result = addPicture(newFileName, outputFormat, outputData);
+      if (result < 0) {
+        // Max pictures reached - still update globals for direct use
+        screenData = outputData;
+        currentFormat = outputFormat;
+        currentFileName = newFileName;
+      }
+    } else {
+      // Editor not loaded - use direct assignment
+      screenData = outputData;
+      currentFormat = outputFormat;
+      currentFileName = newFileName;
     }
 
     // Close dialog and render
@@ -3498,9 +5684,19 @@ function initPngImport() {
     toggleFormatControlsVisibility();
     renderScreen();
 
-    // Enter editor mode
-    if (typeof toggleEditorMode === 'function') {
-      toggleEditorMode();
+    // Update tab bar if available
+    if (typeof updatePictureTabBar === 'function') {
+      updatePictureTabBar();
+    }
+
+    // Update editor state for imported file
+    if (typeof updateEditorState === 'function') {
+      updateEditorState();
+    }
+
+    // Initialize layer system for the imported image
+    if (typeof initLayers === 'function') {
+      initLayers();
     }
   });
 
@@ -3619,6 +5815,31 @@ function openImportDialog(file) {
       importCrop = { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
     }
     updateCropInputs();
+
+    // Reset offset to 0,0 for new image
+    importOffset = { x: 0, y: 0 };
+    if (importElements.offsetX) importElements.offsetX.value = '0';
+    if (importElements.offsetY) importElements.offsetY.value = '0';
+
+    // Reset size to defaults based on current format
+    const format = importElements.format?.value || 'scr';
+    let defaultW = 256, defaultH = 192;
+    if (format === 'bsc') {
+      defaultW = 384; defaultH = 304;
+    } else if (format === 'mono_2_3') {
+      defaultH = 128;
+    } else if (format === 'mono_1_3') {
+      defaultH = 64;
+    }
+    importSize = { w: defaultW, h: defaultH };
+    if (importElements.sizeW) {
+      importElements.sizeW.value = String(defaultW);
+      importElements.sizeW.max = String(format === 'bsc' ? 384 : 256);
+    }
+    if (importElements.sizeH) {
+      importElements.sizeH.value = String(defaultH);
+      importElements.sizeH.max = String(format === 'bsc' ? 304 : 192);
+    }
 
     // Apply crop and render source
     applyCropAndFit();

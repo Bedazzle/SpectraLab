@@ -1,4 +1,4 @@
-// SCA Editor v1.21.0 - Animation trimming, optimization, and frame deletion
+// SCA Editor v1.38.0 - Animation trimming, optimization, frame deletion, payload type 1 support
 // @ts-check
 "use strict";
 
@@ -132,6 +132,7 @@ function initScaEditor() {
   document.getElementById('editBackBtn')?.addEventListener('click', exitEditMode);
   document.getElementById('editSaveBtn')?.addEventListener('click', saveTrimmedSca);
   document.getElementById('exportScrBtn')?.addEventListener('click', exportToScrSeries);
+  document.getElementById('export53cBtn')?.addEventListener('click', exportTo53cSeries);
 
   document.getElementById('trimStartDec')?.addEventListener('click', () => adjustTrim('start', -1));
   document.getElementById('trimStartInc')?.addEventListener('click', () => adjustTrim('start', 1));
@@ -384,40 +385,73 @@ function renderScaFrameToCanvas(canvas, frameIndex) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
-  const frameOffset = scaHeader.frameDataStart + (frameIndex * SCA.FRAME_SIZE);
+  const frameOffset = scaHeader.frameDataStart + (frameIndex * scaHeader.frameSize);
   const imageData = ctx.createImageData(SCREEN.WIDTH, SCREEN.HEIGHT);
   const data = imageData.data;
 
-  // Process all three screen thirds
-  const sections = [
-    { bitmapAddr: 0, attrAddr: 6144, yOffset: 0 },
-    { bitmapAddr: 2048, attrAddr: 6400, yOffset: 64 },
-    { bitmapAddr: 4096, attrAddr: 6656, yOffset: 128 }
-  ];
+  if (scaHeader.payloadType === 1 && scaHeader.fillPattern) {
+    // Payload type 1: attribute-only frames with fill pattern
+    const fillPattern = scaHeader.fillPattern;
 
-  for (const section of sections) {
-    const { bitmapAddr, attrAddr, yOffset } = section;
+    for (let row = 0; row < SCREEN.CHAR_ROWS; row++) {
+      for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
+        const attrOffset = frameOffset + col + row * 32;
+        const attr = screenData[attrOffset];
+        const { inkRgb, paperRgb } = getColorsRgb(attr);
 
-    for (let line = 0; line < 8; line++) {
-      for (let row = 0; row < 8; row++) {
-        for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
-          const bitmapOffset = frameOffset + bitmapAddr + col + row * 32 + line * 256;
-          const byte = screenData[bitmapOffset];
+        // Draw 8x8 cell using fill pattern
+        const cellX = col * 8;
+        const cellY = row * 8;
 
-          const attrOffset = frameOffset + attrAddr + col + row * 32;
-          const attr = screenData[attrOffset];
-          const { inkRgb, paperRgb } = getColorsRgb(attr);
+        for (let py = 0; py < 8; py++) {
+          const patternByte = fillPattern[py];
+          for (let px = 0; px < 8; px++) {
+            const bit = 7 - px; // MSB first
+            const isInk = (patternByte & (1 << bit)) !== 0;
+            const rgb = isInk ? inkRgb : paperRgb;
 
-          const x = col * 8;
-          const y = yOffset + row * 8 + line;
-
-          for (let bit = 0; bit < 8; bit++) {
-            const rgb = isBitSet(byte, bit) ? inkRgb : paperRgb;
-            const pixelIndex = ((y * SCREEN.WIDTH) + x + bit) * 4;
+            const pixelIndex = ((cellY + py) * SCREEN.WIDTH + cellX + px) * 4;
             data[pixelIndex] = rgb[0];
             data[pixelIndex + 1] = rgb[1];
             data[pixelIndex + 2] = rgb[2];
             data[pixelIndex + 3] = 255;
+          }
+        }
+      }
+    }
+  } else {
+    // Payload type 0: full screen frames
+    // Process all three screen thirds
+    const sections = [
+      { bitmapAddr: 0, attrAddr: 6144, yOffset: 0 },
+      { bitmapAddr: 2048, attrAddr: 6400, yOffset: 64 },
+      { bitmapAddr: 4096, attrAddr: 6656, yOffset: 128 }
+    ];
+
+    for (const section of sections) {
+      const { bitmapAddr, attrAddr, yOffset } = section;
+
+      for (let line = 0; line < 8; line++) {
+        for (let row = 0; row < 8; row++) {
+          for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
+            const bitmapOffset = frameOffset + bitmapAddr + col + row * 32 + line * 256;
+            const byte = screenData[bitmapOffset];
+
+            const attrOffset = frameOffset + attrAddr + col + row * 32;
+            const attr = screenData[attrOffset];
+            const { inkRgb, paperRgb } = getColorsRgb(attr);
+
+            const x = col * 8;
+            const y = yOffset + row * 8 + line;
+
+            for (let bit = 0; bit < 8; bit++) {
+              const rgb = isBitSet(byte, bit) ? inkRgb : paperRgb;
+              const pixelIndex = ((y * SCREEN.WIDTH) + x + bit) * 4;
+              data[pixelIndex] = rgb[0];
+              data[pixelIndex + 1] = rgb[1];
+              data[pixelIndex + 2] = rgb[2];
+              data[pixelIndex + 3] = 255;
+            }
           }
         }
       }
@@ -520,10 +554,11 @@ function getTrimmedFrameCount() {
 function compareFrames(frameIndex1, frameIndex2) {
   if (!scaHeader || !screenData) return false;
 
-  const offset1 = scaHeader.frameDataStart + (frameIndex1 * SCA.FRAME_SIZE);
-  const offset2 = scaHeader.frameDataStart + (frameIndex2 * SCA.FRAME_SIZE);
+  const frameSize = scaHeader.frameSize;
+  const offset1 = scaHeader.frameDataStart + (frameIndex1 * frameSize);
+  const offset2 = scaHeader.frameDataStart + (frameIndex2 * frameSize);
 
-  for (let i = 0; i < SCA.FRAME_SIZE; i++) {
+  for (let i = 0; i < frameSize; i++) {
     if (screenData[offset1 + i] !== screenData[offset2 + i]) {
       return false;
     }
@@ -970,7 +1005,15 @@ function formatDuration(ms) {
  * @returns {number} File size in bytes
  */
 function calculateScaFileSize(frameCount) {
-  // Header (14 bytes) + delay table (frameCount bytes) + frames (frameCount * 6912 bytes)
+  if (!scaHeader) {
+    // Default to type 0 if no header
+    return SCA.HEADER_SIZE + frameCount + (frameCount * SCA.FRAME_SIZE);
+  }
+  if (scaHeader.payloadType === 1) {
+    // Type 1: Header + delays + fill pattern (8 bytes) + attributes per frame (768 bytes)
+    return SCA.HEADER_SIZE + frameCount + SCA.FILL_PATTERN_SIZE + (frameCount * SCA.ATTR_FRAME_SIZE);
+  }
+  // Type 0: Header + delays + full frames (6912 bytes)
   return SCA.HEADER_SIZE + frameCount + (frameCount * SCA.FRAME_SIZE);
 }
 
@@ -1263,9 +1306,18 @@ function saveTrimmedSca() {
     return;
   }
 
+  const isType1 = scaHeader.payloadType === 1;
+  const frameSize = scaHeader.frameSize;
+
   // Calculate new file size
-  // Header (14 bytes) + delay table (trimmedCount bytes) + frames (trimmedCount * 6912 bytes)
-  const newSize = SCA.HEADER_SIZE + trimmedCount + (trimmedCount * SCA.FRAME_SIZE);
+  let newSize;
+  if (isType1) {
+    // Type 1: Header + delays + fill pattern (8 bytes) + attributes per frame (768 bytes)
+    newSize = SCA.HEADER_SIZE + trimmedCount + SCA.FILL_PATTERN_SIZE + (trimmedCount * SCA.ATTR_FRAME_SIZE);
+  } else {
+    // Type 0: Header + delays + full frames (6912 bytes)
+    newSize = SCA.HEADER_SIZE + trimmedCount + (trimmedCount * SCA.FRAME_SIZE);
+  }
   const newData = new Uint8Array(newSize);
 
   // Copy and modify header
@@ -1280,25 +1332,31 @@ function saveTrimmedSca() {
   newData[8] = scaHeader.borderColor;
   newData[9] = trimmedCount & 0xFF;
   newData[10] = (trimmedCount >> 8) & 0xFF;
-  newData[11] = 0; // payload type
+  newData[11] = scaHeader.payloadType; // preserve payload type
   newData[12] = SCA.HEADER_SIZE & 0xFF; // payload offset
   newData[13] = (SCA.HEADER_SIZE >> 8) & 0xFF;
 
   // Copy delay table for remaining frames (skip optimized and manually deleted)
-  let delayOffset = SCA.HEADER_SIZE;
+  let offset = SCA.HEADER_SIZE;
   for (let i = editTrimStart; i < scaHeader.frameCount - editTrimEnd; i++) {
     if (!optimizedOutFrames.has(i) && !manuallyDeletedFrames.has(i)) {
-      newData[delayOffset++] = getFrameDelay(i);
+      newData[offset++] = getFrameDelay(i);
+    }
+  }
+
+  // For type 1, copy the fill pattern after delays
+  if (isType1 && scaHeader.fillPattern) {
+    for (let i = 0; i < SCA.FILL_PATTERN_SIZE; i++) {
+      newData[offset++] = scaHeader.fillPattern[i];
     }
   }
 
   // Copy frame data for remaining frames (skip optimized and manually deleted)
-  let frameOffset = SCA.HEADER_SIZE + trimmedCount;
   for (let i = editTrimStart; i < scaHeader.frameCount - editTrimEnd; i++) {
     if (!optimizedOutFrames.has(i) && !manuallyDeletedFrames.has(i)) {
-      const srcOffset = scaHeader.frameDataStart + (i * SCA.FRAME_SIZE);
-      for (let j = 0; j < SCA.FRAME_SIZE; j++) {
-        newData[frameOffset++] = screenData[srcOffset + j];
+      const srcOffset = scaHeader.frameDataStart + (i * frameSize);
+      for (let j = 0; j < frameSize; j++) {
+        newData[offset++] = screenData[srcOffset + j];
       }
     }
   }
@@ -1350,6 +1408,8 @@ async function exportToScrSeries() {
 
   const zip = new JSZip();
   const baseName = currentFileName.replace(/\.sca$/i, '');
+  const isType1 = scaHeader.payloadType === 1;
+  const frameSize = scaHeader.frameSize;
 
   // Determine padding width (3 digits for ≤1000 frames, 4 for more)
   const padWidth = trimmedCount > 1000 ? 4 : 3;
@@ -1360,9 +1420,37 @@ async function exportToScrSeries() {
     if (!optimizedOutFrames.has(i) && !manuallyDeletedFrames.has(i)) {
       // Create SCR data (6912 bytes)
       const scrData = new Uint8Array(SCA.FRAME_SIZE);
-      const srcOffset = scaHeader.frameDataStart + (i * SCA.FRAME_SIZE);
-      for (let j = 0; j < SCA.FRAME_SIZE; j++) {
-        scrData[j] = screenData[srcOffset + j];
+
+      if (isType1 && scaHeader.fillPattern) {
+        // Type 1: generate bitmap from fill pattern, copy attributes
+        const srcAttrOffset = scaHeader.frameDataStart + (i * frameSize);
+
+        // Generate bitmap using fill pattern for all character cells
+        // ZX Spectrum screen layout: 3 thirds, each with 8 character rows
+        for (let third = 0; third < 3; third++) {
+          const bitmapBase = third * 2048;
+          for (let charRow = 0; charRow < 8; charRow++) {
+            for (let line = 0; line < 8; line++) {
+              for (let col = 0; col < 32; col++) {
+                // ZX Spectrum interleaved address: base + col + charRow*32 + line*256
+                const bitmapOffset = bitmapBase + col + charRow * 32 + line * 256;
+                // Fill pattern is 8 bytes, one per line within the cell
+                scrData[bitmapOffset] = scaHeader.fillPattern[line];
+              }
+            }
+          }
+        }
+
+        // Copy attributes (768 bytes at offset 6144)
+        for (let j = 0; j < SCA.ATTR_FRAME_SIZE; j++) {
+          scrData[6144 + j] = screenData[srcAttrOffset + j];
+        }
+      } else {
+        // Type 0: direct copy
+        const srcOffset = scaHeader.frameDataStart + (i * frameSize);
+        for (let j = 0; j < SCA.FRAME_SIZE; j++) {
+          scrData[j] = screenData[srcOffset + j];
+        }
       }
 
       // Generate filename with zero-padded index
@@ -1381,6 +1469,78 @@ async function exportToScrSeries() {
     const a = document.createElement('a');
     a.href = url;
     a.download = `${baseName}_frames.zip`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    alert('Error creating ZIP file: ' + error.message);
+  }
+}
+
+/**
+ * Exports remaining frames as a series of 53c files in a ZIP
+ */
+async function exportTo53cSeries() {
+  if (!scaHeader || !screenData) return;
+
+  const trimmedCount = getTrimmedFrameCount();
+  if (trimmedCount === 0) {
+    alert('Cannot export: no frames remaining.');
+    return;
+  }
+
+  // Check if JSZip is available
+  if (typeof JSZip === 'undefined') {
+    alert('JSZip library not available for export.');
+    return;
+  }
+
+  const zip = new JSZip();
+  const baseName = currentFileName.replace(/\.sca$/i, '');
+  const isType1 = scaHeader.payloadType === 1;
+  const frameSize = scaHeader.frameSize;
+
+  // Determine padding width (3 digits for ≤1000 frames, 4 for more)
+  const padWidth = trimmedCount > 1000 ? 4 : 3;
+
+  // Export each non-deleted frame
+  let exportIndex = 0;
+  for (let i = editTrimStart; i < scaHeader.frameCount - editTrimEnd; i++) {
+    if (!optimizedOutFrames.has(i) && !manuallyDeletedFrames.has(i)) {
+      // Create 53c data (768 bytes - attributes only)
+      const attrData = new Uint8Array(SCA.ATTR_FRAME_SIZE);
+
+      if (isType1) {
+        // Type 1: frame data is already attributes only
+        const srcOffset = scaHeader.frameDataStart + (i * frameSize);
+        for (let j = 0; j < SCA.ATTR_FRAME_SIZE; j++) {
+          attrData[j] = screenData[srcOffset + j];
+        }
+      } else {
+        // Type 0: extract attributes from full frame (offset 6144)
+        const srcOffset = scaHeader.frameDataStart + (i * frameSize) + 6144;
+        for (let j = 0; j < SCA.ATTR_FRAME_SIZE; j++) {
+          attrData[j] = screenData[srcOffset + j];
+        }
+      }
+
+      // Generate filename with zero-padded index
+      const indexStr = String(exportIndex).padStart(padWidth, '0');
+      const fileName = `${baseName}_${indexStr}.53c`;
+
+      zip.file(fileName, attrData);
+      exportIndex++;
+    }
+  }
+
+  // Generate and download ZIP
+  try {
+    const content = await zip.generateAsync({ type: 'blob' });
+    const url = URL.createObjectURL(content);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${baseName}_attrs.zip`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
