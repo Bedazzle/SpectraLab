@@ -35,11 +35,20 @@ Edit standard 6912-byte .scr files with authentic ZX Spectrum color handling:
 - **Fill with patterns**: Fill tool uses selected brush - custom brush patterns tile across fill area for dithered fills
 - **Brush**: Sizes 1-16px, shapes: Square, Round, Horizontal, Vertical, Stroke (/), Back stroke (\) (applies to Pixel, Line, Rectangle, Fill, Eraser)
 - **Brush mode**: Replace (default), Set, Invert — persisted to localStorage
-- **Custom Brushes**: 5 user-defined custom brushes (capture from screen, max 64x64)
-  - Click=select, Shift+click=capture, Ctrl+click=clear
-  - Rotate 90° CW, Mirror horizontal, Mirror vertical
+- **Custom Brushes & Tilesets**: Tabbed interface with Custom, ROM, and user-loaded tabs
+  - Custom tab: 12 user-defined brush slots (capture from screen, max 64x64)
+    - Click=select, Shift+click=capture, Ctrl+click=clear
+    - Rotate 90° CW (R), Mirror horizontal (H), Mirror vertical (V)
+  - ROM tab: Current font as 96 selectable 8x8 tiles
+  - Load tilesets via "+" button: 768-byte (96 tiles) or 2048-byte (256 tiles) formats
+  - Grab tileset from screen via crosshair button: select area, tiles grabbed L-to-R
+  - Load .slb brush sets as new editable tabs
+  - Click any tile to use as brush with all drawing tools
+  - Up to 8 tabs total, user tabs persist in localStorage
 - **Copy/Paste**: Select tool (S) to drag-select a region (auto-copies), Paste (Ctrl+V) to place with preview
-  - Snap modes: Grid, Subgrid (use View tab sizes), Zero (tile from origin), Brush (tile from first paste), Off
+  - Snap modes: Grid, Grid Center, Subgrid, Subgrid Center, Zero, Brush, Off
+  - Grid/Subgrid: Snap top-left to grid boundaries
+  - Grid Center/Subgrid Center: Center brush on grid cells (for aligned tile stamping)
 - **Layers**: Add/remove/reorder layers with visibility toggles
   - Background layer is always opaque; upper layers support transparency
   - Shared attributes per cell across all layers (ZX Spectrum constraint)

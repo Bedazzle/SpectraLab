@@ -1,5 +1,27 @@
 # SpectraLab Version History
 
+## v1.42.0
+- Tileset support integrated with custom brushes
+  - Tabbed interface in Custom Brushes section: Custom, ROM, and user-loaded tabs
+  - ROM tab: Shows current font as 96 tiles (8x8 each), updates when font changes
+  - Load tilesets via "+" button or load button:
+    - 768-byte files: 96 tiles in linear format (tile T, row R at offset T*8+R)
+    - 2048-byte files: 256 tiles in columnar/interleaved format (optimized for Z80)
+    - .slb files: Load as editable brush set tabs
+  - Grab tileset from screen via crosshair button:
+    - Select rectangular area (snaps to 8px grid)
+    - Tiles grabbed left-to-right, top-to-bottom from selection
+    - Creates 96-tile set if ≤96 tiles selected, 256-tile set otherwise
+    - Remaining slots filled with empty tiles
+  - Click any tile to use as brush with all drawing tools
+  - Rotation (R) and mirror (H/V) work on selected tiles
+  - User tabs persist in localStorage, closeable with × button
+  - Maximum 8 tabs total (Custom + ROM + up to 6 user tabs)
+- New snap modes: Grid Center and Subgrid Center
+  - Centers brush on grid/subgrid cells instead of aligning top-left corner
+  - For 8px grid with 8x8 tile: top-left aligns at 0,8,16... instead of -4,4,12...
+- Fixed: Gigascreen replace mode with tiles/custom brushes painted solid square instead of pattern
+
 ## v1.41.0
 - Gigascreen (.img) format editing
   - Full editing support with live blended preview

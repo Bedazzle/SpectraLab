@@ -981,6 +981,96 @@
     border-color: #4a9eff;
   }
 
+  /* Brush tab bar */
+  .brush-tab-bar {
+    display: flex;
+    gap: 2px;
+    margin-top: 4px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .brush-tab {
+    font-size: 9px;
+    padding: 2px 6px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 3px 3px 0 0;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    white-space: nowrap;
+    max-width: 70px;
+  }
+  .brush-tab:hover {
+    background: var(--bg-secondary);
+  }
+  .brush-tab.active {
+    background: var(--bg-primary);
+    border-color: var(--border-primary);
+    color: var(--text-primary);
+    border-bottom-color: var(--bg-primary);
+  }
+  .brush-tab-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 50px;
+  }
+  .brush-tab-close {
+    font-size: 10px;
+    line-height: 1;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    padding: 0 2px;
+  }
+  .brush-tab-close:hover {
+    color: #ff6b6b;
+  }
+  .brush-tab-add {
+    font-size: 11px;
+    padding: 2px 6px;
+    border: 1px dashed var(--border-secondary);
+    border-radius: 3px;
+    background: transparent;
+    color: var(--text-tertiary);
+    cursor: pointer;
+  }
+  .brush-tab-add:hover {
+    border-color: var(--border-primary);
+    color: var(--text-primary);
+  }
+
+  /* Tile grid */
+  .tile-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    max-height: 140px;
+    overflow-y: auto;
+    padding: 2px;
+    background: var(--bg-tertiary);
+    border-radius: 2px;
+  }
+  .tile-cell {
+    width: 18px;
+    height: 18px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 1px;
+    cursor: pointer;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    background: #000;
+    flex-shrink: 0;
+  }
+  .tile-cell:hover {
+    border-color: var(--border-primary);
+  }
+  .tile-cell.selected {
+    border-color: #4a9eff;
+    box-shadow: 0 0 2px #4a9eff;
+  }
+
   .barcode-slot {
     width: 24px;
     height: 64px;
@@ -1577,9 +1667,11 @@
               <div style="display: flex; gap: 8px; align-items: center;">
                 <label style="font-size: 11px; margin-bottom: 0; display: flex; align-items: center; gap: 3px;">
                   Snap:
-                  <select id="editorSnapMode" style="font-size: 11px; padding: 2px;">
-                    <option value="grid" selected>Grid</option>
-                    <option value="subgrid">Subgrid</option>
+                  <select id="editorSnapMode" style="font-size: 11px; padding: 2px; width: 58px;">
+                    <option value="grid-center" selected>Grid</option>
+                    <option value="grid">Grid×</option>
+                    <option value="subgrid-center">Sub</option>
+                    <option value="subgrid">Sub×</option>
                     <option value="zero">Zero</option>
                     <option value="brush">Brush</option>
                     <option value="off">Off</option>
@@ -1587,14 +1679,14 @@
                 </label>
                 <label style="font-size: 11px; margin-bottom: 0; display: flex; align-items: center; gap: 3px;">
                   Mode:
-                  <select id="brushPaintMode" style="font-size: 11px; padding: 2px;" title="Brush paint mode">
+                  <select id="brushPaintMode" style="font-size: 11px; padding: 2px; width: 68px;" title="Brush paint mode">
                     <option value="set">Set</option>
                     <option value="invert">Invert</option>
                     <option value="replace" selected>Replace</option>
                     <option value="recolor">Recolor</option>
                     <option value="retouch">Retouch</option>
                     <option value="masked">Masked</option>
-                    <option value="masked+">Masked+</option>
+                    <option value="masked+">Mask+</option>
                   </select>
                 </label>
               </div>
@@ -1637,27 +1729,33 @@
                     <span style="font-size: 10px; color: var(--text-tertiary);">CUSTOM BRUSHES</span>
                   </div>
                   <div style="display: flex; gap: 2px;">
-                    <button id="saveBrushesBtn" class="editor-tool-btn" title="Save custom brushes (.slb)" style="padding: 1px 4px; font-size: 10px;">💾</button>
-                    <button id="loadBrushesBtn" class="editor-tool-btn" title="Load custom brushes (.slb)" style="padding: 1px 4px; font-size: 10px;">📂</button>
+                    <button id="saveBrushesBtn" class="editor-tool-btn" title="Save current tab (brushes .slb / tileset .768)" style="padding: 1px 4px; font-size: 10px;">💾</button>
+                    <button id="loadBrushesBtn" class="editor-tool-btn" title="Load brushes (.slb) or tileset (.768/.bin)" style="padding: 1px 4px; font-size: 10px;">📂</button>
                   </div>
                 </div>
-                <input type="file" id="brushesFileInput" accept=".slb" style="display: none;">
+                <input type="file" id="brushesFileInput" accept=".slb,.768,.ch8,.bin" style="display: none;">
                 <div id="customBrushControls" style="display: none;">
-                  <div style="display: flex; gap: 2px; margin-top: 4px;">
-                    <canvas id="customBrush0" class="custom-brush-slot" width="64" height="64" data-slot="0" title="Custom brush 1 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
-                    <canvas id="customBrush1" class="custom-brush-slot" width="64" height="64" data-slot="1" title="Custom brush 2 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
-                    <canvas id="customBrush2" class="custom-brush-slot" width="64" height="64" data-slot="2" title="Custom brush 3 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
-                    <canvas id="customBrush3" class="custom-brush-slot" width="64" height="64" data-slot="3" title="Custom brush 4 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
-                    <canvas id="customBrush4" class="custom-brush-slot" width="64" height="64" data-slot="4" title="Custom brush 5 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
-                    <canvas id="customBrush5" class="custom-brush-slot" width="64" height="64" data-slot="5" title="Custom brush 6 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
-                  </div>
-                  <div style="display: flex; gap: 2px; margin-top: 2px;">
-                    <canvas id="customBrush6" class="custom-brush-slot" width="64" height="64" data-slot="6" title="Custom brush 7 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
-                    <canvas id="customBrush7" class="custom-brush-slot" width="64" height="64" data-slot="7" title="Custom brush 8 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
-                    <canvas id="customBrush8" class="custom-brush-slot" width="64" height="64" data-slot="8" title="Custom brush 9 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
-                    <canvas id="customBrush9" class="custom-brush-slot" width="64" height="64" data-slot="9" title="Custom brush 10 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
-                    <canvas id="customBrush10" class="custom-brush-slot" width="64" height="64" data-slot="10" title="Custom brush 11 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
-                    <canvas id="customBrush11" class="custom-brush-slot" width="64" height="64" data-slot="11" title="Custom brush 12 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                  <div id="brushTabBar" class="brush-tab-bar"></div>
+                  <div id="brushTabContent" style="margin-top: 2px;">
+                    <div id="brushSlotsContainer">
+                      <div style="display: flex; gap: 2px; margin-top: 4px;">
+                        <canvas id="customBrush0" class="custom-brush-slot" width="64" height="64" data-slot="0" title="Custom brush 1 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                        <canvas id="customBrush1" class="custom-brush-slot" width="64" height="64" data-slot="1" title="Custom brush 2 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                        <canvas id="customBrush2" class="custom-brush-slot" width="64" height="64" data-slot="2" title="Custom brush 3 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                        <canvas id="customBrush3" class="custom-brush-slot" width="64" height="64" data-slot="3" title="Custom brush 4 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                        <canvas id="customBrush4" class="custom-brush-slot" width="64" height="64" data-slot="4" title="Custom brush 5 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                        <canvas id="customBrush5" class="custom-brush-slot" width="64" height="64" data-slot="5" title="Custom brush 6 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                      </div>
+                      <div style="display: flex; gap: 2px; margin-top: 2px;">
+                        <canvas id="customBrush6" class="custom-brush-slot" width="64" height="64" data-slot="6" title="Custom brush 7 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                        <canvas id="customBrush7" class="custom-brush-slot" width="64" height="64" data-slot="7" title="Custom brush 8 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                        <canvas id="customBrush8" class="custom-brush-slot" width="64" height="64" data-slot="8" title="Custom brush 9 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                        <canvas id="customBrush9" class="custom-brush-slot" width="64" height="64" data-slot="9" title="Custom brush 10 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                        <canvas id="customBrush10" class="custom-brush-slot" width="64" height="64" data-slot="10" title="Custom brush 11 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                        <canvas id="customBrush11" class="custom-brush-slot" width="64" height="64" data-slot="11" title="Custom brush 12 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                      </div>
+                    </div>
+                    <div id="tileGridContainer" class="tile-grid" style="display: none;"></div>
                   </div>
                 </div>
               </div>

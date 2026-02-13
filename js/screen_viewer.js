@@ -825,6 +825,10 @@ async function loadRomFont() {
     currentFontName = 'ROM';
     updateFontInfo();
     renderScreen();
+    // Update ROM brush tab if editor is initialized
+    if (typeof updateRomBrushTab === 'function') {
+      updateRomBrushTab();
+    }
   } catch (error) {
     console.error('Error loading ROM font:', error);
     // Create a basic placeholder font (all zeros = blank)
@@ -853,6 +857,10 @@ function loadFontFile(file) {
         currentFontName = file.name;
         updateFontInfo();
         renderScreen();
+        // Update ROM brush tab if editor is initialized
+        if (typeof updateRomBrushTab === 'function') {
+          updateRomBrushTab();
+        }
       } else {
         alert(`Invalid font file size: ${data.length} bytes. Expected at least 768 bytes.`);
       }

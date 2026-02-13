@@ -76,8 +76,29 @@ let brushShape = 'square';
 /** @type {Array<{width:number, height:number, data:Uint8Array, mask?:Uint8Array}|null>} - 12 custom brush bitmaps with optional transparency mask (variable size, max 64×64) */
 let customBrushes = [null, null, null, null, null, null, null, null, null, null, null, null];
 
-/** @type {number} - Active custom brush slot (0-11), or -1 for built-in shapes */
+/** @type {number} - Active custom brush slot (0-11), or -1 for built-in shapes, or -2 for tile brush */
 let activeCustomBrush = -1;
+
+/**
+ * @typedef {Object} BrushTab
+ * @property {string} name - Tab display name
+ * @property {'brushset'|'tileset'} type - Tab type
+ * @property {Uint8Array} [data] - Tileset data (for tileset type)
+ * @property {number} [tileCount] - Number of tiles (for tileset type)
+ * @property {Array<{width:number, height:number, data:Uint8Array, mask?:Uint8Array}|null>} [brushes] - Brush array (for brushset type)
+ */
+
+/** @type {Array<BrushTab>} - Array of brush/tileset tabs */
+let brushTabs = [];
+
+/** @type {number} - Active brush tab index (0=Custom, 1=ROM, 2+=user loaded) */
+let activeBrushTab = 0;
+
+/** @type {number} - Selected tile index in current tileset (-1 = none) */
+let selectedTileIndex = -1;
+
+/** @type {{width:number, height:number, data:Uint8Array}|null} - Currently active tile brush */
+let activeTileBrush = null;
 
 /** @type {boolean} - True when waiting for click(s) to capture region */
 let capturingBrush = false;
@@ -87,6 +108,12 @@ let captureSlot = 0;
 
 /** @type {{x:number, y:number}|null} - First corner of brush capture rectangle */
 let captureStartPoint = null;
+
+/** @type {boolean} - True when capturing tileset from screen */
+let capturingTileset = false;
+
+/** @type {{x:number, y:number}|null} - First corner of tileset capture rectangle */
+let tilesetCaptureStart = null;
 
 /** @type {string} - Custom brush paint mode: 'set', 'invert', 'replace' */
 let brushPaintMode = localStorage.getItem('spectraLabBrushPaintMode') || 'replace';
@@ -607,8 +634,8 @@ let selectionEndPoint = null;
 /** @type {boolean} - Dragging to define selection */
 let isSelecting = false;
 
-/** @type {string} - Snap mode: 'grid', 'subgrid', 'zero', 'brush', 'off' */
-let snapMode = localStorage.getItem('spectraLabSnapMode') || 'grid';
+/** @type {string} - Snap mode: 'grid', 'grid-center', 'subgrid', 'subgrid-center', 'zero', 'brush', 'off' */
+let snapMode = localStorage.getItem('spectraLabSnapMode') || 'grid-center';
 
 /** @type {{x:number, y:number}|null} - Origin for 'brush' snap mode (set on first paste) */
 let brushSnapOrigin = null;
@@ -699,12 +726,20 @@ function snapPastePosition(x, y) {
 function snapDrawCoords(x, y) {
   if (!isSnapActive()) return { x, y };
 
-  const hasBrush = activeCustomBrush >= 0 && customBrushes[activeCustomBrush];
+  const brush = getActiveBrush();
+  const hasBrush = brush !== null;
 
-  if (snapMode === 'grid' || (!hasBrush && snapMode !== 'subgrid')) {
+  if (snapMode === 'grid' || (!hasBrush && snapMode !== 'subgrid' && snapMode !== 'subgrid-center' && snapMode !== 'grid-center')) {
     // Use gridSize from View tab (default 8)
     const gs = (typeof gridSize !== 'undefined' && gridSize > 0) ? gridSize : 8;
     return { x: Math.floor(x / gs) * gs, y: Math.floor(y / gs) * gs };
+  }
+
+  if (snapMode === 'grid-center') {
+    // Snap to grid cell centers (brush center aligns with grid cell center)
+    const gs = (typeof gridSize !== 'undefined' && gridSize > 0) ? gridSize : 8;
+    const halfGs = Math.floor(gs / 2);
+    return { x: Math.floor(x / gs) * gs + halfGs, y: Math.floor(y / gs) * gs + halfGs };
   }
 
   if (snapMode === 'subgrid') {
@@ -713,8 +748,15 @@ function snapDrawCoords(x, y) {
     return { x: Math.floor(x / sgs) * sgs, y: Math.floor(y / sgs) * sgs };
   }
 
-  const bw = customBrushes[activeCustomBrush].width;
-  const bh = customBrushes[activeCustomBrush].height;
+  if (snapMode === 'subgrid-center') {
+    // Snap to subgrid cell centers
+    const sgs = (typeof subgridSize !== 'undefined' && subgridSize > 0) ? subgridSize : 4;
+    const halfSgs = Math.floor(sgs / 2);
+    return { x: Math.floor(x / sgs) * sgs + halfSgs, y: Math.floor(y / sgs) * sgs + halfSgs };
+  }
+
+  const bw = brush.width;
+  const bh = brush.height;
 
   if (snapMode === 'zero') {
     return { x: Math.floor(x / bw) * bw, y: Math.floor(y / bh) * bh };
@@ -3359,8 +3401,8 @@ function loadWorkspace(file) {
 function stampBrush(cx, cy, isInk) {
   // Custom brush: stamp variable-size pattern centered on cursor
   // Skip this path in masked mode - custom brush is only used as mask pattern, not brush shape
-  if (brushShape === 'custom' && activeCustomBrush >= 0 && customBrushes[activeCustomBrush] && brushPaintMode !== 'masked' && brushPaintMode !== 'masked+') {
-    const brush = customBrushes[activeCustomBrush];
+  const brush = getActiveBrush();
+  if (brushShape === 'custom' && brush && brushPaintMode !== 'masked' && brushPaintMode !== 'masked+') {
     const bw = brush.width;
     const bh = brush.height;
     const bytesPerRow = Math.ceil(bw / 8);
@@ -3397,12 +3439,8 @@ function stampBrush(cx, cy, isInk) {
           }
         } else if (brushPaintMode === 'replace') {
           // Replace: overwrite every visible pixel in the brush
-          // Gigascreen: use mouse button for color selection, brush pattern for shape
-          if (currentFormat === FORMAT.GIGASCREEN) {
-            setPixel(screenData, px, py, isInk);
-          } else {
-            setPixel(screenData, px, py, brushBit);
-          }
+          // brushBit determines ink/paper at each pixel position
+          setPixel(screenData, px, py, brushBit);
         } else if (brushPaintMode === 'invert') {
           // Invert: toggle screen pixel where brush bit is set
           if (brushBit) {
@@ -3525,8 +3563,8 @@ function stampEraser(cx, cy) {
   const height = getFormatHeight();
 
   // Custom brush eraser
-  if (brushShape === 'custom' && activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
-    const brush = customBrushes[activeCustomBrush];
+  const brush = getActiveBrush();
+  if (brushShape === 'custom' && brush) {
     const bw = brush.width;
     const bh = brush.height;
     const bytesPerRow = Math.ceil(bw / 8);
@@ -3620,10 +3658,10 @@ function drawEraser(x, y) {
  * @param {number} y1
  */
 function drawEraserLine(x0, y0, x1, y1) {
-  const hasCustomBrush = brushShape === 'custom' && activeCustomBrush >= 0 && customBrushes[activeCustomBrush];
+  const brush = getActiveBrush();
+  const hasCustomBrush = brushShape === 'custom' && brush;
 
   if (hasCustomBrush) {
-    const brush = customBrushes[activeCustomBrush];
     const ldx = x1 - x0;
     const ldy = y1 - y0;
     const dist = Math.sqrt(ldx * ldx + ldy * ldy);
@@ -3694,10 +3732,10 @@ function drawLine(x0, y0, x1, y1, isInk) {
     // Skip to Bresenham below
   } else {
     // For custom brushes in non-masked modes, step at brush-sized intervals
-    const hasCustomBrush = brushShape === 'custom' && activeCustomBrush >= 0 && customBrushes[activeCustomBrush];
+    const brush = getActiveBrush();
+    const hasCustomBrush = brushShape === 'custom' && brush;
     if (hasCustomBrush) {
       // Step at brush-sized intervals to avoid overlapping stamps destroying each other in replace mode
-      const brush = customBrushes[activeCustomBrush];
       const ldx = x1 - x0;
       const ldy = y1 - y0;
       const dist = Math.sqrt(ldx * ldx + ldy * ldy);
@@ -4089,7 +4127,8 @@ function drawGradient(x0, y0, x1, y1, isInk) {
   const reverse = gradientReverse ? !isInk : isInk;
 
   // Check for custom brush
-  const hasCustomBrush = brushShape === 'custom' && activeCustomBrush >= 0 && customBrushes[activeCustomBrush];
+  const brush = getActiveBrush();
+  const hasCustomBrush = brushShape === 'custom' && brush;
   const isMasked = brushPaintMode === 'masked' || brushPaintMode === 'masked+';
 
   // For masked+ mode, set stroke origin to gradient start
@@ -4136,7 +4175,6 @@ function drawGradient(x0, y0, x1, y1, isInk) {
 
   // Custom brush gradient: stamp brush pattern at gradient-determined positions
   if (hasCustomBrush && !isMasked) {
-    const brush = customBrushes[activeCustomBrush];
     const bw = brush.width;
     const bh = brush.height;
     const bytesPerRow = Math.ceil(bw / 8);
@@ -4417,8 +4455,8 @@ function getPixelState(x, y) {
  */
 function getBrushPatternAt(x, y) {
   // Custom brush: tile the pattern
-  if (brushShape === 'custom' && activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
-    const brush = customBrushes[activeCustomBrush];
+  const brush = getActiveBrush();
+  if (brushShape === 'custom' && brush) {
     const bw = brush.width;
     const bh = brush.height;
     const bytesPerRow = Math.ceil(bw / 8);
@@ -4448,9 +4486,9 @@ function getBrushPatternAt(x, y) {
  * @returns {boolean|null} true if mask has pixel set, false if not, null if transparent
  */
 function getMaskPatternAt(x, y) {
-  // Use custom brush as mask pattern if available
-  if (activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
-    const brush = customBrushes[activeCustomBrush];
+  // Use custom brush or tile brush as mask pattern if available
+  const brush = getActiveBrush();
+  if (brush) {
     const bw = brush.width;
     const bh = brush.height;
     const bytesPerRow = Math.ceil(bw / 8);
@@ -5592,6 +5630,22 @@ function _handleEditorMouseDownCoords(event, coords) {
     return;
   }
 
+  // Intercept for tileset capture (two-click rectangle selection)
+  if (capturingTileset) {
+    if (!tilesetCaptureStart) {
+      // First click: set start corner (snap to 8px grid)
+      tilesetCaptureStart = { x: coords.x, y: coords.y };
+      const infoEl = document.getElementById('editorPositionInfo');
+      if (infoEl) {
+        infoEl.innerHTML = 'Click second corner (will snap to 8px grid)';
+      }
+    } else {
+      // Second click: capture the rectangle as tileset
+      finishTilesetCapture(tilesetCaptureStart.x, tilesetCaptureStart.y, coords.x, coords.y);
+    }
+    return;
+  }
+
   // Alt+click: color picker (eyedropper) - picks both ink and paper from cell
   // Skip for tools that use Alt as modifier (rect, circle, gradient use Alt for "from center")
   const toolUsesAlt = currentTool === EDITOR.TOOL_RECT ||
@@ -5843,6 +5897,13 @@ function _handleEditorMouseMoveCoords(event, coords) {
   if (capturingBrush && captureStartPoint && coords) {
     editorRender();
     drawCapturePreview(captureStartPoint.x, captureStartPoint.y, coords.x, coords.y);
+    return;
+  }
+
+  // Show tileset capture selection rectangle preview
+  if (capturingTileset && tilesetCaptureStart && coords) {
+    editorRender();
+    drawTilesetCapturePreview(tilesetCaptureStart.x, tilesetCaptureStart.y, coords.x, coords.y);
     return;
   }
 
@@ -8006,8 +8067,8 @@ function drawBrushPreview() {
   }
 
   // Check for custom brush
-  if (brushShape === 'custom' && activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
-    const brush = customBrushes[activeCustomBrush];
+  const brush = getActiveBrush();
+  if (brushShape === 'custom' && brush) {
     const hw = Math.floor(brush.width / 2);
     const hh = Math.floor(brush.height / 2);
     const hasMask = brush.mask && brush.mask.length > 0;
@@ -8290,6 +8351,8 @@ function setBrushShape(shape) {
   // In masked mode, preserve activeCustomBrush as the mask pattern source
   if (brushPaintMode !== 'masked' && brushPaintMode !== 'masked+') {
     activeCustomBrush = -1;
+    // Clear tile brush selection
+    clearTileBrushSelection();
     // Deselect custom brush slots only when not in masked mode
     (customBrushSlots || document.querySelectorAll('.custom-brush-slot')).forEach(el => {
       el.classList.remove('selected');
@@ -11130,6 +11193,156 @@ function finishBrushCapture(x0, y0, x1, y1) {
 }
 
 /**
+ * Starts capturing a tileset from a rectangular region on the screen
+ */
+function startTilesetCapture() {
+  if (brushTabs.length >= 8) {
+    alert('Maximum 8 tabs allowed. Please close a tab first.');
+    return;
+  }
+  capturingTileset = true;
+  tilesetCaptureStart = null;
+  const infoEl = document.getElementById('editorPositionInfo');
+  if (infoEl) {
+    infoEl.innerHTML = 'Click first corner of tileset region (will snap to 8px grid)';
+  }
+}
+
+/**
+ * Finishes capturing a tileset from a rectangular region
+ * @param {number} x0 - First corner X
+ * @param {number} y0 - First corner Y
+ * @param {number} x1 - Second corner X
+ * @param {number} y1 - Second corner Y
+ */
+function finishTilesetCapture(x0, y0, x1, y1) {
+  if (!screenData || !isFormatEditable()) return;
+
+  // Normalize and snap to 8px grid
+  let left = Math.floor(Math.min(x0, x1) / 8) * 8;
+  let top = Math.floor(Math.min(y0, y1) / 8) * 8;
+  let right = Math.ceil((Math.max(x0, x1) + 1) / 8) * 8 - 1;
+  let bottom = Math.ceil((Math.max(y0, y1) + 1) / 8) * 8 - 1;
+
+  // Clamp to screen bounds
+  const screenWidth = getFormatWidth();
+  const screenHeight = getFormatHeight();
+  left = Math.max(0, left);
+  top = Math.max(0, top);
+  right = Math.min(screenWidth - 1, right);
+  bottom = Math.min(screenHeight - 1, bottom);
+
+  // Calculate dimensions in tiles
+  const pixelWidth = right - left + 1;
+  const pixelHeight = bottom - top + 1;
+  const tilesX = Math.floor(pixelWidth / 8);
+  const tilesY = Math.floor(pixelHeight / 8);
+  const totalTiles = tilesX * tilesY;
+
+  if (totalTiles === 0) {
+    capturingTileset = false;
+    tilesetCaptureStart = null;
+    editorRender(); // Clear the capture preview rectangle
+    const infoEl = document.getElementById('editorPositionInfo');
+    if (infoEl) infoEl.innerHTML = '';
+    return;
+  }
+
+  // Determine tileset size: 96 if <=96 tiles, 256 otherwise
+  const tileCount = totalTiles > 96 ? 256 : 96;
+  const tilesetData = new Uint8Array(tileCount * 8);
+
+  // Grab tiles from top-left, reading horizontally
+  let tileIdx = 0;
+  for (let ty = 0; ty < tilesY && tileIdx < tileCount; ty++) {
+    for (let tx = 0; tx < tilesX && tileIdx < tileCount; tx++) {
+      const tileLeft = left + tx * 8;
+      const tileTop = top + ty * 8;
+
+      // Read 8 rows of 8 pixels for this tile
+      for (let row = 0; row < 8; row++) {
+        let byte = 0;
+        for (let bit = 0; bit < 8; bit++) {
+          const px = tileLeft + bit;
+          const py = tileTop + row;
+          if (getPixel(screenData, px, py)) {
+            byte |= (0x80 >> bit);
+          }
+        }
+        tilesetData[tileIdx * 8 + row] = byte;
+      }
+      tileIdx++;
+    }
+  }
+
+  // Create new tileset tab
+  const name = 'Grab' + (brushTabs.length - 1);
+  brushTabs.push({
+    name: name.substring(0, 10),
+    type: 'tileset',
+    data: tilesetData,
+    tileCount: tileCount
+  });
+
+  capturingTileset = false;
+  tilesetCaptureStart = null;
+
+  saveBrushTabsToStorage();
+  selectBrushTab(brushTabs.length - 1);
+  updateBrushTabBar();
+  editorRender(); // Clear the capture preview rectangle
+
+  const infoEl = document.getElementById('editorPositionInfo');
+  if (infoEl) {
+    infoEl.innerHTML = `Captured ${Math.min(totalTiles, tileCount)} tiles (${tilesX}\u00d7${tilesY})`;
+  }
+}
+
+/**
+ * Draws tileset capture selection rectangle preview on canvas
+ * @param {number} x0
+ * @param {number} y0
+ * @param {number} x1
+ * @param {number} y1
+ */
+function drawTilesetCapturePreview(x0, y0, x1, y1) {
+  const ctx = screenCtx || (screenCanvas && screenCanvas.getContext('2d'));
+  if (!ctx) return;
+
+  // Snap to 8px grid
+  const left = Math.floor(Math.min(x0, x1) / 8) * 8;
+  const top = Math.floor(Math.min(y0, y1) / 8) * 8;
+  const right = Math.ceil((Math.max(x0, x1) + 1) / 8) * 8;
+  const bottom = Math.ceil((Math.max(y0, y1) + 1) / 8) * 8;
+  const w = right - left;
+  const h = bottom - top;
+
+  const tilesX = w / 8;
+  const tilesY = h / 8;
+  const totalTiles = tilesX * tilesY;
+
+  const borderPixels = getMainScreenOffset();
+
+  ctx.strokeStyle = 'rgba(255, 200, 0, 0.9)';
+  ctx.lineWidth = Math.max(1, zoom / 2);
+  ctx.setLineDash([4, 4]);
+  ctx.strokeRect(
+    borderPixels + left * zoom,
+    borderPixels + top * zoom,
+    w * zoom,
+    h * zoom
+  );
+  ctx.setLineDash([]);
+
+  // Show tile count in info
+  const infoEl = document.getElementById('editorPositionInfo');
+  if (infoEl) {
+    const tileCount = totalTiles > 96 ? 256 : 96;
+    infoEl.innerHTML = `${tilesX}\u00d7${tilesY} = ${totalTiles} tiles \u2192 ${tileCount}-tile set`;
+  }
+}
+
+/**
  * Draws capture selection rectangle preview on canvas
  * @param {number} x0
  * @param {number} y0
@@ -11162,8 +11375,16 @@ function drawCapturePreview(x0, y0, x1, y1) {
  * Rotates the active custom brush 90 degrees clockwise
  */
 function rotateCustomBrush() {
-  if (activeCustomBrush < 0 || !customBrushes[activeCustomBrush]) return;
-  const brush = customBrushes[activeCustomBrush];
+  // Support both custom brush slots and tile brushes
+  let brush;
+  const isTileBrush = activeCustomBrush === -2 && activeTileBrush;
+  if (isTileBrush) {
+    brush = activeTileBrush;
+  } else if (activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
+    brush = customBrushes[activeCustomBrush];
+  } else {
+    return;
+  }
   const ow = brush.width;
   const oh = brush.height;
   const oldBpr = Math.ceil(ow / 8);
@@ -11200,16 +11421,27 @@ function rotateCustomBrush() {
   if (hasMask && newMask) {
     brush.mask = newMask;
   }
-  renderCustomBrushPreview(activeCustomBrush);
-  saveCustomBrushes();
+  // Only update preview and save for custom brush slots, not tile brushes
+  if (!isTileBrush) {
+    renderCustomBrushPreview(activeCustomBrush);
+    saveCustomBrushes();
+  }
 }
 
 /**
  * Mirrors the active custom brush horizontally (left-right flip)
  */
 function mirrorCustomBrushH() {
-  if (activeCustomBrush < 0 || !customBrushes[activeCustomBrush]) return;
-  const brush = customBrushes[activeCustomBrush];
+  // Support both custom brush slots and tile brushes
+  let brush;
+  const isTileBrush = activeCustomBrush === -2 && activeTileBrush;
+  if (isTileBrush) {
+    brush = activeTileBrush;
+  } else if (activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
+    brush = customBrushes[activeCustomBrush];
+  } else {
+    return;
+  }
   const bw = brush.width;
   const bh = brush.height;
   const bpr = Math.ceil(bw / 8);
@@ -11238,16 +11470,26 @@ function mirrorCustomBrushH() {
   if (hasMask && newMask) {
     brush.mask = newMask;
   }
-  renderCustomBrushPreview(activeCustomBrush);
-  saveCustomBrushes();
+  if (!isTileBrush) {
+    renderCustomBrushPreview(activeCustomBrush);
+    saveCustomBrushes();
+  }
 }
 
 /**
  * Mirrors the active custom brush vertically (top-bottom flip)
  */
 function mirrorCustomBrushV() {
-  if (activeCustomBrush < 0 || !customBrushes[activeCustomBrush]) return;
-  const brush = customBrushes[activeCustomBrush];
+  // Support both custom brush slots and tile brushes
+  let brush;
+  const isTileBrush = activeCustomBrush === -2 && activeTileBrush;
+  if (isTileBrush) {
+    brush = activeTileBrush;
+  } else if (activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
+    brush = customBrushes[activeCustomBrush];
+  } else {
+    return;
+  }
   const bw = brush.width;
   const bh = brush.height;
   const bpr = Math.ceil(bw / 8);
@@ -11276,8 +11518,10 @@ function mirrorCustomBrushV() {
   if (hasMask && newMask) {
     brush.mask = newMask;
   }
-  renderCustomBrushPreview(activeCustomBrush);
-  saveCustomBrushes();
+  if (!isTileBrush) {
+    renderCustomBrushPreview(activeCustomBrush);
+    saveCustomBrushes();
+  }
 }
 
 /**
@@ -11977,13 +12221,28 @@ function clearCustomBrush(slot) {
  * @param {number} slot - Slot index (0-11)
  */
 function selectCustomBrush(slot) {
-  if (!customBrushes[slot]) {
-    startBrushCapture(slot);
+  // Get brushes from current tab
+  const tab = brushTabs[activeBrushTab];
+  const brushes = (activeBrushTab === 0) ? customBrushes : (tab?.brushes || customBrushes);
+
+  if (!brushes[slot]) {
+    // Only allow capture in Custom tab (index 0)
+    if (activeBrushTab === 0) {
+      startBrushCapture(slot);
+    }
     return;
   }
 
   brushShape = 'custom';
   activeCustomBrush = slot;
+
+  // Clear tile brush selection
+  selectedTileIndex = -1;
+  activeTileBrush = null;
+  const tileContainer = document.getElementById('tileGridContainer');
+  if (tileContainer) {
+    tileContainer.querySelectorAll('.tile-cell').forEach(cell => cell.classList.remove('selected'));
+  }
 
   // Deselect built-in shape buttons
   (editorShapeButtons || document.querySelectorAll('.editor-shape-btn')).forEach(btn => {
@@ -12081,6 +12340,605 @@ function renderAllCustomBrushPreviews() {
   for (let i = 0; i < 12; i++) {
     renderCustomBrushPreview(i);
   }
+}
+
+// ============================================================================
+// Tileset / Brush Tab Management
+// ============================================================================
+
+/**
+ * Parses tileset data from raw bytes, handling both 768-byte (linear) and 2048-byte (columnar) formats
+ * @param {Uint8Array} data - Raw tileset data
+ * @returns {{data: Uint8Array, tileCount: number}|null}
+ */
+function parseTileset(data) {
+  if (data.length >= 2048) {
+    // Columnar format: row R of tile T at R*256 + T
+    // Convert to linear format for easier access
+    const tiles = new Uint8Array(2048);
+    for (let t = 0; t < 256; t++) {
+      for (let r = 0; r < 8; r++) {
+        tiles[t * 8 + r] = data[r * 256 + t];
+      }
+    }
+    return { data: tiles, tileCount: 256 };
+  } else if (data.length >= 768) {
+    // Linear format: tile T at T*8
+    return { data: data.slice(0, 768), tileCount: 96 };
+  }
+  return null;
+}
+
+/**
+ * Initializes brush tabs with Custom tab
+ */
+function initBrushTabs() {
+  brushTabs = [
+    { name: 'Custom', type: 'brushset', brushes: customBrushes }
+  ];
+  activeBrushTab = 0;
+
+  // Add ROM tab if font is already loaded
+  if (typeof fontLoaded !== 'undefined' && fontLoaded && typeof fontData !== 'undefined' && fontData.length >= 768) {
+    brushTabs.push({ name: 'ROM', type: 'tileset', data: fontData.slice(0, 768), tileCount: 96 });
+  }
+  // Otherwise ROM tab will be added when font loads via updateRomBrushTab()
+
+  // Load user tabs from localStorage
+  loadBrushTabsFromStorage();
+}
+
+/**
+ * Updates or adds the ROM tab when font data becomes available
+ * Called from screen_viewer.js after font loads
+ */
+function updateRomBrushTab() {
+  if (typeof fontData === 'undefined' || typeof fontLoaded === 'undefined' || !fontLoaded) {
+    return;
+  }
+
+  // Check if ROM tab already exists
+  const romTabIndex = brushTabs.findIndex(tab => tab.name === 'ROM');
+
+  if (romTabIndex >= 0) {
+    // Update existing ROM tab data
+    brushTabs[romTabIndex].data = fontData.slice(0, 768);
+  } else {
+    // Insert ROM tab at index 1 (after Custom)
+    brushTabs.splice(1, 0, { name: 'ROM', type: 'tileset', data: fontData.slice(0, 768), tileCount: 96 });
+  }
+
+  updateBrushTabBar();
+  // Re-render if ROM tab is active
+  if (brushTabs[activeBrushTab]?.name === 'ROM') {
+    renderBrushTabContent();
+  }
+}
+
+/**
+ * Saves user brush tabs to localStorage
+ */
+function saveBrushTabsToStorage() {
+  // Only save user-added tabs (index 2+)
+  const userTabs = brushTabs.slice(2).map(tab => {
+    if (tab.type === 'tileset') {
+      return {
+        name: tab.name,
+        type: 'tileset',
+        data: btoa(String.fromCharCode(...tab.data)),
+        tileCount: tab.tileCount
+      };
+    } else {
+      // brushset type
+      return {
+        name: tab.name,
+        type: 'brushset',
+        brushes: (tab.brushes || []).map(b => {
+          if (!b) return null;
+          const obj = { w: b.width, h: b.height, d: btoa(String.fromCharCode(...b.data)) };
+          if (b.mask && b.mask.length > 0) {
+            obj.m = btoa(String.fromCharCode(...b.mask));
+          }
+          return obj;
+        })
+      };
+    }
+  });
+  localStorage.setItem('spectraLabBrushTabs', JSON.stringify(userTabs));
+}
+
+/**
+ * Loads user brush tabs from localStorage
+ */
+function loadBrushTabsFromStorage() {
+  const raw = localStorage.getItem('spectraLabBrushTabs');
+  if (!raw) return;
+
+  try {
+    const userTabs = JSON.parse(raw);
+    for (const tab of userTabs) {
+      if (brushTabs.length >= 8) break; // Max 8 tabs
+
+      if (tab.type === 'tileset') {
+        const decoded = Uint8Array.from(atob(tab.data), c => c.charCodeAt(0));
+        brushTabs.push({
+          name: tab.name,
+          type: 'tileset',
+          data: decoded,
+          tileCount: tab.tileCount
+        });
+      } else if (tab.type === 'brushset') {
+        const brushes = (tab.brushes || []).map(b => {
+          if (!b) return null;
+          const decoded = Uint8Array.from(atob(b.d), c => c.charCodeAt(0));
+          const brush = { width: b.w, height: b.h, data: decoded };
+          if (b.m) {
+            brush.mask = Uint8Array.from(atob(b.m), c => c.charCodeAt(0));
+          }
+          return brush;
+        });
+        // Pad to 12 slots
+        while (brushes.length < 12) brushes.push(null);
+        brushTabs.push({
+          name: tab.name,
+          type: 'brushset',
+          brushes: brushes
+        });
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load brush tabs from storage:', e);
+  }
+}
+
+/**
+ * Handles loading a brush/tileset file and adding it as a new tab
+ * @param {File} file - The file to load
+ */
+function loadBrushTabFile(file) {
+  if (brushTabs.length >= 8) {
+    alert('Maximum 8 tabs allowed. Please close a tab first.');
+    return;
+  }
+
+  const reader = new FileReader();
+  const ext = file.name.toLowerCase().split('.').pop();
+
+  reader.onload = function(e) {
+    const result = e.target?.result;
+
+    if (ext === 'slb') {
+      // JSON brush set file
+      try {
+        const arr = JSON.parse(/** @type {string} */ (result));
+        const brushes = [];
+        for (let i = 0; i < 12; i++) {
+          if (!arr[i]) {
+            brushes.push(null);
+          } else {
+            const decoded = Uint8Array.from(atob(arr[i].d), c => c.charCodeAt(0));
+            const brush = { width: arr[i].w, height: arr[i].h, data: decoded };
+            if (arr[i].m) {
+              brush.mask = Uint8Array.from(atob(arr[i].m), c => c.charCodeAt(0));
+            }
+            brushes.push(brush);
+          }
+        }
+        const name = file.name.replace(/\.slb$/i, '').substring(0, 10);
+        brushTabs.push({ name, type: 'brushset', brushes });
+        saveBrushTabsToStorage();
+        selectBrushTab(brushTabs.length - 1);
+        updateBrushTabBar();
+      } catch (err) {
+        alert('Failed to load brush set file.');
+      }
+    } else {
+      // Binary tileset file
+      const data = new Uint8Array(/** @type {ArrayBuffer} */ (result));
+      const parsed = parseTileset(data);
+      if (parsed) {
+        const name = file.name.replace(/\.(768|ch8|bin)$/i, '').substring(0, 10);
+        brushTabs.push({ name, type: 'tileset', data: parsed.data, tileCount: parsed.tileCount });
+        saveBrushTabsToStorage();
+        selectBrushTab(brushTabs.length - 1);
+        updateBrushTabBar();
+      } else {
+        alert('Invalid tileset file. Expected 768 or 2048+ bytes.');
+      }
+    }
+  };
+
+  if (ext === 'slb') {
+    reader.readAsText(file);
+  } else {
+    reader.readAsArrayBuffer(file);
+  }
+}
+
+/**
+ * Removes a user tab (index must be >= 2)
+ * @param {number} idx - Tab index to remove
+ */
+function removeBrushTab(idx) {
+  if (idx < 0 || idx >= brushTabs.length) return;
+
+  // Never allow removing Custom tab (index 0) or ROM tab
+  const tab = brushTabs[idx];
+  if (idx === 0 || tab.name === 'ROM') return;
+
+  brushTabs.splice(idx, 1);
+
+  // Adjust active tab if needed
+  if (activeBrushTab >= idx) {
+    activeBrushTab = Math.max(0, activeBrushTab - 1);
+  }
+
+  saveBrushTabsToStorage();
+  updateBrushTabBar();
+  renderBrushTabContent();
+}
+
+/**
+ * Selects a brush tab
+ * @param {number} idx - Tab index to select
+ */
+function selectBrushTab(idx) {
+  if (idx < 0 || idx >= brushTabs.length) return;
+
+  activeBrushTab = idx;
+  selectedTileIndex = -1;
+  activeTileBrush = null;
+
+  // Clear tile brush selection when switching tabs
+  if (activeCustomBrush === -2) {
+    activeCustomBrush = -1;
+  }
+
+  updateBrushTabBar();
+  renderBrushTabContent();
+}
+
+/**
+ * Updates the brush tab bar UI
+ */
+function updateBrushTabBar() {
+  const tabBar = document.getElementById('brushTabBar');
+  if (!tabBar) return;
+
+  tabBar.innerHTML = '';
+
+  brushTabs.forEach((tab, idx) => {
+    const tabEl = document.createElement('div');
+    tabEl.className = 'brush-tab' + (idx === activeBrushTab ? ' active' : '');
+    tabEl.title = tab.name;
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'brush-tab-name';
+    nameSpan.textContent = tab.name;
+    tabEl.appendChild(nameSpan);
+
+    // Add close button for user tabs (not Custom or ROM)
+    if (idx > 0 && tab.name !== 'ROM') {
+      const closeBtn = document.createElement('span');
+      closeBtn.className = 'brush-tab-close';
+      closeBtn.textContent = '\u00d7';
+      closeBtn.title = 'Close tab';
+      closeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        removeBrushTab(idx);
+      });
+      tabEl.appendChild(closeBtn);
+    }
+
+    tabEl.addEventListener('click', () => selectBrushTab(idx));
+    tabBar.appendChild(tabEl);
+  });
+
+  // Add "Grab" button to capture tileset from screen (if under tab limit)
+  if (brushTabs.length < 8) {
+    const grabBtn = document.createElement('button');
+    grabBtn.className = 'brush-tab-add';
+    grabBtn.textContent = '\u2316'; // Position indicator symbol
+    grabBtn.title = 'Grab tileset from screen (select rectangular area)';
+    grabBtn.addEventListener('click', () => {
+      startTilesetCapture();
+    });
+    tabBar.appendChild(grabBtn);
+  }
+}
+
+/**
+ * Renders the content for the active brush tab
+ */
+function renderBrushTabContent() {
+  const slotsContainer = document.getElementById('brushSlotsContainer');
+  const tileContainer = document.getElementById('tileGridContainer');
+  if (!slotsContainer || !tileContainer) return;
+
+  const tab = brushTabs[activeBrushTab];
+  if (!tab) return;
+
+  if (tab.type === 'brushset') {
+    // Show brush slots, hide tile grid
+    slotsContainer.style.display = '';
+    tileContainer.style.display = 'none';
+
+    // For Custom tab (index 0), use main customBrushes
+    // For loaded brushset tabs, use their brushes array
+    if (activeBrushTab === 0) {
+      // Main custom brushes - already rendered
+      renderAllCustomBrushPreviews();
+    } else {
+      // Loaded brush set - render to canvases
+      const brushes = tab.brushes || [];
+      for (let i = 0; i < 12; i++) {
+        renderCustomBrushPreviewFrom(i, brushes[i]);
+      }
+    }
+
+    // Update slot selection highlights
+    updateBrushSlotSelection();
+  } else {
+    // Show tile grid, hide brush slots
+    slotsContainer.style.display = 'none';
+    tileContainer.style.display = '';
+
+    renderTileGrid(tab);
+  }
+}
+
+/**
+ * Renders a brush preview from a given brush object (for non-main brush sets)
+ * @param {number} slot - Slot index (0-11)
+ * @param {{width:number, height:number, data:Uint8Array, mask?:Uint8Array}|null} brush - Brush object
+ */
+function renderCustomBrushPreviewFrom(slot, brush) {
+  const canvas = document.getElementById('customBrush' + slot);
+  if (!canvas) return;
+
+  const ctx = /** @type {HTMLCanvasElement} */ (canvas).getContext('2d');
+  if (!ctx) return;
+
+  ctx.clearRect(0, 0, 64, 64);
+
+  if (!brush) {
+    ctx.fillStyle = '#333';
+    ctx.fillRect(0, 0, 64, 64);
+    ctx.strokeStyle = '#555';
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(64, 64);
+    ctx.moveTo(64, 0);
+    ctx.lineTo(0, 64);
+    ctx.stroke();
+    return;
+  }
+
+  const bw = brush.width;
+  const bh = brush.height;
+  const scale = Math.max(1, Math.min(Math.floor(64 / bw), Math.floor(64 / bh)));
+  const ox = Math.floor((64 - bw * scale) / 2);
+  const oy = Math.floor((64 - bh * scale) / 2);
+
+  // Draw checkerboard background for transparent areas
+  for (let y = 0; y < 64; y += 8) {
+    for (let x = 0; x < 64; x += 8) {
+      ctx.fillStyle = ((x + y) % 16 === 0) ? '#282828' : '#383838';
+      ctx.fillRect(x, y, 8, 8);
+    }
+  }
+
+  const bytesPerRow = Math.ceil(bw / 8);
+  const hasMask = brush.mask && brush.mask.length > 0;
+
+  for (let r = 0; r < bh; r++) {
+    for (let c = 0; c < bw; c++) {
+      const byteIdx = r * bytesPerRow + Math.floor(c / 8);
+      const bitIdx = 7 - (c % 8);
+      const isSet = (brush.data[byteIdx] & (1 << bitIdx)) !== 0;
+      const isVisible = hasMask ? (brush.mask[byteIdx] & (1 << bitIdx)) !== 0 : true;
+
+      if (isVisible) {
+        ctx.fillStyle = isSet ? '#e0e0e0' : '#505050';
+        ctx.fillRect(ox + c * scale, oy + r * scale, scale, scale);
+      }
+    }
+  }
+}
+
+/**
+ * Updates the selection highlight for brush slots
+ */
+function updateBrushSlotSelection() {
+  const slots = document.querySelectorAll('.custom-brush-slot');
+  slots.forEach((el, i) => {
+    const isSelected = brushTabs[activeBrushTab]?.type === 'brushset' &&
+                       activeCustomBrush >= 0 &&
+                       activeCustomBrush === i;
+    el.classList.toggle('selected', isSelected);
+  });
+}
+
+/**
+ * Renders the tile grid for a tileset tab
+ * @param {BrushTab} tab - The tileset tab
+ */
+function renderTileGrid(tab) {
+  const container = document.getElementById('tileGridContainer');
+  if (!container || !tab.data) return;
+
+  container.innerHTML = '';
+
+  const tileCount = tab.tileCount || 96;
+
+  for (let i = 0; i < tileCount; i++) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 16;
+    canvas.height = 16;
+    canvas.className = 'tile-cell' + (selectedTileIndex === i && activeBrushTab === brushTabs.indexOf(tab) ? ' selected' : '');
+    canvas.dataset.tile = String(i);
+    canvas.title = `Tile ${i}`;
+
+    renderTileToCanvas(canvas, tab.data, i);
+
+    canvas.addEventListener('click', () => selectTile(i));
+    container.appendChild(canvas);
+  }
+}
+
+/**
+ * Renders a single tile to a canvas (2x scaled)
+ * @param {HTMLCanvasElement} canvas - Target canvas
+ * @param {Uint8Array} tiles - Tile data array
+ * @param {number} idx - Tile index
+ */
+function renderTileToCanvas(canvas, tiles, idx) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, 16, 16);
+
+  ctx.fillStyle = '#e0e0e0';
+
+  for (let row = 0; row < 8; row++) {
+    const byte = tiles[idx * 8 + row];
+    for (let bit = 0; bit < 8; bit++) {
+      if (byte & (0x80 >> bit)) {
+        ctx.fillRect(bit * 2, row * 2, 2, 2);
+      }
+    }
+  }
+}
+
+/**
+ * Selects a tile from the current tileset tab
+ * @param {number} idx - Tile index
+ */
+function selectTile(idx) {
+  const tab = brushTabs[activeBrushTab];
+  if (!tab || tab.type !== 'tileset' || !tab.data) return;
+
+  selectedTileIndex = idx;
+
+  // Create tile brush from tileset data
+  const data = new Uint8Array(8);
+  for (let r = 0; r < 8; r++) {
+    data[r] = tab.data[idx * 8 + r];
+  }
+  activeTileBrush = { width: 8, height: 8, data };
+
+  // Set brush shape to custom and mark as tile brush
+  brushShape = 'custom';
+  activeCustomBrush = -2; // Marker for tile brush
+
+  // Deselect built-in shape buttons
+  document.querySelectorAll('.editor-shape-btn').forEach(btn => {
+    btn.classList.remove('selected');
+  });
+
+  // Update tile grid selection
+  const container = document.getElementById('tileGridContainer');
+  if (container) {
+    container.querySelectorAll('.tile-cell').forEach((cell, i) => {
+      cell.classList.toggle('selected', i === idx);
+    });
+  }
+
+  // Deselect custom brush slots
+  document.querySelectorAll('.custom-brush-slot').forEach(el => {
+    el.classList.remove('selected');
+  });
+}
+
+/**
+ * Gets the currently active brush (custom slot or tile)
+ * @returns {{width:number, height:number, data:Uint8Array, mask?:Uint8Array}|null}
+ */
+function getActiveBrush() {
+  if (activeCustomBrush === -2 && activeTileBrush) {
+    return activeTileBrush;
+  }
+  if (activeCustomBrush >= 0) {
+    // Check if we're in a loaded brushset tab (not Custom tab)
+    if (activeBrushTab > 0 && brushTabs[activeBrushTab]?.type === 'brushset') {
+      return brushTabs[activeBrushTab].brushes?.[activeCustomBrush] || null;
+    }
+    return customBrushes[activeCustomBrush];
+  }
+  return null;
+}
+
+/**
+ * Clears tile brush selection
+ */
+function clearTileBrushSelection() {
+  if (activeCustomBrush === -2) {
+    activeCustomBrush = -1;
+    activeTileBrush = null;
+    selectedTileIndex = -1;
+
+    const container = document.getElementById('tileGridContainer');
+    if (container) {
+      container.querySelectorAll('.tile-cell').forEach(cell => {
+        cell.classList.remove('selected');
+      });
+    }
+  }
+}
+
+/**
+ * Saves current tab's brushes to file (export)
+ */
+function exportCurrentTab() {
+  const tab = brushTabs[activeBrushTab];
+  if (!tab) return;
+
+  if (tab.type === 'tileset') {
+    // Export tileset as binary .768 or .bin file
+    if (!tab.data || tab.data.length === 0) {
+      alert('No tileset data to save.');
+      return;
+    }
+    const ext = tab.tileCount > 96 ? '.bin' : '.768';
+    const blob = new Blob([tab.data], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = (tab.name || 'tileset') + ext;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    return;
+  }
+
+  // Export brushset as .slb file
+  const brushes = activeBrushTab === 0 ? customBrushes : tab.brushes;
+  const arr = (brushes || []).map(b => {
+    if (!b) return null;
+    const obj = { w: b.width, h: b.height, d: btoa(String.fromCharCode(...b.data)) };
+    if (b.mask && b.mask.length > 0) {
+      obj.m = btoa(String.fromCharCode(...b.mask));
+    }
+    return obj;
+  });
+
+  if (arr.every(b => b === null)) {
+    alert('No brushes to save.');
+    return;
+  }
+
+  const json = JSON.stringify(arr);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = (tab.name || 'brushes') + '.slb';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 /**
@@ -13522,6 +14380,11 @@ function initEditor() {
   loadCustomBrushes();
   renderAllCustomBrushPreviews();
 
+  // Initialize brush/tileset tabs
+  initBrushTabs();
+  updateBrushTabBar();
+  renderBrushTabContent();
+
   // Text tool initialization
   initTextTool();
 
@@ -14008,7 +14871,7 @@ function initEditor() {
   // Brushes save/load buttons (stopPropagation to prevent collapsing header)
   document.getElementById('saveBrushesBtn')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    exportBrushesToFile();
+    exportCurrentTab();
   });
 
   const brushesFileInput = /** @type {HTMLInputElement|null} */ (document.getElementById('brushesFileInput'));
@@ -14019,7 +14882,14 @@ function initEditor() {
   brushesFileInput?.addEventListener('change', (e) => {
     const file = /** @type {HTMLInputElement} */ (e.target).files?.[0];
     if (file) {
-      importBrushesFromFile(file);
+      const ext = file.name.toLowerCase().split('.').pop();
+      // If on Custom tab and loading .slb file, replace main custom brushes (existing behavior)
+      // Otherwise, load as new tab (tileset or brushset)
+      if (ext === 'slb' && activeBrushTab === 0) {
+        importBrushesFromFile(file);
+      } else {
+        loadBrushTabFile(file);
+      }
     }
     // Reset so same file can be loaded again
     if (brushesFileInput) brushesFileInput.value = '';
@@ -14090,7 +14960,7 @@ function initEditor() {
         case 'KeyR':
           if (isPasting && clipboardData) {
             rotateClipboard();
-          } else if (activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
+          } else if (getActiveBrush()) {
             rotateCustomBrush();
           } else if (!isAttrEditor()) {
             setEditorTool(EDITOR.TOOL_RECT);
@@ -14099,14 +14969,14 @@ function initEditor() {
         case 'KeyH':
           if (isPasting && clipboardData) {
             mirrorClipboardH();
-          } else if (activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
+          } else if (getActiveBrush()) {
             mirrorCustomBrushH();
           }
           break;
         case 'KeyV':
           if (isPasting && clipboardData) {
             mirrorClipboardV();
-          } else if (activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
+          } else if (getActiveBrush()) {
             mirrorCustomBrushV();
           }
           break;
@@ -14171,6 +15041,13 @@ function initEditor() {
       if (capturingBrush) {
         capturingBrush = false;
         captureStartPoint = null;
+        editorRender();
+        const infoEl = document.getElementById('editorPositionInfo');
+        if (infoEl) infoEl.innerHTML = '';
+      }
+      if (capturingTileset) {
+        capturingTileset = false;
+        tilesetCaptureStart = null;
         editorRender();
         const infoEl = document.getElementById('editorPositionInfo');
         if (infoEl) infoEl.innerHTML = '';
