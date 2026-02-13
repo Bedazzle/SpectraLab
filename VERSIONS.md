@@ -1,5 +1,47 @@
 # SpectraLab Version History
 
+## v1.41.0
+- Gigascreen (.img) format editing
+  - Full editing support with live blended preview
+  - Virtual color palette: 136 unique color blends from 16 ZX colors
+    - 16 solid colors (8 normal + 8 bright)
+    - 120 blended pairs (all combinations)
+  - 4-color cell palette: each ink/paper pair gives 4 paintable blends
+    - Left click color = assign to left mouse button (L)
+    - Right click color = assign to right mouse button (R)
+    - Ink+Ink, Ink+Paper, Paper+Ink, Paper+Paper combinations
+    - True Gigascreen editing: different pixel patterns in each frame
+  - Layer support: add/remove/reorder layers with dual-frame storage
+  - Eyedropper (Alt+click): picks virtual ink/paper and assigns pixel color to L/R
+  - Clear fills with selected virtual colors
+  - Drawing automatically sets both frames simultaneously
+  - Virtual ink/paper selection: click to set ink, right-click for paper
+  - All drawing tools work with virtual colors (pixel, line, rect, fill, etc.)
+  - Recolor tool updates attributes in both frames
+  - Save as .img preserves full 13824-byte format
+  - Create new Gigascreen picture from File > New dialog
+- Fixed stroke/backstroke brush preview showing wrong diagonal
+- Fixed Gigascreen palette remaining visible when switching to non-Gigascreen formats
+
+## v1.40.0
+- Gradient tool enhancements
+  - Supports all brush paint modes (set, replace, invert, recolor, retouch, masked, masked+)
+  - Custom brush support: stamps brush pattern at gradient-dithered positions
+  - Snap support for gradient endpoints
+- Layer operations now support undo/redo
+  - Add layer, remove layer, move layer up/down all undoable
+- RGB3 (.3) format: Flicker emulation mode
+  - "Emulate flicker" checkbox shows bitplane switching effect
+  - Cycles through Red, Green, Blue bitplanes at 50fps
+  - Simulates how RGB3 images appear on real hardware
+  - Blended view (default) shows pristine combined colors
+- Gigascreen (.img) format support
+  - Two alternating SCR frames (13824 bytes = 2×6912)
+  - Two display modes via dropdown:
+    - Average: Blends colors by averaging RGB values (pristine view)
+    - Flicker: Alternates frames at 50fps (hardware emulation)
+  - Validates file size on load (warns if not 13824 bytes)
+
 ## v1.39.0
 - ULA+ palette support (64-color mode)
   - Auto-detects ULA+ files by size (6976 bytes = 6912 SCR + 64 palette)

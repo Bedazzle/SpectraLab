@@ -100,6 +100,28 @@ Edit 11136-byte .bsc border screen files:
   - Exact cycle-accurate timing (224T/line, 71680T/frame)
   - SAVESNA output with original filename
 
+## Gigascreen Editor
+
+Edit 13824-byte .img Gigascreen files (two alternating SCR frames):
+
+- **Virtual color palette**: 136 unique blended colors from 16 ZX colors (8 normal + 8 bright)
+  - Click to set virtual ink, right-click to set virtual paper
+  - Colors blend by averaging RGB values from both frames
+- **4-color per cell**: Each ink/paper pair provides 4 paintable colors
+  - Ink+Ink, Ink+Paper, Paper+Ink, Paper+Paper combinations
+  - Left-click color to assign to left mouse button (L)
+  - Right-click color to assign to right mouse button (R)
+- **True dual-frame editing**: Each frame can have different pixel patterns
+- **Eyedropper** (Alt+click): Picks virtual ink/paper from cell
+  - Alt+left-click assigns pixel color to L button
+  - Alt+right-click assigns pixel color to R button
+- **Layer support**: Full layer system with dual-frame storage
+  - Each layer stores bitmap and attributes for both frames
+  - Flatten merges all layers correctly
+- **All drawing tools**: Pixel, Line, Rectangle, Circle, Fill, etc.
+- **Display modes**: Average (blended colors) or Flicker (50fps alternating frames)
+- **Save**: Export as .img preserves full 13824-byte dual-frame format
+
 ## Supported Formats
 
 | Extension | Size | Description |
@@ -113,7 +135,8 @@ Edit 11136-byte .bsc border screen files:
 | `.ifl` | 9216 bytes | 8x2 multicolor |
 | `.bmc4` | 11904 bytes | Border + 8x4 multicolor |
 | `.mlt` / `.mc` | 12288 bytes | 8x1 multicolor |
-| `.3` | 18432 bytes | Tricolor RGB (3 bitmaps) |
+| `.3` | 18432 bytes | Tricolor RGB (3 bitmaps) — flicker emulation |
+| `.img` | 13824 bytes | Gigascreen (2×SCR) — average/flicker modes - **editable** |
 | `.specscii` | variable | Text mode with colors |
 | `.sca` | variable | Animation (type 0: full frames, type 1: attr-only) |
 | `.slp` | variable | Project file (single picture with layers) |
@@ -142,7 +165,7 @@ All letter shortcuts work with any keyboard layout (Russian, German, etc.) — b
 | `R` | Rectangle tool (or Rotate when pasting/custom brush) |
 | `O` | Circle/ellipse tool |
 | `Ctrl` | Constrain rect/circle to square/circle (1:1) |
-| `Alt` | Draw rect/circle from center |
+| `Alt` | Draw rect/circle from center; Eyedropper (pick color from canvas) |
 | `G` | Airbrush tool |
 | `D` | Gradient tool |
 | `I` | Flood fill tool |

@@ -1,4 +1,4 @@
-// SpectraLab v1.30.0 - Main application
+// SpectraLab v1.41.0 - Main application
 // @ts-check
 "use strict";
 
@@ -112,6 +112,7 @@ const FORMAT = {
   BMC4: 'bmc4',           // 11904-byte border + 8x4 multicolor
   MLT: 'mlt',             // 12288-byte multicolor 8x1 (6144 pixels + 6144 attributes)
   RGB3: 'rgb3',           // 18432-byte tricolor RGB (3 × 6144 bitmaps)
+  GIGASCREEN: 'img',      // 13824-byte Gigascreen (2 × 6912 SCR frames)
   MONO_FULL: 'mono_full', // 6144-byte monochrome (full screen)
   MONO_2_3: 'mono_2_3',   // 4096-byte monochrome (2/3 screen)
   MONO_1_3: 'mono_1_3',   // 2048-byte monochrome (1/3 screen)
@@ -179,6 +180,21 @@ const RGB3 = {
   RED_OFFSET: 0,
   GREEN_OFFSET: 6144,
   BLUE_OFFSET: 12288
+};
+
+// Gigascreen format constants (two alternating SCR frames)
+// Creates more colors through persistence of vision at 50Hz
+const GIGASCREEN = {
+  TOTAL_SIZE: 13824,      // 6912 × 2
+  FRAME_SIZE: 6912,       // Standard SCR size
+  FRAME1_OFFSET: 0,
+  FRAME2_OFFSET: 6912
+};
+
+// Gigascreen display modes
+const GIGASCREEN_MODE = {
+  AVERAGE: 'average',     // Blend colors by averaging RGB values
+  FLICKER: 'flicker'      // Alternate frames at 50fps
 };
 
 // BMC4 format constants (border + 8x4 multicolor)
@@ -684,6 +700,33 @@ let fontInfo;
 /** @type {HTMLSelectElement} */
 let pattern53cSelect;
 
+/** @type {boolean} - RGB3 flicker emulation enabled */
+let rgb3FlickerEnabled = false;
+
+/** @type {number} - Current RGB3 flicker phase (0=R, 1=G, 2=B) */
+let rgb3FlickerPhase = 0;
+
+/** @type {number|null} - RGB3 flicker animation frame ID */
+let rgb3FlickerFrameId = null;
+
+/** @type {number} - Last RGB3 flicker frame timestamp */
+let rgb3FlickerLastTime = 0;
+
+/** @type {string} - Gigascreen display mode: 'average', 'opacity', or 'flicker' */
+let gigascreenMode = GIGASCREEN_MODE.AVERAGE;
+
+/** @type {number} - Current Gigascreen flicker phase (0 or 1) */
+let gigascreenFlickerPhase = 0;
+
+/** @type {number|null} - Gigascreen flicker animation frame ID */
+let gigascreenFlickerFrameId = null;
+
+/** @type {number} - Last Gigascreen flicker frame timestamp */
+let gigascreenFlickerLastTime = 0;
+
+/** @type {number} - Flicker frame interval in ms (20ms = 50Hz) */
+const FLICKER_INTERVAL_MS = 20;
+
 /**
  * Caches DOM element references for performance
  */
@@ -1173,6 +1216,303 @@ function renderRgb3Screen(ctx, borderOffset) {
   temp.ctx.putImageData(imageData, 0, 0);
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(temp.canvas, borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom);
+}
+
+/**
+ * Renders RGB3 format with a single bitplane (for flicker emulation)
+ * @param {CanvasRenderingContext2D} ctx - Canvas context
+ * @param {number} borderOffset - Border offset in canvas pixels
+ * @param {number} phase - Which bitplane to show: 0=R, 1=G, 2=B
+ */
+function renderRgb3ScreenFlicker(ctx, borderOffset, phase) {
+  const imageData = ctx.createImageData(SCREEN.WIDTH, SCREEN.HEIGHT);
+  const data = imageData.data;
+
+  // Determine which bitplane offset to use
+  const bitplaneOffset = phase === 0 ? RGB3.RED_OFFSET :
+                         phase === 1 ? RGB3.GREEN_OFFSET :
+                         RGB3.BLUE_OFFSET;
+
+  // Process each pixel line from 0 to 191
+  for (let y = 0; y < SCREEN.HEIGHT; y++) {
+    // Calculate bitmap address using ZX Spectrum interleaved layout
+    const third = Math.floor(y / 64);
+    const charRow = Math.floor((y % 64) / 8);
+    const pixelLine = y % 8;
+    const bitmapOffset = third * 2048 + charRow * 32 + pixelLine * 256;
+
+    for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
+      const planeByte = screenData[bitplaneOffset + bitmapOffset + col];
+
+      const x = col * 8;
+      for (let bit = 0; bit < 8; bit++) {
+        const px = x + bit;
+        const maskIdx = y * SCREEN.WIDTH + px;
+        const pixelIndex = maskIdx * 4;
+
+        if (isPixelTransparent(maskIdx)) {
+          const checker = getCheckerboardColor(px, y);
+          data[pixelIndex] = checker[0];
+          data[pixelIndex + 1] = checker[1];
+          data[pixelIndex + 2] = checker[2];
+        } else {
+          // Show single color channel based on phase
+          const bitSet = isBitSet(planeByte, bit);
+          if (phase === 0) {
+            // Red phase
+            data[pixelIndex] = bitSet ? 255 : 0;
+            data[pixelIndex + 1] = 0;
+            data[pixelIndex + 2] = 0;
+          } else if (phase === 1) {
+            // Green phase
+            data[pixelIndex] = 0;
+            data[pixelIndex + 1] = bitSet ? 255 : 0;
+            data[pixelIndex + 2] = 0;
+          } else {
+            // Blue phase
+            data[pixelIndex] = 0;
+            data[pixelIndex + 1] = 0;
+            data[pixelIndex + 2] = bitSet ? 255 : 0;
+          }
+        }
+        data[pixelIndex + 3] = 255;
+      }
+    }
+  }
+
+  // Put to temp canvas and scale to main canvas
+  const temp = getTempRenderCanvas(SCREEN.WIDTH, SCREEN.HEIGHT);
+  if (!temp) return;
+  temp.ctx.putImageData(imageData, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(temp.canvas, borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom);
+}
+
+/**
+ * RGB3 flicker animation loop using requestAnimationFrame
+ * @param {number} timestamp - Current timestamp from requestAnimationFrame
+ */
+function rgb3FlickerLoop(timestamp) {
+  if (rgb3FlickerFrameId === null) return; // Animation stopped
+
+  // Check if enough time has passed for next frame (50Hz = 20ms)
+  const elapsed = timestamp - rgb3FlickerLastTime;
+  if (elapsed >= FLICKER_INTERVAL_MS) {
+    rgb3FlickerPhase = (rgb3FlickerPhase + 1) % 3;
+    rgb3FlickerLastTime = timestamp - (elapsed % FLICKER_INTERVAL_MS); // Maintain timing accuracy
+    renderScreen();
+  }
+
+  rgb3FlickerFrameId = requestAnimationFrame(rgb3FlickerLoop);
+}
+
+/**
+ * Starts RGB3 flicker animation (50fps using requestAnimationFrame)
+ */
+function startRgb3Flicker() {
+  if (rgb3FlickerFrameId !== null) return; // Already running
+
+  rgb3FlickerPhase = 0;
+  rgb3FlickerLastTime = performance.now();
+  rgb3FlickerFrameId = requestAnimationFrame(rgb3FlickerLoop);
+}
+
+/**
+ * Stops RGB3 flicker animation
+ */
+function stopRgb3Flicker() {
+  if (rgb3FlickerFrameId !== null) {
+    cancelAnimationFrame(rgb3FlickerFrameId);
+    rgb3FlickerFrameId = null;
+  }
+  rgb3FlickerPhase = 0;
+}
+
+/**
+ * Toggles RGB3 flicker emulation
+ * @param {boolean} enabled
+ */
+function setRgb3FlickerEnabled(enabled) {
+  rgb3FlickerEnabled = enabled;
+  if (enabled && currentFormat === FORMAT.RGB3) {
+    startRgb3Flicker();
+  } else {
+    stopRgb3Flicker();
+    if (currentFormat === FORMAT.RGB3) {
+      renderScreen(); // Re-render with blended colors
+    }
+  }
+}
+
+/**
+ * Renders a Gigascreen format screen
+ * Two SCR frames combined based on current mode (average/opacity/flicker)
+ * @param {CanvasRenderingContext2D} ctx - Canvas context
+ * @param {number} borderOffset - Border offset in canvas pixels
+ */
+function renderGigascreen(ctx, borderOffset) {
+  if (gigascreenMode === GIGASCREEN_MODE.FLICKER && gigascreenFlickerFrameId !== null) {
+    renderGigascreenFrame(ctx, borderOffset, gigascreenFlickerPhase);
+  } else {
+    renderGigascreenAverage(ctx, borderOffset);
+  }
+}
+
+/**
+ * Renders a single Gigascreen frame (for flicker mode)
+ * @param {CanvasRenderingContext2D} ctx - Canvas context
+ * @param {number} borderOffset - Border offset in canvas pixels
+ * @param {number} frameIndex - Which frame to show (0 or 1)
+ */
+function renderGigascreenFrame(ctx, borderOffset, frameIndex) {
+  const imageData = ctx.createImageData(SCREEN.WIDTH, SCREEN.HEIGHT);
+  const data = imageData.data;
+  const frameOffset = frameIndex === 0 ? GIGASCREEN.FRAME1_OFFSET : GIGASCREEN.FRAME2_OFFSET;
+
+  for (let y = 0; y < SCREEN.HEIGHT; y++) {
+    const third = Math.floor(y / 64);
+    const charRow = Math.floor((y % 64) / 8);
+    const pixelLine = y % 8;
+    const bitmapOffset = third * 2048 + charRow * 32 + pixelLine * 256;
+    const attrRowOffset = third * 256 + charRow * 32;
+
+    for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
+      const bitmapByte = screenData[frameOffset + bitmapOffset + col];
+      const attr = screenData[frameOffset + SCREEN.BITMAP_SIZE + attrRowOffset + col];
+      const { inkRgb, paperRgb } = getColorsRgb(attr);
+
+      const x = col * 8;
+      for (let bit = 0; bit < 8; bit++) {
+        const px = x + bit;
+        const pixelIndex = (y * SCREEN.WIDTH + px) * 4;
+        const isInk = isBitSet(bitmapByte, bit);
+        const rgb = isInk ? inkRgb : paperRgb;
+
+        data[pixelIndex] = rgb[0];
+        data[pixelIndex + 1] = rgb[1];
+        data[pixelIndex + 2] = rgb[2];
+        data[pixelIndex + 3] = 255;
+      }
+    }
+  }
+
+  const temp = getTempRenderCanvas(SCREEN.WIDTH, SCREEN.HEIGHT);
+  if (!temp) return;
+  temp.ctx.putImageData(imageData, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(temp.canvas, borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom);
+}
+
+/**
+ * Renders Gigascreen with averaged colors (pristine blend)
+ * @param {CanvasRenderingContext2D} ctx - Canvas context
+ * @param {number} borderOffset - Border offset in canvas pixels
+ */
+function renderGigascreenAverage(ctx, borderOffset) {
+  const imageData = ctx.createImageData(SCREEN.WIDTH, SCREEN.HEIGHT);
+  const data = imageData.data;
+
+  for (let y = 0; y < SCREEN.HEIGHT; y++) {
+    const third = Math.floor(y / 64);
+    const charRow = Math.floor((y % 64) / 8);
+    const pixelLine = y % 8;
+    const bitmapOffset = third * 2048 + charRow * 32 + pixelLine * 256;
+    const attrRowOffset = third * 256 + charRow * 32;
+
+    for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
+      // Frame 1
+      const bitmap1 = screenData[GIGASCREEN.FRAME1_OFFSET + bitmapOffset + col];
+      const attr1 = screenData[GIGASCREEN.FRAME1_OFFSET + SCREEN.BITMAP_SIZE + attrRowOffset + col];
+      const colors1 = getColorsRgb(attr1);
+
+      // Frame 2
+      const bitmap2 = screenData[GIGASCREEN.FRAME2_OFFSET + bitmapOffset + col];
+      const attr2 = screenData[GIGASCREEN.FRAME2_OFFSET + SCREEN.BITMAP_SIZE + attrRowOffset + col];
+      const colors2 = getColorsRgb(attr2);
+
+      const x = col * 8;
+      for (let bit = 0; bit < 8; bit++) {
+        const px = x + bit;
+        const pixelIndex = (y * SCREEN.WIDTH + px) * 4;
+
+        const isInk1 = isBitSet(bitmap1, bit);
+        const rgb1 = isInk1 ? colors1.inkRgb : colors1.paperRgb;
+
+        const isInk2 = isBitSet(bitmap2, bit);
+        const rgb2 = isInk2 ? colors2.inkRgb : colors2.paperRgb;
+
+        // Average the two colors
+        data[pixelIndex] = Math.round((rgb1[0] + rgb2[0]) / 2);
+        data[pixelIndex + 1] = Math.round((rgb1[1] + rgb2[1]) / 2);
+        data[pixelIndex + 2] = Math.round((rgb1[2] + rgb2[2]) / 2);
+        data[pixelIndex + 3] = 255;
+      }
+    }
+  }
+
+  const temp = getTempRenderCanvas(SCREEN.WIDTH, SCREEN.HEIGHT);
+  if (!temp) return;
+  temp.ctx.putImageData(imageData, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(temp.canvas, borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom);
+}
+
+
+/**
+ * Gigascreen flicker animation loop using requestAnimationFrame
+ * @param {number} timestamp - Current timestamp from requestAnimationFrame
+ */
+function gigascreenFlickerLoop(timestamp) {
+  if (gigascreenFlickerFrameId === null) return; // Animation stopped
+
+  // Check if enough time has passed for next frame (50Hz = 20ms)
+  const elapsed = timestamp - gigascreenFlickerLastTime;
+  if (elapsed >= FLICKER_INTERVAL_MS) {
+    gigascreenFlickerPhase = (gigascreenFlickerPhase + 1) % 2;
+    gigascreenFlickerLastTime = timestamp - (elapsed % FLICKER_INTERVAL_MS); // Maintain timing accuracy
+    renderScreen();
+  }
+
+  gigascreenFlickerFrameId = requestAnimationFrame(gigascreenFlickerLoop);
+}
+
+/**
+ * Starts Gigascreen flicker animation (50fps using requestAnimationFrame)
+ */
+function startGigascreenFlicker() {
+  if (gigascreenFlickerFrameId !== null) return; // Already running
+
+  gigascreenFlickerPhase = 0;
+  gigascreenFlickerLastTime = performance.now();
+  gigascreenFlickerFrameId = requestAnimationFrame(gigascreenFlickerLoop);
+}
+
+/**
+ * Stops Gigascreen flicker animation
+ */
+function stopGigascreenFlicker() {
+  if (gigascreenFlickerFrameId !== null) {
+    cancelAnimationFrame(gigascreenFlickerFrameId);
+    gigascreenFlickerFrameId = null;
+  }
+  gigascreenFlickerPhase = 0;
+}
+
+/**
+ * Sets Gigascreen display mode
+ * @param {string} mode - 'average', 'opacity', or 'flicker'
+ */
+function setGigascreenMode(mode) {
+  // Stop existing flicker if running
+  stopGigascreenFlicker();
+
+  gigascreenMode = mode;
+
+  if (mode === GIGASCREEN_MODE.FLICKER && currentFormat === FORMAT.GIGASCREEN) {
+    startGigascreenFlicker();
+  } else if (currentFormat === FORMAT.GIGASCREEN) {
+    renderScreen();
+  }
 }
 
 /**
@@ -2306,6 +2646,41 @@ function toggleFormatControlsVisibility() {
   if (pattern53cControls) {
     pattern53cControls.style.display = (currentFormat === FORMAT.ATTR_53C) ? 'flex' : 'none';
   }
+  const rgb3Controls = document.getElementById('rgb3Controls');
+  if (rgb3Controls) {
+    rgb3Controls.style.display = (currentFormat === FORMAT.RGB3) ? 'flex' : 'none';
+  }
+  // Handle RGB3 flicker: stop when switching away, start if checkbox is checked when switching to
+  if (currentFormat !== FORMAT.RGB3) {
+    if (rgb3FlickerFrameId !== null) {
+      stopRgb3Flicker();
+    }
+  } else {
+    // Switching to RGB3: start flicker if checkbox is checked
+    const flickerCheckbox = /** @type {HTMLInputElement|null} */ (document.getElementById('flickerRgb3Checkbox'));
+    if (flickerCheckbox && flickerCheckbox.checked && rgb3FlickerFrameId === null) {
+      startRgb3Flicker();
+    }
+  }
+  const gigascreenControls = document.getElementById('gigascreenControls');
+  if (gigascreenControls) {
+    gigascreenControls.style.display = (currentFormat === FORMAT.GIGASCREEN) ? 'flex' : 'none';
+  }
+  // Handle Gigascreen flicker: stop when switching away, start if mode is flicker when switching to
+  if (currentFormat !== FORMAT.GIGASCREEN) {
+    if (gigascreenFlickerFrameId !== null) {
+      stopGigascreenFlicker();
+    }
+  } else {
+    // Switching to Gigascreen: start flicker if mode is flicker
+    const modeSelect = /** @type {HTMLSelectElement|null} */ (document.getElementById('gigascreenModeSelect'));
+    if (modeSelect) {
+      gigascreenMode = modeSelect.value;
+    }
+    if (gigascreenMode === GIGASCREEN_MODE.FLICKER && gigascreenFlickerFrameId === null) {
+      startGigascreenFlicker();
+    }
+  }
   const fontControls = document.getElementById('fontControls');
   if (fontControls) {
     fontControls.style.display = (currentFormat === FORMAT.SPECSCII) ? 'flex' : 'none';
@@ -2422,7 +2797,7 @@ function getUlaPlusPaletteIndex(attr, isInk) {
 // ============================================================================
 
 /** @type {string[]} - List of supported file extensions */
-const SUPPORTED_EXTENSIONS = ['scr', '53c', 'atr', 'bsc', 'ifl', 'bmc4', 'mlt', 'mc', '3', 'mem', 'specscii', 'sca'];
+const SUPPORTED_EXTENSIONS = ['scr', '53c', 'atr', 'bsc', 'ifl', 'bmc4', 'mlt', 'mc', '3', 'img', 'mem', 'specscii', 'sca'];
 const IMAGE_EXTENSIONS = ['png', 'gif', 'jpg', 'jpeg', 'webp', 'bmp'];
 
 /** @type {JSZip|null} - Current loaded ZIP archive */
@@ -2558,6 +2933,15 @@ async function loadFileFromZip(fileName) {
     screenData = new Uint8Array(arrayBuffer);
     currentFileName = `${currentZipName}/${fileName}`;
     currentFormat = detectFormat(fileName, screenData.length);
+
+    // Check for invalid format (e.g., .img file with wrong size)
+    if (currentFormat === FORMAT.UNKNOWN) {
+      const ext = fileName.toLowerCase().split('.').pop();
+      if (ext === 'img') {
+        alert(`Invalid Gigascreen file: expected ${GIGASCREEN.TOTAL_SIZE} bytes (2×6912), got ${screenData.length} bytes.`);
+        return;
+      }
+    }
 
     // Handle SCA format
     if (currentFormat === FORMAT.SCA) {
@@ -2730,7 +3114,14 @@ function renderScreen() {
     renderMltScreen(ctx, borderPixels);
   } else if (currentFormat === FORMAT.RGB3) {
     // RGB3 format: tricolor RGB
-    renderRgb3Screen(ctx, borderPixels);
+    if (rgb3FlickerEnabled && rgb3FlickerFrameId !== null) {
+      renderRgb3ScreenFlicker(ctx, borderPixels, rgb3FlickerPhase);
+    } else {
+      renderRgb3Screen(ctx, borderPixels);
+    }
+  } else if (currentFormat === FORMAT.GIGASCREEN) {
+    // Gigascreen format: two alternating SCR frames
+    renderGigascreen(ctx, borderPixels);
   } else if (currentFormat === FORMAT.MONO_FULL) {
     // Monochrome full screen (6144 bytes)
     renderMonoScreen(ctx, borderPixels, 3);
@@ -3105,6 +3496,7 @@ function getFormatName(format) {
     case FORMAT.BMC4: return 'BMC4 (border + 8x4 multicolor)';
     case FORMAT.MLT: return 'MLT (8x1 multicolor)';
     case FORMAT.RGB3: return '3 (tricolor RGB)';
+    case FORMAT.GIGASCREEN: return 'IMG (Gigascreen)';
     case FORMAT.MONO_FULL: return 'SCR (monochrome)';
     case FORMAT.MONO_2_3: return 'SCR (monochrome 2/3)';
     case FORMAT.MONO_1_3: return 'SCR (monochrome 1/3)';
@@ -3489,6 +3881,15 @@ function detectFormat(fileName, fileSize) {
     return FORMAT.RGB3;
   }
 
+  if (ext === 'img') {
+    // Gigascreen: must be exactly 13824 bytes (2 × 6912)
+    if (fileSize === GIGASCREEN.TOTAL_SIZE) {
+      return FORMAT.GIGASCREEN;
+    }
+    // Invalid size for .img - return UNKNOWN to trigger warning
+    return FORMAT.UNKNOWN;
+  }
+
   if (ext === 'specscii') {
     return FORMAT.SPECSCII;
   }
@@ -3520,6 +3921,10 @@ function detectFormat(fileName, fileSize) {
 
   if (fileSize === RGB3.TOTAL_SIZE) {
     return FORMAT.RGB3;
+  }
+
+  if (fileSize === GIGASCREEN.TOTAL_SIZE) {
+    return FORMAT.GIGASCREEN;
   }
 
   if (fileSize === ULAPLUS.TOTAL_SIZE) {
@@ -3600,6 +4005,15 @@ function loadScreenFile(file) {
         updateFileInfo();
         renderScreen();
         return;
+      }
+
+      // Check for invalid format (e.g., .img file with wrong size)
+      if (format === FORMAT.UNKNOWN) {
+        const ext = fileName.toLowerCase().split('.').pop();
+        if (ext === 'img') {
+          alert(`Invalid Gigascreen file: expected ${GIGASCREEN.TOTAL_SIZE} bytes (2×6912), got ${data.length} bytes.`);
+          return;
+        }
       }
 
       // Initialize ULA+ mode based on format

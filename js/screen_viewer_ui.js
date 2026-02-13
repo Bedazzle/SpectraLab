@@ -140,6 +140,20 @@ function initScreenViewerUI() {
     saveSettings();
   });
 
+  // RGB3 flicker checkbox handler
+  document.getElementById('flickerRgb3Checkbox')?.addEventListener('change', function() {
+    if (typeof setRgb3FlickerEnabled === 'function') {
+      setRgb3FlickerEnabled(/** @type {HTMLInputElement} */ (this).checked);
+    }
+  });
+
+  // Gigascreen mode select handler
+  document.getElementById('gigascreenModeSelect')?.addEventListener('change', function() {
+    if (typeof setGigascreenMode === 'function') {
+      setGigascreenMode(/** @type {HTMLSelectElement} */ (this).value);
+    }
+  });
+
   // Palette select handler
   document.getElementById('paletteSelect')?.addEventListener('change', function() {
     setPalette(/** @type {HTMLSelectElement} */ (this).value);
