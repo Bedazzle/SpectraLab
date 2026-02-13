@@ -1,5 +1,49 @@
 # SpectraLab Version History
 
+## v1.39.0
+- ULA+ palette support (64-color mode)
+  - Auto-detects ULA+ files by size (6976 bytes = 6912 SCR + 64 palette)
+  - GRB332 color format: 3 bits green, 3 bits red, 2 bits blue per entry
+  - 4 CLUTs (Color Look-Up Tables) × 16 colors each
+  - Default palette generates standard ZX Spectrum colors
+  - Two palette view modes with toggle checkbox:
+    - Grid mode: 8×8 grid showing all 64 colors at once
+    - Classic mode: 16-color row with CLUT selector (0-3)
+  - Left-click to select ink color, right-click for paper color
+  - Rendering uses ULA+ palette when in ULA+ mode
+  - Format conversion: SCR ↔ ULA+ (add/strip palette)
+  - PNG import: ULA+ target format with optimal palette generation
+    - Extracts dominant colors from source image
+    - Clusters colors into 4 CLUTs based on cell usage
+    - Generates 64-color palette optimized for the image
+  - Save/Load palette: 64-byte raw .pal files (GRB332 format)
+    - Compatible with ZX emulators and tools
+  - Color editor: Ctrl+click palette to edit individual colors
+    - R/G/B sliders (0-7 for R/G, 0-3 for B)
+    - Live preview while adjusting
+    - Undo support for color changes
+  - Color picker (eyedropper): Alt+click on canvas to pick colors
+    - Picks both ink and paper from the clicked cell
+    - For ULA+: automatically selects correct CLUT in palette UI
+    - For standard SCR/BSC: also picks bright and flash attributes
+    - Works with most tools (not rect/circle/gradient which use Alt for "from center")
+  - File info shows "SCR (ULA+) (64 colors)" for ULA+ files
+- Border editing: Rectangle tool now works on BSC/BMC4 border
+  - Click and drag to fill rectangular region with current color
+  - Left click = ink color, Right click = paper color
+  - Preview shown while dragging
+  - Can drag into paper area (only border portion painted)
+- Barcodes: Vertical color patterns for border decoration
+  - 8 barcode slots for storing patterns
+  - Shift+click slot then click border to capture pattern
+  - Click slot to select, click again to deselect
+  - Ctrl+click to clear slot
+  - Auto-detects width (8/16/24px) based on capture position
+  - Click/drag on border to stamp selected barcode
+  - Save/load barcodes to .slbc files
+  - Palette data saved/loaded with picture state (multi-picture support)
+  - Clear screen resets palette to default colors
+
 ## v1.38.0
 - SCA animation payload type 1 support
   - Attribute-only animation format (768 bytes per frame vs 6912 for full frames)

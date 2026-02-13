@@ -330,14 +330,6 @@ function initScreenViewerUI() {
         setZoom(newZoom);
         break;
 
-      case '~':
-        // Toggle preview panel (Shift+`) - skip if editor handles it
-        if (typeof editorActive !== 'undefined' && editorActive) break;
-        if (typeof togglePreviewPanel === 'function') {
-          togglePreviewPanel();
-        }
-        break;
-
       case ' ':
         // Space: Toggle SCA animation
         if (currentFormat === FORMAT.SCA) {
@@ -397,6 +389,17 @@ function initScreenViewerUI() {
     }
 
     // Use event.code for layout-independent letter shortcuts (works with non-Latin keyboards)
+
+    // ~: Toggle preview panel (Shift+Backquote for layout independence)
+    if (event.shiftKey && event.code === 'Backquote') {
+      // Skip if editor handles it
+      if (typeof editorActive !== 'undefined' && editorActive) return;
+      if (typeof togglePreviewPanel === 'function') {
+        togglePreviewPanel();
+      }
+      return;
+    }
+
     switch (event.code) {
       case 'KeyG':
         // Cycle grid size: 0 -> 8 -> 16 -> 24 -> 0

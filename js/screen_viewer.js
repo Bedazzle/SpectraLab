@@ -105,6 +105,7 @@ const SCREEN = {
 const FORMAT = {
   UNKNOWN: 'unknown',
   SCR: 'scr',             // Standard 6912-byte screen dump
+  SCR_ULAPLUS: 'scr+',    // 6976-byte SCR with ULA+ palette (6912 + 64)
   ATTR_53C: '53c',        // 768-byte attribute-only with checkerboard
   BSC: 'bsc',             // 11136-byte border screen (SCR + border data)
   IFL: 'ifl',             // 9216-byte multicolor 8x2 (6144 pixels + 3072 attributes)
@@ -241,6 +242,109 @@ const BSC = {
   BORDER_SIDE_PX: 192,      // Side border height in pixels (192 data lines, 1:1)
   BORDER_BOTTOM_PX: 48      // Bottom border height in pixels (48 data lines, 1:1)
 };
+
+// ULA+ format constants (64-color palette extension)
+// Standard SCR (6912 bytes) + 64-byte palette
+// Palette format: GRB332 (3 bits green, 3 bits red, 2 bits blue per entry)
+// Palette organization: 4 CLUTs × 16 colors each
+// - CLUT 0: FLASH=0, BRIGHT=0 (entries 0-15: 8 INK + 8 PAPER)
+// - CLUT 1: FLASH=0, BRIGHT=1 (entries 16-31)
+// - CLUT 2: FLASH=1, BRIGHT=0 (entries 32-47)
+// - CLUT 3: FLASH=1, BRIGHT=1 (entries 48-63)
+const ULAPLUS = {
+  TOTAL_SIZE: 6976,         // 6912 + 64
+  PALETTE_OFFSET: 6912,     // Palette starts after standard SCR
+  PALETTE_SIZE: 64,         // 64 colors in GRB332 format
+  CLUT_SIZE: 16,            // Colors per CLUT (8 INK + 8 PAPER)
+  CLUT_COUNT: 4             // Number of CLUTs
+};
+
+/** @type {Uint8Array|null} - ULA+ 64-color palette (GRB332 format), null if not in ULA+ mode */
+let ulaPlusPalette = null;
+
+/** @type {boolean} - Whether current screen uses ULA+ mode */
+let isUlaPlusMode = false;
+
+/**
+ * Converts GRB332 byte to RGB array
+ * @param {number} grb332 - GRB332 byte (bits 7-5: G, bits 4-2: R, bits 1-0: B)
+ * @returns {number[]} RGB array [r, g, b]
+ */
+function grb332ToRgb(grb332) {
+  // Extract components
+  const g3 = (grb332 >> 5) & 0x07;  // 3 bits green
+  const r3 = (grb332 >> 2) & 0x07;  // 3 bits red
+  const b2 = grb332 & 0x03;         // 2 bits blue
+
+  // Scale to 8-bit: replicate bits to fill byte
+  // 3-bit: ABC -> ABCABCAB (multiply by 36.43 ≈ 255/7)
+  // 2-bit: AB -> ABABABAB (multiply by 85 = 255/3)
+  const r = Math.round(r3 * 255 / 7);
+  const g = Math.round(g3 * 255 / 7);
+  const b = Math.round(b2 * 255 / 3);
+
+  return [r, g, b];
+}
+
+/**
+ * Converts RGB to GRB332 byte
+ * @param {number} r - Red (0-255)
+ * @param {number} g - Green (0-255)
+ * @param {number} b - Blue (0-255)
+ * @returns {number} GRB332 byte
+ */
+function rgbToGrb332(r, g, b) {
+  const g3 = Math.round(g * 7 / 255) & 0x07;
+  const r3 = Math.round(r * 7 / 255) & 0x07;
+  const b2 = Math.round(b * 3 / 255) & 0x03;
+  return (g3 << 5) | (r3 << 2) | b2;
+}
+
+/**
+ * Generates default ULA+ palette matching standard ZX Spectrum colors
+ * @returns {Uint8Array} 64-byte palette in GRB332 format
+ */
+function generateDefaultUlaPlusPalette() {
+  const palette = new Uint8Array(64);
+
+  // Standard ZX Spectrum colors in RGB
+  const normalColors = [
+    [0, 0, 0],       // 0 Black
+    [0, 0, 215],     // 1 Blue
+    [215, 0, 0],     // 2 Red
+    [215, 0, 215],   // 3 Magenta
+    [0, 215, 0],     // 4 Green
+    [0, 215, 215],   // 5 Cyan
+    [215, 215, 0],   // 6 Yellow
+    [215, 215, 215]  // 7 White
+  ];
+
+  const brightColors = [
+    [0, 0, 0],       // 0 Black (same)
+    [0, 0, 255],     // 1 Blue
+    [255, 0, 0],     // 2 Red
+    [255, 0, 255],   // 3 Magenta
+    [0, 255, 0],     // 4 Green
+    [0, 255, 255],   // 5 Cyan
+    [255, 255, 0],   // 6 Yellow
+    [255, 255, 255]  // 7 White
+  ];
+
+  // Fill all 4 CLUTs
+  for (let clut = 0; clut < 4; clut++) {
+    const colors = (clut & 1) ? brightColors : normalColors;  // Odd CLUTs = bright
+    const baseIdx = clut * 16;
+
+    // 8 INK colors (0-7) + 8 PAPER colors (8-15) - same colors for both
+    for (let i = 0; i < 8; i++) {
+      const grb = rgbToGrb332(colors[i][0], colors[i][1], colors[i][2]);
+      palette[baseIdx + i] = grb;       // INK
+      palette[baseIdx + 8 + i] = grb;   // PAPER (same as INK for standard compatibility)
+    }
+  }
+
+  return palette;
+}
 
 // ZX Spectrum color palettes (prefixed to avoid conflict with shared constants.js)
 const ZX_PALETTE = {
@@ -641,6 +745,19 @@ function getColorIndices(attr) {
  * @returns {{ink: string, paper: string}} Color values
  */
 function getColors(attr) {
+  // ULA+ mode uses 64-color palette
+  if (isUlaPlusMode && ulaPlusPalette) {
+    const inkIdx = getUlaPlusPaletteIndex(attr, true);
+    const paperIdx = getUlaPlusPaletteIndex(attr, false);
+    const inkRgb = getUlaPlusColor(inkIdx);
+    const paperRgb = getUlaPlusColor(paperIdx);
+    return {
+      ink: `rgb(${inkRgb[0]},${inkRgb[1]},${inkRgb[2]})`,
+      paper: `rgb(${paperRgb[0]},${paperRgb[1]},${paperRgb[2]})`
+    };
+  }
+
+  // Standard ZX Spectrum mode
   const { inkIndex, paperIndex, isBright } = getColorIndices(attr);
   const palette = isBright ? ZX_PALETTE.BRIGHT : ZX_PALETTE.REGULAR;
   return { ink: palette[inkIndex], paper: palette[paperIndex] };
@@ -721,6 +838,14 @@ function updateFontInfo() {
  * @returns {{inkRgb: number[], paperRgb: number[]}} RGB color arrays
  */
 function getColorsRgb(attr) {
+  // ULA+ mode uses 64-color palette with CLUT selection
+  if (isUlaPlusMode && ulaPlusPalette) {
+    const inkIdx = getUlaPlusPaletteIndex(attr, true);
+    const paperIdx = getUlaPlusPaletteIndex(attr, false);
+    return { inkRgb: getUlaPlusColor(inkIdx), paperRgb: getUlaPlusColor(paperIdx) };
+  }
+
+  // Standard ZX Spectrum mode
   const { inkIndex, paperIndex, isBright } = getColorIndices(attr);
   const palette = isBright ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
   return { inkRgb: palette[inkIndex], paperRgb: palette[paperIndex] };
@@ -2187,7 +2312,15 @@ function toggleFormatControlsVisibility() {
   }
   const scrEditorControls = document.getElementById('scrEditorControls');
   if (scrEditorControls) {
-    scrEditorControls.style.display = (currentFormat === FORMAT.SCR || currentFormat === FORMAT.ATTR_53C || currentFormat === FORMAT.BSC || currentFormat === FORMAT.IFL || currentFormat === FORMAT.MLT || currentFormat === FORMAT.BMC4 || currentFormat === FORMAT.RGB3 || currentFormat === FORMAT.MONO_FULL || currentFormat === FORMAT.MONO_2_3 || currentFormat === FORMAT.MONO_1_3) ? 'flex' : 'none';
+    scrEditorControls.style.display = (currentFormat === FORMAT.SCR || currentFormat === FORMAT.SCR_ULAPLUS || currentFormat === FORMAT.ATTR_53C || currentFormat === FORMAT.BSC || currentFormat === FORMAT.IFL || currentFormat === FORMAT.MLT || currentFormat === FORMAT.BMC4 || currentFormat === FORMAT.RGB3 || currentFormat === FORMAT.MONO_FULL || currentFormat === FORMAT.MONO_2_3 || currentFormat === FORMAT.MONO_1_3) ? 'flex' : 'none';
+  }
+  // Update ULA+ palette section visibility
+  if (typeof updateUlaPlusSectionVisibility === 'function') {
+    updateUlaPlusSectionVisibility();
+  }
+  // Update barcode section visibility (for border formats)
+  if (typeof updateBarcodeVisibility === 'function') {
+    updateBarcodeVisibility();
   }
 }
 
@@ -2198,6 +2331,90 @@ function resetScaState() {
   stopScaAnimation();
   scaHeader = null;
   scaCurrentFrame = 0;
+}
+
+/**
+ * Initializes ULA+ mode from loaded screen data
+ * @param {Uint8Array} data - The loaded file data
+ * @param {string} format - The detected format
+ */
+function initUlaPlusMode(data, format) {
+  if (format === FORMAT.SCR_ULAPLUS && data.length >= ULAPLUS.TOTAL_SIZE) {
+    // Extract palette from the end of the file
+    ulaPlusPalette = new Uint8Array(ULAPLUS.PALETTE_SIZE);
+    for (let i = 0; i < ULAPLUS.PALETTE_SIZE; i++) {
+      ulaPlusPalette[i] = data[ULAPLUS.PALETTE_OFFSET + i];
+    }
+    isUlaPlusMode = true;
+  } else {
+    // Not ULA+ mode - reset state
+    ulaPlusPalette = null;
+    isUlaPlusMode = false;
+  }
+
+  // Update ULA+ palette UI if available
+  if (typeof buildUlaPlusGrid === 'function') {
+    buildUlaPlusGrid();
+  }
+  if (typeof buildUlaPlusClassic === 'function') {
+    buildUlaPlusClassic();
+  }
+  if (typeof updateUlaPlusPalette === 'function') {
+    updateUlaPlusPalette();
+  }
+}
+
+/**
+ * Resets ULA+ mode state
+ */
+function resetUlaPlusMode() {
+  ulaPlusPalette = null;
+  isUlaPlusMode = false;
+}
+
+/**
+ * Enables ULA+ mode with default or provided palette
+ * @param {Uint8Array} [palette] - Optional palette, uses default if not provided
+ */
+function enableUlaPlusMode(palette) {
+  ulaPlusPalette = palette || generateDefaultUlaPlusPalette();
+  isUlaPlusMode = true;
+}
+
+/**
+ * Gets the RGB color for a ULA+ palette entry
+ * @param {number} index - Palette index (0-63)
+ * @returns {number[]} RGB array [r, g, b]
+ */
+function getUlaPlusColor(index) {
+  if (!ulaPlusPalette || index < 0 || index >= 64) {
+    return [0, 0, 0];
+  }
+  return grb332ToRgb(ulaPlusPalette[index]);
+}
+
+/**
+ * Gets the ULA+ palette index for a given attribute and pixel state
+ * @param {number} attr - Attribute byte
+ * @param {boolean} isInk - True for ink color, false for paper
+ * @returns {number} Palette index (0-63)
+ */
+function getUlaPlusPaletteIndex(attr, isInk) {
+  const ink = attr & 0x07;
+  const paper = (attr >> 3) & 0x07;
+  const bright = (attr >> 6) & 0x01;
+  const flash = (attr >> 7) & 0x01;
+
+  // CLUT selection: bits 7-6 of attribute (FLASH, BRIGHT)
+  const clut = (flash << 1) | bright;
+  const baseIdx = clut * ULAPLUS.CLUT_SIZE;
+
+  // Within CLUT: 0-7 = INK colors, 8-15 = PAPER colors
+  if (isInk) {
+    return baseIdx + ink;
+  } else {
+    return baseIdx + 8 + paper;
+  }
 }
 
 // ============================================================================
@@ -2882,6 +3099,7 @@ function getFormatName(format) {
   switch (format) {
     case FORMAT.ATTR_53C: return '53c (attributes only)';
     case FORMAT.SCR: return 'SCR (standard)';
+    case FORMAT.SCR_ULAPLUS: return 'SCR (ULA+)';
     case FORMAT.BSC: return 'BSC (border screen)';
     case FORMAT.IFL: return 'IFL (8x2 multicolor)';
     case FORMAT.BMC4: return 'BMC4 (border + 8x4 multicolor)';
@@ -2949,6 +3167,8 @@ function updateFileInfo() {
     let formatDisplay = formatName;
     if (currentFormat === FORMAT.SCA && scaHeader) {
       formatDisplay = `${formatName} (v${scaHeader.version})`;
+    } else if (currentFormat === FORMAT.SCR_ULAPLUS && isUlaPlusMode) {
+      formatDisplay = `${formatName} (64 colors)`;
     }
     infoFormat.textContent = currentFileName ? formatDisplay : '-';
   }
@@ -3302,6 +3522,10 @@ function detectFormat(fileName, fileSize) {
     return FORMAT.RGB3;
   }
 
+  if (fileSize === ULAPLUS.TOTAL_SIZE) {
+    return FORMAT.SCR_ULAPLUS;
+  }
+
   if (fileSize === SCREEN.TOTAL_SIZE) {
     return FORMAT.SCR;
   }
@@ -3377,6 +3601,9 @@ function loadScreenFile(file) {
         renderScreen();
         return;
       }
+
+      // Initialize ULA+ mode based on format
+      initUlaPlusMode(data, format);
 
       // For editable formats, use multi-picture system if available
       if (typeof addPicture === 'function') {

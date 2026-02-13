@@ -52,6 +52,9 @@ let currentTool = EDITOR.TOOL_PIXEL;
 /** @type {number} - Transparent color constant */
 const COLOR_TRANSPARENT = -1;
 
+/** @type {number} - Transparent color for barcodes (stored in Uint8Array, so use 255) */
+const BARCODE_TRANSPARENT = 255;
+
 /** @type {number} - Current ink color (0-7, or -1 for transparent) */
 let editorInkColor = parseInt(localStorage.getItem('spectraLabInkColor') || '0', 10);
 
@@ -87,6 +90,15 @@ let captureStartPoint = null;
 
 /** @type {string} - Custom brush paint mode: 'set', 'invert', 'replace' */
 let brushPaintMode = localStorage.getItem('spectraLabBrushPaintMode') || 'replace';
+
+/** @type {Array<{width:number, height:number, colors:Uint8Array}|null>} - 8 barcode patterns for border */
+let barcodes = [null, null, null, null, null, null, null, null];
+
+/** @type {number} - Active barcode slot (0-7), or -1 for none */
+let activeBarcode = -1;
+
+/** @type {boolean} - True when barcode mode is active for border drawing */
+let barcodeMode = false;
 
 /** @type {{x: number, y: number}|null} - Stroke origin for masked+ mode */
 let maskStrokeOrigin = null;
@@ -173,6 +185,10 @@ function scheduleRender() {
   if (pendingRenderFrame === null) {
     pendingRenderFrame = requestAnimationFrame(() => {
       pendingRenderFrame = null;
+      // Flatten layers before render for real-time visual feedback on non-background layers
+      if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
+        flattenLayersToScreen();
+      }
       editorRender(true); // Skip preview during continuous drawing
     });
   }
@@ -479,7 +495,8 @@ let borderPreviewPos = null;
  *   brushSize: number,
  *   brushShape: string,
  *   scrollTop: number,
- *   scrollLeft: number
+ *   scrollLeft: number,
+ *   ulaPlusPalette: Uint8Array|null
  * }} PictureState
  */
 
@@ -537,8 +554,17 @@ function saveCurrentPictureState() {
 
   const pic = openPictures[activePictureIndex];
   pic.screenData = screenData.slice();
-  pic.undoStack = undoStack.map(s => s.slice());
-  pic.redoStack = redoStack.map(s => s.slice());
+  // Clone undo/redo stacks (each entry is {screenData, layers, activeLayerIndex})
+  pic.undoStack = undoStack.map(s => ({
+    screenData: s.screenData.slice(),
+    layers: deepCloneLayers(s.layers),
+    activeLayerIndex: s.activeLayerIndex
+  }));
+  pic.redoStack = redoStack.map(s => ({
+    screenData: s.screenData.slice(),
+    layers: deepCloneLayers(s.layers),
+    activeLayerIndex: s.activeLayerIndex
+  }));
   pic.layers = deepCloneLayers(layers);
   pic.activeLayerIndex = activeLayerIndex;
   pic.layersEnabled = layersEnabled;
@@ -562,6 +588,8 @@ function saveCurrentPictureState() {
     pic.scrollTop = container.scrollTop;
     pic.scrollLeft = container.scrollLeft;
   }
+  // Save ULA+ palette if active
+  pic.ulaPlusPalette = ulaPlusPalette ? ulaPlusPalette.slice() : null;
 }
 
 /**
@@ -575,8 +603,17 @@ function loadPictureState(index) {
   screenData = pic.screenData.slice();
   currentFileName = pic.fileName;
   currentFormat = pic.format;
-  undoStack = pic.undoStack.map(s => s.slice());
-  redoStack = pic.redoStack.map(s => s.slice());
+  // Clone undo/redo stacks (each entry is {screenData, layers, activeLayerIndex})
+  undoStack = pic.undoStack.map(s => ({
+    screenData: s.screenData.slice(),
+    layers: deepCloneLayers(s.layers),
+    activeLayerIndex: s.activeLayerIndex
+  }));
+  redoStack = pic.redoStack.map(s => ({
+    screenData: s.screenData.slice(),
+    layers: deepCloneLayers(s.layers),
+    activeLayerIndex: s.activeLayerIndex
+  }));
   layers = deepCloneLayers(pic.layers);
   activeLayerIndex = pic.activeLayerIndex;
   layersEnabled = pic.layersEnabled;
@@ -619,6 +656,16 @@ function loadPictureState(index) {
         container.scrollLeft = pic.scrollLeft;
       }
     }, 0);
+  }
+
+  // Restore ULA+ palette
+  if (pic.ulaPlusPalette) {
+    ulaPlusPalette = pic.ulaPlusPalette.slice();
+    isUlaPlusMode = true;
+    resetUlaPlusColors();
+  } else {
+    ulaPlusPalette = null;
+    isUlaPlusMode = false;
   }
 }
 
@@ -675,7 +722,8 @@ function addPicture(fileName, format, data) {
     brushSize: brushSize,
     brushShape: brushShape,
     scrollTop: 0,
-    scrollLeft: 0
+    scrollLeft: 0,
+    ulaPlusPalette: ulaPlusPalette ? ulaPlusPalette.slice() : null
   };
 
   openPictures.push(newPicture);
@@ -1007,9 +1055,9 @@ function setPixel(data, x, y, isInk) {
   if (currentFormat === FORMAT.MONO_2_3 && y >= 128) return;
   if (currentFormat === FORMAT.MONO_1_3 && y >= 64) return;
 
-  // Check if painting with transparent color
-  const color = isInk ? editorInkColor : editorPaperColor;
-  if (color === COLOR_TRANSPARENT) {
+  // Check if painting with transparent color (not available in ULA+ mode)
+  const isTransparent = isInk ? isInkTransparent() : isPaperTransparent();
+  if (isTransparent) {
     // Transparent: clear the mask on non-background layers
     if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
       const layer = layers[activeLayerIndex];
@@ -1022,6 +1070,9 @@ function setPixel(data, x, y, isInk) {
     // On background layer, transparent does nothing (can't erase background)
     return;
   }
+
+  // Get current color for format-specific handling
+  const color = isInk ? getCurrentInkColor() : getCurrentPaperColor();
 
   // RGB3 format: set bits in all 3 color channels based on ink/paper color
   if (currentFormat === FORMAT.RGB3) {
@@ -1054,14 +1105,9 @@ function setPixel(data, x, y, isInk) {
   const bitmapAddr = getBitmapAddress(x, y);
   const bit = getBitPosition(x);
 
-  if (isInk) {
-    data[bitmapAddr] |= (1 << bit);
-  } else {
-    data[bitmapAddr] &= ~(1 << bit);
-  }
-
-  // Also update active layer if layers are enabled
-  if (layersEnabled && layers.length > 0) {
+  // When layers are enabled and on non-background layer, only modify the layer bitmap
+  // screenData will be updated via flattenLayersToScreen() after drawing completes
+  if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
     const layer = layers[activeLayerIndex];
     if (layer) {
       const maskIdx = y * width + x;
@@ -1071,9 +1117,24 @@ function setPixel(data, x, y, isInk) {
         layer.bitmap[bitmapAddr] &= ~(1 << bit);
       }
       layer.mask[maskIdx] = 1; // Mark pixel as visible
-      // Also update screen transparency mask
-      if (screenTransparencyMask && maskIdx < screenTransparencyMask.length) {
-        screenTransparencyMask[maskIdx] = 1;
+    }
+  } else {
+    // No layers, or on background layer - modify screenData directly
+    if (isInk) {
+      data[bitmapAddr] |= (1 << bit);
+    } else {
+      data[bitmapAddr] &= ~(1 << bit);
+    }
+
+    // Also update background layer bitmap if layers are enabled
+    if (layersEnabled && layers.length > 0 && activeLayerIndex === 0) {
+      const layer = layers[0];
+      if (layer) {
+        if (isInk) {
+          layer.bitmap[bitmapAddr] |= (1 << bit);
+        } else {
+          layer.bitmap[bitmapAddr] &= ~(1 << bit);
+        }
       }
     }
   }
@@ -1084,50 +1145,74 @@ function setPixel(data, x, y, isInk) {
   }
 
   // Set the attribute for this cell to current ink/paper/bright
-  // For attributes, use actual colors (not transparent)
-  const attrInk = editorInkColor === COLOR_TRANSPARENT ? 0 : editorInkColor;
-  const attrPaper = editorPaperColor === COLOR_TRANSPARENT ? 0 : editorPaperColor;
-  const attr = buildAttribute(attrInk, attrPaper, editorBright, editorFlash);
+  const attr = getCurrentDrawingAttribute();
 
   // MLT uses 8×1 blocks (192 rows), IFL uses 8×2 blocks (96 rows), BMC4 uses 8×4 blocks (48 rows), SCR uses 8×8 cells (24 rows)
   const attrAddr = currentFormat === FORMAT.MLT ? getMltAttributeAddress(x, y) :
                    currentFormat === FORMAT.IFL ? getIflAttributeAddress(x, y) :
                    currentFormat === FORMAT.BMC4 ? getBmc4AttributeAddress(x, y) :
                    getAttributeAddress(x, y);
-  data[attrAddr] = attr;
 
-  // Also update per-layer attributes if layers are enabled
-  if (layersEnabled && layers.length > 0) {
+  // When layers are enabled and on non-background layer, only update layer attributes
+  // screenData attributes will be updated via flattenAttributesToScreen()
+  if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
     const layer = layers[activeLayerIndex];
     if (layer && layer.attributes) {
       if (currentFormat === FORMAT.BMC4) {
-        // BMC4: determine which attribute bank to use based on pixel line within cell
         const pixelLine = y % 8;
         const charRow = Math.floor(y / 8);
         const charCol = Math.floor(x / 8);
         const attrIdx = charRow * 32 + charCol;
         if (pixelLine < 4) {
-          // Top half of cell -> attributes (bank 1)
           layer.attributes[attrIdx] = attr;
         } else if (layer.attributes2) {
-          // Bottom half of cell -> attributes2 (bank 2)
           layer.attributes2[attrIdx] = attr;
         }
       } else if (currentFormat === FORMAT.MLT) {
-        // MLT: one attribute per pixel row (192 rows)
         const attrIdx = y * 32 + Math.floor(x / 8);
         layer.attributes[attrIdx] = attr;
       } else if (currentFormat === FORMAT.IFL) {
-        // IFL: one attribute per 2 pixel rows (96 rows)
         const attrRow = Math.floor(y / 2);
         const attrIdx = attrRow * 32 + Math.floor(x / 8);
         layer.attributes[attrIdx] = attr;
       } else {
-        // SCR/BSC: one attribute per 8x8 cell (24 rows)
         const charRow = Math.floor(y / 8);
         const charCol = Math.floor(x / 8);
         const attrIdx = charRow * 32 + charCol;
         layer.attributes[attrIdx] = attr;
+      }
+    }
+  } else {
+    // No layers, or on background layer - modify screenData directly
+    data[attrAddr] = attr;
+
+    // Also update background layer attributes if layers are enabled
+    if (layersEnabled && layers.length > 0 && activeLayerIndex === 0) {
+      const layer = layers[0];
+      if (layer && layer.attributes) {
+        if (currentFormat === FORMAT.BMC4) {
+          const pixelLine = y % 8;
+          const charRow = Math.floor(y / 8);
+          const charCol = Math.floor(x / 8);
+          const attrIdx = charRow * 32 + charCol;
+          if (pixelLine < 4) {
+            layer.attributes[attrIdx] = attr;
+          } else if (layer.attributes2) {
+            layer.attributes2[attrIdx] = attr;
+          }
+        } else if (currentFormat === FORMAT.MLT) {
+          const attrIdx = y * 32 + Math.floor(x / 8);
+          layer.attributes[attrIdx] = attr;
+        } else if (currentFormat === FORMAT.IFL) {
+          const attrRow = Math.floor(y / 2);
+          const attrIdx = attrRow * 32 + Math.floor(x / 8);
+          layer.attributes[attrIdx] = attr;
+        } else {
+          const charRow = Math.floor(y / 8);
+          const charCol = Math.floor(x / 8);
+          const attrIdx = charRow * 32 + charCol;
+          layer.attributes[attrIdx] = attr;
+        }
       }
     }
   }
@@ -1152,7 +1237,7 @@ function setPixelBitmapOnly(data, x, y, isInk) {
   if (currentFormat === FORMAT.RGB3) {
     const bitmapAddr = getBitmapAddress(x, y);
     const bit = getBitPosition(x);
-    const color = isInk ? editorInkColor : editorPaperColor;
+    const color = isInk ? getCurrentInkColor() : getCurrentPaperColor();
     const hasBlue = (color & 1) !== 0;
     const hasRed = (color & 2) !== 0;
     const hasGreen = (color & 4) !== 0;
@@ -1178,14 +1263,8 @@ function setPixelBitmapOnly(data, x, y, isInk) {
   const bitmapAddr = getBitmapAddress(x, y);
   const bit = getBitPosition(x);
 
-  if (isInk) {
-    data[bitmapAddr] |= (1 << bit);
-  } else {
-    data[bitmapAddr] &= ~(1 << bit);
-  }
-
-  // Update active layer if layers are enabled
-  if (layersEnabled && layers.length > 0) {
+  // When layers are enabled and on non-background layer, only modify layer data
+  if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
     const layer = layers[activeLayerIndex];
     if (layer) {
       const maskIdx = y * width + x;
@@ -1195,6 +1274,25 @@ function setPixelBitmapOnly(data, x, y, isInk) {
         layer.bitmap[bitmapAddr] &= ~(1 << bit);
       }
       layer.mask[maskIdx] = 1;
+    }
+  } else {
+    // No layers or on background layer - modify screenData directly
+    if (isInk) {
+      data[bitmapAddr] |= (1 << bit);
+    } else {
+      data[bitmapAddr] &= ~(1 << bit);
+    }
+
+    // Also update background layer if layers enabled
+    if (layersEnabled && layers.length > 0 && activeLayerIndex === 0) {
+      const layer = layers[0];
+      if (layer) {
+        if (isInk) {
+          layer.bitmap[bitmapAddr] |= (1 << bit);
+        } else {
+          layer.bitmap[bitmapAddr] &= ~(1 << bit);
+        }
+      }
     }
   }
 }
@@ -1216,40 +1314,50 @@ function setPixelAttributeOnly(data, x, y) {
     return;
   }
 
-  const attr = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+  const attr = getCurrentDrawingAttribute();
   const attrAddr = currentFormat === FORMAT.MLT ? getMltAttributeAddress(x, y) :
                    currentFormat === FORMAT.IFL ? getIflAttributeAddress(x, y) :
                    currentFormat === FORMAT.BMC4 ? getBmc4AttributeAddress(x, y) :
                    getAttributeAddress(x, y);
-  data[attrAddr] = attr;
 
-  // Also update per-layer attribute if layers are enabled
-  if (layersEnabled && layers.length > 0) {
-    const layer = layers[activeLayerIndex];
-    if (layer && layer.attributes) {
-      if (currentFormat === FORMAT.BMC4) {
-        const pixelLine = y % 8;
-        const charRow = Math.floor(y / 8);
-        const charCol = Math.floor(x / 8);
-        const attrIdx = charRow * 32 + charCol;
-        if (pixelLine < 4) {
-          layer.attributes[attrIdx] = attr;
-        } else if (layer.attributes2) {
-          layer.attributes2[attrIdx] = attr;
-        }
-      } else if (currentFormat === FORMAT.MLT) {
-        const attrIdx = y * 32 + Math.floor(x / 8);
+  // Helper to update layer attributes
+  const updateLayerAttr = (layer) => {
+    if (!layer || !layer.attributes) return;
+    if (currentFormat === FORMAT.BMC4) {
+      const pixelLine = y % 8;
+      const charRow = Math.floor(y / 8);
+      const charCol = Math.floor(x / 8);
+      const attrIdx = charRow * 32 + charCol;
+      if (pixelLine < 4) {
         layer.attributes[attrIdx] = attr;
-      } else if (currentFormat === FORMAT.IFL) {
-        const attrRow = Math.floor(y / 2);
-        const attrIdx = attrRow * 32 + Math.floor(x / 8);
-        layer.attributes[attrIdx] = attr;
-      } else {
-        const charRow = Math.floor(y / 8);
-        const charCol = Math.floor(x / 8);
-        const attrIdx = charRow * 32 + charCol;
-        layer.attributes[attrIdx] = attr;
+      } else if (layer.attributes2) {
+        layer.attributes2[attrIdx] = attr;
       }
+    } else if (currentFormat === FORMAT.MLT) {
+      const attrIdx = y * 32 + Math.floor(x / 8);
+      layer.attributes[attrIdx] = attr;
+    } else if (currentFormat === FORMAT.IFL) {
+      const attrRow = Math.floor(y / 2);
+      const attrIdx = attrRow * 32 + Math.floor(x / 8);
+      layer.attributes[attrIdx] = attr;
+    } else {
+      const charRow = Math.floor(y / 8);
+      const charCol = Math.floor(x / 8);
+      const attrIdx = charRow * 32 + charCol;
+      layer.attributes[attrIdx] = attr;
+    }
+  };
+
+  // When layers are enabled and on non-background layer, only modify layer data
+  if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
+    updateLayerAttr(layers[activeLayerIndex]);
+  } else {
+    // No layers or on background layer - modify screenData directly
+    data[attrAddr] = attr;
+
+    // Also update background layer if layers enabled
+    if (layersEnabled && layers.length > 0 && activeLayerIndex === 0) {
+      updateLayerAttr(layers[0]);
     }
   }
 }
@@ -1276,6 +1384,96 @@ function buildAttribute(ink, paper, bright, flash) {
   const safeInk = ink === COLOR_TRANSPARENT ? 0 : ink;
   const safePaper = paper === COLOR_TRANSPARENT ? 0 : paper;
   return (safeInk & 0x07) | ((safePaper & 0x07) << 3) | (bright ? 0x40 : 0) | (flash ? 0x80 : 0);
+}
+
+/**
+ * Builds attribute byte for ULA+ mode from selected palette indices
+ * Uses CLUT from ink selection, ink/paper positions from their respective indices
+ * @returns {number} Attribute byte
+ */
+function buildUlaPlusAttribute() {
+  // Handle transparent - use defaults (0 for ink, 7 for paper)
+  const inkIdx = ulaPlusInkIndex === ULAPLUS_TRANSPARENT ? 0 : ulaPlusInkIndex;
+  const paperIdx = ulaPlusPaperIndex === ULAPLUS_TRANSPARENT ? 15 : ulaPlusPaperIndex;
+
+  // Extract CLUT from ink index (0-63 → CLUT 0-3)
+  const clut = Math.floor(inkIdx / 16);
+
+  // Extract ink position (0-7) from index
+  // Indices 0-7, 16-23, 32-39, 48-55 are INK positions
+  const inkPos = inkIdx % 8;
+
+  // Extract paper position (0-7) from paper index
+  // Indices 8-15, 24-31, 40-47, 56-63 are PAPER positions
+  // We take just the 0-7 part regardless of which CLUT the paper was selected from
+  const paperPos = paperIdx % 8;
+
+  // CLUT is encoded as: bit 6 = BRIGHT, bit 7 = FLASH
+  const bright = (clut & 1) !== 0;
+  const flash = (clut & 2) !== 0;
+
+  return (inkPos & 0x07) | ((paperPos & 0x07) << 3) | (bright ? 0x40 : 0) | (flash ? 0x80 : 0);
+}
+
+/**
+ * Gets the current drawing attribute based on mode (ULA+ or standard)
+ * @returns {number} Attribute byte for drawing
+ */
+function getCurrentDrawingAttribute() {
+  if (isUlaPlusMode) {
+    return buildUlaPlusAttribute();
+  }
+  const attrInk = editorInkColor === COLOR_TRANSPARENT ? 0 : editorInkColor;
+  const attrPaper = editorPaperColor === COLOR_TRANSPARENT ? 0 : editorPaperColor;
+  return buildAttribute(attrInk, attrPaper, editorBright, editorFlash);
+}
+
+/**
+ * Gets the current ink color for drawing (0-7 for standard, 0-7 within CLUT for ULA+)
+ * Returns COLOR_TRANSPARENT (-1) if transparent is selected
+ * @returns {number} Ink color index
+ */
+function getCurrentInkColor() {
+  if (isUlaPlusMode) {
+    if (ulaPlusInkIndex === ULAPLUS_TRANSPARENT) return COLOR_TRANSPARENT;
+    return ulaPlusInkIndex % 8;
+  }
+  return editorInkColor;
+}
+
+/**
+ * Gets the current paper color for drawing (0-7 for standard, 0-7 within CLUT for ULA+)
+ * Returns COLOR_TRANSPARENT (-1) if transparent is selected
+ * @returns {number} Paper color index
+ */
+function getCurrentPaperColor() {
+  if (isUlaPlusMode) {
+    if (ulaPlusPaperIndex === ULAPLUS_TRANSPARENT) return COLOR_TRANSPARENT;
+    return ulaPlusPaperIndex % 8;
+  }
+  return editorPaperColor;
+}
+
+/**
+ * Checks if ink is set to transparent
+ * @returns {boolean}
+ */
+function isInkTransparent() {
+  if (isUlaPlusMode) {
+    return ulaPlusInkIndex === ULAPLUS_TRANSPARENT;
+  }
+  return editorInkColor === COLOR_TRANSPARENT;
+}
+
+/**
+ * Checks if paper is set to transparent
+ * @returns {boolean}
+ */
+function isPaperTransparent() {
+  if (isUlaPlusMode) {
+    return ulaPlusPaperIndex === ULAPLUS_TRANSPARENT;
+  }
+  return editorPaperColor === COLOR_TRANSPARENT;
 }
 
 /**
@@ -1333,7 +1531,7 @@ function getLayerBorderSize() {
  * @returns {number} Attribute size in bytes (0 for formats without attributes)
  */
 function getLayerAttributeSize() {
-  if (currentFormat === FORMAT.SCR || currentFormat === FORMAT.BSC) {
+  if (currentFormat === FORMAT.SCR || currentFormat === FORMAT.SCR_ULAPLUS || currentFormat === FORMAT.BSC) {
     return SCREEN.ATTR_SIZE; // 768 bytes (8×8 cells)
   }
   if (currentFormat === FORMAT.BMC4) {
@@ -1442,6 +1640,9 @@ function initLayers() {
 function addLayer(name) {
   if (!layersEnabled) return;
 
+  // Save undo state before adding layer
+  saveUndoState();
+
   const bitmapSize = getLayerBitmapSize();
   const borderSize = getLayerBorderSize();
   const hasBorder = formatHasBorder();
@@ -1494,6 +1695,9 @@ function addLayer(name) {
 function removeLayer() {
   if (!layersEnabled || layers.length <= 1 || activeLayerIndex === 0) return;
 
+  // Save undo state before removing layer
+  saveUndoState();
+
   layers.splice(activeLayerIndex, 1);
   if (activeLayerIndex >= layers.length) {
     activeLayerIndex = layers.length - 1;
@@ -1510,6 +1714,9 @@ function removeLayer() {
 function moveLayerUp() {
   if (!layersEnabled || activeLayerIndex >= layers.length - 1) return;
 
+  // Save undo state before reordering layers
+  saveUndoState();
+
   const temp = layers[activeLayerIndex];
   layers[activeLayerIndex] = layers[activeLayerIndex + 1];
   layers[activeLayerIndex + 1] = temp;
@@ -1525,6 +1732,9 @@ function moveLayerUp() {
  */
 function moveLayerDown() {
   if (!layersEnabled || activeLayerIndex <= 1) return; // Can't move below background
+
+  // Save undo state before reordering layers
+  saveUndoState();
 
   const temp = layers[activeLayerIndex];
   layers[activeLayerIndex] = layers[activeLayerIndex - 1];
@@ -1739,8 +1949,8 @@ function flattenAttributesToScreen() {
       const cellStartY = attrRow * cellHeight;
       const attrIdx = attrRow * attrCols + attrCol;
 
-      // Find topmost visible layer with content in this cell
-      const ownerLayer = findLayerOwnerForRegion(cellStartX, cellStartY, cellWidth, cellHeight);
+      // Find topmost visible layer with content AND attributes in this cell
+      const ownerLayer = findLayerOwnerForRegionWithAttributes(cellStartX, cellStartY, cellWidth, cellHeight);
 
       if (ownerLayer && ownerLayer.attributes && attrIdx < ownerLayer.attributes.length) {
         screenData[bitmapSize + attrIdx] = ownerLayer.attributes[attrIdx];
@@ -1771,7 +1981,7 @@ function flattenBmc4Attributes() {
 
       // Top half (lines 0-3 of the 8-pixel cell)
       const topStartY = charRow * 8;
-      const topOwner = findLayerOwnerForRegion(cellStartX, topStartY, cellWidth, 4);
+      const topOwner = findLayerOwnerForRegionWithAttributes(cellStartX, topStartY, cellWidth, 4);
       if (topOwner && topOwner.attributes && attrIdx < topOwner.attributes.length) {
         screenData[BMC4.ATTR1_OFFSET + attrIdx] = topOwner.attributes[attrIdx];
       } else if (layers[0].visible && layers[0].attributes && attrIdx < layers[0].attributes.length) {
@@ -1782,7 +1992,7 @@ function flattenBmc4Attributes() {
 
       // Bottom half (lines 4-7 of the 8-pixel cell)
       const bottomStartY = charRow * 8 + 4;
-      const bottomOwner = findLayerOwnerForRegion(cellStartX, bottomStartY, cellWidth, 4);
+      const bottomOwner = findLayerOwnerForRegionWithAttributes(cellStartX, bottomStartY, cellWidth, 4);
       if (bottomOwner && bottomOwner.attributes2 && attrIdx < bottomOwner.attributes2.length) {
         screenData[BMC4.ATTR2_OFFSET + attrIdx] = bottomOwner.attributes2[attrIdx];
       } else if (layers[0].visible && layers[0].attributes2 && attrIdx < layers[0].attributes2.length) {
@@ -1823,6 +2033,45 @@ function findLayerOwnerForRegion(startX, startY, regionWidth, regionHeight) {
         const maskIdx = y * width + x;
         if (layer.mask[maskIdx]) {
           // Found a visible pixel on this layer
+          return layer;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Finds the topmost visible layer that has content AND attributes in a region.
+ * This ensures the returned layer can provide attributes for the cell.
+ * @param {number} startX
+ * @param {number} startY
+ * @param {number} regionWidth
+ * @param {number} regionHeight
+ * @returns {Layer|null}
+ */
+function findLayerOwnerForRegionWithAttributes(startX, startY, regionWidth, regionHeight) {
+  const width = getFormatWidth();
+
+  // Search from top layer down to background
+  for (let layerIdx = layers.length - 1; layerIdx >= 0; layerIdx--) {
+    const layer = layers[layerIdx];
+    if (!layer.visible) continue;
+    if (!layer.attributes) continue; // Skip layers without attributes
+
+    // Check if this layer has any visible pixel in the region
+    for (let dy = 0; dy < regionHeight; dy++) {
+      const y = startY + dy;
+      if (y >= getFormatHeight()) continue;
+
+      for (let dx = 0; dx < regionWidth; dx++) {
+        const x = startX + dx;
+        if (x >= width) continue;
+
+        const maskIdx = y * width + x;
+        if (layer.mask[maskIdx]) {
+          // Found a visible pixel on this layer (which has attributes)
           return layer;
         }
       }
@@ -3291,10 +3540,12 @@ const BLUE_NOISE_16X16 = [
  */
 function getDitherThreshold(x, y, method) {
   if (method === DITHER_METHOD.NOISE) {
-    return BLUE_NOISE_16X16[y & 15][x & 15] / 255;
+    // Offset by 0.5 and divide by 256 to get range (0, 1) exclusive
+    // This avoids edge cases where threshold = 0 or 1
+    return (BLUE_NOISE_16X16[y & 15][x & 15] + 0.5) / 256;
   }
-  // Default to Bayer
-  return GRADIENT_BAYER_8X8[y & 7][x & 7] / 63;
+  // Default to Bayer - offset by 0.5 and divide by 64 for range (0, 1) exclusive
+  return (GRADIENT_BAYER_8X8[y & 7][x & 7] + 0.5) / 64;
 }
 
 // ============================================================================
@@ -3386,6 +3637,8 @@ function calculateGradientValue(px, py, x0, y0, x1, y1, type) {
 function drawGradient(x0, y0, x1, y1, isInk) {
   if (!screenData) return;
 
+  // Note: snap is already applied by caller (mousedown/mouseup handlers use snapDrawCoords)
+
   // Determine screen bounds based on format
   let width = 256, height = 192;
   if (currentFormat === FORMAT.BSC || currentFormat === FORMAT.BMC4) {
@@ -3404,6 +3657,123 @@ function drawGradient(x0, y0, x1, y1, isInk) {
 
   const reverse = gradientReverse ? !isInk : isInk;
 
+  // Check for custom brush
+  const hasCustomBrush = brushShape === 'custom' && activeCustomBrush >= 0 && customBrushes[activeCustomBrush];
+  const isMasked = brushPaintMode === 'masked' || brushPaintMode === 'masked+';
+
+  // For masked+ mode, set stroke origin to gradient start
+  if (brushPaintMode === 'masked+') {
+    maskStrokeOrigin = { x: x0, y: y0 };
+  }
+
+  // Helper to apply a single pixel with current brush mode
+  const applyGradientPixel = (px, py, shouldBeInk) => {
+    if (isMasked) {
+      // Masked mode: paint through mask pattern
+      const patternSet = getMaskPatternAt(px, py);
+      if (patternSet === null) return; // Transparent - skip
+      // In masked mode, the mask pattern determines ink/paper, gradient determines where to apply
+      if (shouldBeInk) {
+        setPixel(screenData, px, py, patternSet);
+      }
+    } else if (brushPaintMode === 'invert') {
+      // Invert: toggle pixel where gradient says ink
+      if (shouldBeInk) {
+        const current = getPixel(screenData, px, py);
+        setPixel(screenData, px, py, !current);
+      }
+    } else if (brushPaintMode === 'recolor') {
+      // Recolor: only update attributes where gradient says ink
+      if (shouldBeInk) {
+        setPixelAttributeOnly(screenData, px, py);
+      }
+    } else if (brushPaintMode === 'retouch') {
+      // Retouch: only update bitmap where gradient says ink
+      if (shouldBeInk) {
+        setPixelBitmapOnly(screenData, px, py, isInk);
+      }
+    } else if (brushPaintMode === 'replace') {
+      // Replace: always set pixel based on gradient
+      setPixel(screenData, px, py, shouldBeInk);
+    } else {
+      // Set (default): only paint where gradient says ink
+      if (shouldBeInk) {
+        setPixel(screenData, px, py, isInk);
+      }
+    }
+  };
+
+  // Custom brush gradient: stamp brush pattern at gradient-determined positions
+  if (hasCustomBrush && !isMasked) {
+    const brush = customBrushes[activeCustomBrush];
+    const bw = brush.width;
+    const bh = brush.height;
+    const bytesPerRow = Math.ceil(bw / 8);
+    const offsetX = Math.floor(bw / 2);
+    const offsetY = Math.floor(bh / 2);
+    const hasMask = brush.mask && brush.mask.length > 0;
+
+    // Iterate screen in brush-sized steps
+    const stepX = Math.max(1, bw);
+    const stepY = Math.max(1, bh);
+
+    for (let cy = offsetY; cy < height; cy += stepY) {
+      for (let cx = offsetX; cx < width; cx += stepX) {
+        // Calculate gradient value at brush center
+        let value = calculateGradientValue(cx, cy, x0, y0, x1, y1, gradientType);
+        if (reverse) value = 1 - value;
+        const threshold = getDitherThreshold(cx, cy, ditherMethod);
+        const shouldStamp = value > threshold;
+
+        if (!shouldStamp && brushPaintMode !== 'replace') continue;
+
+        // Stamp brush at this position
+        for (let r = 0; r < bh; r++) {
+          for (let c = 0; c < bw; c++) {
+            const px = cx + c - offsetX;
+            const py = cy + r - offsetY;
+            if (px < 0 || px >= width || py < 0 || py >= height) continue;
+
+            const byteIdx = r * bytesPerRow + Math.floor(c / 8);
+            const bitIdx = 7 - (c % 8);
+            const brushBit = (brush.data[byteIdx] & (1 << bitIdx)) !== 0;
+            const maskBit = hasMask ? (brush.mask[byteIdx] & (1 << bitIdx)) !== 0 : true;
+
+            if (!maskBit) continue; // Skip transparent brush pixels
+
+            if (brushPaintMode === 'replace') {
+              // Replace: stamp brush pattern (ink/paper based on brush bit)
+              setPixel(screenData, px, py, shouldStamp ? brushBit : !brushBit);
+            } else if (brushPaintMode === 'invert') {
+              // Invert: toggle where brush bit is set
+              if (brushBit) {
+                const current = getPixel(screenData, px, py);
+                setPixel(screenData, px, py, !current);
+              }
+            } else if (brushPaintMode === 'recolor') {
+              // Recolor: update attributes where brush bit is set
+              if (brushBit) {
+                setPixelAttributeOnly(screenData, px, py);
+              }
+            } else if (brushPaintMode === 'retouch') {
+              // Retouch: update bitmap where brush bit is set
+              if (brushBit) {
+                setPixelBitmapOnly(screenData, px, py, isInk);
+              }
+            } else {
+              // Set: paint ink where brush bit is set
+              if (brushBit) {
+                setPixel(screenData, px, py, isInk);
+              }
+            }
+          }
+        }
+      }
+    }
+    return;
+  }
+
+  // Standard pixel-by-pixel gradient with brush mode support
   for (let py = 0; py < height; py++) {
     for (let px = 0; px < width; px++) {
       // Calculate gradient value at this pixel
@@ -3415,9 +3785,9 @@ function drawGradient(x0, y0, x1, y1, isInk) {
       // Get dither threshold
       const threshold = getDitherThreshold(px, py, ditherMethod);
 
-      // Compare and set pixel
+      // Compare and apply pixel with brush mode
       const shouldBeInk = value > threshold;
-      setPixel(screenData, px, py, shouldBeInk);
+      applyGradientPixel(px, py, shouldBeInk);
     }
   }
 }
@@ -3437,7 +3807,7 @@ function fillCell(x, y, isInk) {
     if (!screenData || screenData.length < RGB3.TOTAL_SIZE) return;
     const cellX = Math.floor(x / 8) * 8;
     const cellY = Math.floor(y / 8) * 8;
-    const color = isInk ? editorInkColor : editorPaperColor;
+    const color = isInk ? getCurrentInkColor() : getCurrentPaperColor();
     // ZX color index bits: bit0=Blue, bit1=Red, bit2=Green
     const redByte = (color & 2) ? 0xFF : 0x00;
     const greenByte = (color & 4) ? 0xFF : 0x00;
@@ -3467,7 +3837,7 @@ function fillCell(x, y, isInk) {
 
     // Set attribute for this 8×1 block
     const attrAddr = getMltAttributeAddress(cellX, y);
-    screenData[attrAddr] = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+    screenData[attrAddr] = getCurrentDrawingAttribute();
 
     // Fill single pixel row
     const bitmapAddr = getBitmapAddress(cellX, y);
@@ -3481,7 +3851,7 @@ function fillCell(x, y, isInk) {
 
     // Set attribute for this 8×2 block
     const attrAddr = getIflAttributeAddress(cellX, cellY);
-    screenData[attrAddr] = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+    screenData[attrAddr] = getCurrentDrawingAttribute();
 
     // Fill 2 pixel rows
     for (let py = 0; py < 2; py++) {
@@ -3497,7 +3867,7 @@ function fillCell(x, y, isInk) {
 
     // Set attribute for this 8×4 block
     const attrAddr = getBmc4AttributeAddress(cellX, cellY);
-    screenData[attrAddr] = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+    screenData[attrAddr] = getCurrentDrawingAttribute();
 
     // Fill 4 pixel rows
     for (let py = 0; py < 4; py++) {
@@ -3513,7 +3883,7 @@ function fillCell(x, y, isInk) {
 
     // Set attribute
     const attrAddr = getAttributeAddress(cellX, cellY);
-    screenData[attrAddr] = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+    screenData[attrAddr] = getCurrentDrawingAttribute();
 
     // Fill all pixels in cell
     for (let py = 0; py < 8; py++) {
@@ -3637,9 +4007,8 @@ function floodFill(startX, startY, isInk) {
   const height = getFormatHeight();
   if (startX < 0 || startX >= width || startY < 0 || startY >= height) return;
 
-  // Check if filling with transparent color
-  const fillColor = isInk ? editorInkColor : editorPaperColor;
-  const usingTransparent = fillColor === COLOR_TRANSPARENT;
+  // Check if filling with transparent color (not available in ULA+ mode)
+  const usingTransparent = isInk ? isInkTransparent() : isPaperTransparent();
 
   // Get the target pixel state (what we're replacing)
   const targetState = getPixelState(startX, startY);
@@ -3677,8 +4046,8 @@ function floodFill(startX, startY, isInk) {
     stack.push([x, y + 1]);
   }
 
-  // Flatten layers if we used transparent color
-  if (usingTransparent && layersEnabled && layers.length > 0) {
+  // Flatten layers if on non-background layer or used transparent color
+  if (layersEnabled && layers.length > 0 && (activeLayerIndex > 0 || usingTransparent)) {
     flattenLayersToScreen();
   }
 }
@@ -3694,9 +4063,9 @@ function setPixelDirect(x, y, isInk) {
   const height = getFormatHeight();
   if (x < 0 || x >= width || y < 0 || y >= height) return;
 
-  // Check if painting with transparent color
-  const color = isInk ? editorInkColor : editorPaperColor;
-  if (color === COLOR_TRANSPARENT) {
+  // Check if painting with transparent color (not available in ULA+ mode)
+  const isTransparent = isInk ? isInkTransparent() : isPaperTransparent();
+  if (isTransparent) {
     // Transparent: clear the mask on non-background layers
     if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
       const layer = layers[activeLayerIndex];
@@ -3708,6 +4077,9 @@ function setPixelDirect(x, y, isInk) {
     // On background layer, transparent does nothing
     return;
   }
+
+  // Get current color for format-specific handling
+  const color = isInk ? getCurrentInkColor() : getCurrentPaperColor();
 
   if (currentFormat === FORMAT.RGB3) {
     const addr = getBitmapAddress(x, y);
@@ -3736,12 +4108,9 @@ function setPixelDirect(x, y, isInk) {
   // Standard formats with attributes (SCR, IFL, MLT, BMC4, BSC)
   const bitmapAddr = getBitmapAddress(x, y);
   const bitMask = 0x80 >> (x % 8);
-  if (isInk) screenData[bitmapAddr] |= bitMask;
-  else screenData[bitmapAddr] &= ~bitMask & 0xFF;
+  const attr = getCurrentDrawingAttribute();
 
-  // Update attribute based on format (use actual colors, not transparent)
-  const attrInk = editorInkColor === COLOR_TRANSPARENT ? 0 : editorInkColor;
-  const attrPaper = editorPaperColor === COLOR_TRANSPARENT ? 0 : editorPaperColor;
+  // Update attribute address based on format
   let attrAddr;
   if (currentFormat === FORMAT.MLT) {
     attrAddr = getMltAttributeAddress(x, y);
@@ -3752,7 +4121,84 @@ function setPixelDirect(x, y, isInk) {
   } else {
     attrAddr = getAttributeAddress(x, y);
   }
-  screenData[attrAddr] = buildAttribute(attrInk, attrPaper, editorBright, editorFlash);
+
+  // When layers are enabled and on non-background layer, only modify layer data
+  if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
+    const layer = layers[activeLayerIndex];
+    if (layer) {
+      const maskIdx = y * width + x;
+      if (isInk) layer.bitmap[bitmapAddr] |= bitMask;
+      else layer.bitmap[bitmapAddr] &= ~bitMask & 0xFF;
+      layer.mask[maskIdx] = 1;
+
+      // Update layer attributes
+      if (layer.attributes) {
+        if (currentFormat === FORMAT.BMC4) {
+          const pixelLine = y % 8;
+          const charRow = Math.floor(y / 8);
+          const charCol = Math.floor(x / 8);
+          const attrIdx = charRow * 32 + charCol;
+          if (pixelLine < 4) {
+            layer.attributes[attrIdx] = attr;
+          } else if (layer.attributes2) {
+            layer.attributes2[attrIdx] = attr;
+          }
+        } else if (currentFormat === FORMAT.MLT) {
+          const attrIdx = y * 32 + Math.floor(x / 8);
+          layer.attributes[attrIdx] = attr;
+        } else if (currentFormat === FORMAT.IFL) {
+          const attrRow = Math.floor(y / 2);
+          const attrIdx = attrRow * 32 + Math.floor(x / 8);
+          layer.attributes[attrIdx] = attr;
+        } else {
+          const charRow = Math.floor(y / 8);
+          const charCol = Math.floor(x / 8);
+          const attrIdx = charRow * 32 + charCol;
+          layer.attributes[attrIdx] = attr;
+        }
+      }
+    }
+  } else {
+    // No layers or on background layer - modify screenData directly
+    if (isInk) screenData[bitmapAddr] |= bitMask;
+    else screenData[bitmapAddr] &= ~bitMask & 0xFF;
+    screenData[attrAddr] = attr;
+
+    // Also update background layer if layers enabled
+    if (layersEnabled && layers.length > 0 && activeLayerIndex === 0) {
+      const layer = layers[0];
+      if (layer) {
+        if (isInk) layer.bitmap[bitmapAddr] |= bitMask;
+        else layer.bitmap[bitmapAddr] &= ~bitMask & 0xFF;
+
+        if (layer.attributes) {
+          if (currentFormat === FORMAT.BMC4) {
+            const pixelLine = y % 8;
+            const charRow = Math.floor(y / 8);
+            const charCol = Math.floor(x / 8);
+            const attrIdx = charRow * 32 + charCol;
+            if (pixelLine < 4) {
+              layer.attributes[attrIdx] = attr;
+            } else if (layer.attributes2) {
+              layer.attributes2[attrIdx] = attr;
+            }
+          } else if (currentFormat === FORMAT.MLT) {
+            const attrIdx = y * 32 + Math.floor(x / 8);
+            layer.attributes[attrIdx] = attr;
+          } else if (currentFormat === FORMAT.IFL) {
+            const attrRow = Math.floor(y / 2);
+            const attrIdx = attrRow * 32 + Math.floor(x / 8);
+            layer.attributes[attrIdx] = attr;
+          } else {
+            const charRow = Math.floor(y / 8);
+            const charCol = Math.floor(x / 8);
+            const attrIdx = charRow * 32 + charCol;
+            layer.attributes[attrIdx] = attr;
+          }
+        }
+      }
+    }
+  }
 }
 
 /**
@@ -3774,19 +4220,19 @@ function recolorCell(x, y) {
 
     // MLT: 8×1 blocks - set single attribute for this pixel row
     const attrAddr = getMltAttributeAddress(x, y);
-    screenData[attrAddr] = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+    screenData[attrAddr] = getCurrentDrawingAttribute();
   } else if (currentFormat === FORMAT.IFL) {
     if (!screenData || screenData.length < IFL.TOTAL_SIZE) return;
 
     // IFL: 8×2 blocks - set single attribute for this block
     const attrAddr = getIflAttributeAddress(x, y);
-    screenData[attrAddr] = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+    screenData[attrAddr] = getCurrentDrawingAttribute();
   } else if (currentFormat === FORMAT.BMC4) {
     if (!screenData || screenData.length < BMC4.TOTAL_SIZE) return;
 
     // BMC4: 8×4 blocks - set attribute for this block
     const attrAddr = getBmc4AttributeAddress(x, y);
-    screenData[attrAddr] = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+    screenData[attrAddr] = getCurrentDrawingAttribute();
   } else {
     // SCR/BSC: 8×8 cells
     if (!screenData || screenData.length < SCREEN.TOTAL_SIZE) return;
@@ -3795,7 +4241,7 @@ function recolorCell(x, y) {
     const cellY = Math.floor(y / 8) * 8;
 
     const attrAddr = getAttributeAddress(cellX, cellY);
-    screenData[attrAddr] = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+    screenData[attrAddr] = getCurrentDrawingAttribute();
   }
 }
 
@@ -3807,7 +4253,7 @@ function recolorCell(x, y) {
 function recolorCell53c(x, y) {
   if (!screenData || screenData.length < 768) return;
   const addr = Math.floor(x / 8) + Math.floor(y / 8) * 32;
-  screenData[addr] = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+  screenData[addr] = getCurrentDrawingAttribute();
 }
 
 // ============================================================================
@@ -4636,6 +5082,24 @@ function _handleEditorMouseDownCoords(event, coords) {
     return;
   }
 
+  // Alt+click: color picker (eyedropper) - picks both ink and paper from cell
+  // Skip for tools that use Alt as modifier (rect, circle, gradient use Alt for "from center")
+  const toolUsesAlt = currentTool === EDITOR.TOOL_RECT ||
+                      currentTool === EDITOR.TOOL_CIRCLE ||
+                      currentTool === EDITOR.TOOL_GRADIENT;
+  if (event.altKey && !toolUsesAlt) {
+    if (currentFormat === FORMAT.SCR_ULAPLUS) {
+      if (pickUlaPlusColorFromCanvas(coords.x, coords.y)) {
+        editorRender();
+      }
+    } else if (currentFormat === FORMAT.SCR || currentFormat === FORMAT.BSC) {
+      if (pickScrColorFromCanvas(coords.x, coords.y)) {
+        editorRender();
+      }
+    }
+    return;
+  }
+
   // Paste mode: click to execute paste
   if (isPasting) {
     executePaste(coords.x, coords.y);
@@ -4768,7 +5232,16 @@ function handleEditorMouseMove(event) {
     if (!bsc) return;
 
     if (bsc.type === 'main') {
-      // Ignore if mouseDown started in border
+      // If drawing border rectangle, show preview even when over main area
+      if (bscDrawRegion === 'border' && currentTool === EDITOR.TOOL_RECT && borderRectStart && isBorderDrawing) {
+        const frameX = bsc.x + 64; // Convert main coords to frame coords
+        const frameY = bsc.y + 64;
+        editorRender();
+        drawBorderRectPreview(borderRectStart.frameX, borderRectStart.frameY, frameX, frameY);
+        updateEditorInfo(bsc.x, bsc.y);
+        return;
+      }
+      // Ignore other operations if mouseDown started in border
       if (bscDrawRegion === 'border') {
         updateEditorInfo(bsc.x, bsc.y);
         return;
@@ -4785,8 +5258,10 @@ function handleEditorMouseMove(event) {
       if (isBorderEditable()) {
         handleBorderMouseMove(event, bsc);
       }
-      // Handle brush preview on border
-      if (brushPreviewMode) {
+      // Handle brush preview on border (or barcode preview)
+      const needsBorderPreview = brushPreviewMode || barcodeCaptureSlot >= 0 ||
+                                  (barcodeMode && activeBarcode >= 0 && barcodes[activeBarcode]);
+      if (needsBorderPreview) {
         brushPreviewPos = null;
         borderPreviewPos = { frameX: bsc.frameX, frameY: bsc.frameY };
         if (event.buttons === 0) {
@@ -4978,7 +5453,7 @@ function handleEditorMouseUp(event) {
   // BSC/BMC4 dispatch
   if (isBorderFormatEditor()) {
     if (bscDrawRegion === 'border' && isBorderEditable()) {
-      handleBorderMouseUp();
+      handleBorderMouseUp(event);
       bscDrawRegion = null;
       return;
     }
@@ -5061,6 +5536,11 @@ function _handleEditorMouseUpCoords(event, coords) {
         drawGradient(toolStartPoint.x, toolStartPoint.y, snapped.x, snapped.y, isInk);
         break;
     }
+  }
+
+  // Flatten layers to screen when drawing ends on non-background layer
+  if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
+    flattenLayersToScreen();
   }
 
   // Always do a full render (with preview) when drawing ends
@@ -5206,6 +5686,12 @@ function undo() {
     screenData.set(previousState.screenData);
     layers = previousState.layers;
     activeLayerIndex = previousState.activeLayerIndex;
+
+    // Re-flatten layers to update transparency masks (borderTransparencyMask, screenTransparencyMask)
+    if (layersEnabled && layers.length > 0) {
+      flattenLayersToScreen();
+    }
+
     updateLayerPanel();
     editorRender();
   }
@@ -5227,6 +5713,12 @@ function redo() {
     screenData.set(redoState.screenData);
     layers = redoState.layers;
     activeLayerIndex = redoState.activeLayerIndex;
+
+    // Re-flatten layers to update transparency masks (borderTransparencyMask, screenTransparencyMask)
+    if (layersEnabled && layers.length > 0) {
+      flattenLayersToScreen();
+    }
+
     updateLayerPanel();
     editorRender();
   }
@@ -5242,7 +5734,7 @@ function clearScreen() {
 
   if (currentFormat === FORMAT.ATTR_53C) {
     // .53c: fill all 768 attribute bytes with current color
-    const attr = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+    const attr = getCurrentDrawingAttribute();
     for (let i = 0; i < 768; i++) {
       screenData[i] = attr;
     }
@@ -5278,13 +5770,40 @@ function clearScreen() {
     return;
   }
 
+  // ULA+: clear bitmap, reset palette to default, reset colors
+  if (currentFormat === FORMAT.SCR_ULAPLUS) {
+    // Clear bitmap
+    for (let i = 0; i < SCREEN.BITMAP_SIZE; i++) {
+      screenData[i] = 0;
+    }
+    // Set attributes to black ink (0) on black paper (0) in CLUT 0
+    const clearAttr = 0; // ink=0, paper=0, bright=0, flash=0
+    for (let i = SCREEN.BITMAP_SIZE; i < SCREEN.TOTAL_SIZE; i++) {
+      screenData[i] = clearAttr;
+    }
+    // Reset palette to default
+    const defaultPalette = generateDefaultUlaPlusPalette();
+    screenData.set(defaultPalette, ULAPLUS.PALETTE_OFFSET);
+    ulaPlusPalette = defaultPalette;
+    // Reset selected colors to CLUT 0
+    resetUlaPlusColors();
+    // Reinitialize layers
+    if (layersEnabled) initLayers();
+    // Update palette display
+    if (typeof updateUlaPlusPalette === 'function') {
+      updateUlaPlusPalette();
+    }
+    editorRender();
+    return;
+  }
+
   // SCR / BSC / IFL / MLT / BMC4: Clear all bitmap data (all pixels become paper)
   for (let i = 0; i < SCREEN.BITMAP_SIZE; i++) {
     screenData[i] = 0;
   }
 
   // Set all attributes to current ink/paper/bright/flash
-  const attr = buildAttribute(editorInkColor, editorPaperColor, editorBright, editorFlash);
+  const attr = getCurrentDrawingAttribute();
   if (currentFormat === FORMAT.MLT) {
     // MLT: 6144 attribute bytes (192 rows × 32 columns)
     for (let i = MLT.BITMAP_SIZE; i < MLT.TOTAL_SIZE; i++) {
@@ -5687,18 +6206,20 @@ function renderPreview() {
             const attrOffset = section.attrAddr + col + row * 32;
             const attr = screenData[attrOffset];
 
-            let inkIndex = attr & 0x07;
-            let paperIndex = (attr >> 3) & 0x07;
-            const isBright = (attr & 0x40) !== 0;
-            const isFlash = (attr & 0x80) !== 0;
+            // Use getColorsRgb to support ULA+ mode
+            const colors = getColorsRgb(attr);
+            let ink = colors.inkRgb;
+            let paper = colors.paperRgb;
 
-            if (isFlash && flashPhase && flashEnabled) {
-              const tmp = inkIndex;
-              inkIndex = paperIndex;
-              paperIndex = tmp;
+            // Flash only applies in standard mode (in ULA+ bits 6-7 are CLUT selector)
+            if (!isUlaPlusMode) {
+              const isFlash = (attr & 0x80) !== 0;
+              if (isFlash && flashPhase && flashEnabled) {
+                const tmp = ink;
+                ink = paper;
+                paper = tmp;
+              }
             }
-
-            const palette = isBright ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
 
             const x = col * 8;
             const y = section.yOffset + row * 8 + line;
@@ -5715,7 +6236,7 @@ function renderPreview() {
                 data[pixelIndex + 2] = checker[2];
               } else {
                 const isSet = (byte & (0x80 >> bit)) !== 0;
-                const rgb = isSet ? palette[inkIndex] : palette[paperIndex];
+                const rgb = isSet ? ink : paper;
                 data[pixelIndex] = rgb[0];
                 data[pixelIndex + 1] = rgb[1];
                 data[pixelIndex + 2] = rgb[2];
@@ -6239,8 +6760,10 @@ function editorRender(skipPreview = false) {
       drawBrushPreview();
     }
 
-    // Draw border brush preview
-    if (brushPreviewMode && borderPreviewPos && !isPasting && !isSelecting) {
+    // Draw border brush/barcode preview
+    const needsBorderPreview = brushPreviewMode || barcodeCaptureSlot >= 0 ||
+                                (barcodeMode && activeBarcode >= 0 && barcodes[activeBarcode]);
+    if (needsBorderPreview && borderPreviewPos && !isPasting && !isSelecting) {
       drawBorderBrushPreview();
     }
   }
@@ -6415,6 +6938,17 @@ function saveScrFile(filename) {
   } else if (currentFormat === FORMAT.MONO_1_3) {
     saveData = screenData.slice(0, 2048);
     defaultExt = '.scr';
+  } else if (currentFormat === FORMAT.SCR_ULAPLUS) {
+    // ULA+ format: SCR data + 64-byte palette
+    saveData = new Uint8Array(ULAPLUS.TOTAL_SIZE);
+    saveData.set(screenData.slice(0, SCREEN.TOTAL_SIZE), 0);
+    if (ulaPlusPalette) {
+      saveData.set(ulaPlusPalette, ULAPLUS.PALETTE_OFFSET);
+    } else {
+      // Use default palette if none exists
+      saveData.set(generateDefaultUlaPlusPalette(), ULAPLUS.PALETTE_OFFSET);
+    }
+    defaultExt = '.scr';
   } else {
     saveData = screenData.slice(0, SCREEN.TOTAL_SIZE);
     defaultExt = '.scr';
@@ -6494,15 +7028,24 @@ function createNewPicture(format) {
     resetScaState();
   }
 
+  // Reset ULA+ mode (will be re-enabled if creating ULA+ format)
+  if (typeof resetUlaPlusMode === 'function') {
+    resetUlaPlusMode();
+  }
+
   // Build new screen data
   let newData;
   let newFormat;
   let newFileName;
 
-  // Use current editor colors (with safe defaults for transparent)
-  const newInk = editorInkColor === COLOR_TRANSPARENT ? 0 : editorInkColor;
-  const newPaper = editorPaperColor === COLOR_TRANSPARENT ? 7 : editorPaperColor;
-  const newAttr = buildAttribute(newInk, newPaper, editorBright, editorFlash);
+  // Use current editor colors (use standard mode for new attribute)
+  // For ULA+ format, we'll set up the mode after creating the data
+  const newAttr = buildAttribute(
+    editorInkColor === COLOR_TRANSPARENT ? 0 : editorInkColor,
+    editorPaperColor === COLOR_TRANSPARENT ? 7 : editorPaperColor,
+    editorBright,
+    editorFlash
+  );
 
   // Border color for BSC/BMC4 (from screen_viewer.js, default to 7/white)
   const bc = (typeof borderColor !== 'undefined') ? (borderColor & 0x07) : 7;
@@ -6595,6 +7138,23 @@ function createNewPicture(format) {
       newFileName = 'new_screen.3';
       break;
 
+    case 'ulaplus':
+      // ULA+: standard SCR + 64-byte palette
+      newData = new Uint8Array(ULAPLUS.TOTAL_SIZE);
+      for (let i = SCREEN.BITMAP_SIZE; i < SCREEN.TOTAL_SIZE; i++) {
+        newData[i] = newAttr;
+      }
+      // Append default ULA+ palette
+      const defaultPalette = generateDefaultUlaPlusPalette();
+      newData.set(defaultPalette, ULAPLUS.PALETTE_OFFSET);
+      newFormat = FORMAT.SCR_ULAPLUS;
+      newFileName = 'new_screen.scr';
+      // Enable ULA+ mode
+      ulaPlusPalette = defaultPalette.slice();
+      isUlaPlusMode = true;
+      resetUlaPlusColors();
+      break;
+
     case 'scr':
     default:
       newData = new Uint8Array(SCREEN.TOTAL_SIZE);
@@ -6632,6 +7192,12 @@ function createNewPicture(format) {
   }
   if (typeof updateFileInfo === 'function') {
     updateFileInfo();
+  }
+  // Update ULA+ palette UI if in ULA+ mode
+  if (isUlaPlusMode) {
+    if (typeof buildUlaPlusGrid === 'function') buildUlaPlusGrid();
+    if (typeof buildUlaPlusClassic === 'function') buildUlaPlusClassic();
+    if (typeof updateUlaPlusPalette === 'function') updateUlaPlusPalette();
   }
 
   toggleLayerSectionVisibility();
@@ -6815,9 +7381,16 @@ function drawBrushPreview() {
   ctx.globalAlpha = opacity;
 
   // Determine brush color (use ink color, or red tint for transparent/eraser)
-  const isTransparent = editorInkColor === COLOR_TRANSPARENT;
-  const color = isTransparent ? '#ff4444' :
-    (editorBright ? ZX_PALETTE.BRIGHT[editorInkColor] : ZX_PALETTE.REGULAR[editorInkColor]);
+  const isTransparent = isInkTransparent();
+  let color;
+  if (isTransparent) {
+    color = '#ff4444';
+  } else if (isUlaPlusMode) {
+    const rgb = getUlaPlusColor(ulaPlusInkIndex);
+    color = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+  } else {
+    color = editorBright ? ZX_PALETTE.BRIGHT[editorInkColor] : ZX_PALETTE.REGULAR[editorInkColor];
+  }
 
   // Check for custom brush
   if (brushShape === 'custom' && activeCustomBrush >= 0 && customBrushes[activeCustomBrush]) {
@@ -6902,8 +7475,23 @@ function drawBrushPreview() {
  * Draws border brush preview overlay for BSC/BMC4 formats
  */
 function drawBorderBrushPreview() {
-  if (!brushPreviewMode || !borderPreviewPos || !screenCanvas) return;
+  if (!borderPreviewPos || !screenCanvas) return;
   if (!isBorderFormatEditor()) return;
+
+  // In barcode capture mode, show crosshair only (no preview)
+  if (barcodeCaptureSlot >= 0) {
+    screenCanvas.style.cursor = 'crosshair';
+    return;
+  }
+
+  // In barcode stamp mode, draw barcode preview instead of brush
+  if (barcodeMode && activeBarcode >= 0 && barcodes[activeBarcode]) {
+    drawBarcodeStampPreview();
+    return;
+  }
+
+  // Normal brush preview
+  if (!brushPreviewMode) return;
 
   const ctx = screenCanvas.getContext('2d');
   if (!ctx) return;
@@ -6938,9 +7526,16 @@ function drawBorderBrushPreview() {
   }
 
   const opacity = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.BRUSH_PREVIEW_OPACITY) || 0.5;
-  const isTransparent = editorInkColor === COLOR_TRANSPARENT;
-  const color = isTransparent ? '#ff4444' :
-    (editorBright ? ZX_PALETTE.BRIGHT[editorInkColor] : ZX_PALETTE.REGULAR[editorInkColor]);
+  const isTransparent = isInkTransparent();
+  let color;
+  if (isTransparent) {
+    color = '#ff4444';
+  } else if (isUlaPlusMode) {
+    const rgb = getUlaPlusColor(ulaPlusInkIndex);
+    color = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+  } else {
+    color = editorBright ? ZX_PALETTE.BRIGHT[editorInkColor] : ZX_PALETTE.REGULAR[editorInkColor];
+  }
 
   ctx.save();
   ctx.globalAlpha = opacity;
@@ -6951,6 +7546,48 @@ function drawBorderBrushPreview() {
     const cellX = bounds.left + i * 8;
     // Draw 8px wide rectangle at frame position
     ctx.fillRect(cellX * zoom, frameY * zoom, 8 * zoom, zoom);
+  }
+
+  ctx.restore();
+}
+
+/**
+ * Draws a preview of the barcode that will be stamped at the current position.
+ */
+function drawBarcodeStampPreview() {
+  if (!borderPreviewPos || !screenCanvas) return;
+  if (!barcodes[activeBarcode]) return;
+
+  const ctx = screenCanvas.getContext('2d');
+  if (!ctx) return;
+
+  const barcode = barcodes[activeBarcode];
+  const widthCells = barcode.width / 8;
+
+  // Snap to 8px grid
+  const snappedX = Math.floor(borderPreviewPos.frameX / 8) * 8;
+  const frameY = borderPreviewPos.frameY;
+
+  const opacity = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.BRUSH_PREVIEW_OPACITY) || 0.5;
+
+  ctx.save();
+  ctx.globalAlpha = opacity;
+
+  // Draw each row of the barcode
+  for (let y = 0; y < barcode.height; y++) {
+    const stampY = frameY + y;
+    if (stampY >= BSC.FRAME_HEIGHT) break;
+
+    for (let c = 0; c < widthCells; c++) {
+      const color = barcode.colors[y * widthCells + c];
+
+      // Skip transparent pixels
+      if (color === BARCODE_TRANSPARENT) continue;
+
+      const rgb = ZX_PALETTE_RGB.REGULAR[color] || [0, 0, 0];
+      ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+      ctx.fillRect((snappedX + c * 8) * zoom, stampY * zoom, 8 * zoom, zoom);
+    }
   }
 
   ctx.restore();
@@ -7221,12 +7858,880 @@ function buildPalette() {
   updateColorPreview();
 }
 
+// ============================================================================
+// ULA+ Palette UI
+// ============================================================================
+
+/** @type {number} - Currently selected CLUT for classic mode (0-3) */
+let ulaPlusSelectedClut = 0;
+
+/** @type {boolean} - ULA+ palette view mode: true = grid, false = classic */
+let ulaPlusGridView = true;
+
+/** @type {number} - Selected ULA+ ink color index (0-63, or -1 for transparent) */
+let ulaPlusInkIndex = 0;
+
+/** @type {number} - Selected ULA+ paper color index (0-63, or -1 for transparent) */
+let ulaPlusPaperIndex = 15; // Default to paper 7 (white) in CLUT 0
+
+/** @type {number} - Transparent color for ULA+ mode */
+const ULAPLUS_TRANSPARENT = -1;
+
+/**
+ * Resets ULA+ ink/paper selection to CLUT 0 defaults
+ * Called on image load or new picture creation
+ */
+function resetUlaPlusColors() {
+  ulaPlusInkIndex = 0;       // INK 0 (black) in CLUT 0
+  ulaPlusPaperIndex = 15;    // PAPER 7 (white) in CLUT 0
+  ulaPlusSelectedClut = 0;
+
+  // Update CLUT button selection
+  const buttons = document.querySelectorAll('.ulaplus-clut-btn');
+  buttons.forEach((btn) => {
+    const btnClut = parseInt(/** @type {HTMLElement} */ (btn).dataset.clut || '0', 10);
+    btn.classList.toggle('selected', btnClut === 0);
+  });
+
+  // Rebuild palettes with new selection
+  if (typeof buildUlaPlusGrid === 'function') buildUlaPlusGrid();
+  if (typeof buildUlaPlusClassic === 'function') buildUlaPlusClassic();
+  if (typeof updateUlaPlusPalette === 'function') updateUlaPlusPalette();
+}
+
+/**
+ * Picks ink and paper colors from ULA+ canvas at given coordinates
+ * @param {number} x - X coordinate in pixels
+ * @param {number} y - Y coordinate in pixels
+ * @returns {boolean} - true if colors were picked successfully
+ */
+function pickUlaPlusColorFromCanvas(x, y) {
+  if (!screenData || currentFormat !== FORMAT.SCR_ULAPLUS) return false;
+  if (x < 0 || x >= SCREEN.WIDTH || y < 0 || y >= SCREEN.HEIGHT) return false;
+
+  // Get attribute for this cell
+  const attrAddr = getAttributeAddress(x, y);
+  const attr = screenData[attrAddr];
+
+  // Decode ULA+ attribute:
+  // bits 0-2: ink color (0-7)
+  // bits 3-5: paper color (0-7)
+  // bits 6-7: CLUT (0-3)
+  const inkColor = attr & 0x07;
+  const paperColor = (attr >> 3) & 0x07;
+  const clut = (attr >> 6) & 0x03;
+
+  // Calculate palette indices
+  // Ink colors are at positions 0-7 in each CLUT
+  // Paper colors are at positions 8-15 in each CLUT
+  ulaPlusInkIndex = clut * 16 + inkColor;
+  ulaPlusPaperIndex = clut * 16 + 8 + paperColor;
+
+  // Switch to the correct CLUT in classic view
+  ulaPlusSelectedClut = clut;
+
+  // Update CLUT button selection
+  const buttons = document.querySelectorAll('.ulaplus-clut-btn');
+  buttons.forEach((btn) => {
+    const btnClut = parseInt(/** @type {HTMLElement} */ (btn).dataset.clut || '0', 10);
+    btn.classList.toggle('selected', btnClut === clut);
+  });
+
+  // Update palette UI
+  buildUlaPlusGrid();
+  buildUlaPlusClassic();
+  updateUlaPlusPalette();
+
+  return true;
+}
+
+/**
+ * Picks ink and paper colors from standard SCR canvas at given coordinates
+ * @param {number} x - X coordinate in pixels
+ * @param {number} y - Y coordinate in pixels
+ * @returns {boolean} - true if colors were picked successfully
+ */
+function pickScrColorFromCanvas(x, y) {
+  if (!screenData) return false;
+  if (x < 0 || x >= SCREEN.WIDTH || y < 0 || y >= SCREEN.HEIGHT) return false;
+
+  // Get attribute for this cell
+  const attrAddr = getAttributeAddress(x, y);
+  const attr = screenData[attrAddr];
+
+  // Decode standard attribute:
+  // bits 0-2: ink color (0-7)
+  // bits 3-5: paper color (0-7)
+  // bit 6: bright
+  // bit 7: flash
+  editorInkColor = attr & 0x07;
+  editorPaperColor = (attr >> 3) & 0x07;
+  editorBright = (attr & 0x40) !== 0;
+  editorFlash = (attr & 0x80) !== 0;
+
+  // Update checkboxes
+  const brightCheckbox = document.getElementById('brightCheckbox');
+  if (brightCheckbox) {
+    /** @type {HTMLInputElement} */ (brightCheckbox).checked = editorBright;
+  }
+  const flashCheckbox = document.getElementById('editorFlashCheckbox');
+  if (flashCheckbox) {
+    /** @type {HTMLInputElement} */ (flashCheckbox).checked = editorFlash;
+  }
+
+  // Update palette UI
+  updateColorPreview();
+
+  return true;
+}
+
+/**
+ * Saves the current ULA+ palette to a 64-byte .pal file
+ */
+function saveUlaPlusPalette() {
+  if (!isUlaPlusMode || !ulaPlusPalette) {
+    alert('No ULA+ palette to save');
+    return;
+  }
+
+  // Get palette data from screenData or ulaPlusPalette
+  const palette = screenData.length >= ULAPLUS.TOTAL_SIZE
+    ? screenData.slice(ULAPLUS.PALETTE_OFFSET, ULAPLUS.PALETTE_OFFSET + 64)
+    : ulaPlusPalette;
+
+  // Create blob and download
+  const blob = new Blob([palette], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement('a');
+  a.href = url;
+  // Use current filename as base, or default
+  const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'palette';
+  a.download = baseName + '.pal';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Loads a ULA+ palette from a 64-byte .pal file
+ * @param {File} file - The palette file to load
+ */
+function loadUlaPlusPalette(file) {
+  if (!isUlaPlusMode) {
+    alert('Switch to ULA+ mode first');
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const data = new Uint8Array(/** @type {ArrayBuffer} */ (e.target?.result));
+
+    // Validate size
+    if (data.length !== 64) {
+      alert('Invalid palette file: expected 64 bytes, got ' + data.length);
+      return;
+    }
+
+    // Save undo state before applying
+    saveUndoState();
+
+    // Apply palette to screenData and ulaPlusPalette
+    if (screenData.length >= ULAPLUS.TOTAL_SIZE) {
+      for (let i = 0; i < 64; i++) {
+        screenData[ULAPLUS.PALETTE_OFFSET + i] = data[i];
+      }
+    }
+    ulaPlusPalette = new Uint8Array(data);
+
+    // Rebuild palette UI
+    if (typeof buildUlaPlusGrid === 'function') buildUlaPlusGrid();
+    if (typeof buildUlaPlusClassic === 'function') buildUlaPlusClassic();
+    if (typeof updateUlaPlusPalette === 'function') updateUlaPlusPalette();
+
+    // Re-render
+    editorRender();
+    if (typeof renderPreview === 'function') renderPreview();
+  };
+
+  reader.onerror = () => {
+    alert('Failed to read palette file');
+  };
+
+  reader.readAsArrayBuffer(file);
+}
+
+// ============================================================================
+// ULA+ Color Picker Dialog
+// ============================================================================
+
+/** @type {number} - Index of color being edited (0-63) */
+let ulaPlusEditingColorIndex = -1;
+
+/** @type {number} - Original GRB332 value before editing */
+let ulaPlusOriginalGrb = 0;
+
+/**
+ * Opens the ULA+ color picker dialog for a specific palette index
+ * @param {number} index - Palette index (0-63)
+ */
+function openUlaPlusColorPicker(index) {
+  if (index < 0 || index >= 64) return;
+  if (!ulaPlusPalette) return;
+
+  ulaPlusEditingColorIndex = index;
+  ulaPlusOriginalGrb = ulaPlusPalette[index];
+
+  const dialog = document.getElementById('ulaPlusColorDialog');
+  if (!dialog) return;
+
+  // Get current color components from GRB332
+  const g3 = (ulaPlusOriginalGrb >> 5) & 0x07;
+  const r3 = (ulaPlusOriginalGrb >> 2) & 0x07;
+  const b2 = ulaPlusOriginalGrb & 0x03;
+
+  // Set slider values
+  const rSlider = /** @type {HTMLInputElement} */ (document.getElementById('ulaPlusColorR'));
+  const gSlider = /** @type {HTMLInputElement} */ (document.getElementById('ulaPlusColorG'));
+  const bSlider = /** @type {HTMLInputElement} */ (document.getElementById('ulaPlusColorB'));
+
+  if (rSlider) rSlider.value = String(r3);
+  if (gSlider) gSlider.value = String(g3);
+  if (bSlider) bSlider.value = String(b2);
+
+  // Update labels
+  const rVal = document.getElementById('ulaPlusColorRVal');
+  const gVal = document.getElementById('ulaPlusColorGVal');
+  const bVal = document.getElementById('ulaPlusColorBVal');
+  if (rVal) rVal.textContent = String(r3);
+  if (gVal) gVal.textContent = String(g3);
+  if (bVal) bVal.textContent = String(b2);
+
+  // Update index info
+  const indexLabel = document.getElementById('ulaPlusColorIndex');
+  const grbLabel = document.getElementById('ulaPlusColorGRB');
+  const clut = Math.floor(index / 16);
+  const pos = index % 16;
+  const isInk = pos < 8;
+  if (indexLabel) indexLabel.textContent = `CLUT ${clut}, ${isInk ? 'INK' : 'PAPER'} ${pos % 8}`;
+  if (grbLabel) grbLabel.textContent = `GRB: ${g3}${r3}${b2}`;
+
+  // Update color previews
+  updateUlaPlusColorPreview();
+
+  // Show original color
+  const origPreview = document.getElementById('ulaPlusColorOriginal');
+  const rgb = grb332ToRgb(ulaPlusOriginalGrb);
+  if (origPreview) origPreview.style.backgroundColor = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+
+  // Show dialog
+  dialog.style.display = '';
+}
+
+/**
+ * Updates the color preview in the dialog based on current slider values
+ */
+function updateUlaPlusColorPreview() {
+  const rSlider = /** @type {HTMLInputElement} */ (document.getElementById('ulaPlusColorR'));
+  const gSlider = /** @type {HTMLInputElement} */ (document.getElementById('ulaPlusColorG'));
+  const bSlider = /** @type {HTMLInputElement} */ (document.getElementById('ulaPlusColorB'));
+
+  const r3 = parseInt(rSlider?.value || '0', 10);
+  const g3 = parseInt(gSlider?.value || '0', 10);
+  const b2 = parseInt(bSlider?.value || '0', 10);
+
+  // Update labels
+  const rVal = document.getElementById('ulaPlusColorRVal');
+  const gVal = document.getElementById('ulaPlusColorGVal');
+  const bVal = document.getElementById('ulaPlusColorBVal');
+  if (rVal) rVal.textContent = String(r3);
+  if (gVal) gVal.textContent = String(g3);
+  if (bVal) bVal.textContent = String(b2);
+
+  // Build GRB332 and convert to RGB
+  const grb = (g3 << 5) | (r3 << 2) | b2;
+  const rgb = grb332ToRgb(grb);
+
+  // Update preview
+  const preview = document.getElementById('ulaPlusColorPreview');
+  if (preview) preview.style.backgroundColor = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+
+  // Update GRB label
+  const grbLabel = document.getElementById('ulaPlusColorGRB');
+  if (grbLabel) grbLabel.textContent = `GRB: ${g3}${r3}${b2}`;
+}
+
+/**
+ * Applies the edited color to the palette
+ */
+function applyUlaPlusColor() {
+  if (ulaPlusEditingColorIndex < 0 || ulaPlusEditingColorIndex >= 64) return;
+
+  const rSlider = /** @type {HTMLInputElement} */ (document.getElementById('ulaPlusColorR'));
+  const gSlider = /** @type {HTMLInputElement} */ (document.getElementById('ulaPlusColorG'));
+  const bSlider = /** @type {HTMLInputElement} */ (document.getElementById('ulaPlusColorB'));
+
+  const r3 = parseInt(rSlider?.value || '0', 10);
+  const g3 = parseInt(gSlider?.value || '0', 10);
+  const b2 = parseInt(bSlider?.value || '0', 10);
+
+  const grb = (g3 << 5) | (r3 << 2) | b2;
+
+  // Save undo state
+  saveUndoState();
+
+  // Apply to palette
+  if (ulaPlusPalette) {
+    ulaPlusPalette[ulaPlusEditingColorIndex] = grb;
+  }
+
+  // Apply to screenData if ULA+ file
+  if (screenData && screenData.length >= ULAPLUS.TOTAL_SIZE) {
+    screenData[ULAPLUS.PALETTE_OFFSET + ulaPlusEditingColorIndex] = grb;
+  }
+
+  // Close dialog
+  closeUlaPlusColorPicker();
+
+  // Rebuild palette UI
+  buildUlaPlusGrid();
+  buildUlaPlusClassic();
+  updateUlaPlusPalette();
+
+  // Re-render
+  editorRender();
+  if (typeof renderPreview === 'function') renderPreview();
+}
+
+/**
+ * Closes the ULA+ color picker dialog without applying changes
+ */
+function closeUlaPlusColorPicker() {
+  const dialog = document.getElementById('ulaPlusColorDialog');
+  if (dialog) dialog.style.display = 'none';
+  ulaPlusEditingColorIndex = -1;
+}
+
+/**
+ * Initializes the ULA+ color picker dialog event listeners
+ */
+function initUlaPlusColorPicker() {
+  const rSlider = document.getElementById('ulaPlusColorR');
+  const gSlider = document.getElementById('ulaPlusColorG');
+  const bSlider = document.getElementById('ulaPlusColorB');
+
+  rSlider?.addEventListener('input', updateUlaPlusColorPreview);
+  gSlider?.addEventListener('input', updateUlaPlusColorPreview);
+  bSlider?.addEventListener('input', updateUlaPlusColorPreview);
+
+  const applyBtn = document.getElementById('ulaPlusColorApplyBtn');
+  const cancelBtn = document.getElementById('ulaPlusColorCancelBtn');
+  const closeBtn = document.getElementById('ulaPlusColorCloseBtn');
+
+  applyBtn?.addEventListener('click', applyUlaPlusColor);
+  cancelBtn?.addEventListener('click', closeUlaPlusColorPicker);
+  closeBtn?.addEventListener('click', closeUlaPlusColorPicker);
+
+  // Close on Escape
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      const dialog = document.getElementById('ulaPlusColorDialog');
+      if (dialog && dialog.style.display !== 'none') {
+        closeUlaPlusColorPicker();
+        e.preventDefault();
+      }
+    }
+  });
+}
+
+/**
+ * Shows or hides the ULA+ palette section and regular palette based on current mode
+ */
+function updateUlaPlusSectionVisibility() {
+  const ulaPlusSection = document.getElementById('ulaPlusSection');
+  const regularPalette = document.getElementById('editorPalette');
+  const brightFlashRow = document.querySelector('.editor-color-row'); // First color row has bright/flash
+
+  if (ulaPlusSection) {
+    ulaPlusSection.style.display = isUlaPlusMode ? 'block' : 'none';
+  }
+
+  // Hide regular palette and bright/flash controls in ULA+ mode
+  if (regularPalette) {
+    regularPalette.style.display = isUlaPlusMode ? 'none' : 'flex';
+  }
+
+  // Find the bright/flash row (contains editorBrightCheckbox)
+  const brightCheckbox = document.getElementById('editorBrightCheckbox');
+  if (brightCheckbox) {
+    const brightFlashContainer = brightCheckbox.closest('.editor-color-row');
+    if (brightFlashContainer) {
+      /** @type {HTMLElement} */ (brightFlashContainer).style.display = isUlaPlusMode ? 'none' : 'flex';
+    }
+  }
+}
+
+/**
+ * Builds the ULA+ 8x8 grid palette (Mode A)
+ * Layout: 4 CLUTs x 2 rows each (ink row + paper row per CLUT)
+ */
+function buildUlaPlusGrid() {
+  const container = document.getElementById('ulaPlusGridMode');
+  if (!container) return;
+
+  container.innerHTML = '';
+
+  for (let i = 0; i < 64; i++) {
+    const cell = document.createElement('div');
+    cell.className = 'ulaplus-grid-cell';
+    cell.dataset.index = String(i);
+
+    // Get color from palette
+    const rgb = getUlaPlusColor(i);
+    cell.style.backgroundColor = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+
+    // Tooltip showing CLUT and position
+    const clut = Math.floor(i / 16);
+    const pos = i % 16;
+    const isInk = pos < 8;
+    cell.title = `CLUT ${clut}, ${isInk ? 'INK' : 'PAPER'} ${pos % 8} (#${i}) - Ctrl+click to edit`;
+
+    // Add gap class to first row of each CLUT (except first CLUT)
+    // CLUT 1 ink row: indices 16-23
+    // CLUT 2 ink row: indices 32-39
+    // CLUT 3 ink row: indices 48-55
+    if ((i >= 16 && i <= 23) || (i >= 32 && i <= 39) || (i >= 48 && i <= 55)) {
+      cell.classList.add('clut-gap');
+    }
+
+    // Left click = set ink (only allow ink colors: pos 0-7 within CLUT)
+    // Ctrl+click = edit color
+    cell.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (e.ctrlKey || e.metaKey) {
+        openUlaPlusColorPicker(i);
+        return;
+      }
+      if (pos >= 8) return; // Can't select paper as ink
+
+      const newClut = clut;
+      ulaPlusInkIndex = i;
+
+      // Sync paper to same CLUT if it's not transparent
+      if (ulaPlusPaperIndex !== ULAPLUS_TRANSPARENT) {
+        const currentPaperClut = Math.floor(ulaPlusPaperIndex / 16);
+        if (newClut !== currentPaperClut) {
+          const paperPos = ulaPlusPaperIndex % 8; // Paper color 0-7
+          ulaPlusPaperIndex = newClut * 16 + 8 + paperPos; // Same color in new CLUT
+        }
+      }
+
+      updateUlaPlusPalette();
+    });
+
+    // Right click = set paper (only allow paper colors: pos 8-15 within CLUT)
+    cell.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (pos < 8) return; // Can't select ink as paper
+
+      const newClut = clut;
+      ulaPlusPaperIndex = i;
+
+      // Sync ink to same CLUT if it's not transparent
+      if (ulaPlusInkIndex !== ULAPLUS_TRANSPARENT) {
+        const currentInkClut = Math.floor(ulaPlusInkIndex / 16);
+        if (newClut !== currentInkClut) {
+          const inkPos = ulaPlusInkIndex % 8; // Ink color 0-7
+          ulaPlusInkIndex = newClut * 16 + inkPos; // Same color in new CLUT
+        }
+      }
+
+      updateUlaPlusPalette();
+    });
+
+    container.appendChild(cell);
+  }
+
+}
+
+/**
+ * Builds the ULA+ transparent cell row (separate from main grid)
+ */
+function buildUlaPlusTransparentRow() {
+  const container = document.getElementById('ulaPlusTransparentRow');
+  if (!container) return;
+
+  container.innerHTML = '';
+
+  const transCell = document.createElement('div');
+  transCell.className = 'ulaplus-grid-cell ulaplus-transparent-cell';
+  transCell.dataset.index = String(ULAPLUS_TRANSPARENT);
+  transCell.title = 'Transparent (erases on non-background layers)';
+  transCell.innerHTML = '<span style="font-size:9px;color:#888;">T</span>';
+
+  transCell.addEventListener('click', (e) => {
+    e.preventDefault();
+    ulaPlusInkIndex = ULAPLUS_TRANSPARENT;
+    updateUlaPlusPalette();
+  });
+
+  transCell.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    ulaPlusPaperIndex = ULAPLUS_TRANSPARENT;
+    updateUlaPlusPalette();
+  });
+
+  container.appendChild(transCell);
+}
+
+/**
+ * Builds the ULA+ classic 16-color palette for selected CLUT (Mode B)
+ * Layout: Two rows - ink (0-7) on top, paper (8-15) on bottom
+ */
+function buildUlaPlusClassic() {
+  const container = document.getElementById('ulaPlusClassicPalette');
+  if (!container) return;
+
+  container.innerHTML = '';
+  const baseIdx = ulaPlusSelectedClut * 16;
+
+  // First row: INK colors (0-7)
+  for (let i = 0; i < 8; i++) {
+    const cell = document.createElement('div');
+    cell.className = 'ulaplus-classic-cell';
+    const paletteIdx = baseIdx + i;
+    cell.dataset.index = String(paletteIdx);
+
+    // Get color from palette
+    const rgb = getUlaPlusColor(paletteIdx);
+    cell.style.backgroundColor = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+
+    // Tooltip
+    cell.title = `INK ${i} (#${paletteIdx}) - Ctrl+click to edit`;
+
+    // Left click = set ink (allowed for ink colors)
+    // Ctrl+click = edit color
+    cell.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (e.ctrlKey || e.metaKey) {
+        openUlaPlusColorPicker(paletteIdx);
+        return;
+      }
+      ulaPlusInkIndex = paletteIdx;
+
+      // Sync paper to same CLUT if it's not transparent
+      if (ulaPlusPaperIndex !== ULAPLUS_TRANSPARENT) {
+        const currentPaperClut = Math.floor(ulaPlusPaperIndex / 16);
+        if (ulaPlusSelectedClut !== currentPaperClut) {
+          const paperPos = ulaPlusPaperIndex % 8; // Paper color 0-7
+          ulaPlusPaperIndex = ulaPlusSelectedClut * 16 + 8 + paperPos;
+        }
+      }
+
+      updateUlaPlusPalette();
+    });
+
+    // Right click = set paper (NOT allowed for ink colors)
+    cell.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      // Don't allow setting paper from ink row
+    });
+
+    container.appendChild(cell);
+  }
+
+  // Second row: PAPER colors (8-15)
+  for (let i = 8; i < 16; i++) {
+    const cell = document.createElement('div');
+    cell.className = 'ulaplus-classic-cell';
+    const paletteIdx = baseIdx + i;
+    cell.dataset.index = String(paletteIdx);
+
+    // Get color from palette
+    const rgb = getUlaPlusColor(paletteIdx);
+    cell.style.backgroundColor = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+
+    // Tooltip
+    cell.title = `PAPER ${i % 8} (#${paletteIdx}) - Ctrl+click to edit`;
+
+    // Left click = edit color (Ctrl+click)
+    cell.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (e.ctrlKey || e.metaKey) {
+        openUlaPlusColorPicker(paletteIdx);
+        return;
+      }
+      // Don't allow setting ink from paper row
+    });
+
+    // Right click = set paper (allowed for paper colors)
+    cell.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      ulaPlusPaperIndex = paletteIdx;
+
+      // Sync ink to same CLUT if it's not transparent
+      if (ulaPlusInkIndex !== ULAPLUS_TRANSPARENT) {
+        const currentInkClut = Math.floor(ulaPlusInkIndex / 16);
+        if (ulaPlusSelectedClut !== currentInkClut) {
+          const inkPos = ulaPlusInkIndex % 8; // Ink color 0-7
+          ulaPlusInkIndex = ulaPlusSelectedClut * 16 + inkPos;
+        }
+      }
+
+      updateUlaPlusPalette();
+    });
+
+    container.appendChild(cell);
+  }
+}
+
+/**
+ * Updates the ULA+ palette display (both modes)
+ */
+function updateUlaPlusPalette() {
+  // Update grid mode colors and selection
+  const gridContainer = document.getElementById('ulaPlusGridMode');
+  if (gridContainer) {
+    const cells = gridContainer.querySelectorAll('.ulaplus-grid-cell');
+    cells.forEach((cell) => {
+      const idx = parseInt(/** @type {HTMLElement} */ (cell).dataset.index || '0', 10);
+      const isTransparent = idx === ULAPLUS_TRANSPARENT;
+
+      // Update color (skip for transparent cell)
+      if (!isTransparent) {
+        const rgb = getUlaPlusColor(idx);
+        /** @type {HTMLElement} */ (cell).style.backgroundColor = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+      }
+
+      // Position within CLUT (0-7 = ink, 8-15 = paper)
+      const pos = idx % 16;
+      const isInkPos = pos < 8;
+
+      // Update selection
+      cell.classList.toggle('ink-selected', idx === ulaPlusInkIndex);
+      cell.classList.toggle('paper-selected', idx === ulaPlusPaperIndex);
+
+      // Add disabled class for wrong click type (ink row can't be paper, paper row can't be ink)
+      if (!isTransparent) {
+        cell.classList.toggle('disabled', false); // Grid shows visual hint via opacity
+      }
+
+      // Remove old markers
+      const oldMarkers = cell.querySelectorAll('.ulaplus-palette-marker');
+      oldMarkers.forEach((m) => m.remove());
+
+      // Add I marker for ink selection
+      if (idx === ulaPlusInkIndex) {
+        const marker = document.createElement('span');
+        marker.className = 'ulaplus-palette-marker ink-marker';
+        marker.textContent = 'I';
+        cell.appendChild(marker);
+      }
+
+      // Add P marker for paper selection
+      if (idx === ulaPlusPaperIndex) {
+        const marker = document.createElement('span');
+        marker.className = 'ulaplus-palette-marker paper-marker';
+        marker.textContent = 'P';
+        cell.appendChild(marker);
+      }
+    });
+  }
+
+  // Update classic mode colors and selection
+  const classicContainer = document.getElementById('ulaPlusClassicPalette');
+  if (classicContainer) {
+    const cells = classicContainer.querySelectorAll('.ulaplus-classic-cell');
+    cells.forEach((cell) => {
+      const idx = parseInt(/** @type {HTMLElement} */ (cell).dataset.index || '0', 10);
+      const isTransparent = idx === ULAPLUS_TRANSPARENT;
+
+      // Update color (skip for transparent cell)
+      if (!isTransparent) {
+        const rgb = getUlaPlusColor(idx);
+        /** @type {HTMLElement} */ (cell).style.backgroundColor = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+      }
+
+      // Update selection
+      cell.classList.toggle('ink-selected', idx === ulaPlusInkIndex);
+      cell.classList.toggle('paper-selected', idx === ulaPlusPaperIndex);
+
+      // Remove old markers
+      const oldMarkers = cell.querySelectorAll('.ulaplus-palette-marker');
+      oldMarkers.forEach((m) => m.remove());
+
+      // Add I marker for ink selection
+      if (idx === ulaPlusInkIndex) {
+        const marker = document.createElement('span');
+        marker.className = 'ulaplus-palette-marker ink-marker';
+        marker.textContent = 'I';
+        cell.appendChild(marker);
+      }
+
+      // Add P marker for paper selection
+      if (idx === ulaPlusPaperIndex) {
+        const marker = document.createElement('span');
+        marker.className = 'ulaplus-palette-marker paper-marker';
+        marker.textContent = 'P';
+        cell.appendChild(marker);
+      }
+    });
+  }
+
+  // Update transparent row
+  const transContainer = document.getElementById('ulaPlusTransparentRow');
+  if (transContainer) {
+    const transCell = transContainer.querySelector('.ulaplus-transparent-cell');
+    if (transCell) {
+      // Update selection
+      transCell.classList.toggle('ink-selected', ulaPlusInkIndex === ULAPLUS_TRANSPARENT);
+      transCell.classList.toggle('paper-selected', ulaPlusPaperIndex === ULAPLUS_TRANSPARENT);
+
+      // Remove old markers
+      const oldMarkers = transCell.querySelectorAll('.ulaplus-palette-marker');
+      oldMarkers.forEach((m) => m.remove());
+
+      // Add I marker for ink selection
+      if (ulaPlusInkIndex === ULAPLUS_TRANSPARENT) {
+        const marker = document.createElement('span');
+        marker.className = 'ulaplus-palette-marker ink-marker';
+        marker.textContent = 'I';
+        transCell.appendChild(marker);
+      }
+
+      // Add P marker for paper selection
+      if (ulaPlusPaperIndex === ULAPLUS_TRANSPARENT) {
+        const marker = document.createElement('span');
+        marker.className = 'ulaplus-palette-marker paper-marker';
+        marker.textContent = 'P';
+        transCell.appendChild(marker);
+      }
+    }
+  }
+}
+
+/**
+ * Toggles between ULA+ grid and classic view modes
+ */
+function toggleUlaPlusViewMode() {
+  ulaPlusGridView = !ulaPlusGridView;
+
+  const gridMode = document.getElementById('ulaPlusGridMode');
+  const classicMode = document.getElementById('ulaPlusClassicMode');
+  const modeLabel = document.getElementById('ulaPlusModeLabel');
+  const modeToggle = /** @type {HTMLInputElement} */ (document.getElementById('ulaPlusModeToggle'));
+
+  if (gridMode && classicMode) {
+    gridMode.style.display = ulaPlusGridView ? 'grid' : 'none';
+    classicMode.style.display = ulaPlusGridView ? 'none' : 'block';
+  }
+
+  if (modeLabel) {
+    modeLabel.textContent = ulaPlusGridView ? 'Grid' : 'Classic';
+  }
+
+  if (modeToggle) {
+    modeToggle.checked = ulaPlusGridView;
+  }
+
+  // Rebuild classic palette when switching to it
+  if (!ulaPlusGridView) {
+    buildUlaPlusClassic();
+  }
+
+  updateUlaPlusPalette();
+}
+
+/**
+ * Sets the selected CLUT for classic mode
+ * @param {number} clut - CLUT index (0-3)
+ */
+function setUlaPlusClut(clut) {
+  ulaPlusSelectedClut = clut;
+
+  // Move ink to new CLUT (keep same color position 0-7)
+  if (ulaPlusInkIndex !== ULAPLUS_TRANSPARENT) {
+    const inkPos = ulaPlusInkIndex % 8;
+    ulaPlusInkIndex = clut * 16 + inkPos;
+  }
+
+  // Move paper to new CLUT (keep same color position 0-7)
+  if (ulaPlusPaperIndex !== ULAPLUS_TRANSPARENT) {
+    const paperPos = ulaPlusPaperIndex % 8;
+    ulaPlusPaperIndex = clut * 16 + 8 + paperPos;
+  }
+
+  // Update CLUT button selection
+  const buttons = document.querySelectorAll('.ulaplus-clut-btn');
+  buttons.forEach((btn) => {
+    const btnClut = parseInt(/** @type {HTMLElement} */ (btn).dataset.clut || '0', 10);
+    btn.classList.toggle('selected', btnClut === clut);
+  });
+
+  // Rebuild classic palette for new CLUT
+  buildUlaPlusClassic();
+  updateUlaPlusPalette();
+}
+
+/**
+ * Initializes ULA+ palette UI event listeners
+ */
+function initUlaPlusPaletteUI() {
+  // Mode toggle checkbox
+  const modeToggle = document.getElementById('ulaPlusModeToggle');
+  if (modeToggle) {
+    modeToggle.addEventListener('change', () => {
+      toggleUlaPlusViewMode();
+    });
+  }
+
+  // CLUT buttons
+  const clutButtons = document.querySelectorAll('.ulaplus-clut-btn');
+  clutButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const clut = parseInt(/** @type {HTMLElement} */ (btn).dataset.clut || '0', 10);
+      setUlaPlusClut(clut);
+    });
+  });
+
+  // Save palette button
+  const savePalBtn = document.getElementById('ulaPlusSavePalBtn');
+  savePalBtn?.addEventListener('click', saveUlaPlusPalette);
+
+  // Load palette button and file input
+  const loadPalBtn = document.getElementById('ulaPlusLoadPalBtn');
+  const palFileInput = /** @type {HTMLInputElement|null} */ (document.getElementById('ulaPlusPalFileInput'));
+
+  loadPalBtn?.addEventListener('click', () => {
+    palFileInput?.click();
+  });
+
+  palFileInput?.addEventListener('change', (e) => {
+    const file = /** @type {HTMLInputElement} */ (e.target).files?.[0];
+    if (file) {
+      loadUlaPlusPalette(file);
+    }
+    // Reset input so same file can be loaded again
+    if (palFileInput) palFileInput.value = '';
+  });
+
+  // Build initial palettes
+  buildUlaPlusGrid();
+  buildUlaPlusClassic();
+  buildUlaPlusTransparentRow();
+
+  // Initialize color picker dialog
+  initUlaPlusColorPicker();
+}
+
 /**
  * Checks if format is editable
  * @returns {boolean}
  */
 function isFormatEditable() {
   if (currentFormat === FORMAT.SCR && screenData && screenData.length >= SCREEN.TOTAL_SIZE) return true;
+  if (currentFormat === FORMAT.SCR_ULAPLUS && screenData && screenData.length >= SCREEN.TOTAL_SIZE) return true;
   if (currentFormat === FORMAT.ATTR_53C && screenData && screenData.length >= 768) return true;
   if (currentFormat === FORMAT.BSC && screenData && screenData.length >= BSC.TOTAL_SIZE) return true;
   if (currentFormat === FORMAT.IFL && screenData && screenData.length >= IFL.TOTAL_SIZE) return true;
@@ -7298,6 +8803,9 @@ let isBorderDrawing = false;
 
 /** @type {{frameX: number, frameY: number}|null} - Last border drawing position for interpolation */
 let lastBorderPos = null;
+
+/** @type {{frameX: number, frameY: number}|null} - Start point for border rectangle tool */
+let borderRectStart = null;
 
 /**
  * Converts canvas mouse event to BSC coordinates.
@@ -7571,13 +9079,40 @@ function paintBscBorderCell(frameX, frameY, color) {
   const rightCell = bounds.right / 8;  // exclusive
   const cellCount = rightCell - leftCell;
 
+  // Get layer mask info for transparency-aware color comparison
+  const activeLayer = layersEnabled && layers.length > 0 ? layers[activeLayerIndex] : null;
+  const layerBorderMask = activeLayer && activeLayer.borderMask ? activeLayer.borderMask : null;
+  const borderOffset = getBorderDataOffset();
+
+  // Use -1 to represent "transparent/no content" for orphan handling
+  const TRANSPARENT_COLOR = -1;
+
   // Read current colors for all cells in this region
+  // For layers: transparent cells (mask=0) get TRANSPARENT_COLOR so they don't coalesce
   const cellColors = [];
   const originalColors = [];
+  const cellHasContent = []; // Track which cells have actual content
   for (let i = 0; i < cellCount; i++) {
-    const col = getBorderCellColor(bounds.left + i * 8, frameY);
-    cellColors[i] = col;
-    originalColors[i] = col;
+    const px = bounds.left + i * 8;
+    const col = getBorderCellColor(px, frameY);
+
+    // Check if this cell has content on the active layer
+    let hasContent = true;
+    if (layerBorderMask && activeLayerIndex > 0) {
+      const info = getBscBorderByteInfo(px, frameY);
+      if (info) {
+        const relOffset = info.byteOffset - borderOffset;
+        const maskIdx = relOffset * 2 + info.halfIndex;
+        if (maskIdx >= 0 && maskIdx < layerBorderMask.length) {
+          hasContent = layerBorderMask[maskIdx] === 1;
+        }
+      }
+    }
+
+    cellHasContent[i] = hasContent;
+    // For orphan handling: transparent cells use special value so they don't coalesce
+    cellColors[i] = hasContent ? col : TRANSPARENT_COLOR;
+    originalColors[i] = hasContent ? col : TRANSPARENT_COLOR;
   }
 
   // Determine which cells we're painting
@@ -7663,14 +9198,26 @@ function paintBscBorderCell(frameX, frameY, color) {
     }
   }
 
-  // Write back only cells that actually changed
+  // Write back cells that changed OR need mask update (for cells in paint range)
+  // The painted range is from extendLeft to extendRight (after orphan handling)
+  const paintRangeStart = extendLeft;
+  const paintRangeEnd = extendRight;
+
   for (let i = 0; i < cellCount; i++) {
-    if (cellColors[i] !== originalColors[i]) {
-      const px = bounds.left + i * 8;
-      const info = getBscBorderByteInfo(px, frameY);
-      if (info) {
-        setBscBorderColor(info.byteOffset, info.halfIndex, cellColors[i]);
-      }
+    const px = bounds.left + i * 8;
+    const info = getBscBorderByteInfo(px, frameY);
+    if (!info) continue;
+
+    const colorChanged = cellColors[i] !== originalColors[i];
+
+    // Only check mask for cells within the paint range
+    const inPaintRange = i >= paintRangeStart && i <= paintRangeEnd;
+    // Cell needs update if: color changed, OR it's in paint range and had no content
+    const maskWasEmpty = inPaintRange && !cellHasContent[i];
+
+    if (colorChanged || maskWasEmpty) {
+      // Write the actual color (cellColors[i] is the paint color, not TRANSPARENT_COLOR)
+      setBscBorderColor(info.byteOffset, info.halfIndex, cellColors[i]);
     }
   }
 }
@@ -7694,18 +9241,124 @@ function paintBorderWithBrush(frameX, frameY, color) {
 }
 
 /**
+ * Fills a rectangle on the border with a color.
+ * Respects the 24px minimum width constraint (8/16px allowed at edges).
+ * Skips main screen area automatically.
+ * @param {number} x0 - Start X coordinate (frame coords)
+ * @param {number} y0 - Start Y coordinate (frame coords)
+ * @param {number} x1 - End X coordinate (frame coords)
+ * @param {number} y1 - End Y coordinate (frame coords)
+ * @param {number} color - Color value (0–7)
+ */
+function fillBorderRect(x0, y0, x1, y1, color) {
+  // Normalize coordinates and snap to 8px grid
+  const minX = Math.floor(Math.min(x0, x1) / 8) * 8;
+  const maxX = Math.floor(Math.max(x0, x1) / 8) * 8;
+  const minY = Math.min(y0, y1);
+  const maxY = Math.max(y0, y1);
+
+  // Fill each row in the rectangle
+  for (let y = minY; y <= maxY; y++) {
+    // Determine which border regions this row has
+    let regions = [];
+    if (y < 64 || y >= 256) {
+      // Top or bottom border - full width
+      regions.push({ left: 0, right: 384 });
+    } else {
+      // Side borders - left and right separately
+      regions.push({ left: 0, right: 64 });    // Left border
+      regions.push({ left: 320, right: 384 }); // Right border
+    }
+
+    // Paint each region that intersects with the rectangle
+    for (const bounds of regions) {
+      // Calculate intersection of rectangle with this region
+      const regionMinX = Math.max(minX, bounds.left);
+      const regionMaxX = Math.min(maxX, bounds.right - 8);
+
+      // Skip if no intersection
+      if (regionMinX > regionMaxX) continue;
+
+      let paintMinX = regionMinX;
+      let paintMaxX = regionMaxX;
+
+      // Calculate width in cells
+      const widthCells = (paintMaxX - paintMinX) / 8 + 1;
+
+      // Apply 24px (3 cells) minimum, unless at boundary
+      if (widthCells < 3) {
+        const touchesLeft = (paintMinX <= bounds.left);
+        const touchesRight = (paintMaxX >= bounds.right - 8);
+
+        if (!touchesLeft && !touchesRight) {
+          // Not at boundary - expand to 24px (3 cells)
+          const centerX = (paintMinX + paintMaxX) / 2;
+          const centerCell = Math.floor(centerX / 8);
+          paintMinX = Math.max((centerCell - 1) * 8, bounds.left);
+          paintMaxX = Math.min((centerCell + 1) * 8, bounds.right - 8);
+
+          // Ensure we have at least 3 cells after clamping
+          if ((paintMaxX - paintMinX) / 8 + 1 < 3) {
+            if (paintMinX === bounds.left) {
+              paintMaxX = Math.min(bounds.left + 16, bounds.right - 8);
+            } else {
+              paintMinX = Math.max(bounds.right - 24, bounds.left);
+            }
+          }
+        }
+      }
+
+      // Paint each 8px cell in the range
+      for (let x = paintMinX; x <= paintMaxX; x += 8) {
+        const cellX = x / 8;
+        setBorderCellColor(cellX, y, color);
+      }
+    }
+  }
+}
+
+/**
  * Handles mouse down on BSC border area.
  * @param {MouseEvent} event
  * @param {{type:'border', frameX:number, frameY:number, region:string, byteOffset:number, halfIndex:number}} bscCoords
  */
 function handleBorderMouseDown(event, bscCoords) {
+  // Handle barcode capture mode - start drag
+  if (barcodeCaptureSlot >= 0) {
+    barcodeCaptureStart = { frameX: bscCoords.frameX, frameY: bscCoords.frameY };
+    isBorderDrawing = true;
+    editorRender();
+    updateBscEditorInfo(bscCoords);
+    return;
+  }
+
   saveUndoState();
+
+  // Handle barcode stamp mode
+  if (barcodeMode && activeBarcode >= 0 && barcodes[activeBarcode]) {
+    isBorderDrawing = true;
+    lastBorderPos = { frameX: bscCoords.frameX, frameY: bscCoords.frameY };
+    stampBarcode(bscCoords.frameX, bscCoords.frameY, activeBarcode);
+    editorRender();
+    updateBscEditorInfo(bscCoords);
+    return;
+  }
+
   // Left click = ink color, Right click = paper color
   const color = event.button !== 2 ? editorInkColor : editorPaperColor;
 
   // Handle flood fill on border
   if (currentTool === EDITOR.TOOL_FLOOD_FILL) {
     floodFillBorder(bscCoords.frameX, bscCoords.frameY, color);
+    editorRender();
+    updateBscEditorInfo(bscCoords);
+    return;
+  }
+
+  // Handle rectangle tool on border
+  if (currentTool === EDITOR.TOOL_RECT) {
+    borderRectStart = { frameX: bscCoords.frameX, frameY: bscCoords.frameY };
+    isBorderDrawing = true;
     editorRender();
     updateBscEditorInfo(bscCoords);
     return;
@@ -7727,6 +9380,31 @@ function handleBorderMouseDown(event, bscCoords) {
  */
 function handleBorderMouseMove(event, bscCoords) {
   if (isBorderDrawing) {
+    // Barcode capture mode: show preview
+    if (barcodeCaptureSlot >= 0 && barcodeCaptureStart) {
+      editorRender();
+      drawBarcodeCapturePreview(barcodeCaptureStart.frameX, barcodeCaptureStart.frameY, bscCoords.frameX, bscCoords.frameY);
+      updateBscEditorInfo(bscCoords);
+      return;
+    }
+
+    // Rectangle tool: just update preview, don't draw yet
+    if (currentTool === EDITOR.TOOL_RECT && borderRectStart) {
+      editorRender();
+      drawBorderRectPreview(borderRectStart.frameX, borderRectStart.frameY, bscCoords.frameX, bscCoords.frameY);
+      updateBscEditorInfo(bscCoords);
+      return;
+    }
+
+    // Barcode stamp mode: stamp on drag
+    if (barcodeMode && activeBarcode >= 0 && barcodes[activeBarcode]) {
+      stampBarcode(bscCoords.frameX, bscCoords.frameY, activeBarcode);
+      lastBorderPos = { frameX: bscCoords.frameX, frameY: bscCoords.frameY };
+      editorRender();
+      updateBscEditorInfo(bscCoords);
+      return;
+    }
+
     const color = (event.buttons & 2) !== 0 ? editorPaperColor : editorInkColor;
 
     if (lastBorderPos) {
@@ -7770,11 +9448,579 @@ function handleBorderMouseMove(event, bscCoords) {
 }
 
 /**
- * Handles mouse up on BSC border area.
+ * Draws a preview rectangle on the border (overlay, not committed).
+ * @param {number} x0 - Start X (frame coords)
+ * @param {number} y0 - Start Y (frame coords)
+ * @param {number} x1 - End X (frame coords)
+ * @param {number} y1 - End Y (frame coords)
  */
-function handleBorderMouseUp() {
+function drawBorderRectPreview(x0, y0, x1, y1) {
+  if (!screenCanvas) return;
+  const ctx = screenCanvas.getContext('2d');
+  if (!ctx) return;
+
+  const minX = Math.min(x0, x1);
+  const maxX = Math.max(x0, x1);
+  const minY = Math.min(y0, y1);
+  const maxY = Math.max(y0, y1);
+
+  // Draw preview rectangle outline
+  ctx.strokeStyle = 'rgba(255, 255, 0, 0.8)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.strokeRect(minX * zoom + 0.5, minY * zoom + 0.5, (maxX - minX + 1) * zoom - 1, (maxY - minY + 1) * zoom - 1);
+  ctx.setLineDash([]);
+
+  // Draw semi-transparent fill preview
+  ctx.fillStyle = 'rgba(255, 255, 0, 0.2)';
+  ctx.fillRect(minX * zoom, minY * zoom, (maxX - minX + 1) * zoom, (maxY - minY + 1) * zoom);
+}
+
+/**
+ * Handles mouse up on BSC border area.
+ * @param {MouseEvent} [event] - Mouse event (optional, for getting button state)
+ */
+function handleBorderMouseUp(event) {
+  // Handle barcode capture completion
+  if (barcodeCaptureSlot >= 0 && barcodeCaptureStart && isBorderDrawing) {
+    const bsc = event ? canvasToBscCoords(screenCanvas, event) : null;
+    if (bsc && bsc.type === 'border') {
+      captureBarcodeRegion(
+        barcodeCaptureStart.frameX, barcodeCaptureStart.frameY,
+        bsc.frameX, bsc.frameY,
+        barcodeCaptureSlot
+      );
+      editorRender();
+    }
+    barcodeCaptureSlot = -1;
+    barcodeCaptureStart = null;
+    // Restore cursor after capture mode ends
+    if (screenCanvas) {
+      screenCanvas.style.cursor = brushPreviewMode ? 'none' : 'crosshair';
+    }
+  }
+
+  // Handle rectangle tool completion
+  if (currentTool === EDITOR.TOOL_RECT && borderRectStart && isBorderDrawing) {
+    const bsc = event ? canvasToBscCoords(screenCanvas, event) : null;
+    if (bsc) {
+      // Get frame coordinates - works for both border and main area
+      // fillBorderRect will skip main screen pixels automatically
+      const endX = bsc.type === 'border' ? bsc.frameX : (bsc.x + 64);
+      const endY = bsc.type === 'border' ? bsc.frameY : (bsc.y + 64);
+      const color = (event && event.button === 2) ? editorPaperColor : editorInkColor;
+      fillBorderRect(borderRectStart.frameX, borderRectStart.frameY, endX, endY, color);
+      editorRender();
+    }
+    borderRectStart = null;
+  }
+
   isBorderDrawing = false;
   lastBorderPos = null;
+}
+
+// ============================================================================
+// Barcode Functions (Border Patterns)
+// ============================================================================
+
+/**
+ * Captures a barcode pattern from a region on the border.
+ * @param {number} x0 - Start X coordinate
+ * @param {number} y0 - Start Y coordinate
+ * @param {number} x1 - End X coordinate
+ * @param {number} y1 - End Y coordinate
+ * @param {number} slot - Barcode slot (0-7)
+ */
+function captureBarcodeRegion(x0, y0, x1, y1, slot) {
+  if (slot < 0 || slot >= 8 || !screenData) return;
+
+  // Use start position (x0, y0) as anchor for width calculation
+  // Y coordinates are normalized (min/max) for the capture range
+  const minY = Math.min(y0, y1);
+  const maxY = Math.max(y0, y1);
+
+  const height = maxY - minY + 1;
+  if (height < 2) return; // Minimum 2 pixels height
+
+  // Determine width based on START position (x0), not minX
+  const bounds = getBorderRegionBounds(y0, x0);
+  if (!bounds) return;
+
+  const snappedX = Math.floor(x0 / 8) * 8;
+  const cellX = snappedX / 8;
+  const regionLeftCell = bounds.left / 8;
+  const regionRightCell = bounds.right / 8;
+  const posInRegion = cellX - regionLeftCell;
+  const regionWidth = regionRightCell - regionLeftCell;
+
+  // Determine width: 8px at edges, 24px in middle, 16px one cell from edge
+  let widthCells;
+  if (posInRegion === 0 || posInRegion === regionWidth - 1) {
+    widthCells = 1; // 8px at edge
+  } else if (posInRegion === 1 || posInRegion === regionWidth - 2) {
+    widthCells = 2; // 16px one cell from edge
+  } else {
+    widthCells = 3; // 24px in middle
+  }
+
+  // Start capture from clicked cell (no centering)
+  let startCellX = cellX;
+  // Clamp to region bounds
+  if (startCellX + widthCells > regionRightCell) {
+    startCellX = regionRightCell - widthCells;
+  }
+  startCellX = Math.max(startCellX, regionLeftCell);
+
+  const width = widthCells * 8;
+  const colors = new Uint8Array(height * widthCells);
+
+  // Capture colors for each row (with transparency support)
+  const borderOffset = getBorderDataOffset();
+  // Get the active layer for transparency detection and color reading
+  const activeLayer = layersEnabled && layers.length > 0 ? layers[activeLayerIndex] : null;
+  const layerBorderMask = activeLayer && activeLayer.borderMask ? activeLayer.borderMask : null;
+  const layerBorderData = activeLayer && activeLayer.borderData ? activeLayer.borderData : null;
+  const captureFromLayer = activeLayerIndex > 0 && layerBorderMask && layerBorderData;
+
+  for (let y = 0; y < height; y++) {
+    const captureY = minY + y;
+    if (captureY >= BSC.FRAME_HEIGHT) break;
+
+    for (let c = 0; c < widthCells; c++) {
+      const px = (startCellX + c) * 8;
+      const info = getBscBorderByteInfo(px, captureY);
+
+      if (captureFromLayer && info) {
+        // Capture from active layer (non-background)
+        const relOffset = info.byteOffset - borderOffset;
+        const maskIdx = relOffset * 2 + info.halfIndex;
+
+        if (maskIdx >= 0 && maskIdx < layerBorderMask.length && layerBorderMask[maskIdx] === 0) {
+          // Transparent pixel on this layer
+          colors[y * widthCells + c] = BARCODE_TRANSPARENT;
+          continue;
+        }
+
+        // Read color from layer's border data
+        if (relOffset >= 0 && relOffset < layerBorderData.length) {
+          const byte = layerBorderData[relOffset];
+          const color = info.halfIndex === 0 ? (byte & 0x07) : ((byte >> 3) & 0x07);
+          colors[y * widthCells + c] = color;
+          continue;
+        }
+      }
+
+      // Fallback: read from flattened screen data (background layer or no layers)
+      const color = getBorderCellColor(px, captureY);
+      colors[y * widthCells + c] = color >= 0 ? color : 0;
+    }
+  }
+
+  barcodes[slot] = { width, height, colors };
+  renderBarcodeSlot(slot);
+  saveBarcodes(); // Persist to localStorage
+
+  // Show info
+  const infoEl = document.getElementById('editorPositionInfo');
+  if (infoEl) {
+    infoEl.innerHTML = `Captured barcode ${slot + 1}: ${width}×${height}px`;
+  }
+}
+
+/**
+ * Draws barcode capture preview rectangle.
+ * @param {number} x0 - Start X
+ * @param {number} y0 - Start Y
+ * @param {number} x1 - End X
+ * @param {number} y1 - End Y
+ */
+function drawBarcodeCapturePreview(x0, y0, x1, y1) {
+  if (!screenCanvas) return;
+  const ctx = screenCanvas.getContext('2d');
+  if (!ctx) return;
+
+  // Use start position (x0, y0) as anchor for width calculation
+  const minY = Math.min(y0, y1);
+  const maxY = Math.max(y0, y1);
+
+  // Calculate actual capture width based on START position (x0), not minX
+  const bounds = getBorderRegionBounds(y0, x0);
+  if (!bounds) return;
+
+  const snappedX = Math.floor(x0 / 8) * 8;
+  const cellX = snappedX / 8;
+  const regionLeftCell = bounds.left / 8;
+  const regionRightCell = bounds.right / 8;
+  const posInRegion = cellX - regionLeftCell;
+  const regionWidth = regionRightCell - regionLeftCell;
+
+  let widthCells;
+  if (posInRegion === 0 || posInRegion === regionWidth - 1) {
+    widthCells = 1;
+  } else if (posInRegion === 1 || posInRegion === regionWidth - 2) {
+    widthCells = 2;
+  } else {
+    widthCells = 3;
+  }
+
+  // Start capture from clicked cell (no centering)
+  let startCellX = cellX;
+  // Clamp to region bounds
+  if (startCellX + widthCells > regionRightCell) {
+    startCellX = regionRightCell - widthCells;
+  }
+  startCellX = Math.max(startCellX, regionLeftCell);
+
+  const previewX = startCellX * 8;
+  const previewWidth = widthCells * 8;
+
+  // Draw preview rectangle (cyan for capture)
+  ctx.strokeStyle = 'rgba(0, 255, 255, 0.8)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.strokeRect(previewX * zoom + 0.5, minY * zoom + 0.5, previewWidth * zoom - 1, (maxY - minY + 1) * zoom - 1);
+  ctx.setLineDash([]);
+
+  // Draw semi-transparent fill
+  ctx.fillStyle = 'rgba(0, 255, 255, 0.2)';
+  ctx.fillRect(previewX * zoom, minY * zoom, previewWidth * zoom, (maxY - minY + 1) * zoom);
+}
+
+/**
+ * Stamps a barcode pattern onto the border at the given position.
+ * @param {number} frameX - Frame X coordinate
+ * @param {number} frameY - Frame Y coordinate (top of stamp)
+ * @param {number} slot - Barcode slot (0-7)
+ */
+function stampBarcode(frameX, frameY, slot) {
+  if (slot < 0 || slot >= 8 || !barcodes[slot] || !screenData) return;
+
+  const barcode = barcodes[slot];
+  const widthCells = barcode.width / 8;
+
+  // Snap to 8px grid
+  const snappedX = Math.floor(frameX / 8) * 8;
+  const startCellX = snappedX / 8;
+
+  // Stamp each row
+  for (let y = 0; y < barcode.height; y++) {
+    const stampY = frameY + y;
+    if (stampY >= BSC.FRAME_HEIGHT) break;
+
+    for (let c = 0; c < widthCells; c++) {
+      const cellX = startCellX + c;
+      const color = barcode.colors[y * widthCells + c];
+      // Skip transparent pixels
+      if (color === BARCODE_TRANSPARENT) continue;
+      setBorderCellColor(cellX, stampY, color);
+    }
+  }
+}
+
+/**
+ * Renders a barcode slot preview.
+ * @param {number} slot - Barcode slot (0-7)
+ */
+function renderBarcodeSlot(slot) {
+  const canvas = document.getElementById(`barcode${slot}`);
+  if (!canvas) return;
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  // Clear
+  ctx.fillStyle = '#222';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const barcode = barcodes[slot];
+  if (!barcode) return;
+
+  const widthCells = barcode.width / 8;
+  const cellWidth = canvas.width / 3; // Max 3 cells (24px)
+  const scaleY = canvas.height / barcode.height;
+
+  // Center if narrower than 3 cells
+  const offsetX = (3 - widthCells) * cellWidth / 2;
+
+  // Draw each row
+  for (let y = 0; y < barcode.height; y++) {
+    for (let c = 0; c < widthCells; c++) {
+      const color = barcode.colors[y * widthCells + c];
+      const cellX = offsetX + c * cellWidth;
+      const cellY = y * scaleY;
+
+      if (color === BARCODE_TRANSPARENT) {
+        // Draw checkerboard pattern for transparent pixels
+        const checkSize = Math.max(2, Math.floor(cellWidth / 4));
+        for (let cy = 0; cy < scaleY + 1; cy += checkSize) {
+          for (let cx = 0; cx < cellWidth; cx += checkSize) {
+            const isLight = ((Math.floor(cx / checkSize) + Math.floor(cy / checkSize)) % 2) === 0;
+            ctx.fillStyle = isLight ? '#444' : '#333';
+            ctx.fillRect(cellX + cx, cellY + cy, checkSize, checkSize);
+          }
+        }
+      } else {
+        const rgb = ZX_PALETTE_RGB.REGULAR[color] || [0, 0, 0];
+        ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+        ctx.fillRect(cellX, cellY, cellWidth, scaleY + 1);
+      }
+    }
+  }
+}
+
+/**
+ * Renders all barcode slot previews.
+ */
+function renderAllBarcodeSlots() {
+  for (let i = 0; i < 8; i++) {
+    renderBarcodeSlot(i);
+  }
+}
+
+/**
+ * Selects a barcode slot.
+ * @param {number} slot - Barcode slot (0-7), or -1 to deselect
+ */
+function selectBarcode(slot) {
+  activeBarcode = slot;
+  barcodeMode = slot >= 0 && barcodes[slot] !== null;
+
+  // Update cursor: hide when in barcode stamp mode to show barcode preview
+  if (screenCanvas) {
+    if (barcodeMode) {
+      screenCanvas.style.cursor = 'none';
+    } else {
+      screenCanvas.style.cursor = brushPreviewMode ? 'none' : 'crosshair';
+    }
+  }
+
+  // Update UI selection
+  for (let i = 0; i < 8; i++) {
+    const canvas = document.getElementById(`barcode${i}`);
+    if (canvas) {
+      canvas.classList.toggle('selected', i === slot);
+    }
+  }
+}
+
+/**
+ * Clears a barcode slot.
+ * @param {number} slot - Barcode slot (0-7)
+ */
+function clearBarcode(slot) {
+  if (slot < 0 || slot >= 8) return;
+  barcodes[slot] = null;
+  renderBarcodeSlot(slot);
+  saveBarcodes(); // Persist to localStorage
+  if (activeBarcode === slot) {
+    selectBarcode(-1);
+  }
+}
+
+/**
+ * Initializes the barcode UI.
+ */
+function initBarcodeUI() {
+  // Collapsible header
+  const header = document.getElementById('barcodeHeader');
+  const controls = document.getElementById('barcodeControls');
+  const expandIcon = document.getElementById('barcodeExpandIcon');
+
+  header?.addEventListener('click', (e) => {
+    // Don't toggle if clicking save/load buttons
+    if (/** @type {HTMLElement} */ (e.target).closest('button')) return;
+
+    const isHidden = controls?.style.display === 'none';
+    if (controls) controls.style.display = isHidden ? '' : 'none';
+    if (expandIcon) expandIcon.textContent = isHidden ? '▼' : '▶';
+  });
+
+  // Barcode slot click handlers
+  for (let i = 0; i < 8; i++) {
+    const canvas = document.getElementById(`barcode${i}`);
+    canvas?.addEventListener('click', (e) => {
+      if (e.shiftKey) {
+        // Shift+click: start capture mode (need to click on border)
+        startBarcodeCapture(i);
+      } else if (e.ctrlKey || e.metaKey) {
+        // Ctrl+click: clear slot
+        clearBarcode(i);
+      } else {
+        // Normal click: select/deselect slot
+        if (activeBarcode === i) {
+          selectBarcode(-1); // Deselect if already selected
+        } else {
+          selectBarcode(i);
+        }
+      }
+    });
+  }
+
+  // Save/load buttons
+  document.getElementById('saveBarcodesBtn')?.addEventListener('click', exportBarcodes);
+  document.getElementById('loadBarcodesBtn')?.addEventListener('click', () => {
+    document.getElementById('barcodesFileInput')?.click();
+  });
+  document.getElementById('barcodesFileInput')?.addEventListener('change', (e) => {
+    const file = /** @type {HTMLInputElement} */ (e.target).files?.[0];
+    if (file) loadBarcodesFromFile(file);
+  });
+
+  // Load barcodes from localStorage or default file
+  loadBarcodes();
+}
+
+/** @type {number} - Slot being captured for barcode */
+let barcodeCaptureSlot = -1;
+
+/** @type {{frameX: number, frameY: number}|null} - Start point for barcode capture drag */
+let barcodeCaptureStart = null;
+
+/**
+ * Starts barcode capture mode.
+ * @param {number} slot - Barcode slot (0-7)
+ */
+function startBarcodeCapture(slot) {
+  barcodeCaptureSlot = slot;
+  barcodeCaptureStart = null;
+  // Set cursor to crosshair for capture mode
+  if (screenCanvas) {
+    screenCanvas.style.cursor = 'crosshair';
+  }
+  const infoEl = document.getElementById('editorPositionInfo');
+  if (infoEl) {
+    infoEl.innerHTML = `Drag on border to capture barcode ${slot + 1}`;
+  }
+}
+
+/**
+ * Saves barcodes to localStorage for persistence.
+ */
+function saveBarcodes() {
+  const data = [];
+  for (let i = 0; i < 8; i++) {
+    if (barcodes[i]) {
+      data.push({
+        slot: i,
+        width: barcodes[i].width,
+        height: barcodes[i].height,
+        colors: Array.from(barcodes[i].colors)
+      });
+    }
+  }
+  localStorage.setItem('spectraLabBarcodes', JSON.stringify(data));
+}
+
+/**
+ * Exports all barcodes to a .slbc file.
+ */
+function exportBarcodes() {
+  const data = [];
+  for (let i = 0; i < 8; i++) {
+    if (barcodes[i]) {
+      data.push({
+        slot: i,
+        width: barcodes[i].width,
+        height: barcodes[i].height,
+        colors: Array.from(barcodes[i].colors)
+      });
+    }
+  }
+
+  if (data.length === 0) {
+    alert('No barcodes to save');
+    return;
+  }
+
+  const json = JSON.stringify(data);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'barcodes.slbc';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Parses barcode data array and populates the barcodes slots.
+ * @param {Array} data - Array of barcode objects
+ */
+function parseBarcodeArray(data) {
+  if (!Array.isArray(data)) return;
+
+  for (const item of data) {
+    if (item.slot >= 0 && item.slot < 8 && item.colors) {
+      barcodes[item.slot] = {
+        width: item.width,
+        height: item.height,
+        colors: new Uint8Array(item.colors)
+      };
+    }
+  }
+}
+
+/**
+ * Loads barcodes from a .slbc file.
+ * @param {File} file - The file to load
+ */
+function loadBarcodesFromFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const data = JSON.parse(/** @type {string} */ (e.target?.result));
+      parseBarcodeArray(data);
+      saveBarcodes(); // Persist to localStorage
+      renderAllBarcodeSlots();
+    } catch (err) {
+      alert('Failed to load barcodes: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
+/**
+ * Loads barcodes from localStorage, or from brushes/barcodes.slbc if localStorage is empty
+ */
+function loadBarcodes() {
+  const raw = localStorage.getItem('spectraLabBarcodes');
+  if (raw) {
+    // Load from localStorage
+    try {
+      const arr = JSON.parse(raw);
+      parseBarcodeArray(arr);
+    } catch (e) {
+      // Ignore corrupt data
+    }
+    renderAllBarcodeSlots();
+  } else {
+    // Try to load default barcodes from file
+    fetch('brushes/barcodes.slbc')
+      .then(response => {
+        if (!response.ok) throw new Error('Not found');
+        return response.text();
+      })
+      .then(text => {
+        const arr = JSON.parse(text);
+        parseBarcodeArray(arr);
+        renderAllBarcodeSlots();
+      })
+      .catch(() => {
+        // No default barcodes file, that's fine
+      });
+  }
+}
+
+/**
+ * Shows or hides barcode section based on format.
+ */
+function updateBarcodeVisibility() {
+  const section = document.getElementById('barcodeSection');
+  if (section) {
+    section.style.display = isBorderFormatEditor() ? '' : 'none';
+  }
 }
 
 /**
@@ -9136,9 +11382,13 @@ function updateConvertOptions() {
   convertSelect.innerHTML = '<option value="" disabled selected>Convert...</option>';
 
   if (currentFormat === FORMAT.SCR) {
-    // SCR can convert to ATTR or BSC
+    // SCR can convert to ATTR, BSC, or ULA+
     convertSelect.innerHTML += '<option value="scr-to-attr">→ ATTR (.53c)</option>';
     convertSelect.innerHTML += '<option value="scr-to-bsc">→ BSC (add border)</option>';
+    convertSelect.innerHTML += '<option value="scr-to-ulaplus">→ ULA+ (add palette)</option>';
+  } else if (currentFormat === FORMAT.SCR_ULAPLUS) {
+    // ULA+ can convert to SCR (strip palette)
+    convertSelect.innerHTML += '<option value="ulaplus-to-scr">→ SCR (strip palette)</option>';
   } else if (currentFormat === FORMAT.ATTR_53C) {
     // ATTR can convert to SCR or BSC
     convertSelect.innerHTML += '<option value="attr-to-scr">→ SCR (add pattern)</option>';
@@ -9160,6 +11410,12 @@ function handleConversion(action) {
       break;
     case 'scr-to-bsc':
       showBorderColorPicker();
+      break;
+    case 'scr-to-ulaplus':
+      convertScrToUlaPlus();
+      break;
+    case 'ulaplus-to-scr':
+      convertUlaPlusToScr();
       break;
     case 'attr-to-scr':
       showPatternPicker(false);
@@ -9190,6 +11446,89 @@ function convertScrToAttr() {
   screenData = attrData;
   currentFormat = FORMAT.ATTR_53C;
   currentFileName = currentFileName.replace(/\.[^.]+$/, '.53c');
+
+  // Clear undo history for new format
+  undoStack = [];
+  redoStack = [];
+
+  // Mark picture as modified and sync state
+  markPictureModified();
+  saveCurrentPictureState();
+
+  // Update UI
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+  updateConvertOptions();
+  updateFileInfo();
+  updatePictureTabBar();
+  renderScreen();
+  editorRender();
+}
+
+/**
+ * Convert SCR to ULA+ (add default palette)
+ */
+function convertScrToUlaPlus() {
+  if (!screenData || screenData.length < SCREEN.TOTAL_SIZE) {
+    alert('No valid SCR data to convert');
+    return;
+  }
+
+  // Create new screen data with palette appended
+  const newData = new Uint8Array(ULAPLUS.TOTAL_SIZE);
+  newData.set(screenData.slice(0, SCREEN.TOTAL_SIZE), 0);
+
+  // Generate and append default ULA+ palette
+  const defaultPalette = generateDefaultUlaPlusPalette();
+  newData.set(defaultPalette, ULAPLUS.PALETTE_OFFSET);
+
+  // Update state
+  screenData = newData;
+  currentFormat = FORMAT.SCR_ULAPLUS;
+  ulaPlusPalette = defaultPalette.slice();
+  isUlaPlusMode = true;
+  resetUlaPlusColors();
+
+  // Keep .scr extension (ULA+ files use same extension)
+
+  // Clear undo history for new format
+  undoStack = [];
+  redoStack = [];
+
+  // Mark picture as modified and sync state
+  markPictureModified();
+  saveCurrentPictureState();
+
+  // Update UI
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+  updateConvertOptions();
+  updateFileInfo();
+  updatePictureTabBar();
+  renderScreen();
+  editorRender();
+}
+
+/**
+ * Convert ULA+ to SCR (strip palette)
+ */
+function convertUlaPlusToScr() {
+  if (!screenData || screenData.length < SCREEN.TOTAL_SIZE) {
+    alert('No valid ULA+ data to convert');
+    return;
+  }
+
+  // Extract just the SCR data (first 6912 bytes)
+  const newData = new Uint8Array(SCREEN.TOTAL_SIZE);
+  newData.set(screenData.slice(0, SCREEN.TOTAL_SIZE), 0);
+
+  // Update state
+  screenData = newData;
+  currentFormat = FORMAT.SCR;
+  ulaPlusPalette = null;
+  isUlaPlusMode = false;
 
   // Clear undo history for new format
   undoStack = [];
@@ -10504,6 +12843,12 @@ function initEditor() {
   // Build color palette
   buildPalette();
 
+  // Initialize ULA+ palette UI
+  initUlaPlusPaletteUI();
+
+  // Initialize barcode UI (for border patterns)
+  initBarcodeUI();
+
   const brightCb = document.getElementById('editorBrightCheckbox');
   if (brightCb) {
     brightCb.addEventListener('change', (e) => {
@@ -10842,9 +13187,16 @@ function initEditor() {
       startPasteMode();
     }
 
-    // Brush preview toggle (configurable hotkey, default backtick)
+    // ~: Toggle preview panel (Shift+Backquote for layout independence)
+    if (e.shiftKey && e.code === 'Backquote') {
+      e.preventDefault();
+      togglePreviewPanel();
+      return;
+    }
+
+    // Brush preview toggle (configurable hotkey, default backtick) - must be without Shift
     const brushPreviewKey = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.BRUSH_PREVIEW_HOTKEY) || '`';
-    if (!e.ctrlKey && !e.altKey && e.key === brushPreviewKey) {
+    if (!e.ctrlKey && !e.altKey && !e.shiftKey && e.key === brushPreviewKey) {
       e.preventDefault();
       toggleBrushPreview();
       return;  // Don't process further key handlers
@@ -10921,12 +13273,6 @@ function initEditor() {
     if (e.key === 'Tab' && fullscreenMode) {
       e.preventDefault();
       toggleFloatingPalette();
-      return;
-    }
-
-    // ~: Toggle preview panel
-    if (e.key === '~') {
-      togglePreviewPanel();
       return;
     }
 

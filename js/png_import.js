@@ -2020,6 +2020,344 @@ function convertToScr(sourceCanvas, dithering, brightness, contrast, saturation 
 }
 
 // ============================================================================
+// ULA+ FORMAT CONVERSION (64-color palette)
+// ============================================================================
+
+/**
+ * Generate optimal ULA+ palette from image colors
+ * @param {Float32Array} pixels - Float array of RGB values (256x192x3)
+ * @returns {Uint8Array} 64-byte palette in GRB332 format
+ */
+function generateOptimalUlaPlusPalette(pixels) {
+  // Count frequency of each GRB332 color
+  const colorFreq = new Map();
+
+  for (let i = 0; i < 256 * 192; i++) {
+    const r = Math.round(pixels[i * 3]);
+    const g = Math.round(pixels[i * 3 + 1]);
+    const b = Math.round(pixels[i * 3 + 2]);
+    const grb = rgbToGrb332(r, g, b);
+    colorFreq.set(grb, (colorFreq.get(grb) || 0) + 1);
+  }
+
+  // Sort colors by frequency
+  const sortedColors = Array.from(colorFreq.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(entry => entry[0]);
+
+  // Analyze cells to find which color pairs are used together
+  const cellColorPairs = [];
+  for (let cellY = 0; cellY < 24; cellY++) {
+    for (let cellX = 0; cellX < 32; cellX++) {
+      const cellColors = new Map();
+      for (let dy = 0; dy < 8; dy++) {
+        for (let dx = 0; dx < 8; dx++) {
+          const px = cellX * 8 + dx;
+          const py = cellY * 8 + dy;
+          const idx = (py * 256 + px) * 3;
+          const r = Math.round(pixels[idx]);
+          const g = Math.round(pixels[idx + 1]);
+          const b = Math.round(pixels[idx + 2]);
+          const grb = rgbToGrb332(r, g, b);
+          cellColors.set(grb, (cellColors.get(grb) || 0) + 1);
+        }
+      }
+      // Get top 2 colors for this cell
+      const topColors = Array.from(cellColors.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 2)
+        .map(e => e[0]);
+      if (topColors.length >= 2) {
+        cellColorPairs.push(topColors);
+      }
+    }
+  }
+
+  // Build 4 CLUTs using color clustering
+  // Each CLUT has 8 ink colors (0-7) and 8 paper colors (8-15)
+  const clutColors = [new Set(), new Set(), new Set(), new Set()];
+
+  // Assign cell color pairs to CLUTs to minimize color overlap
+  for (const pair of cellColorPairs) {
+    // Find CLUT with most room that can accommodate both colors
+    let bestClut = 0;
+    let bestScore = -Infinity;
+
+    for (let c = 0; c < 4; c++) {
+      const has0 = clutColors[c].has(pair[0]);
+      const has1 = clutColors[c].has(pair[1]);
+      const size = clutColors[c].size;
+
+      // Score: prefer CLUTs that already have these colors, or have room
+      let score = 0;
+      if (has0) score += 10;
+      if (has1) score += 10;
+      if (size < 16) score += (16 - size);  // Room available
+      if (!has0 && !has1 && size >= 14) score = -100;  // No room for 2 new colors
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestClut = c;
+      }
+    }
+
+    // Add colors to chosen CLUT if there's room
+    if (clutColors[bestClut].size < 16) {
+      clutColors[bestClut].add(pair[0]);
+    }
+    if (clutColors[bestClut].size < 16) {
+      clutColors[bestClut].add(pair[1]);
+    }
+  }
+
+  // Fill any remaining slots with most frequent colors not yet used
+  const usedColors = new Set();
+  for (const clut of clutColors) {
+    for (const c of clut) usedColors.add(c);
+  }
+
+  for (const grb of sortedColors) {
+    if (usedColors.has(grb)) continue;
+
+    // Add to CLUT with most room
+    let minSize = 17;
+    let targetClut = -1;
+    for (let c = 0; c < 4; c++) {
+      if (clutColors[c].size < minSize) {
+        minSize = clutColors[c].size;
+        targetClut = c;
+      }
+    }
+    if (targetClut >= 0 && clutColors[targetClut].size < 16) {
+      clutColors[targetClut].add(grb);
+      usedColors.add(grb);
+    }
+  }
+
+  // Ensure each CLUT has at least black and white for fallback
+  const black = rgbToGrb332(0, 0, 0);
+  const white = rgbToGrb332(255, 255, 255);
+  for (let c = 0; c < 4; c++) {
+    if (clutColors[c].size < 15 && !clutColors[c].has(black)) {
+      clutColors[c].add(black);
+    }
+    if (clutColors[c].size < 16 && !clutColors[c].has(white)) {
+      clutColors[c].add(white);
+    }
+  }
+
+  // Convert to palette array
+  const palette = new Uint8Array(64);
+  for (let c = 0; c < 4; c++) {
+    const colors = Array.from(clutColors[c]);
+    // Sort by brightness for consistent ordering
+    colors.sort((a, b) => {
+      const rgbA = grb332ToRgb(a);
+      const rgbB = grb332ToRgb(b);
+      const lumA = rgbA[0] * 0.299 + rgbA[1] * 0.587 + rgbA[2] * 0.114;
+      const lumB = rgbB[0] * 0.299 + rgbB[1] * 0.587 + rgbB[2] * 0.114;
+      return lumA - lumB;
+    });
+
+    // Fill ink (0-7) and paper (8-15) slots
+    const baseIdx = c * 16;
+    for (let i = 0; i < 8; i++) {
+      const color = i < colors.length ? colors[i] : (i === 0 ? black : white);
+      palette[baseIdx + i] = color;  // INK
+    }
+    for (let i = 0; i < 8; i++) {
+      const color = (i + 8) < colors.length ? colors[i + 8] : colors[Math.min(i, colors.length - 1)];
+      palette[baseIdx + 8 + i] = color;  // PAPER
+    }
+  }
+
+  return palette;
+}
+
+/**
+ * Find best CLUT and ink/paper for a cell
+ * @param {Float32Array} pixels - Float array of RGB values
+ * @param {number} cellX - Cell X position
+ * @param {number} cellY - Cell Y position
+ * @param {Uint8Array} palette - ULA+ 64-byte palette
+ * @returns {{clut: number, ink: number, paper: number, inkRgb: number[], paperRgb: number[]}}
+ */
+function findUlaPlusCellColors(pixels, cellX, cellY, palette) {
+  // Collect cell colors
+  const cellColors = [];
+  for (let dy = 0; dy < 8; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const px = cellX * 8 + dx;
+      const py = cellY * 8 + dy;
+      const idx = (py * 256 + px) * 3;
+      cellColors.push([pixels[idx], pixels[idx + 1], pixels[idx + 2]]);
+    }
+  }
+
+  let bestError = Infinity;
+  let bestClut = 0;
+  let bestInk = 0;
+  let bestPaper = 0;
+
+  // Try all CLUTs and all ink/paper combinations within each
+  for (let clut = 0; clut < 4; clut++) {
+    const baseIdx = clut * 16;
+
+    for (let ink = 0; ink < 8; ink++) {
+      const inkGrb = palette[baseIdx + ink];
+      const inkRgb = grb332ToRgb(inkGrb);
+
+      for (let paper = 0; paper < 8; paper++) {
+        const paperGrb = palette[baseIdx + 8 + paper];
+        const paperRgb = grb332ToRgb(paperGrb);
+
+        let totalError = 0;
+        for (const color of cellColors) {
+          const inkDist = colorDistance(color, inkRgb);
+          const paperDist = colorDistance(color, paperRgb);
+          totalError += Math.min(inkDist, paperDist);
+        }
+
+        if (totalError < bestError) {
+          bestError = totalError;
+          bestClut = clut;
+          bestInk = ink;
+          bestPaper = paper;
+        }
+      }
+    }
+  }
+
+  const baseIdx = bestClut * 16;
+  return {
+    clut: bestClut,
+    ink: bestInk,
+    paper: bestPaper,
+    inkRgb: grb332ToRgb(palette[baseIdx + bestInk]),
+    paperRgb: grb332ToRgb(palette[baseIdx + 8 + bestPaper])
+  };
+}
+
+/**
+ * Convert image to ULA+ format with optimal palette
+ */
+function convertToUlaPlus(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0) {
+  updateColorDistanceMode();
+
+  const ctx = sourceCanvas.getContext('2d');
+  if (!ctx) throw new Error('Cannot get canvas context');
+
+  const imageData = ctx.getImageData(0, 0, 256, 192);
+  const pixels = imageData.data;
+
+  // Apply image adjustments
+  if (grayscale) {
+    applyGrayscale(pixels);
+  } else {
+    if (saturation !== 0) applySaturation(pixels, saturation);
+    if (balanceR !== 0 || balanceG !== 0 || balanceB !== 0) {
+      applyColorBalance(pixels, balanceR, balanceG, balanceB);
+    }
+  }
+  if (gamma !== 1.0) applyGamma(pixels, gamma);
+  if (blackPoint > 0 || whitePoint < 255) applyLevels(pixels, blackPoint, whitePoint);
+  if (brightness !== 0 || contrast !== 0) applyBrightnessContrast(pixels, brightness, contrast);
+  if (smoothing > 0) applyBilateralFilter(pixels, 256, 192, smoothing);
+  if (sharpness > 0) applySharpening(pixels, 256, 192, sharpness);
+
+  // Convert to float array
+  const floatPixels = new Float32Array(256 * 192 * 3);
+  for (let i = 0; i < 256 * 192; i++) {
+    floatPixels[i * 3] = pixels[i * 4];
+    floatPixels[i * 3 + 1] = pixels[i * 4 + 1];
+    floatPixels[i * 3 + 2] = pixels[i * 4 + 2];
+  }
+
+  // Generate optimal palette
+  const palette = generateOptimalUlaPlusPalette(floatPixels);
+
+  // Create output buffer (SCR + palette)
+  const output = new Uint8Array(ULAPLUS.TOTAL_SIZE);
+
+  // Check if using cell-aware dithering
+  const isCellAware = dithering.startsWith('cell-');
+  const cellDitherMethod = isCellAware ? dithering.replace('cell-', '') : dithering;
+
+  // Convert each cell
+  for (let cellY = 0; cellY < 24; cellY++) {
+    for (let cellX = 0; cellX < 32; cellX++) {
+      // Find best CLUT and colors for this cell
+      const colors = findUlaPlusCellColors(floatPixels, cellX, cellY, palette);
+
+      // Apply dithering within cell
+      let bitmap;
+      if (isCellAware) {
+        switch (cellDitherMethod) {
+          case 'floyd':
+            bitmap = ditherCellFloydSteinberg(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'atkinson':
+            bitmap = ditherCellAtkinson(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'ordered':
+            bitmap = ditherCellOrdered(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'sierra2':
+            bitmap = ditherCellSierra2(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'serpentine':
+            bitmap = ditherCellSerpentine(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'riemersma':
+            bitmap = ditherCellRiemersma(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'blue-noise':
+            bitmap = ditherCellBlueNoise(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          default:
+            bitmap = ditherCellOrdered(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+        }
+      } else {
+        // Simple nearest-color mapping
+        bitmap = new Uint8Array(8);
+        for (let dy = 0; dy < 8; dy++) {
+          for (let dx = 0; dx < 8; dx++) {
+            const px = cellX * 8 + dx;
+            const py = cellY * 8 + dy;
+            const idx = (py * 256 + px) * 3;
+            const color = [floatPixels[idx], floatPixels[idx + 1], floatPixels[idx + 2]];
+            const inkDist = colorDistance(color, colors.inkRgb);
+            const paperDist = colorDistance(color, colors.paperRgb);
+            if (inkDist < paperDist) {
+              bitmap[dy] |= (0x80 >> dx);
+            }
+          }
+        }
+      }
+
+      // Write bitmap
+      for (let line = 0; line < 8; line++) {
+        const y = cellY * 8 + line;
+        const offset = getBitmapOffset(y) + cellX;
+        output[offset] = bitmap[line];
+      }
+
+      // Write attribute: ULA+ uses standard format, CLUT selected by FLASH+BRIGHT bits
+      // CLUT = (FLASH << 1) | BRIGHT
+      const flash = (colors.clut >> 1) & 1;
+      const bright = colors.clut & 1;
+      const attrOffset = 6144 + cellY * 32 + cellX;
+      output[attrOffset] = (flash << 7) | (bright << 6) | (colors.paper << 3) | colors.ink;
+    }
+  }
+
+  // Write palette
+  output.set(palette, ULAPLUS.PALETTE_OFFSET);
+
+  return { data: output, palette: palette };
+}
+
+// ============================================================================
 // IFL FORMAT CONVERSION (8×2 multicolor blocks)
 // ============================================================================
 
@@ -4099,6 +4437,66 @@ function renderScrToCanvas(scrData, canvas, zoom = 2) {
 }
 
 /**
+ * Render ULA+ data to a canvas (64-color palette)
+ * @param {Uint8Array} ulaPlusData - ULA+ data (6912 SCR + 64 palette)
+ * @param {HTMLCanvasElement} canvas - Target canvas
+ * @param {number} zoom - Zoom factor
+ */
+function renderUlaPlusToCanvas(ulaPlusData, canvas, zoom = 2) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  canvas.width = 256 * zoom;
+  canvas.height = 192 * zoom;
+
+  const imageData = ctx.createImageData(256, 192);
+  const pixels = imageData.data;
+
+  // Extract palette from data
+  const palette = ulaPlusData.slice(ULAPLUS.PALETTE_OFFSET, ULAPLUS.PALETTE_OFFSET + 64);
+
+  for (let y = 0; y < 192; y++) {
+    const bitmapOffset = getBitmapOffset(y);
+
+    for (let x = 0; x < 256; x++) {
+      const cellX = Math.floor(x / 8);
+      const cellY = Math.floor(y / 8);
+      const bitPos = x % 8;
+
+      const byte = ulaPlusData[bitmapOffset + cellX];
+      const attrOffset = 6144 + cellY * 32 + cellX;
+      const attr = ulaPlusData[attrOffset];
+
+      // ULA+ attribute: ink (0-7), paper (0-7), CLUT from FLASH+BRIGHT
+      const ink = attr & 0x07;
+      const paper = (attr >> 3) & 0x07;
+      const bright = (attr >> 6) & 1;
+      const flash = (attr >> 7) & 1;
+      const clut = (flash << 1) | bright;
+
+      const isInk = (byte & (0x80 >> bitPos)) !== 0;
+      const colorIdx = clut * 16 + (isInk ? ink : (8 + paper));
+      const grb = palette[colorIdx];
+      const color = grb332ToRgb(grb);
+
+      const idx = (y * 256 + x) * 4;
+      pixels[idx] = color[0];
+      pixels[idx + 1] = color[1];
+      pixels[idx + 2] = color[2];
+      pixels[idx + 3] = 255;
+    }
+  }
+
+  // Draw at 1x then scale up
+  const temp = getImportTempCanvas(256, 192);
+  if (temp) {
+    temp.ctx.putImageData(imageData, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(temp.canvas, 0, 0, 256 * zoom, 192 * zoom);
+  }
+}
+
+/**
  * Render IFL data to a canvas (8×2 multicolor attributes)
  */
 function renderIflToCanvas(iflData, canvas, zoom = 2) {
@@ -5198,6 +5596,9 @@ function initPngImport() {
     } else if (format === 'mono_1_3') {
       const monoData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 1);
       renderMonoToCanvas(monoData, importPreviewCanvas, currentZoom, 1);
+    } else if (format === 'ulaplus') {
+      const result = convertToUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      renderUlaPlusToCanvas(result.data, importPreviewCanvas, currentZoom);
     } else {
       const scrData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderScrToCanvas(scrData, importPreviewCanvas, currentZoom);
@@ -5638,6 +6039,15 @@ function initPngImport() {
       outputData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 1);
       outputFormat = FORMAT.MONO_1_3;
       fileExt = '.scr';
+    } else if (format === 'ulaplus') {
+      // ULA+ format: SCR + 64-byte optimal palette
+      const result = convertToUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputData = result.data;
+      outputFormat = FORMAT.SCR_ULAPLUS;
+      fileExt = '.scr';
+      // Enable ULA+ mode with generated palette
+      ulaPlusPalette = result.palette;
+      isUlaPlusMode = true;
     } else {
       outputData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.SCR;
@@ -5866,8 +6276,39 @@ function openImportDialog(file) {
     const grayscale = importElements.grayscale?.checked || false;
     const monoOutput = importElements.monoOutput?.checked || false;
 
-    const scrData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
-    renderScrToCanvas(scrData, importPreviewCanvas, importZoom);
+    // Render initial preview based on format
+    if (format === 'ulaplus') {
+      const result = convertToUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      renderUlaPlusToCanvas(result.data, importPreviewCanvas, importZoom);
+    } else if (format === '53c') {
+      const pattern = importElements.pattern53c?.value || 'checker';
+      const attrData = convertTo53c(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, pattern);
+      render53cToCanvas(attrData, importPreviewCanvas, importZoom, pattern);
+    } else if (format === 'ifl') {
+      const iflData = convertToIfl(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      renderIflToCanvas(iflData, importPreviewCanvas, importZoom);
+    } else if (format === 'mlt') {
+      const mltData = convertToMlt(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      renderMltToCanvas(mltData, importPreviewCanvas, importZoom);
+    } else if (format === 'bmc4') {
+      const bmc4Data = convertToBmc4(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      renderBmc4ToCanvas(bmc4Data, importPreviewCanvas, importZoom);
+    } else if (format === 'rgb3') {
+      const rgb3Data = convertToRgb3(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      renderRgb3ToCanvas(rgb3Data, importPreviewCanvas);
+    } else if (format === 'mono_full') {
+      const monoData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 3);
+      renderMonoToCanvas(monoData, importPreviewCanvas, importZoom, 3);
+    } else if (format === 'mono_2_3') {
+      const monoData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 2);
+      renderMonoToCanvas(monoData, importPreviewCanvas, importZoom, 2);
+    } else if (format === 'mono_1_3') {
+      const monoData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 1);
+      renderMonoToCanvas(monoData, importPreviewCanvas, importZoom, 1);
+    } else {
+      const scrData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      renderScrToCanvas(scrData, importPreviewCanvas, importZoom);
+    }
 
     // Show dialog
     importElements.dialog.style.display = '';

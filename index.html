@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.38.0 -->
+<!-- SpectraLab v1.39.0 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -631,6 +631,134 @@
     right: 2px;
   }
 
+  /* ULA+ Palette Styles */
+  .ulaplus-grid {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 2px;
+    margin-left: -4px;
+  }
+
+  /* Add larger gaps between CLUTs (every 2 rows) */
+  .ulaplus-grid-cell.clut-gap {
+    margin-top: 6px;
+  }
+
+  .ulaplus-grid-cell {
+    aspect-ratio: 1;
+    border: 1px solid var(--border-secondary);
+    border-radius: 1px;
+    cursor: pointer;
+    position: relative;
+    min-height: 18px;
+  }
+
+  .ulaplus-grid-cell:hover {
+    border-color: var(--border-primary);
+    z-index: 1;
+  }
+
+  .ulaplus-grid-cell.ink-selected {
+    border-color: #fff;
+    border-width: 2px;
+    z-index: 2;
+  }
+
+  .ulaplus-grid-cell.paper-selected {
+    border-color: #fff;
+    border-style: dashed;
+    border-width: 2px;
+    z-index: 2;
+  }
+
+  .ulaplus-classic {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 2px;
+    row-gap: 6px;
+    margin-left: -4px;
+  }
+
+  .ulaplus-classic-cell {
+    aspect-ratio: 1;
+    border: 1px solid var(--border-secondary);
+    border-radius: 2px;
+    cursor: pointer;
+    position: relative;
+    min-height: 26px;
+  }
+
+  .ulaplus-classic-cell:hover {
+    border-color: var(--border-primary);
+  }
+
+  .ulaplus-classic-cell.ink-selected {
+    border-color: #fff;
+  }
+
+  .ulaplus-classic-cell.paper-selected {
+    border-color: #fff;
+    border-style: dashed;
+  }
+
+  /* I/P markers for ULA+ palette cells */
+  .ulaplus-palette-marker {
+    position: absolute;
+    font-size: 9px;
+    font-weight: bold;
+    line-height: 1;
+    pointer-events: none;
+    text-shadow: 0 0 2px #000, 0 0 2px #000, 1px 1px 0 #000;
+    color: #fff;
+  }
+
+  .ulaplus-palette-marker.ink-marker {
+    top: 1px;
+    left: 2px;
+  }
+
+  .ulaplus-palette-marker.paper-marker {
+    bottom: 1px;
+    right: 2px;
+  }
+
+  /* ULA+ transparent cell */
+  .ulaplus-transparent-cell {
+    background: repeating-conic-gradient(#444 0% 25%, #222 0% 50%) 50% / 8px 8px !important;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+  }
+
+  /* Disabled state for wrong ink/paper selection */
+  .ulaplus-grid-cell.disabled,
+  .ulaplus-classic-cell.disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .ulaplus-clut-btn {
+    padding: 2px 6px;
+    font-size: 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    border-radius: 2px;
+  }
+
+  .ulaplus-clut-btn:hover {
+    background: var(--bg-secondary);
+  }
+
+  .ulaplus-clut-btn.selected {
+    background: var(--accent-color);
+    color: #fff;
+    border-color: var(--accent-color);
+  }
+
   .editor-color-preview {
     width: 24px;
     height: 24px;
@@ -812,6 +940,24 @@
     border-color: var(--border-primary);
   }
   .custom-brush-slot.selected {
+    border-color: #4a9eff;
+  }
+
+  .barcode-slot {
+    width: 24px;
+    height: 64px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 2px;
+    cursor: pointer;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    background: var(--bg-tertiary);
+    flex-shrink: 0;
+  }
+  .barcode-slot:hover {
+    border-color: var(--border-primary);
+  }
+  .barcode-slot.selected {
     border-color: #4a9eff;
   }
 
@@ -1053,7 +1199,7 @@
                   <input type="checkbox" id="showAttrsCheckbox" checked>
                   Attrs
                 </label>
-                <label title="Toggle preview (P)">
+                <label title="Toggle preview (~)">
                   <input type="checkbox" id="showPreviewCheckbox" checked>
                   Preview
                 </label>
@@ -1201,7 +1347,7 @@
           </div>
           <div class="control-group" style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-color);">
             <div style="display: flex; align-items: center; gap: 8px;">
-              <a href="../index.html" id="appTitle" style="text-decoration: none; color: var(--text-secondary); font-size: 11px;">SpectraLab v1.38.0</a>
+              <a href="../index.html" id="appTitle" style="text-decoration: none; color: var(--text-secondary); font-size: 11px;">SpectraLab v1.39.0</a>
               <button id="helpBtn" style="padding: 2px 6px; font-size: 10px;" title="Help">?</button>
             </div>
           </div>
@@ -1214,6 +1360,29 @@
           </div>
           <div id="scrEditorOverlay" class="scr-editor-panel">
             <div id="editorPalette" class="editor-palette"></div>
+            <!-- ULA+ Palette Section (hidden by default) -->
+            <div id="ulaPlusSection" style="display: none; margin-bottom: 8px;">
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                <span style="font-size: 10px; color: var(--text-tertiary);">ULA+ PALETTE</span>
+                <button id="ulaPlusSavePalBtn" title="Save palette (.pal)" style="padding: 1px 4px; font-size: 10px;">💾</button>
+                <button id="ulaPlusLoadPalBtn" title="Load palette (.pal)" style="padding: 1px 4px; font-size: 10px;">📂</button>
+                <input type="file" id="ulaPlusPalFileInput" accept=".pal" style="display: none;">
+                <label style="font-size: 10px; min-width: auto;"><input type="checkbox" id="ulaPlusModeToggle"> <span id="ulaPlusModeLabel">Grid</span></label>
+                <div id="ulaPlusTransparentRow" style="display: flex; gap: 2px; margin-left: auto;"></div>
+              </div>
+              <!-- Mode A: 8x8 Grid -->
+              <div id="ulaPlusGridMode" class="ulaplus-grid"></div>
+              <!-- Mode B: Classic with CLUT selector -->
+              <div id="ulaPlusClassicMode" style="display: none;">
+                <div style="display: flex; gap: 2px; margin-bottom: 4px;">
+                  <button class="ulaplus-clut-btn selected" data-clut="0" title="CLUT 0: FLASH=0 BRIGHT=0">0</button>
+                  <button class="ulaplus-clut-btn" data-clut="1" title="CLUT 1: FLASH=0 BRIGHT=1">1</button>
+                  <button class="ulaplus-clut-btn" data-clut="2" title="CLUT 2: FLASH=1 BRIGHT=0">2</button>
+                  <button class="ulaplus-clut-btn" data-clut="3" title="CLUT 3: FLASH=1 BRIGHT=1">3</button>
+                </div>
+                <div id="ulaPlusClassicPalette" class="ulaplus-classic"></div>
+              </div>
+            </div>
             <div class="editor-color-row" style="margin-bottom: 8px;">
               <label style="min-width: auto;"><input type="checkbox" id="editorBrightCheckbox"> Bright (B)</label>
               <label style="min-width: auto;"><input type="checkbox" id="editorFlashCheckbox"> Flash (F)</label>
@@ -1415,6 +1584,32 @@
                     <canvas id="customBrush10" class="custom-brush-slot" width="64" height="64" data-slot="10" title="Custom brush 11 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
                     <canvas id="customBrush11" class="custom-brush-slot" width="64" height="64" data-slot="11" title="Custom brush 12 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
                   </div>
+                </div>
+              </div>
+            </div>
+            <!-- Barcodes Section (for border patterns) -->
+            <div id="barcodeSection" style="margin-top: 4px; display: none;">
+              <div id="barcodeHeader" class="collapsible-header" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 2px 0;">
+                <div style="display: flex; align-items: center; gap: 4px;">
+                  <span id="barcodeExpandIcon" style="font-size: 10px; width: 12px;">▶</span>
+                  <span style="font-size: 10px; color: var(--text-tertiary);">BARCODES</span>
+                </div>
+                <div style="display: flex; gap: 2px;">
+                  <button id="saveBarcodesBtn" class="editor-tool-btn" title="Save barcodes (.slbc)" style="padding: 1px 4px; font-size: 10px;">💾</button>
+                  <button id="loadBarcodesBtn" class="editor-tool-btn" title="Load barcodes (.slbc)" style="padding: 1px 4px; font-size: 10px;">📂</button>
+                </div>
+              </div>
+              <input type="file" id="barcodesFileInput" accept=".slbc" style="display: none;">
+              <div id="barcodeControls" style="display: none;">
+                <div style="display: flex; gap: 2px; margin-top: 4px; flex-wrap: wrap;">
+                  <canvas id="barcode0" class="barcode-slot" width="24" height="64" data-slot="0" title="Barcode 1 (click=select, Shift+click=capture, Ctrl+click=clear)"></canvas>
+                  <canvas id="barcode1" class="barcode-slot" width="24" height="64" data-slot="1" title="Barcode 2"></canvas>
+                  <canvas id="barcode2" class="barcode-slot" width="24" height="64" data-slot="2" title="Barcode 3"></canvas>
+                  <canvas id="barcode3" class="barcode-slot" width="24" height="64" data-slot="3" title="Barcode 4"></canvas>
+                  <canvas id="barcode4" class="barcode-slot" width="24" height="64" data-slot="4" title="Barcode 5"></canvas>
+                  <canvas id="barcode5" class="barcode-slot" width="24" height="64" data-slot="5" title="Barcode 6"></canvas>
+                  <canvas id="barcode6" class="barcode-slot" width="24" height="64" data-slot="6" title="Barcode 7"></canvas>
+                  <canvas id="barcode7" class="barcode-slot" width="24" height="64" data-slot="7" title="Barcode 8"></canvas>
                 </div>
               </div>
             </div>
@@ -1795,6 +1990,7 @@
         Format:
         <select id="newPictureFormat" style="width: 100%; margin-top: 4px; padding: 4px; font-size: 12px;">
           <option value="scr" selected>Screen (.scr) — 256×192, bitmap + attributes</option>
+          <option value="ulaplus">ULA+ (.scr) — 256×192, 64-color palette</option>
           <option value="ifl">IFL (.ifl) — 256×192, 8×2 multicolor attributes</option>
           <option value="mlt">MLT (.mlt) — 256×192, 8×1 multicolor attributes</option>
           <option value="bsc">Border Screen (.bsc) — 384×304, bitmap + attributes + border</option>
@@ -1810,6 +2006,56 @@
     <div style="display: flex; gap: 8px; justify-content: flex-end;">
       <button id="newPictureCancelBtn" style="padding: 5px 16px; font-size: 12px;">Cancel</button>
       <button id="newPictureOkBtn" style="padding: 5px 16px; font-size: 12px;">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- ULA+ Color Picker Dialog -->
+<div id="ulaPlusColorDialog" class="modal-overlay" style="display:none;">
+  <div class="modal-dialog" style="width: 280px;">
+    <div class="modal-title" style="display: flex; justify-content: space-between; align-items: center;">
+      <span>Edit ULA+ Color</span>
+      <button id="ulaPlusColorCloseBtn" style="padding: 2px 8px; font-size: 12px;">×</button>
+    </div>
+    <div style="margin-bottom: 12px;">
+      <div style="display: flex; gap: 12px; margin-bottom: 12px;">
+        <div style="text-align: center;">
+          <div style="font-size: 10px; margin-bottom: 4px;">Original</div>
+          <div id="ulaPlusColorOriginal" style="width: 48px; height: 48px; border: 1px solid var(--border-color);"></div>
+        </div>
+        <div style="text-align: center;">
+          <div style="font-size: 10px; margin-bottom: 4px;">New</div>
+          <div id="ulaPlusColorPreview" style="width: 48px; height: 48px; border: 1px solid var(--border-color);"></div>
+        </div>
+      </div>
+      <div style="margin-bottom: 8px;">
+        <label style="display: flex; align-items: center; gap: 8px; font-size: 11px;">
+          <span style="width: 20px;">R:</span>
+          <input type="range" id="ulaPlusColorR" min="0" max="7" value="0" style="flex: 1;">
+          <span id="ulaPlusColorRVal" style="width: 16px; text-align: right;">0</span>
+        </label>
+      </div>
+      <div style="margin-bottom: 8px;">
+        <label style="display: flex; align-items: center; gap: 8px; font-size: 11px;">
+          <span style="width: 20px;">G:</span>
+          <input type="range" id="ulaPlusColorG" min="0" max="7" value="0" style="flex: 1;">
+          <span id="ulaPlusColorGVal" style="width: 16px; text-align: right;">0</span>
+        </label>
+      </div>
+      <div style="margin-bottom: 8px;">
+        <label style="display: flex; align-items: center; gap: 8px; font-size: 11px;">
+          <span style="width: 20px;">B:</span>
+          <input type="range" id="ulaPlusColorB" min="0" max="3" value="0" style="flex: 1;">
+          <span id="ulaPlusColorBVal" style="width: 16px; text-align: right;">0</span>
+        </label>
+      </div>
+      <div style="font-size: 10px; color: var(--text-secondary); margin-top: 8px;">
+        GRB332: 3-bit green, 3-bit red, 2-bit blue
+      </div>
+    </div>
+    <div style="display: flex; gap: 8px; justify-content: flex-end;">
+      <button id="ulaPlusColorCancelBtn" style="padding: 5px 16px; font-size: 12px;">Cancel</button>
+      <button id="ulaPlusColorApplyBtn" style="padding: 5px 16px; font-size: 12px;">Apply</button>
     </div>
   </div>
 </div>
@@ -1868,6 +2114,7 @@
         <table style="width: 100%; font-size: 11px;">
           <tr><td style="width: 90px; color: var(--text-secondary);">Left click</td><td>Draw with ink</td></tr>
           <tr><td style="color: var(--text-secondary);">Right click</td><td>Draw with paper (erase)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Alt+click</td><td>Pick ink+paper from cell (eyedropper)</td></tr>
           <tr><td style="color: var(--text-secondary);">B</td><td>Toggle bright</td></tr>
           <tr><td style="color: var(--text-secondary);">F</td><td>Toggle flash attribute</td></tr>
           <tr><td style="color: var(--text-secondary);">X</td><td>Swap ink/paper colors</td></tr>
@@ -1949,6 +2196,26 @@
           <tr><td style="color: var(--text-secondary);">W/H</td><td>Custom size (empty = fit to format)</td></tr>
         </table>
         <p style="font-size: 11px; margin: 4px 0 0;">Reference image is saved in workspace files.</p>
+        <div style="font-weight: bold; margin: 12px 0 6px;">ULA+ Mode (64 colors)</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td style="width: 70px; color: var(--text-secondary);">4 CLUTs</td><td>16 colors each (8 ink + 8 paper)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Grid view</td><td>All 64 colors in 8×8 grid</td></tr>
+          <tr><td style="color: var(--text-secondary);">Classic view</td><td>Single CLUT, ink row + paper row</td></tr>
+          <tr><td style="color: var(--text-secondary);">Save palette</td><td>Export 64-byte .pal file (GRB332)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Load palette</td><td>Import .pal file to current picture</td></tr>
+          <tr><td style="color: var(--text-secondary);">I/P markers</td><td>Show selected ink/paper colors</td></tr>
+          <tr><td style="color: var(--text-secondary);">Ctrl+click</td><td>Edit color (R/G/B sliders, GRB332)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Alt+click</td><td>Pick ink+paper from cell (eyedropper)</td></tr>
+        </table>
+        <p style="font-size: 11px; margin: 4px 0 0;">Ink and paper must be from same CLUT. Convert SCR↔ULA+ via Transform tab.</p>
+        <div style="font-weight: bold; margin: 12px 0 6px;">Barcodes (Border Patterns)</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td style="width: 80px; color: var(--text-secondary);">Shift+click</td><td>Start capture, then click border</td></tr>
+          <tr><td style="color: var(--text-secondary);">Click slot</td><td>Select/deselect barcode</td></tr>
+          <tr><td style="color: var(--text-secondary);">Ctrl+click</td><td>Clear slot</td></tr>
+          <tr><td style="color: var(--text-secondary);">Stamp</td><td>Click/drag on border with selected barcode</td></tr>
+        </table>
+        <p style="font-size: 11px; margin: 4px 0 0;">Width auto-detected (8/16/24px). Available for BSC/BMC4 formats.</p>
         <div style="font-weight: bold; margin: 12px 0 6px;">Snap Mode</div>
         <table style="width: 100%; font-size: 11px;">
           <tr><td style="width: 50px; color: var(--text-secondary);">Grid</td><td>Snap to grid size (from View tab)</td></tr>
@@ -1966,6 +2233,7 @@
         <div style="font-weight: bold; margin-bottom: 6px;">Editable Formats</div>
         <table style="width: 100%; font-size: 11px;">
           <tr><td style="width: 70px; color: var(--text-secondary);">.scr</td><td>6912b</td><td>Standard screen</td></tr>
+          <tr><td style="color: var(--text-secondary);">.scr</td><td>6976b</td><td>ULA+ (64-color palette)</td></tr>
           <tr><td style="color: var(--text-secondary);">.scr</td><td>6144b</td><td>Monochrome full</td></tr>
           <tr><td style="color: var(--text-secondary);">.scr</td><td>4096b</td><td>Monochrome 2/3</td></tr>
           <tr><td style="color: var(--text-secondary);">.scr</td><td>2048b</td><td>Monochrome 1/3</td></tr>
@@ -1991,7 +2259,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.38.0</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.39.0</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">
@@ -2120,6 +2388,7 @@
             <span style="width: 44px;">Format:</span>
             <select id="importFormat" style="width: 90px; padding: 2px; font-size: 11px;">
               <option value="scr" selected>SCR</option>
+              <option value="ulaplus">ULA+</option>
               <option value="53c">53c (attr)</option>
               <option value="ifl">IFL (8×2)</option>
               <option value="bmc4">BMC4 (8×4)</option>
@@ -2285,6 +2554,60 @@
     <div style="display: flex; gap: 8px; justify-content: flex-end;">
       <button id="qrCancelBtn" style="padding: 5px 16px; font-size: 12px;">Cancel</button>
       <button id="qrApplyBtn" style="padding: 5px 16px; font-size: 12px;" disabled>Apply</button>
+    </div>
+  </div>
+</div>
+
+<!-- ULA+ Color Picker Dialog -->
+<div id="ulaPlusColorDialog" class="dialog-overlay" style="display: none;">
+  <div class="dialog-content" style="max-width: 280px;">
+    <div class="dialog-header">
+      <span>Edit ULA+ Color</span>
+      <button id="ulaPlusColorCloseBtn" class="dialog-close">×</button>
+    </div>
+    <div style="padding: 12px;">
+      <div style="margin-bottom: 12px;">
+        <div style="display: flex; gap: 12px; align-items: center;">
+          <div>
+            <label style="font-size: 10px; color: var(--text-secondary); display: block;">Original</label>
+            <div id="ulaPlusColorOriginal" style="width: 40px; height: 40px; border: 1px solid var(--border-primary);"></div>
+          </div>
+          <div style="font-size: 16px;">→</div>
+          <div>
+            <label style="font-size: 10px; color: var(--text-secondary); display: block;">New</label>
+            <div id="ulaPlusColorPreview" style="width: 40px; height: 40px; border: 1px solid var(--border-primary);"></div>
+          </div>
+          <div style="flex: 1; text-align: right;">
+            <div id="ulaPlusColorIndex" style="font-size: 10px; color: var(--text-secondary);">Index: 0</div>
+            <div id="ulaPlusColorGRB" style="font-size: 10px; color: var(--text-secondary);">GRB: 000</div>
+          </div>
+        </div>
+      </div>
+      <div style="margin-bottom: 8px;">
+        <label style="font-size: 11px; display: flex; align-items: center; gap: 8px;">
+          <span style="width: 50px;">Red:</span>
+          <input type="range" id="ulaPlusColorR" min="0" max="7" value="0" style="flex: 1;">
+          <span id="ulaPlusColorRVal" style="width: 20px; text-align: right;">0</span>
+        </label>
+      </div>
+      <div style="margin-bottom: 8px;">
+        <label style="font-size: 11px; display: flex; align-items: center; gap: 8px;">
+          <span style="width: 50px;">Green:</span>
+          <input type="range" id="ulaPlusColorG" min="0" max="7" value="0" style="flex: 1;">
+          <span id="ulaPlusColorGVal" style="width: 20px; text-align: right;">0</span>
+        </label>
+      </div>
+      <div style="margin-bottom: 12px;">
+        <label style="font-size: 11px; display: flex; align-items: center; gap: 8px;">
+          <span style="width: 50px;">Blue:</span>
+          <input type="range" id="ulaPlusColorB" min="0" max="3" value="0" style="flex: 1;">
+          <span id="ulaPlusColorBVal" style="width: 20px; text-align: right;">0</span>
+        </label>
+      </div>
+      <div style="display: flex; gap: 8px; justify-content: flex-end;">
+        <button id="ulaPlusColorCancelBtn" style="padding: 5px 16px; font-size: 12px;">Cancel</button>
+        <button id="ulaPlusColorApplyBtn" style="padding: 5px 16px; font-size: 12px;">Apply</button>
+      </div>
     </div>
   </div>
 </div>
