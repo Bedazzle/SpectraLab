@@ -35,11 +35,12 @@ Edit standard 6912-byte .scr files with authentic ZX Spectrum color handling:
 - **Fill with patterns**: Fill tool uses selected brush - custom brush patterns tile across fill area for dithered fills
 - **Brush**: Sizes 1-16px, shapes: Square, Round, Horizontal, Vertical, Stroke (/), Back stroke (\) (applies to Pixel, Line, Rectangle, Fill, Eraser)
 - **Brush mode**: Replace (default), Set, Invert — persisted to localStorage
-- **Custom Brushes & Tilesets**: Tabbed interface with Custom, ROM, and user-loaded tabs
+- **Custom Brushes & Tilesets**: Tabbed interface with Custom, ROM, UDG, and user-loaded tabs
   - Custom tab: 12 user-defined brush slots (capture from screen, max 64x64)
     - Click=select, Shift+click=capture, Ctrl+click=clear
     - Rotate 90° CW (R), Mirror horizontal (H), Mirror vertical (V)
   - ROM tab: Current font as 96 selectable 8x8 tiles
+  - UDG tab: 96 built-in tiles (block graphics, dithers, borders, shapes, arrows, connectors)
   - Load tilesets via "+" button: 768-byte (96 tiles) or 2048-byte (256 tiles) formats
   - Grab tileset from screen via crosshair button: select area, tiles grabbed L-to-R
   - Load .slb brush sets as new editable tabs
@@ -130,6 +131,34 @@ Edit 13824-byte .img Gigascreen files (two alternating SCR frames):
 - **All drawing tools**: Pixel, Line, Rectangle, Circle, Fill, etc.
 - **Display modes**: Average (blended colors) or Flicker (50fps alternating frames)
 - **Save**: Export as .img preserves full 13824-byte dual-frame format
+- **ASM export**: Generate sjasmplus-compatible source for Pentagon 128K
+  - Uses dual-screen banking (banks 5 and 7)
+  - Alternates frames at 25Hz for flicker effect
+  - SAVESNA output for direct emulator testing
+
+## RGB3 Viewer
+
+View 18432-byte .3 tricolor RGB files (three monochrome bitmaps):
+
+- **Flicker emulation**: Cycles R, G, B frames at ~16.7Hz each
+- **Additive color mixing**: Persistence of vision creates full-color image
+- **ASM export**: Generate sjasmplus-compatible source for Pentagon 128K
+  - Ultra-fast unrolled copy: `LD HL,nn : PUSH HL` (21T per 2 bytes)
+  - Bitmap data embedded directly in code as immediate values
+  - 64512T bitmap + ~5000T attrs = ~70000T (under 71680T frame time)
+  - Tear-free 50fps display (each color shown for 1/50s)
+  - SAVESNA output for direct emulator testing
+
+## IFL Viewer
+
+View 9216-byte .ifl 8x2 multicolor files:
+
+- **8x2 multicolor**: Attributes updated every 2 scanlines (96 attribute rows)
+- **ASM export**: Generate sjasmplus-compatible source for Pentagon 128K
+  - Stack-based fast attribute copy (POP/PUSH technique)
+  - 32 bytes copied per 2-line block using register pairs
+  - 224T per scanline × 2 lines = 448T per attribute row
+  - SAVESNA output for direct emulator testing
 
 ## Supported Formats
 

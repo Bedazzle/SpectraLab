@@ -1,5 +1,30 @@
 # SpectraLab Version History
 
+## v1.43.0
+- Built-in UDG tileset with 96 useful tiles
+  - Block graphics (16 mosaic patterns), dither patterns, border/frame pieces
+  - Shapes, arrows, line connectors, box drawing characters
+  - Auto-loaded from fonts/udg.768 if present
+  - Appears as "UDG" tab in brush panel (non-closeable)
+- ASM export for Gigascreen (.img), RGB3 (.3), and IFL (.ifl) formats
+  - Pentagon 128K compatible, sjasmplus assembler
+  - "Embed data" checkbox: toggle between embedded DB lines or INCBIN mode
+  - Gigascreen: dual-screen banking (banks 5/7), 25Hz alternation
+    - INCBIN mode: `INCBIN "file.img", offset, length` for both frames
+  - RGB3: ultra-fast unrolled copy (LD HL,nn : PUSH HL technique)
+    - 64512T bitmap copy (under one frame!) + ~5000T attrs = ~70000T total
+    - Tear-free 50fps display (71680T per frame on Pentagon 128K)
+    - Bitmap data embedded as immediate values in code (~37KB total)
+  - IFL: dual-screen interlace technique (from zxpress.ru)
+    - BC=#7FFD, D=#1F (show bank 7), E=#17 (show bank 5)
+    - OUT(C),D/E for fast 12T screen switching
+    - Write to non-displayed screen while showing the other (no beam racing)
+    - 448T per attr row: OUT(12T) + NOP(4T) + 16×POP+LD(416T) + DS 4(16T)
+    - Compact DUP/IF macros with sjasmplus label variables
+    - INCBIN mode: runtime attr reordering at startup (row1..95,row0)
+  - BSC: INCBIN mode references original .bsc file
+  - SAVESNA output for direct emulator testing
+
 ## v1.42.0
 - Tileset support integrated with custom brushes
   - Tabbed interface in Custom Brushes section: Custom, ROM, and user-loaded tabs

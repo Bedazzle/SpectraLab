@@ -2975,6 +2975,10 @@ async function loadFileFromZip(fileName) {
     if (typeof updateConvertOptions === 'function') {
       updateConvertOptions();
     }
+    // Update export ASM button state
+    if (typeof updateExportAsmButton === 'function') {
+      updateExportAsmButton();
+    }
 
     // Update editor state based on loaded file format
     if (typeof updateEditorState === 'function') {
@@ -4012,6 +4016,10 @@ function loadScreenFile(file) {
         updateScaControls();
         updateFileInfo();
         renderScreen();
+        // Update export ASM button state
+        if (typeof updateExportAsmButton === 'function') {
+          updateExportAsmButton();
+        }
         return;
       }
 
@@ -4053,6 +4061,10 @@ function loadScreenFile(file) {
       // Update convert dropdown if editor function exists
       if (typeof updateConvertOptions === 'function') {
         updateConvertOptions();
+      }
+      // Update export ASM button state
+      if (typeof updateExportAsmButton === 'function') {
+        updateExportAsmButton();
       }
 
       // Reset layer system for new file

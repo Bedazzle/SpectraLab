@@ -12,8 +12,8 @@
  * @param {string} baseName - Base filename for SAVESNA output
  * @returns {string} Complete ASM source code
  */
-function generateBscAsm(baseName = 'border') {
-  if (!screenData || screenData.length < BSC.TOTAL_SIZE) return '';
+function generateBscAsm(baseName = 'border', embedData = true) {
+  if (!screenData || screenData.length < BSC.TOTAL_SIZE) return null;
 
   // Fixed color-to-OUT mapping (all 8 ZX colors covered)
   // C=$E6 (port byte, $E6 & 7 = 6 = yellow), A=7, B=1, D=2, E=3, H=4, L=5
@@ -310,12 +310,16 @@ function generateBscAsm(baseName = 'border') {
   asm.push('; ============================================================================');
   asm.push('');
   asm.push('ScrData:                 ; 6912 bytes (bitmap + attributes)');
-  asm.push(formatDbLines(scrData, 16));
+  if (embedData) {
+    asm.push(formatDbLines(scrData, 16));
+  } else {
+    asm.push(`    INCBIN "${baseName}.bsc", 0, 6912`);
+  }
   asm.push('');
   asm.push('    SAVESNA "' + baseName + '.sna",Start');
   asm.push('');
 
-  return asm.join('\n');
+  return { asm: asm.join('\n') };
 }
 
 /**
@@ -336,15 +340,17 @@ function exportBscAsm() {
     baseName = fileName.replace(/\.[^.]+$/, '');
   }
 
-  const asmSource = generateBscAsm(baseName);
-  if (!asmSource) return;
+  const embedChk = document.getElementById('editorEmbedDataChk');
+  const embedData = embedChk ? embedChk.checked : true;
 
-  const blob = new Blob([asmSource], { type: 'text/plain' });
+  const result = generateBscAsm(baseName, embedData);
+  if (!result) return;
+
+  const blob = new Blob([result.asm], { type: 'text/plain' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = baseName + '.asm';
-
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

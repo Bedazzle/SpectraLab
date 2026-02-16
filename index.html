@@ -1842,8 +1842,11 @@
                   <option value="" disabled selected>Convert to...</option>
                 </select>
               </div>
-              <div class="editor-actions" style="margin-top: 4px;">
-                <button id="editorExportAsmBtn" title="Export ASM (Pentagon border)" style="display:none; width: 100%;">Export ASM</button>
+              <div class="editor-actions" style="margin-top: 4px; display: flex; gap: 6px; align-items: center;">
+                <label id="editorEmbedDataLabel" style="display:none; font-size: 11px; cursor: pointer; white-space: nowrap;">
+                  <input type="checkbox" id="editorEmbedDataChk" checked> Embed
+                </label>
+                <button id="editorExportAsmBtn" title="Export ASM (Pentagon border)" style="display:none; flex: 1;">Export ASM</button>
               </div>
             </div>
 
@@ -2417,12 +2420,12 @@
           <tr><td style="color: var(--text-secondary);">.mlt/.mc</td><td>12288b</td><td>8×1 multicolor</td></tr>
           <tr><td style="color: var(--text-secondary);">.bmc4</td><td>11904b</td><td>8×4 + border</td></tr>
           <tr><td style="color: var(--text-secondary);">.3</td><td>18432b</td><td>Tricolor RGB</td></tr>
+          <tr><td style="color: var(--text-secondary);">.img</td><td>13824b</td><td>Gigascreen (2×SCR)</td></tr>
           <tr><td style="color: var(--text-secondary);">.sca</td><td>var</td><td>Animation (full/attr-only)</td></tr>
         </table>
         <div style="font-weight: bold; margin: 12px 0 6px;">View-Only Formats</div>
         <table style="width: 100%; font-size: 11px;">
-          <tr><td style="width: 70px; color: var(--text-secondary);">.img</td><td>13824b</td><td>Gigascreen (2×SCR, flicker)</td></tr>
-          <tr><td style="color: var(--text-secondary);">.specscii</td><td>var</td><td>Text mode</td></tr>
+          <tr><td style="width: 70px; color: var(--text-secondary);">.specscii</td><td>var</td><td>Text mode</td></tr>
           <tr><td style="color: var(--text-secondary);">.zip</td><td>var</td><td>Archive (auto-extract)</td></tr>
         </table>
         <div style="font-weight: bold; margin: 12px 0 6px;">Import (convert to ZX)</div>
@@ -2434,7 +2437,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.41.0</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.43.0</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">
@@ -2795,6 +2798,8 @@
 <script src="js/screen_viewer.js"></script>
 <script src="js/png_import.js"></script>
 <script src="js/bsc_asm_export.js"></script>
+<script src="js/flicker_asm_export.js"></script>
+<script src="js/ifl_asm_export.js"></script>
 <script src="js/screen_viewer_ui.js"></script>
 <script src="js/sca_editor.js"></script>
 <script src="js/qrcode.js"></script>

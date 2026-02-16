@@ -11047,8 +11047,8 @@ function setEditorEnabled(active) {
       if (brushSection) brushSection.style.display = '';
       if (snapSelect) snapSelect.parentElement.style.display = '';
     }
-    // Show Export ASM button only for BSC format
-    if (exportAsmBtn) exportAsmBtn.style.display = (currentFormat === FORMAT.BSC) ? '' : 'none';
+    // Show Export ASM button for BSC, Gigascreen, and RGB3 formats
+    updateExportAsmButton();
 
     // Gigascreen: initialize virtual palette and show virtual color picker
     if (currentFormat === FORMAT.GIGASCREEN) {
@@ -12386,6 +12386,9 @@ function initBrushTabs() {
 
   // Load user tabs from localStorage
   loadBrushTabsFromStorage();
+
+  // Auto-load UDG tileset if present in fonts/ directory
+  autoLoadUdgTileset();
 }
 
 /**
@@ -12419,8 +12422,10 @@ function updateRomBrushTab() {
  * Saves user brush tabs to localStorage
  */
 function saveBrushTabsToStorage() {
-  // Only save user-added tabs (index 2+)
-  const userTabs = brushTabs.slice(2).map(tab => {
+  // Only save user-added tabs (skip Custom, ROM, and built-in tabs like UDG)
+  const userTabs = brushTabs.filter(tab => {
+    return tab.name !== 'Custom' && tab.name !== 'ROM' && !tab.builtIn;
+  }).map(tab => {
     if (tab.type === 'tileset') {
       return {
         name: tab.name,
@@ -12488,6 +12493,56 @@ function loadBrushTabsFromStorage() {
     }
   } catch (e) {
     console.error('Failed to load brush tabs from storage:', e);
+  }
+}
+
+/**
+ * Auto-loads the UDG tileset from fonts/udg.768 if present
+ * Called during initialization
+ */
+async function autoLoadUdgTileset() {
+  // Check if UDG tab already exists (from localStorage)
+  if (brushTabs.some(tab => tab.name === 'UDG')) {
+    return;
+  }
+
+  try {
+    const response = await fetch('./fonts/udg.768');
+    if (!response.ok) {
+      return; // File doesn't exist, silently skip
+    }
+
+    const buffer = await response.arrayBuffer();
+    const data = new Uint8Array(buffer);
+
+    if (data.length < 768) {
+      console.warn('UDG file too small:', data.length, 'bytes');
+      return;
+    }
+
+    // Parse as tileset (768-byte linear format)
+    const parsed = parseTileset(data);
+    if (!parsed) {
+      console.warn('Failed to parse UDG tileset');
+      return;
+    }
+
+    // Insert UDG tab after ROM (index 2), or after Custom if ROM not present
+    const insertIndex = brushTabs.findIndex(tab => tab.name === 'ROM');
+    const idx = insertIndex >= 0 ? insertIndex + 1 : 1;
+
+    brushTabs.splice(idx, 0, {
+      name: 'UDG',
+      type: 'tileset',
+      data: parsed.data,
+      tileCount: parsed.tileCount,
+      builtIn: true  // Mark as built-in so it won't be saved to localStorage
+    });
+
+    updateBrushTabBar();
+    console.log('Auto-loaded UDG tileset (' + parsed.tileCount + ' tiles)');
+  } catch (e) {
+    // Silently ignore - file probably doesn't exist
   }
 }
 
@@ -12617,8 +12672,8 @@ function updateBrushTabBar() {
     nameSpan.textContent = tab.name;
     tabEl.appendChild(nameSpan);
 
-    // Add close button for user tabs (not Custom or ROM)
-    if (idx > 0 && tab.name !== 'ROM') {
+    // Add close button for user tabs (not Custom, ROM, or built-in)
+    if (idx > 0 && tab.name !== 'ROM' && !tab.builtIn) {
       const closeBtn = document.createElement('span');
       closeBtn.className = 'brush-tab-close';
       closeBtn.textContent = '\u00d7';
@@ -13285,6 +13340,45 @@ function convertUlaPlusToScr() {
 }
 
 /**
+ * Updates Export ASM button visibility and title based on current format
+ */
+function updateExportAsmButton() {
+  const exportAsmBtn = document.getElementById('editorExportAsmBtn');
+  const embedDataLabel = document.getElementById('editorEmbedDataLabel');
+  const embedDataChk = document.getElementById('editorEmbedDataChk');
+  if (!exportAsmBtn) return;
+
+  const supportsAsm = currentFormat === FORMAT.BSC || currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.RGB3 || currentFormat === FORMAT.IFL;
+
+  // Always show, but disable if format doesn't support export
+  exportAsmBtn.style.display = 'inline-block';
+  exportAsmBtn.disabled = !supportsAsm;
+  exportAsmBtn.style.opacity = supportsAsm ? '1' : '0.5';
+
+  // RGB3 always embeds data in code (LD HL,nn instructions) - disable checkbox
+  const supportsEmbed = supportsAsm && currentFormat !== FORMAT.RGB3;
+  if (embedDataLabel) {
+    embedDataLabel.style.display = 'inline';
+    embedDataLabel.style.opacity = supportsEmbed ? '1' : '0.5';
+  }
+  if (embedDataChk) {
+    embedDataChk.disabled = !supportsEmbed;
+  }
+
+  if (currentFormat === FORMAT.BSC) {
+    exportAsmBtn.title = 'Export ASM (Pentagon border)';
+  } else if (currentFormat === FORMAT.GIGASCREEN) {
+    exportAsmBtn.title = 'Export ASM (Pentagon dual-screen)';
+  } else if (currentFormat === FORMAT.RGB3) {
+    exportAsmBtn.title = 'Export ASM (Pentagon RGB flicker)';
+  } else if (currentFormat === FORMAT.IFL) {
+    exportAsmBtn.title = 'Export ASM (Pentagon 8x2 multicolor)';
+  } else {
+    exportAsmBtn.title = 'Export ASM (not available for this format)';
+  }
+}
+
+/**
  * Bitmap patterns for ATTR to SCR conversion
  */
 const BITMAP_PATTERNS = {
@@ -13414,9 +13508,8 @@ function convertAttrToBsc(patternId, borderColor) {
   if (typeof toggleFormatControlsVisibility === 'function') {
     toggleFormatControlsVisibility();
   }
-  // Show Export ASM button (BSC format)
-  const exportAsmBtn = document.getElementById('editorExportAsmBtn');
-  if (exportAsmBtn) exportAsmBtn.style.display = '';
+  // Update Export ASM button visibility
+  updateExportAsmButton();
   updateConvertOptions();
   updateFileInfo();
   updatePictureTabBar();
@@ -13573,9 +13666,8 @@ function convertBscToScr() {
   if (typeof toggleFormatControlsVisibility === 'function') {
     toggleFormatControlsVisibility();
   }
-  // Hide Export ASM button (only for BSC)
-  const exportAsmBtn = document.getElementById('editorExportAsmBtn');
-  if (exportAsmBtn) exportAsmBtn.style.display = 'none';
+  // Update Export ASM button visibility
+  updateExportAsmButton();
   updateConvertOptions();
   updateFileInfo();
   updatePictureTabBar();
@@ -13623,9 +13715,8 @@ function convertScrToBsc(borderColor) {
   if (typeof toggleFormatControlsVisibility === 'function') {
     toggleFormatControlsVisibility();
   }
-  // Show Export ASM button (BSC format)
-  const exportAsmBtn = document.getElementById('editorExportAsmBtn');
-  if (exportAsmBtn) exportAsmBtn.style.display = '';
+  // Update Export ASM button visibility
+  updateExportAsmButton();
   updateConvertOptions();
   updateFileInfo();
   updatePictureTabBar();
@@ -14665,7 +14756,17 @@ function initEditor() {
 
   // Action buttons
   document.getElementById('editorSaveBtn')?.addEventListener('click', () => saveScrFile());
-  document.getElementById('editorExportAsmBtn')?.addEventListener('click', exportBscAsm);
+  document.getElementById('editorExportAsmBtn')?.addEventListener('click', () => {
+    if (currentFormat === FORMAT.BSC) {
+      exportBscAsm();
+    } else if (currentFormat === FORMAT.GIGASCREEN) {
+      exportGigascreenAsm();
+    } else if (currentFormat === FORMAT.RGB3) {
+      exportRgb3Asm();
+    } else if (currentFormat === FORMAT.IFL) {
+      exportIflAsm();
+    }
+  });
 
   // Convert dropdown
   const convertSelect = /** @type {HTMLSelectElement|null} */ (document.getElementById('editorConvertSelect'));
