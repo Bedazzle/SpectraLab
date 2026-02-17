@@ -3,6 +3,8 @@
 // @ts-check
 "use strict";
 
+const APP_VERSION = '1.44.0';
+
 const APP_CONFIG = {
   // ============================================================================
   // General Settings

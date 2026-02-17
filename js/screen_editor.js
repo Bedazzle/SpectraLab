@@ -566,6 +566,22 @@ let screenTransparencyMask = null;
 /** @type {Uint8Array|null} - Border transparency mask for BSC/BMC4 (1=has content, 0=transparent), 2 slots per byte */
 let borderTransparencyMask = null;
 
+// ============================================================================
+// SPECSCII Editor State
+// ============================================================================
+
+/** @type {Uint8Array|null} - SPECSCII character grid (768 = 32×24, codes 0x20-0x8F) */
+let specsciiCharGrid = null;
+
+/** @type {Uint8Array|null} - SPECSCII attribute grid (768 = 32×24, ink|paper<<3|bright<<6|flash<<7) */
+let specsciiAttrGrid = null;
+
+/** @type {Uint8Array|null} - SPECSCII mask grid (768 = 32×24, 1=user-placed content, 0=empty/transparent) */
+let specsciiMask = null;
+
+/** @type {number} - Currently selected SPECSCII character for drawing (0x20-0x8F) */
+let specsciiSelectedChar = 0x20;
+
 /** @type {number} - Preview zoom level */
 let previewZoom = 1;
 
@@ -887,17 +903,21 @@ function saveCurrentPictureState() {
 
   const pic = openPictures[activePictureIndex];
   pic.screenData = screenData.slice();
-  // Clone undo/redo stacks (each entry is {screenData, layers, activeLayerIndex})
-  pic.undoStack = undoStack.map(s => ({
-    screenData: s.screenData.slice(),
-    layers: deepCloneLayers(s.layers),
-    activeLayerIndex: s.activeLayerIndex
-  }));
-  pic.redoStack = redoStack.map(s => ({
-    screenData: s.screenData.slice(),
-    layers: deepCloneLayers(s.layers),
-    activeLayerIndex: s.activeLayerIndex
-  }));
+  // Clone undo/redo stacks (each entry is {screenData, layers, activeLayerIndex, specsciiCharGrid?, specsciiAttrGrid?, specsciiMask?})
+  pic.undoStack = undoStack.map(s => {
+    const clone = { screenData: s.screenData.slice(), layers: deepCloneLayers(s.layers), activeLayerIndex: s.activeLayerIndex };
+    if (s.specsciiCharGrid) clone.specsciiCharGrid = new Uint8Array(s.specsciiCharGrid);
+    if (s.specsciiAttrGrid) clone.specsciiAttrGrid = new Uint8Array(s.specsciiAttrGrid);
+    if (s.specsciiMask) clone.specsciiMask = new Uint8Array(s.specsciiMask);
+    return clone;
+  });
+  pic.redoStack = redoStack.map(s => {
+    const clone = { screenData: s.screenData.slice(), layers: deepCloneLayers(s.layers), activeLayerIndex: s.activeLayerIndex };
+    if (s.specsciiCharGrid) clone.specsciiCharGrid = new Uint8Array(s.specsciiCharGrid);
+    if (s.specsciiAttrGrid) clone.specsciiAttrGrid = new Uint8Array(s.specsciiAttrGrid);
+    if (s.specsciiMask) clone.specsciiMask = new Uint8Array(s.specsciiMask);
+    return clone;
+  });
   pic.layers = deepCloneLayers(layers);
   pic.activeLayerIndex = activeLayerIndex;
   pic.layersEnabled = layersEnabled;
@@ -923,6 +943,10 @@ function saveCurrentPictureState() {
   }
   // Save ULA+ palette if active
   pic.ulaPlusPalette = ulaPlusPalette ? ulaPlusPalette.slice() : null;
+  // Save SPECSCII grids if active
+  pic.specsciiCharGrid = specsciiCharGrid ? new Uint8Array(specsciiCharGrid) : null;
+  pic.specsciiAttrGrid = specsciiAttrGrid ? new Uint8Array(specsciiAttrGrid) : null;
+  pic.specsciiMask = specsciiMask ? new Uint8Array(specsciiMask) : null;
 }
 
 /**
@@ -936,17 +960,21 @@ function loadPictureState(index) {
   screenData = pic.screenData.slice();
   currentFileName = pic.fileName;
   currentFormat = pic.format;
-  // Clone undo/redo stacks (each entry is {screenData, layers, activeLayerIndex})
-  undoStack = pic.undoStack.map(s => ({
-    screenData: s.screenData.slice(),
-    layers: deepCloneLayers(s.layers),
-    activeLayerIndex: s.activeLayerIndex
-  }));
-  redoStack = pic.redoStack.map(s => ({
-    screenData: s.screenData.slice(),
-    layers: deepCloneLayers(s.layers),
-    activeLayerIndex: s.activeLayerIndex
-  }));
+  // Clone undo/redo stacks (each entry is {screenData, layers, activeLayerIndex, specsciiCharGrid?, specsciiAttrGrid?, specsciiMask?})
+  undoStack = pic.undoStack.map(s => {
+    const clone = { screenData: s.screenData.slice(), layers: deepCloneLayers(s.layers), activeLayerIndex: s.activeLayerIndex };
+    if (s.specsciiCharGrid) clone.specsciiCharGrid = new Uint8Array(s.specsciiCharGrid);
+    if (s.specsciiAttrGrid) clone.specsciiAttrGrid = new Uint8Array(s.specsciiAttrGrid);
+    if (s.specsciiMask) clone.specsciiMask = new Uint8Array(s.specsciiMask);
+    return clone;
+  });
+  redoStack = pic.redoStack.map(s => {
+    const clone = { screenData: s.screenData.slice(), layers: deepCloneLayers(s.layers), activeLayerIndex: s.activeLayerIndex };
+    if (s.specsciiCharGrid) clone.specsciiCharGrid = new Uint8Array(s.specsciiCharGrid);
+    if (s.specsciiAttrGrid) clone.specsciiAttrGrid = new Uint8Array(s.specsciiAttrGrid);
+    if (s.specsciiMask) clone.specsciiMask = new Uint8Array(s.specsciiMask);
+    return clone;
+  });
   layers = deepCloneLayers(pic.layers);
   activeLayerIndex = pic.activeLayerIndex;
   layersEnabled = pic.layersEnabled;
@@ -972,8 +1000,19 @@ function loadPictureState(index) {
     // Update color UI
     updateColorSelectors();
 
-    // Update tool UI using existing function
-    setEditorTool(pic.currentTool);
+    // Restore tool (update UI state without rendering — caller will render)
+    // Hide sections of the previous tool first
+    showTextToolSection(false);
+    showAirbrushSection(false);
+    showGradientSection(false);
+    currentTool = pic.currentTool;
+    (editorToolButtons || document.querySelectorAll('.editor-tool-btn[data-tool]')).forEach(btn => {
+      btn.classList.toggle('selected', /** @type {HTMLElement} */(btn).dataset.tool === currentTool);
+    });
+    // Show section for the restored tool
+    if (currentTool === EDITOR.TOOL_TEXT) showTextToolSection(true);
+    else if (currentTool === EDITOR.TOOL_AIRBRUSH) showAirbrushSection(true);
+    else if (currentTool === EDITOR.TOOL_GRADIENT) showGradientSection(true);
 
     // Update brush UI using existing functions
     setBrushSize(pic.brushSize);
@@ -999,6 +1038,17 @@ function loadPictureState(index) {
   } else {
     ulaPlusPalette = null;
     isUlaPlusMode = false;
+  }
+
+  // Restore SPECSCII grids
+  if (pic.specsciiCharGrid) {
+    specsciiCharGrid = new Uint8Array(pic.specsciiCharGrid);
+    specsciiAttrGrid = pic.specsciiAttrGrid ? new Uint8Array(pic.specsciiAttrGrid) : null;
+    specsciiMask = pic.specsciiMask ? new Uint8Array(pic.specsciiMask) : null;
+  } else {
+    specsciiCharGrid = null;
+    specsciiAttrGrid = null;
+    specsciiMask = null;
   }
 }
 
@@ -1056,14 +1106,18 @@ function addPicture(fileName, format, data) {
     brushShape: brushShape,
     scrollTop: 0,
     scrollLeft: 0,
-    ulaPlusPalette: ulaPlusPalette ? ulaPlusPalette.slice() : null
+    ulaPlusPalette: ulaPlusPalette ? ulaPlusPalette.slice() : null,
+    // Grids will be parsed from screenData when editor is activated
+    specsciiCharGrid: null,
+    specsciiAttrGrid: null,
+    specsciiMask: null
   };
 
   openPictures.push(newPicture);
   const newIndex = openPictures.length - 1;
 
-  // Switch to the new picture
-  switchToPicture(newIndex);
+  // Switch to the new picture (skip save — already done above)
+  switchToPicture(newIndex, true);
 
   return newIndex;
 }
@@ -1100,6 +1154,9 @@ function closePicture(index) {
     layers = [];
     activeLayerIndex = 0;
     layersEnabled = false;
+    specsciiCharGrid = null;
+    specsciiAttrGrid = null;
+    specsciiMask = null;
     renderScreen();
     updateFileInfo();
   } else {
@@ -1146,7 +1203,7 @@ function closePicture(index) {
  * Switches to a different picture.
  * @param {number} index - Index of picture to switch to
  */
-function switchToPicture(index) {
+function switchToPicture(index, skipSave) {
   if (index < 0 || index >= openPictures.length) return;
   if (index === activePictureIndex) return;
 
@@ -1155,11 +1212,19 @@ function switchToPicture(index) {
     resetScaState();
   }
 
-  // Save current state
-  saveCurrentPictureState();
+  // Save current state (skip when caller already saved, e.g. addPicture)
+  if (!skipSave) {
+    saveCurrentPictureState();
+  }
 
   // Load new picture
   loadPictureState(index);
+
+  // SPECSCII: parse stream into grids/layers before first render
+  // so the grid-based multi-layer XOR renderer can be used immediately
+  if (currentFormat === FORMAT.SPECSCII && !specsciiCharGrid && screenData) {
+    specsciiStreamToGrids();
+  }
 
   // Update UI
   renderScreen();
@@ -1174,36 +1239,24 @@ function switchToPicture(index) {
     toggleFormatControlsVisibility();
   }
 
-  // Update editor state
-  if (typeof updateConvertOptions === 'function') {
-    updateConvertOptions();
-  }
+  // Update layer panel
   if (typeof toggleLayerSectionVisibility === 'function') {
     toggleLayerSectionVisibility();
   }
   if (typeof updateLayerPanel === 'function') {
     updateLayerPanel();
   }
+  // Update editor state (handles convert options, gigascreen picker, preview, export button)
   if (typeof updateEditorState === 'function') {
     updateEditorState();
   }
-  // Update Gigascreen color picker visibility
-  if (typeof toggleGigascreenColorPicker === 'function') {
-    toggleGigascreenColorPicker(currentFormat === FORMAT.GIGASCREEN);
-    if (currentFormat === FORMAT.GIGASCREEN) {
-      generateGigascreenVirtualPalette();
-      updateGigascreenColorPickerUI();
-    }
-  }
-  if (editorActive && typeof renderPreview === 'function') {
-    renderPreview();
-  }
 
-  // Reset selection and paste states
-  if (typeof clearSelection === 'function') {
-    clearSelection();
-  }
+  // Reset selection and paste states (without triggering another render)
+  selectionStartPoint = null;
+  selectionEndPoint = null;
+  isSelecting = false;
   isPasting = false;
+  brushSnapOrigin = null;
 }
 
 /**
@@ -1852,6 +1905,7 @@ function getLayerBitmapSize() {
   if (currentFormat === FORMAT.IFL) return IFL.BITMAP_SIZE;
   if (currentFormat === FORMAT.MLT) return MLT.BITMAP_SIZE;
   if (currentFormat === FORMAT.GIGASCREEN) return SCREEN.BITMAP_SIZE; // Per-frame bitmap size
+  if (currentFormat === FORMAT.SPECSCII) return 768; // 32×24 character grid
   return SCREEN.BITMAP_SIZE; // Default for SCR
 }
 
@@ -1894,7 +1948,10 @@ function getLayerAttributeSize() {
   if (currentFormat === FORMAT.GIGASCREEN) {
     return SCREEN.ATTR_SIZE; // 768 bytes per frame (stored separately as attributes + attributesFrame2)
   }
-  // MONO, RGB3, ATTR_53C, SPECSCII, SCA have no layer attributes
+  if (currentFormat === FORMAT.SPECSCII) {
+    return 768; // 32×24 attribute grid
+  }
+  // MONO, RGB3, ATTR_53C, SCA have no layer attributes
   return 0;
 }
 
@@ -1903,10 +1960,15 @@ function getLayerAttributeSize() {
  * Creates a background layer from the current screenData.
  */
 function initLayers() {
-  if (!screenData || screenData.length === 0) {
+  if (!screenData || (screenData.length === 0 && currentFormat !== FORMAT.SPECSCII)) {
     layers = [];
     activeLayerIndex = 0;
     layersEnabled = false;
+    return;
+  }
+
+  // SPECSCII: if layers were already parsed from stream (OVER sections), keep them
+  if (currentFormat === FORMAT.SPECSCII && layersEnabled && layers.length > 1) {
     return;
   }
 
@@ -1925,12 +1987,22 @@ function initLayers() {
 
   // Create background layer from current bitmap
   const bgBitmap = new Uint8Array(bitmapSize);
-  const bgMask = new Uint8Array(bitmapSize * 8); // 1 bit per pixel -> 1 byte per pixel for simplicity
-  bgMask.fill(1); // Background is fully opaque
+  const maskSize = currentFormat === FORMAT.SPECSCII ? bitmapSize : bitmapSize * 8;
+  const bgMask = new Uint8Array(maskSize); // SPECSCII: 1 per cell; others: 1 per pixel
 
   // Copy current bitmap to background layer
-  for (let i = 0; i < bitmapSize; i++) {
-    bgBitmap[i] = screenData[i];
+  if (currentFormat === FORMAT.SPECSCII && specsciiCharGrid) {
+    // SPECSCII: layer bitmap stores charGrid, attributes store attrGrid
+    // Copy mask to track user-placed content
+    for (let i = 0; i < bitmapSize; i++) {
+      bgBitmap[i] = specsciiCharGrid[i];
+      bgMask[i] = specsciiMask ? specsciiMask[i] : 1;
+    }
+  } else {
+    bgMask.fill(1); // Non-SPECSCII: background is fully opaque
+    for (let i = 0; i < bitmapSize; i++) {
+      bgBitmap[i] = screenData[i];
+    }
   }
 
   /** @type {Layer} */
@@ -1943,7 +2015,12 @@ function initLayers() {
 
   // Initialize per-layer attributes from screenData
   if (attrSize > 0) {
-    if (currentFormat === FORMAT.BMC4) {
+    if (currentFormat === FORMAT.SPECSCII && specsciiAttrGrid) {
+      bgLayer.attributes = new Uint8Array(attrSize);
+      for (let i = 0; i < attrSize; i++) {
+        bgLayer.attributes[i] = specsciiAttrGrid[i];
+      }
+    } else if (currentFormat === FORMAT.BMC4) {
       // BMC4: two attribute banks (768 bytes each)
       bgLayer.attributes = new Uint8Array(BMC4.ATTR1_SIZE);
       bgLayer.attributes2 = new Uint8Array(BMC4.ATTR2_SIZE);
@@ -2022,9 +2099,14 @@ function addLayer(name) {
   const newLayer = {
     name: name || `Layer ${layers.length}`,
     bitmap: new Uint8Array(bitmapSize), // Empty (all zeros = paper)
-    mask: new Uint8Array(width * height), // All transparent
+    mask: new Uint8Array(currentFormat === FORMAT.SPECSCII ? bitmapSize : width * height), // SPECSCII: 1 mask entry per cell
     visible: true
   };
+
+  // SPECSCII: fill bitmap with spaces (0x20) instead of zeros
+  if (currentFormat === FORMAT.SPECSCII) {
+    newLayer.bitmap.fill(0x20);
+  }
 
   // Add default attributes (ink=7, paper=0) for formats that support them
   if (attrSize > 0) {
@@ -2135,6 +2217,19 @@ function setActiveLayer(index) {
   if (!layersEnabled || index < 0 || index >= layers.length) return;
   activeLayerIndex = index;
 
+  // SPECSCII: sync charGrid/attrGrid/mask from newly active layer so pick/info works correctly
+  if (currentFormat === FORMAT.SPECSCII && specsciiCharGrid && specsciiAttrGrid) {
+    const layer = layers[index];
+    if (layer && layer.bitmap) {
+      const cellCount = 768;
+      for (let i = 0; i < cellCount; i++) {
+        specsciiCharGrid[i] = layer.bitmap[i];
+        specsciiAttrGrid[i] = layer.attributes ? layer.attributes[i] : 0x38;
+        if (specsciiMask && layer.mask) specsciiMask[i] = layer.mask[i];
+      }
+    }
+  }
+
   // Update visual state without rebuilding DOM (preserves double-click)
   const layerList = document.getElementById('layerList');
   if (layerList) {
@@ -2166,6 +2261,26 @@ function toggleLayerVisibility(index) {
  */
 function flattenLayersToScreen() {
   if (!layersEnabled || layers.length === 0) return;
+
+  // SPECSCII: flatten layers into charGrid/attrGrid
+  // Upper layers use OVER (XOR) compositing — the renderer handles visual XOR,
+  // and the stream encoder emits OVER 1 control codes for multi-layer output.
+  if (currentFormat === FORMAT.SPECSCII && specsciiCharGrid && specsciiAttrGrid) {
+    const cellCount = 768; // 32×24
+    // Copy active layer data into grids for editing (pick, info display)
+    const activeIdx = typeof activeLayerIndex !== 'undefined' ? activeLayerIndex : 0;
+    const activeLayer = layers[activeIdx];
+    if (activeLayer && activeLayer.bitmap) {
+      for (let i = 0; i < cellCount; i++) {
+        specsciiCharGrid[i] = activeLayer.bitmap[i];
+        specsciiAttrGrid[i] = activeLayer.attributes ? activeLayer.attributes[i] : 0x38;
+        if (specsciiMask && activeLayer.mask) specsciiMask[i] = activeLayer.mask[i];
+      }
+    }
+    // Sync to stream: encode all layers with OVER control codes
+    specsciiSyncToStream();
+    return;
+  }
 
   const bitmapSize = getLayerBitmapSize();
   const width = getFormatWidth();
@@ -2320,6 +2435,9 @@ function flattenBorderLayersToScreen() {
 function flattenAttributesToScreen() {
   const attrSize = getLayerAttributeSize();
   if (attrSize === 0) return; // No attributes for this format
+
+  // SPECSCII attributes are flattened in flattenLayersToScreen()
+  if (currentFormat === FORMAT.SPECSCII) return;
 
   const width = getFormatWidth();
   const height = getFormatHeight();
@@ -5681,7 +5799,53 @@ function _handleEditorMouseDownCoords(event, coords) {
     const input = /** @type {HTMLInputElement|null} */ (document.getElementById('textToolInput'));
     textToolInput = input?.value || '';
     if (textToolInput.length > 0) {
-      stampText(coords.x, coords.y);
+      if (isSpecsciiEditor()) {
+        // SPECSCII text: place characters directly into grid
+        // Respects paint mode: set=place char+attr, recolor=attr only, invert=swap ink/paper
+        saveUndoState();
+        const g = specsciiPixelToGrid(coords.x, coords.y);
+        let col = g.col;
+        let row = g.row;
+        for (let i = 0; i < textToolInput.length; i++) {
+          if (col >= SPECSCII.CHAR_COLS) { col = 0; row++; }
+          if (row >= SPECSCII.CHAR_ROWS) break;
+          const charCode = textToolInput.charCodeAt(i);
+          if ((charCode >= 0x20 && charCode <= 0x7F) || (charCode >= 0x80 && charCode <= 0x8F)) {
+            const idx = row * 32 + col;
+            let ch, attr;
+            if (brushPaintMode === 'invert') {
+              const old = specsciiAttrGrid[idx];
+              const oldInk = old & 0x07;
+              const oldPaper = (old >> 3) & 0x07;
+              attr = (oldPaper & 0x07) | ((oldInk & 0x07) << 3) | (old & 0xC0);
+              ch = specsciiCharGrid[idx];
+            } else if (brushPaintMode === 'recolor') {
+              attr = getCurrentDrawingAttribute();
+              ch = specsciiCharGrid[idx];
+            } else {
+              attr = getCurrentDrawingAttribute();
+              ch = charCode;
+            }
+            specsciiCharGrid[idx] = ch;
+            specsciiAttrGrid[idx] = attr;
+            if (specsciiMask) specsciiMask[idx] = 1;
+            // Update layer data when layers are enabled
+            if (layersEnabled && layers.length > 0) {
+              const layer = layers[activeLayerIndex];
+              if (layer) {
+                if (layer.bitmap) layer.bitmap[idx] = ch;
+                if (layer.attributes) layer.attributes[idx] = attr;
+                if (layer.mask) layer.mask[idx] = 1;
+              }
+            }
+            col++;
+          }
+        }
+        specsciiSyncToStream();
+        editorRender();
+      } else {
+        stampText(coords.x, coords.y);
+      }
     }
     return;
   }
@@ -5714,6 +5878,62 @@ function _handleEditorMouseDownCoords(event, coords) {
     isDrawing = true;
     recolorCell53c(coords.x, coords.y);
     editorRender();
+    updateEditorInfo(coords.x, coords.y);
+    return;
+  }
+
+  // SPECSCII editor: all tools operate on character grid
+  if (isSpecsciiEditor()) {
+    const g = specsciiPixelToGrid(coords.x, coords.y);
+
+    // Right-click: pick character + attribute from cell
+    if (event.button === 2) {
+      specsciiPickFromCell(g.col, g.row);
+      updateEditorInfo(coords.x, coords.y);
+      return;
+    }
+
+    saveUndoState();
+    isDrawing = true;
+    lastDrawnPixel = { x: g.col, y: g.row };
+
+    switch (currentTool) {
+      case EDITOR.TOOL_LINE:
+      case EDITOR.TOOL_RECT:
+      case EDITOR.TOOL_CIRCLE:
+        toolStartPoint = { x: g.col, y: g.row };
+        break;
+
+      case EDITOR.TOOL_PIXEL:
+        specsciiPlotCell(g.col, g.row);
+        specsciiSyncToStream();
+        editorRender();
+        break;
+
+      case EDITOR.TOOL_FILL_CELL:
+      case EDITOR.TOOL_RECOLOR:
+        specsciiRecolorCell(g.col, g.row);
+        specsciiSyncToStream();
+        editorRender();
+        break;
+
+      case EDITOR.TOOL_FLOOD_FILL:
+        specsciiFloodFill(g.col, g.row);
+        specsciiSyncToStream();
+        editorRender();
+        break;
+
+      case EDITOR.TOOL_ERASER:
+        specsciiEraseCell(g.col, g.row);
+        specsciiSyncToStream();
+        editorRender();
+        break;
+
+      case EDITOR.TOOL_TEXT:
+        // Text handled separately above
+        break;
+    }
+
     updateEditorInfo(coords.x, coords.y);
     return;
   }
@@ -5933,6 +6153,69 @@ function _handleEditorMouseMoveCoords(event, coords) {
     return;
   }
 
+  // SPECSCII editor: drag handling
+  if (isSpecsciiEditor() && currentTool !== EDITOR.TOOL_SELECT) {
+    const g = specsciiPixelToGrid(coords.x, coords.y);
+
+    if (isDrawing) {
+      switch (currentTool) {
+        case EDITOR.TOOL_PIXEL:
+          // Draw continuous line from last cell
+          if (lastDrawnPixel && (lastDrawnPixel.x !== g.col || lastDrawnPixel.y !== g.row)) {
+            specsciiDrawLine(lastDrawnPixel.x, lastDrawnPixel.y, g.col, g.row);
+          } else {
+            specsciiPlotCell(g.col, g.row);
+          }
+          lastDrawnPixel = { x: g.col, y: g.row };
+          specsciiSyncToStream();
+          scheduleRender();
+          break;
+
+        case EDITOR.TOOL_FILL_CELL:
+        case EDITOR.TOOL_RECOLOR:
+          specsciiRecolorCell(g.col, g.row);
+          specsciiSyncToStream();
+          scheduleRender();
+          break;
+
+        case EDITOR.TOOL_ERASER:
+          if (lastDrawnPixel && (lastDrawnPixel.x !== g.col || lastDrawnPixel.y !== g.row)) {
+            // Erase along line
+            const dx = Math.abs(g.col - lastDrawnPixel.x);
+            const dy = Math.abs(g.row - lastDrawnPixel.y);
+            const sx = lastDrawnPixel.x < g.col ? 1 : -1;
+            const sy = lastDrawnPixel.y < g.row ? 1 : -1;
+            let err = dx - dy;
+            let c = lastDrawnPixel.x, r = lastDrawnPixel.y;
+            while (true) {
+              specsciiEraseCell(c, r);
+              if (c === g.col && r === g.row) break;
+              const e2 = 2 * err;
+              if (e2 > -dy) { err -= dy; c += sx; }
+              if (e2 < dx) { err += dx; r += sy; }
+            }
+          } else {
+            specsciiEraseCell(g.col, g.row);
+          }
+          lastDrawnPixel = { x: g.col, y: g.row };
+          specsciiSyncToStream();
+          scheduleRender();
+          break;
+
+        case EDITOR.TOOL_LINE:
+        case EDITOR.TOOL_RECT:
+        case EDITOR.TOOL_CIRCLE:
+          // Preview — render then draw overlay
+          editorRender();
+          if (toolStartPoint) {
+            drawToolPreview(toolStartPoint.x * 8 + 4, toolStartPoint.y * 8 + 4, g.col * 8 + 4, g.row * 8 + 4);
+          }
+          break;
+      }
+    }
+    return;
+  }
+
   if (!isDrawing) return;
 
   const isInk = (event.buttons & 2) === 0; // Left = ink, Right = paper
@@ -6086,6 +6369,30 @@ function _handleEditorMouseUpCoords(event, coords) {
     return;
   }
 
+  // SPECSCII editor: finalize shape tools
+  if (isSpecsciiEditor()) {
+    if (toolStartPoint && coords) {
+      const g = specsciiPixelToGrid(coords.x, coords.y);
+      switch (currentTool) {
+        case EDITOR.TOOL_LINE:
+          specsciiDrawLine(toolStartPoint.x, toolStartPoint.y, g.col, g.row);
+          break;
+        case EDITOR.TOOL_RECT:
+          specsciiDrawRect(toolStartPoint.x, toolStartPoint.y, g.col, g.row);
+          break;
+        case EDITOR.TOOL_CIRCLE:
+          specsciiDrawCircle(toolStartPoint.x, toolStartPoint.y, g.col, g.row);
+          break;
+      }
+      specsciiSyncToStream();
+    }
+    editorRender();
+    isDrawing = false;
+    toolStartPoint = null;
+    lastDrawnPixel = null;
+    return;
+  }
+
   const isInk = event.button !== 2;
 
   if (toolStartPoint && coords) {
@@ -6227,12 +6534,18 @@ function handleContextMenu(event) {
 
 function saveUndoState() {
   if (screenData && isFormatEditable()) {
-    // Push current state to undo stack (screenData + layers)
-    undoStack.push({
+    // Push current state to undo stack (screenData + layers + SPECSCII grids)
+    const state = {
       screenData: new Uint8Array(screenData),
       layers: deepCloneLayers(layers),
       activeLayerIndex: activeLayerIndex
-    });
+    };
+    // Include SPECSCII grids if present
+    if (specsciiCharGrid) state.specsciiCharGrid = new Uint8Array(specsciiCharGrid);
+    if (specsciiAttrGrid) state.specsciiAttrGrid = new Uint8Array(specsciiAttrGrid);
+    if (specsciiMask) state.specsciiMask = new Uint8Array(specsciiMask);
+
+    undoStack.push(state);
 
     // Limit stack size
     if (undoStack.length > MAX_UNDO_LEVELS) {
@@ -6251,18 +6564,27 @@ function undo() {
   if (undoStack.length === 0) return;
 
   // Save current state to redo stack
-  redoStack.push({
+  const state = {
     screenData: new Uint8Array(screenData),
     layers: deepCloneLayers(layers),
     activeLayerIndex: activeLayerIndex
-  });
+  };
+  if (specsciiCharGrid) state.specsciiCharGrid = new Uint8Array(specsciiCharGrid);
+  if (specsciiAttrGrid) state.specsciiAttrGrid = new Uint8Array(specsciiAttrGrid);
+  if (specsciiMask) state.specsciiMask = new Uint8Array(specsciiMask);
+  redoStack.push(state);
 
   // Restore previous state
   const previousState = undoStack.pop();
   if (previousState) {
-    screenData.set(previousState.screenData);
+    screenData = previousState.screenData;
     layers = previousState.layers;
     activeLayerIndex = previousState.activeLayerIndex;
+
+    // Restore SPECSCII grids if present
+    if (previousState.specsciiCharGrid) specsciiCharGrid = previousState.specsciiCharGrid;
+    if (previousState.specsciiAttrGrid) specsciiAttrGrid = previousState.specsciiAttrGrid;
+    if (previousState.specsciiMask) specsciiMask = previousState.specsciiMask;
 
     // Re-flatten layers to update transparency masks (borderTransparencyMask, screenTransparencyMask)
     if (layersEnabled && layers.length > 0) {
@@ -6278,18 +6600,27 @@ function redo() {
   if (redoStack.length === 0) return;
 
   // Save current state to undo stack
-  undoStack.push({
+  const state = {
     screenData: new Uint8Array(screenData),
     layers: deepCloneLayers(layers),
     activeLayerIndex: activeLayerIndex
-  });
+  };
+  if (specsciiCharGrid) state.specsciiCharGrid = new Uint8Array(specsciiCharGrid);
+  if (specsciiAttrGrid) state.specsciiAttrGrid = new Uint8Array(specsciiAttrGrid);
+  if (specsciiMask) state.specsciiMask = new Uint8Array(specsciiMask);
+  undoStack.push(state);
 
   // Restore redo state
   const redoState = redoStack.pop();
   if (redoState) {
-    screenData.set(redoState.screenData);
+    screenData = redoState.screenData;
     layers = redoState.layers;
     activeLayerIndex = redoState.activeLayerIndex;
+
+    // Restore SPECSCII grids if present
+    if (redoState.specsciiCharGrid) specsciiCharGrid = redoState.specsciiCharGrid;
+    if (redoState.specsciiAttrGrid) specsciiAttrGrid = redoState.specsciiAttrGrid;
+    if (redoState.specsciiMask) specsciiMask = redoState.specsciiMask;
 
     // Re-flatten layers to update transparency masks (borderTransparencyMask, screenTransparencyMask)
     if (layersEnabled && layers.length > 0) {
@@ -6315,6 +6646,15 @@ function clearScreen() {
     for (let i = 0; i < 768; i++) {
       screenData[i] = attr;
     }
+    editorRender();
+    return;
+  }
+
+  // SPECSCII: clear grids and sync
+  if (currentFormat === FORMAT.SPECSCII) {
+    const attr = getCurrentDrawingAttribute();
+    specsciiInitGrids(0x20, attr);
+    specsciiSyncToStream();
     editorRender();
     return;
   }
@@ -6465,7 +6805,9 @@ function clearScreen() {
  * Renders the preview canvas
  */
 function renderPreview() {
-  if (!previewCanvas || !screenData) return;
+  if (!previewCanvas) return;
+  // SPECSCII can render from grids even with empty screenData
+  if (!screenData && !(currentFormat === FORMAT.SPECSCII && specsciiCharGrid)) return;
 
   const ctx = previewCanvas.getContext('2d');
   if (!ctx) return;
@@ -6515,6 +6857,83 @@ function renderPreview() {
             data[pixelIndex + 2] = rgb[2];
             data[pixelIndex + 3] = 255;
           }
+        }
+      }
+    }
+  } else if (currentFormat === FORMAT.SPECSCII && specsciiCharGrid && specsciiAttrGrid) {
+    // SPECSCII: render characters from grids (with multi-layer XOR compositing)
+    const hasLayers = typeof layersEnabled !== 'undefined' && layersEnabled &&
+                      typeof layers !== 'undefined' && layers.length > 1;
+    if (hasLayers) {
+      // Build pixel buffer with XOR compositing from all layers
+      const W = SCREEN.WIDTH, H = SCREEN.HEIGHT;
+      const pixBuf = new Uint8Array(W * H);
+      const cellAttr = new Uint8Array(768);
+      cellAttr.fill(0x38); // ink 0 (black), paper 7 (white)
+
+      for (let layerIdx = 0; layerIdx < layers.length; layerIdx++) {
+        const layer = layers[layerIdx];
+        if (!layer.visible || !layer.bitmap) continue;
+
+        for (let crow = 0; crow < SPECSCII.CHAR_ROWS; crow++) {
+          for (let ccol = 0; ccol < SPECSCII.CHAR_COLS; ccol++) {
+            const ci = crow * 32 + ccol;
+            if (layerIdx > 0 && (!layer.mask || !layer.mask[ci])) continue;
+
+            const ch = layer.bitmap[ci];
+            const attr = layer.attributes ? layer.attributes[ci] : 0x38;
+            cellAttr[ci] = attr;
+
+            for (let line = 0; line < 8; line++) {
+              const glyphByte = specsciiGetGlyphByte(ch, line);
+              for (let bit = 0; bit < 8; bit++) {
+                if (glyphByte & (0x80 >> bit)) {
+                  const pi = (crow * 8 + line) * W + ccol * 8 + bit;
+                  if (layerIdx === 0) {
+                    pixBuf[pi] = 1;
+                  } else {
+                    pixBuf[pi] ^= 1; // XOR — OVER mode
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Render composited buffer to ImageData
+      for (let crow = 0; crow < SPECSCII.CHAR_ROWS; crow++) {
+        for (let ccol = 0; ccol < SPECSCII.CHAR_COLS; ccol++) {
+          const ci = crow * 32 + ccol;
+          const attr = cellAttr[ci];
+          const aInk = attr & 0x07, aPaper = (attr >> 3) & 0x07;
+          const aBright = (attr & 0x40) !== 0, aFlash = (attr & 0x80) !== 0;
+          const pal = aBright ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
+          let inkRgb, paperRgb;
+          if (aFlash && flashPhase && flashEnabled) {
+            inkRgb = pal[aPaper]; paperRgb = pal[aInk];
+          } else {
+            inkRgb = pal[aInk]; paperRgb = pal[aPaper];
+          }
+          for (let line = 0; line < 8; line++) {
+            for (let bit = 0; bit < 8; bit++) {
+              const pi = (crow * 8 + line) * W + ccol * 8 + bit;
+              const rgb = pixBuf[pi] ? inkRgb : paperRgb;
+              const offset = pi * 4;
+              data[offset] = rgb[0];
+              data[offset + 1] = rgb[1];
+              data[offset + 2] = rgb[2];
+              data[offset + 3] = 255;
+            }
+          }
+        }
+      }
+    } else {
+      // Single layer: render directly from grids
+      for (let row = 0; row < SPECSCII.CHAR_ROWS; row++) {
+        for (let col = 0; col < SPECSCII.CHAR_COLS; col++) {
+          const idx = row * 32 + col;
+          specsciiRenderGlyph(data, SCREEN.WIDTH, specsciiCharGrid[idx], specsciiAttrGrid[idx], col * 8, row * 8);
         }
       }
     }
@@ -7597,6 +8016,13 @@ function saveScrFile(filename) {
   } else if (currentFormat === FORMAT.MONO_1_3) {
     saveData = screenData.slice(0, 2048);
     defaultExt = '.scr';
+  } else if (currentFormat === FORMAT.SPECSCII) {
+    // SPECSCII: sync grids to stream and save
+    if (specsciiCharGrid && specsciiAttrGrid) {
+      specsciiSyncToStream();
+    }
+    saveData = screenData ? new Uint8Array(screenData) : new Uint8Array(0);
+    defaultExt = '.specscii';
   } else if (currentFormat === FORMAT.SCR_ULAPLUS) {
     // ULA+ format: SCR data + 64-byte palette
     saveData = new Uint8Array(ULAPLUS.TOTAL_SIZE);
@@ -7629,7 +8055,8 @@ function saveScrFile(filename) {
                  currentFormat === FORMAT.IFL ? 'screen.ifl' :
                  currentFormat === FORMAT.MLT ? 'screen.mlt' :
                  currentFormat === FORMAT.BMC4 ? 'screen.bmc4' :
-                 currentFormat === FORMAT.GIGASCREEN ? 'screen.img' : 'screen.scr';
+                 currentFormat === FORMAT.GIGASCREEN ? 'screen.img' :
+                 currentFormat === FORMAT.SPECSCII ? 'screen.specscii' : 'screen.scr';
     }
   }
 
@@ -7829,6 +8256,18 @@ function createNewPicture(format) {
       generateGigascreenVirtualPalette();
       break;
 
+    case 'specscii':
+      // SPECSCII: initialize empty grids, create minimal stream
+      specsciiInitGrids(0x20, newAttr);
+      newData = specsciiGridsToStream();
+      if (newData.length === 0) {
+        // Empty stream if all spaces — create at least 1 byte placeholder
+        newData = new Uint8Array(0);
+      }
+      newFormat = FORMAT.SPECSCII;
+      newFileName = 'new_screen.specscii';
+      break;
+
     case 'scr':
     default:
       newData = new Uint8Array(SCREEN.TOTAL_SIZE);
@@ -7842,14 +8281,17 @@ function createNewPicture(format) {
 
   // Use multi-picture system
   const result = addPicture(newFileName, newFormat, newData);
-  if (result < 0) {
-    // Max pictures reached - still update globals for direct use
-    screenData = newData;
-    currentFormat = newFormat;
-    currentFileName = newFileName;
+  if (result >= 0) {
+    // addPicture -> switchToPicture handles all rendering and UI updates
+    return;
   }
 
-  // Reset undo/redo stacks (addPicture creates fresh state, but ensure clean)
+  // Max pictures reached - fall through to direct load
+  screenData = newData;
+  currentFormat = newFormat;
+  currentFileName = newFileName;
+
+  // Reset undo/redo stacks
   undoStack = [];
   redoStack = [];
 
@@ -7879,11 +8321,6 @@ function createNewPicture(format) {
   renderScreen();
   updatePictureTabBar();
 
-  // Apply current zoom (already loaded from settings)
-  if (typeof setZoom === 'function') {
-    setZoom(zoom);
-  }
-
   // Enable editor for new picture
   updateEditorState();
 }
@@ -7908,6 +8345,27 @@ function updateEditorInfo(x, y) {
 
   const cellX = Math.floor(x / 8);
   const cellY = Math.floor(y / 8);
+
+  // SPECSCII: show cell coordinates and character info
+  if (currentFormat === FORMAT.SPECSCII && specsciiCharGrid && specsciiAttrGrid) {
+    const g = specsciiPixelToGrid(x, y);
+    const cell = specsciiGetCell(g.col, g.row);
+    if (cell) {
+      const hex = cell.char.toString(16).toUpperCase().padStart(2, '0');
+      const charName = cell.char === 0x20 ? 'Space' :
+                       cell.char <= 0x7F ? String.fromCharCode(cell.char) :
+                       'Block';
+      const ink = cell.attr & 0x07;
+      const paper = (cell.attr >> 3) & 0x07;
+      const bright = (cell.attr & 0x40) ? ' Bright' : '';
+      const flash = (cell.attr & 0x80) ? ' Flash' : '';
+      infoEl.innerHTML =
+        `Cell: (${g.col}, ${g.row})<br>` +
+        `Char: 0x${hex} (${charName})<br>` +
+        `Ink: ${ink} (${COLOR_NAMES[ink]}) Paper: ${paper} (${COLOR_NAMES[paper]})${bright}${flash}`;
+    }
+    return;
+  }
 
   /** @type {number} */
   let attr;
@@ -9649,6 +10107,978 @@ function initUlaPlusPaletteUI() {
   initUlaPlusColorPicker();
 }
 
+// ============================================================================
+// SPECSCII Editor — Grid Management, Stream Parser/Encoder, Drawing, Palette
+// ============================================================================
+
+/**
+ * Initializes empty SPECSCII grids (32×24)
+ * @param {number} [fillChar=0x20] - Character to fill with (default: space)
+ * @param {number} [fillAttr=0x38] - Attribute to fill with (default: white ink on black paper)
+ */
+function specsciiInitGrids(fillChar = 0x20, fillAttr = 0x38) {
+  specsciiCharGrid = new Uint8Array(768);
+  specsciiAttrGrid = new Uint8Array(768);
+  specsciiMask = new Uint8Array(768);
+  specsciiCharGrid.fill(fillChar);
+  specsciiAttrGrid.fill(fillAttr);
+  // mask starts at 0 — cells are empty/transparent until user places content
+}
+
+/**
+ * Parses a SPECSCII stream (screenData) into the character and attribute grids.
+ * Walk bytes, process control codes (INK, PAPER, BRIGHT, FLASH, AT, ENTER).
+ * Printable chars (0x20-0x7F, 0x80-0x8F) placed into grid with current attribute.
+ * Detects OVER 1 sections and creates separate layers for each OVER block.
+ */
+function specsciiStreamToGrids() {
+  if (!screenData) return;
+
+  // Initialize grids: space (0x20), white ink (7) on black paper (0) = attr 0x07
+  specsciiInitGrids(0x20, 0x38);
+
+  // Collect OVER layers: each entry is {charGrid, attrGrid, mask}
+  /** @type {Array<{charGrid: Uint8Array, attrGrid: Uint8Array, mask: Uint8Array}>} */
+  const overLayers = [];
+  let overMode = 0;
+  /** @type {Uint8Array|null} */
+  let curCharGrid = specsciiCharGrid;
+  /** @type {Uint8Array|null} */
+  let curAttrGrid = specsciiAttrGrid;
+  /** @type {Uint8Array|null} */
+  let curMask = specsciiMask; // track which cells have user-placed content
+
+  let ink = 7, paper = 0, bright = 0, flash = 0;
+  let col = 0, row = 0;
+  let i = 0;
+
+  while (i < screenData.length) {
+    const byte = screenData[i];
+
+    if (byte === SPECSCII.CC_ENTER) {
+      col = 0;
+      row++;
+      if (row >= SPECSCII.CHAR_ROWS) row = SPECSCII.CHAR_ROWS - 1;
+      i++;
+      continue;
+    }
+
+    if (byte === SPECSCII.CC_INK && i + 1 < screenData.length) {
+      ink = screenData[i + 1] & 0x07;
+      i += 2;
+      continue;
+    }
+    if (byte === SPECSCII.CC_PAPER && i + 1 < screenData.length) {
+      paper = screenData[i + 1] & 0x07;
+      i += 2;
+      continue;
+    }
+    if (byte === SPECSCII.CC_FLASH && i + 1 < screenData.length) {
+      flash = screenData[i + 1] & 0x01;
+      i += 2;
+      continue;
+    }
+    if (byte === SPECSCII.CC_BRIGHT && i + 1 < screenData.length) {
+      bright = screenData[i + 1] & 0x01;
+      i += 2;
+      continue;
+    }
+    if (byte === SPECSCII.CC_INVERSE && i + 1 < screenData.length) {
+      i += 2; // Parse but don't track for grid (applied at render time in viewer)
+      continue;
+    }
+    if (byte === SPECSCII.CC_OVER && i + 1 < screenData.length) {
+      const newOver = screenData[i + 1] & 0x01;
+      if (newOver && !overMode) {
+        // Entering OVER mode: start a new layer
+        const layerChars = new Uint8Array(768);
+        layerChars.fill(0x20);
+        const layerAttrs = new Uint8Array(768);
+        layerAttrs.fill(0x38);
+        const layerMask = new Uint8Array(768);
+        overLayers.push({ charGrid: layerChars, attrGrid: layerAttrs, mask: layerMask });
+        curCharGrid = layerChars;
+        curAttrGrid = layerAttrs;
+        curMask = layerMask;
+        // Reset position for new layer section
+        col = 0;
+        row = 0;
+      } else if (!newOver && overMode) {
+        // Leaving OVER mode: switch back to background grids
+        curCharGrid = specsciiCharGrid;
+        curAttrGrid = specsciiAttrGrid;
+        curMask = specsciiMask;
+        col = 0;
+        row = 0;
+      }
+      overMode = newOver;
+      i += 2;
+      continue;
+    }
+    if (byte === SPECSCII.CC_AT && i + 2 < screenData.length) {
+      row = screenData[i + 1];
+      col = screenData[i + 2];
+      if (row >= SPECSCII.CHAR_ROWS) row = SPECSCII.CHAR_ROWS - 1;
+      if (col >= SPECSCII.CHAR_COLS) col = SPECSCII.CHAR_COLS - 1;
+      i += 3;
+      continue;
+    }
+    if (byte === SPECSCII.CC_TAB && i + 1 < screenData.length) {
+      col = screenData[i + 1];
+      if (col >= SPECSCII.CHAR_COLS) col = SPECSCII.CHAR_COLS - 1;
+      i += 2;
+      continue;
+    }
+
+    // Skip non-printable bytes below 0x20 (other control codes)
+    if (byte < 0x20) {
+      i++;
+      continue;
+    }
+
+    // Printable character: 0x20-0x7F (ROM font) or 0x80-0x8F (block graphics)
+    // Characters above 0x8F are also valid block graphics on ZX Spectrum
+    if (col < SPECSCII.CHAR_COLS && row < SPECSCII.CHAR_ROWS) {
+      const idx = row * 32 + col;
+      curCharGrid[idx] = byte;
+      curAttrGrid[idx] = (ink & 0x07) | ((paper & 0x07) << 3) | (bright ? 0x40 : 0) | (flash ? 0x80 : 0);
+      if (curMask) curMask[idx] = 1;
+    }
+
+    col++;
+    if (col >= SPECSCII.CHAR_COLS) {
+      col = 0;
+      row++;
+      if (row >= SPECSCII.CHAR_ROWS) row = SPECSCII.CHAR_ROWS - 1;
+    }
+    i++;
+  }
+
+  // If OVER layers were found, initialize the layer system with them
+  if (overLayers.length > 0) {
+    specsciiInitLayersFromStream(overLayers);
+    // Update layer panel UI (may have been called before grids were parsed)
+    if (typeof toggleLayerSectionVisibility === 'function') {
+      toggleLayerSectionVisibility();
+    }
+    if (typeof updateLayerPanel === 'function') {
+      updateLayerPanel();
+    }
+  }
+}
+
+/**
+ * Initializes the layer system from parsed OVER sections in a SPECSCII stream.
+ * Creates a background layer from specsciiCharGrid/specsciiAttrGrid, then adds
+ * one layer for each OVER section found during parsing.
+ * @param {Array<{charGrid: Uint8Array, attrGrid: Uint8Array, mask: Uint8Array}>} overLayers
+ */
+function specsciiInitLayersFromStream(overLayers) {
+  const cellCount = 768;
+
+  layersEnabled = true;
+  layers = [];
+
+  // Background layer from main grids (copy mask to track user-placed content)
+  const bgBitmap = new Uint8Array(cellCount);
+  const bgAttrs = new Uint8Array(cellCount);
+  const bgMask = new Uint8Array(cellCount);
+  for (let i = 0; i < cellCount; i++) {
+    bgBitmap[i] = specsciiCharGrid[i];
+    bgAttrs[i] = specsciiAttrGrid[i];
+    bgMask[i] = specsciiMask ? specsciiMask[i] : 1;
+  }
+  layers.push({
+    name: 'Background',
+    bitmap: bgBitmap,
+    attributes: bgAttrs,
+    mask: bgMask,
+    visible: true
+  });
+
+  // One layer per OVER section
+  for (let li = 0; li < overLayers.length; li++) {
+    const ol = overLayers[li];
+    const layerBitmap = new Uint8Array(cellCount);
+    const layerAttrs = new Uint8Array(cellCount);
+    const layerMask = new Uint8Array(cellCount);
+    for (let i = 0; i < cellCount; i++) {
+      layerBitmap[i] = ol.charGrid[i];
+      layerAttrs[i] = ol.attrGrid[i];
+      layerMask[i] = ol.mask[i];
+    }
+    layers.push({
+      name: `OVER ${li + 1}`,
+      bitmap: layerBitmap,
+      attributes: layerAttrs,
+      mask: layerMask,
+      visible: true
+    });
+  }
+
+  activeLayerIndex = 0;
+}
+
+/**
+ * Serializes SPECSCII character and attribute grids back to a stream.
+ * Uses sticky attribute optimization — only emits control codes when attributes change.
+ * Uses AT codes for each row to ensure correct positioning.
+ * Skips trailing spaces for compactness.
+ * @returns {Uint8Array} Variable-length stream
+ */
+function specsciiGridsToStream() {
+  if (!specsciiCharGrid || !specsciiAttrGrid) return new Uint8Array(0);
+
+  const buf = [];
+  let curInk = -1, curPaper = -1, curBright = -1, curFlash = -1;
+  const hasMask = specsciiMask !== null;
+
+  for (let row = 0; row < SPECSCII.CHAR_ROWS; row++) {
+    // Find last masked column in this row
+    let lastCol = -1;
+    for (let col = SPECSCII.CHAR_COLS - 1; col >= 0; col--) {
+      const ci = row * 32 + col;
+      if (hasMask ? specsciiMask[ci] : (specsciiCharGrid[ci] !== 0x20)) {
+        lastCol = col;
+        break;
+      }
+    }
+    if (lastCol < 0) continue; // Skip rows with no user content
+
+    let prevCol = -1;
+    for (let col = 0; col <= lastCol; col++) {
+      const idx = row * 32 + col;
+
+      // Skip unmasked cells (empty/transparent)
+      if (hasMask && !specsciiMask[idx]) continue;
+
+      // Emit AT to position if not sequential
+      if (col !== prevCol + 1) {
+        buf.push(SPECSCII.CC_AT, row, col);
+        // Reset attribute tracking after repositioning
+        curInk = -1; curPaper = -1; curBright = -1; curFlash = -1;
+      }
+
+      const attr = specsciiAttrGrid[idx];
+      const ch = specsciiCharGrid[idx];
+
+      const ink = attr & 0x07;
+      const paper = (attr >> 3) & 0x07;
+      const bright = (attr >> 6) & 0x01;
+      const flash = (attr >> 7) & 0x01;
+
+      // Emit attribute changes (sticky)
+      if (ink !== curInk) {
+        buf.push(SPECSCII.CC_INK, ink);
+        curInk = ink;
+      }
+      if (paper !== curPaper) {
+        buf.push(SPECSCII.CC_PAPER, paper);
+        curPaper = paper;
+      }
+      if (bright !== curBright) {
+        buf.push(SPECSCII.CC_BRIGHT, bright);
+        curBright = bright;
+      }
+      if (flash !== curFlash) {
+        buf.push(SPECSCII.CC_FLASH, flash);
+        curFlash = flash;
+      }
+
+      buf.push(ch);
+      prevCol = col;
+    }
+  }
+
+  return new Uint8Array(buf);
+}
+
+/**
+ * Places a character with current attribute at the given grid position.
+ * Core drawing primitive for SPECSCII editor — used by all tools.
+ * @param {number} col - Column (0-31)
+ * @param {number} row - Row (0-23)
+ */
+function specsciiPlotCell(col, row) {
+  if (!specsciiCharGrid || !specsciiAttrGrid) return;
+  if (col < 0 || col >= SPECSCII.CHAR_COLS || row < 0 || row >= SPECSCII.CHAR_ROWS) return;
+
+  const idx = row * 32 + col;
+
+  let ch, attr;
+  if (brushPaintMode === 'invert') {
+    // Invert: swap ink and paper of existing cell, keep character
+    const old = specsciiAttrGrid[idx];
+    const ink = old & 0x07;
+    const paper = (old >> 3) & 0x07;
+    attr = (paper & 0x07) | ((ink & 0x07) << 3) | (old & 0xC0); // swap ink<->paper, keep bright+flash
+    ch = specsciiCharGrid[idx];
+  } else if (brushPaintMode === 'recolor') {
+    // Recolor: change attribute only, keep character
+    attr = getCurrentDrawingAttribute();
+    ch = specsciiCharGrid[idx];
+  } else {
+    // Set: place selected char with current attribute
+    attr = getCurrentDrawingAttribute();
+    ch = specsciiSelectedChar;
+  }
+
+  specsciiCharGrid[idx] = ch;
+  specsciiAttrGrid[idx] = attr;
+  if (specsciiMask) specsciiMask[idx] = 1;
+
+  // Update active layer if layers are enabled
+  if (layersEnabled && layers.length > 0) {
+    const layer = layers[activeLayerIndex];
+    if (layer) {
+      if (layer.bitmap) layer.bitmap[idx] = ch;
+      if (layer.attributes) layer.attributes[idx] = attr;
+      if (layer.mask) layer.mask[idx] = 1;
+    }
+  }
+}
+
+/**
+ * Gets the character and attribute at a grid position.
+ * @param {number} col
+ * @param {number} row
+ * @returns {{char: number, attr: number}|null}
+ */
+function specsciiGetCell(col, row) {
+  if (!specsciiCharGrid || !specsciiAttrGrid) return null;
+  if (col < 0 || col >= SPECSCII.CHAR_COLS || row < 0 || row >= SPECSCII.CHAR_ROWS) return null;
+  const idx = row * 32 + col;
+  return { char: specsciiCharGrid[idx], attr: specsciiAttrGrid[idx] };
+}
+
+/**
+ * Converts pixel coordinates (from canvasToScreenCoords) to grid coordinates.
+ * @param {number} x - Pixel X (0-255)
+ * @param {number} y - Pixel Y (0-191)
+ * @returns {{col: number, row: number}}
+ */
+function specsciiPixelToGrid(x, y) {
+  return {
+    col: Math.max(0, Math.min(31, Math.floor(x / 8))),
+    row: Math.max(0, Math.min(23, Math.floor(y / 8)))
+  };
+}
+
+/**
+ * Bresenham line in grid coordinates, placing selected char at each cell.
+ * @param {number} c0 - Start column
+ * @param {number} r0 - Start row
+ * @param {number} c1 - End column
+ * @param {number} r1 - End row
+ */
+function specsciiDrawLine(c0, r0, c1, r1) {
+  let dx = Math.abs(c1 - c0);
+  let dy = Math.abs(r1 - r0);
+  const sx = c0 < c1 ? 1 : -1;
+  const sy = r0 < r1 ? 1 : -1;
+  let err = dx - dy;
+
+  while (true) {
+    specsciiPlotCell(c0, r0);
+    if (c0 === c1 && r0 === r1) break;
+    const e2 = 2 * err;
+    if (e2 > -dy) { err -= dy; c0 += sx; }
+    if (e2 < dx) { err += dx; r0 += sy; }
+  }
+}
+
+/**
+ * Rectangle outline in grid coordinates.
+ * @param {number} c0
+ * @param {number} r0
+ * @param {number} c1
+ * @param {number} r1
+ */
+function specsciiDrawRect(c0, r0, c1, r1) {
+  const left = Math.min(c0, c1);
+  const right = Math.max(c0, c1);
+  const top = Math.min(r0, r1);
+  const bottom = Math.max(r0, r1);
+
+  specsciiDrawLine(left, top, right, top);
+  specsciiDrawLine(left, bottom, right, bottom);
+  specsciiDrawLine(left, top, left, bottom);
+  specsciiDrawLine(right, top, right, bottom);
+}
+
+/**
+ * Ellipse outline in grid coordinates using midpoint algorithm.
+ * @param {number} c0
+ * @param {number} r0
+ * @param {number} c1
+ * @param {number} r1
+ */
+function specsciiDrawCircle(c0, r0, c1, r1) {
+  const left = Math.min(c0, c1);
+  const right = Math.max(c0, c1);
+  const top = Math.min(r0, r1);
+  const bottom = Math.max(r0, r1);
+  const cx = (left + right) / 2;
+  const cy = (top + bottom) / 2;
+  const rx = (right - left) / 2;
+  const ry = (bottom - top) / 2;
+
+  if (rx < 0.5 && ry < 0.5) {
+    specsciiPlotCell(Math.round(cx), Math.round(cy));
+    return;
+  }
+
+  // Use parametric approach for small ellipses
+  const steps = Math.max(16, Math.ceil(Math.PI * (rx + ry)));
+  let prevC = -1, prevR = -1;
+  for (let i = 0; i <= steps; i++) {
+    const angle = (i / steps) * 2 * Math.PI;
+    const c = Math.round(cx + rx * Math.cos(angle));
+    const r = Math.round(cy + ry * Math.sin(angle));
+    if (c !== prevC || r !== prevR) {
+      specsciiPlotCell(c, r);
+      prevC = c;
+      prevR = r;
+    }
+  }
+}
+
+/**
+ * Flood fill connected region of same character code with selected char + current attr.
+ * @param {number} startCol
+ * @param {number} startRow
+ */
+function specsciiFloodFill(startCol, startRow) {
+  if (!specsciiCharGrid || !specsciiAttrGrid) return;
+  if (startCol < 0 || startCol >= SPECSCII.CHAR_COLS || startRow < 0 || startRow >= SPECSCII.CHAR_ROWS) return;
+
+  const startIdx = startRow * 32 + startCol;
+  const targetChar = specsciiCharGrid[startIdx];
+  const targetAttr = specsciiAttrGrid[startIdx];
+  const newAttr = getCurrentDrawingAttribute();
+
+  // Don't fill if same char and attr
+  if (targetChar === specsciiSelectedChar && targetAttr === newAttr) return;
+
+  const visited = new Uint8Array(768);
+  const stack = [[startCol, startRow]];
+
+  while (stack.length > 0) {
+    const [c, r] = stack.pop();
+    if (c < 0 || c >= SPECSCII.CHAR_COLS || r < 0 || r >= SPECSCII.CHAR_ROWS) continue;
+    const idx = r * 32 + c;
+    if (visited[idx]) continue;
+    if (specsciiCharGrid[idx] !== targetChar || specsciiAttrGrid[idx] !== targetAttr) continue;
+
+    visited[idx] = 1;
+    specsciiCharGrid[idx] = specsciiSelectedChar;
+    specsciiAttrGrid[idx] = newAttr;
+    if (specsciiMask) specsciiMask[idx] = 1;
+
+    if (layersEnabled && layers.length > 0) {
+      const layer = layers[activeLayerIndex];
+      if (layer) {
+        if (layer.bitmap) layer.bitmap[idx] = specsciiSelectedChar;
+        if (layer.attributes) layer.attributes[idx] = newAttr;
+        if (layer.mask) layer.mask[idx] = 1;
+      }
+    }
+
+    stack.push([c - 1, r], [c + 1, r], [c, r - 1], [c, r + 1]);
+  }
+}
+
+/**
+ * Recolor cell: change attribute only, preserving character.
+ * @param {number} col
+ * @param {number} row
+ */
+function specsciiRecolorCell(col, row) {
+  if (!specsciiAttrGrid) return;
+  if (col < 0 || col >= SPECSCII.CHAR_COLS || row < 0 || row >= SPECSCII.CHAR_ROWS) return;
+  const idx = row * 32 + col;
+  const attr = getCurrentDrawingAttribute();
+  specsciiAttrGrid[idx] = attr;
+
+  if (layersEnabled && layers.length > 0) {
+    const layer = layers[activeLayerIndex];
+    if (layer && layer.attributes) layer.attributes[idx] = attr;
+  }
+}
+
+/**
+ * Eraser: place space (0x20) with current attribute at cell.
+ * @param {number} col
+ * @param {number} row
+ */
+function specsciiEraseCell(col, row) {
+  if (!specsciiCharGrid || !specsciiAttrGrid) return;
+  if (col < 0 || col >= SPECSCII.CHAR_COLS || row < 0 || row >= SPECSCII.CHAR_ROWS) return;
+  const idx = row * 32 + col;
+
+  // Reset cell to space with default attribute and clear mask
+  specsciiCharGrid[idx] = 0x20;
+  specsciiAttrGrid[idx] = 0x38; // default: ink 0, paper 7
+  if (specsciiMask) specsciiMask[idx] = 0;
+
+  if (layersEnabled && layers.length > 0) {
+    const layer = layers[activeLayerIndex];
+    if (layer) {
+      if (layer.bitmap) layer.bitmap[idx] = 0x20;
+      if (layer.attributes) layer.attributes[idx] = 0x38;
+      if (layer.mask) layer.mask[idx] = 0;
+    }
+  }
+}
+
+/**
+ * Renders a single SPECSCII glyph into an ImageData at pixel (px, py).
+ * Handles both ROM font (0x20-0x7F) and block graphics (0x80+).
+ * @param {Uint8Array} imgData - RGBA pixel array (256×192 or similar)
+ * @param {number} imgWidth - Image width in pixels
+ * @param {number} charCode - Character code
+ * @param {number} attr - Attribute byte
+ * @param {number} px - Pixel X position
+ * @param {number} py - Pixel Y position
+ */
+function specsciiRenderGlyph(imgData, imgWidth, charCode, attr, px, py) {
+  const inkIdx = attr & 0x07;
+  const paperIdx = (attr >> 3) & 0x07;
+  const isBright = (attr & 0x40) !== 0;
+  const isFlash = (attr & 0x80) !== 0;
+
+  const palette = isBright ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
+
+  let inkRgb, paperRgb;
+  if (isFlash && flashPhase && flashEnabled) {
+    inkRgb = palette[paperIdx];
+    paperRgb = palette[inkIdx];
+  } else {
+    inkRgb = palette[inkIdx];
+    paperRgb = palette[paperIdx];
+  }
+
+  if (charCode >= 0x20 && charCode <= 0x7F) {
+    // ROM font character
+    const glyphIndex = charCode - SPECSCII.FIRST_CHAR;
+    const glyphOffset = glyphIndex * 8;
+
+    for (let line = 0; line < 8; line++) {
+      const glyphByte = (fontData && glyphOffset + line < fontData.length) ? fontData[glyphOffset + line] : 0;
+      for (let bit = 0; bit < 8; bit++) {
+        const isSet = (glyphByte & (0x80 >> bit)) !== 0;
+        const rgb = isSet ? inkRgb : paperRgb;
+        const offset = ((py + line) * imgWidth + (px + bit)) * 4;
+        imgData[offset] = rgb[0];
+        imgData[offset + 1] = rgb[1];
+        imgData[offset + 2] = rgb[2];
+        imgData[offset + 3] = 255;
+      }
+    }
+  } else if (charCode >= 0x80) {
+    // Block graphics character
+    const pattern = charCode & 0x0F;
+    for (let line = 0; line < 8; line++) {
+      for (let bit = 0; bit < 8; bit++) {
+        const inTop = line < 4;
+        const inLeft = bit < 4;
+        let isSet = false;
+        if (inTop && inLeft) isSet = (pattern & 0x02) !== 0;       // top-left
+        else if (inTop && !inLeft) isSet = (pattern & 0x01) !== 0;  // top-right
+        else if (!inTop && inLeft) isSet = (pattern & 0x08) !== 0;  // bottom-left
+        else isSet = (pattern & 0x04) !== 0;                        // bottom-right
+
+        const rgb = isSet ? inkRgb : paperRgb;
+        const offset = ((py + line) * imgWidth + (px + bit)) * 4;
+        imgData[offset] = rgb[0];
+        imgData[offset + 1] = rgb[1];
+        imgData[offset + 2] = rgb[2];
+        imgData[offset + 3] = 255;
+      }
+    }
+  } else {
+    // Unknown char, render as paper
+    for (let line = 0; line < 8; line++) {
+      for (let bit = 0; bit < 8; bit++) {
+        const offset = ((py + line) * imgWidth + (px + bit)) * 4;
+        imgData[offset] = paperRgb[0];
+        imgData[offset + 1] = paperRgb[1];
+        imgData[offset + 2] = paperRgb[2];
+        imgData[offset + 3] = 255;
+      }
+    }
+  }
+}
+
+/**
+ * Renders the SPECSCII character palette canvas (16×7 tiles = 112 chars).
+ * Row 0-5: ROM chars 0x20-0x7F (96), Row 6: Block graphics 0x80-0x8F (16).
+ */
+/** SPECSCII palette layout constants */
+const SPECSCII_PAL_COLS = 8;
+const SPECSCII_PAL_ROM_ROWS = 12;  // 96 ROM chars / 8 cols
+const SPECSCII_PAL_BLK_ROWS = 2;   // 16 block graphics / 8 cols
+const SPECSCII_PAL_ROWS = SPECSCII_PAL_ROM_ROWS + SPECSCII_PAL_BLK_ROWS; // 14
+
+function renderSpecsciiPalette() {
+  const canvas = /** @type {HTMLCanvasElement|null} */ (document.getElementById('specsciiPaletteCanvas'));
+  if (!canvas) return;
+
+  const TILE = 8;
+  const GAP = 1;
+  const CELL = TILE + GAP; // 9px stride per character
+
+  // Canvas size: tiles + gaps (no trailing gap)
+  canvas.width = SPECSCII_PAL_COLS * CELL - GAP;
+  canvas.height = SPECSCII_PAL_ROWS * CELL - GAP;
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  // Fill background with gap color
+  ctx.fillStyle = '#333333';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Render each tile into its own 8×8 ImageData and draw at offset position
+  for (let tileRow = 0; tileRow < SPECSCII_PAL_ROWS; tileRow++) {
+    for (let tileCol = 0; tileCol < SPECSCII_PAL_COLS; tileCol++) {
+      let charCode;
+      if (tileRow < SPECSCII_PAL_ROM_ROWS) {
+        charCode = 0x20 + tileRow * SPECSCII_PAL_COLS + tileCol;
+        if (charCode > 0x7F) continue;
+      } else {
+        charCode = 0x80 + (tileRow - SPECSCII_PAL_ROM_ROWS) * SPECSCII_PAL_COLS + tileCol;
+      }
+
+      const tileImg = ctx.createImageData(TILE, TILE);
+      const attr = 0x07; // white ink, black paper
+      specsciiRenderGlyph(tileImg.data, TILE, charCode, attr, 0, 0);
+      ctx.putImageData(tileImg, tileCol * CELL, tileRow * CELL);
+    }
+  }
+
+  // Highlight selected character
+  specsciiHighlightSelected(ctx, CELL, SPECSCII_PAL_COLS);
+
+  // Update zoomed preview
+  renderSpecsciiCharPreview();
+}
+
+/**
+ * Renders a zoomed preview of the currently selected SPECSCII character.
+ */
+function renderSpecsciiCharPreview() {
+  const preview = /** @type {HTMLCanvasElement|null} */ (document.getElementById('specsciiCharPreview'));
+  if (!preview) return;
+
+  const BORDER = 2;
+  const INNER = 32; // 8×8 glyph scaled 4×
+  const SIZE = INNER + BORDER * 2;
+  preview.width = SIZE;
+  preview.height = SIZE;
+
+  const ctx = preview.getContext('2d');
+  if (!ctx) return;
+
+  // Draw frame border
+  ctx.fillStyle = '#ffff00';
+  ctx.fillRect(0, 0, SIZE, SIZE);
+
+  // Render glyph at 1:1 into a tiny ImageData
+  const imgData = ctx.createImageData(8, 8);
+  const attr = 0x07; // white on black
+  specsciiRenderGlyph(imgData.data, 8, specsciiSelectedChar, attr, 0, 0);
+
+  // Scale up to preview size inside the border
+  const tmp = document.createElement('canvas');
+  tmp.width = 8;
+  tmp.height = 8;
+  tmp.getContext('2d').putImageData(imgData, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(tmp, 0, 0, 8, 8, BORDER, BORDER, INNER, INNER);
+}
+
+/**
+ * Highlights the currently selected character in the palette canvas.
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {number} tileSize - Tile size in canvas pixels
+ * @param {number} cols - Columns per row
+ */
+function specsciiHighlightSelected(ctx, cellSize, cols) {
+  let tileCol, tileRow;
+  if (specsciiSelectedChar >= 0x80 && specsciiSelectedChar <= 0x8F) {
+    const idx = specsciiSelectedChar - 0x80;
+    tileRow = SPECSCII_PAL_ROM_ROWS + Math.floor(idx / cols);
+    tileCol = idx % cols;
+  } else if (specsciiSelectedChar >= 0x20 && specsciiSelectedChar <= 0x7F) {
+    const idx = specsciiSelectedChar - 0x20;
+    tileRow = Math.floor(idx / cols);
+    tileCol = idx % cols;
+  } else {
+    return;
+  }
+
+  ctx.strokeStyle = '#ffff00';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(tileCol * cellSize + 0.5, tileRow * cellSize + 0.5, 7, 7);
+}
+
+/**
+ * Handles click on the SPECSCII palette canvas to select a character.
+ * @param {MouseEvent} event
+ */
+function handleSpecsciiPaletteClick(event) {
+  const canvas = /** @type {HTMLCanvasElement|null} */ (document.getElementById('specsciiPaletteCanvas'));
+  if (!canvas) return;
+
+  const rect = canvas.getBoundingClientRect();
+
+  // Convert display coordinates to tile coordinates
+  const tileCol = Math.floor((event.clientX - rect.left) / rect.width * SPECSCII_PAL_COLS);
+  const tileRow = Math.floor((event.clientY - rect.top) / rect.height * SPECSCII_PAL_ROWS);
+
+  if (tileCol < 0 || tileCol >= SPECSCII_PAL_COLS) return;
+
+  let charCode;
+  if (tileRow >= 0 && tileRow < SPECSCII_PAL_ROM_ROWS) {
+    charCode = 0x20 + tileRow * SPECSCII_PAL_COLS + tileCol;
+    if (charCode > 0x7F) return;
+  } else if (tileRow >= SPECSCII_PAL_ROM_ROWS && tileRow < SPECSCII_PAL_ROWS) {
+    charCode = 0x80 + (tileRow - SPECSCII_PAL_ROM_ROWS) * SPECSCII_PAL_COLS + tileCol;
+  } else {
+    return;
+  }
+
+  specsciiSelectedChar = charCode;
+  renderSpecsciiPalette();
+  updateSpecsciiCharInfo();
+}
+
+/**
+ * Updates the character info display below the palette.
+ */
+function updateSpecsciiCharInfo() {
+  const info = document.getElementById('specsciiCharInfo');
+  if (!info) return;
+  const hex = specsciiSelectedChar.toString(16).toUpperCase().padStart(2, '0');
+  const name = specsciiSelectedChar === 0x20 ? 'Space' :
+               specsciiSelectedChar <= 0x7F ? String.fromCharCode(specsciiSelectedChar) :
+               'Block 0x' + hex;
+  info.textContent = 'Char: 0x' + hex + ' (' + name + ')';
+  renderSpecsciiCharPreview();
+}
+
+/**
+ * Right-click pick: copies character + attribute from cell under cursor.
+ * @param {number} col
+ * @param {number} row
+ */
+function specsciiPickFromCell(col, row) {
+  const cell = specsciiGetCell(col, row);
+  if (!cell) return;
+
+  specsciiSelectedChar = cell.char;
+  editorInkColor = cell.attr & 0x07;
+  editorPaperColor = (cell.attr >> 3) & 0x07;
+  editorBright = (cell.attr & 0x40) !== 0;
+  editorFlash = (cell.attr & 0x80) !== 0;
+
+  // Update UI
+  updateColorPreview();
+  const brightCb = /** @type {HTMLInputElement|null} */ (document.getElementById('editorBrightCheckbox'));
+  const flashCb = /** @type {HTMLInputElement|null} */ (document.getElementById('editorFlashCheckbox'));
+  if (brightCb) brightCb.checked = editorBright;
+  if (flashCb) flashCb.checked = editorFlash;
+
+  renderSpecsciiPalette();
+  updateSpecsciiCharInfo();
+}
+
+/**
+ * Syncs grids → stream (screenData) after editing.
+ */
+function specsciiSyncToStream() {
+  // Multi-layer: encode all visible layers with OVER control codes
+  if (typeof layersEnabled !== 'undefined' && layersEnabled &&
+      typeof layers !== 'undefined' && layers.length > 1) {
+    screenData = specsciiLayersToStream();
+  } else {
+    screenData = specsciiGridsToStream();
+  }
+}
+
+/**
+ * Serializes multiple SPECSCII layers into a stream with OVER control codes.
+ * Background layer is printed normally. Upper layers are printed with OVER 1,
+ * which causes the ZX Spectrum PRINT routine to XOR the glyph pixels.
+ * @returns {Uint8Array} Variable-length stream
+ */
+function specsciiLayersToStream() {
+  const buf = [];
+
+  for (let layerIdx = 0; layerIdx < layers.length; layerIdx++) {
+    const layer = layers[layerIdx];
+    if (!layer.visible || !layer.bitmap) continue;
+
+    // Upper layers: enable OVER 1 (XOR mode)
+    if (layerIdx > 0) {
+      buf.push(SPECSCII.CC_OVER, 1);
+    }
+
+    let curInk = -1, curPaper = -1, curBright = -1, curFlash = -1;
+
+    for (let row = 0; row < SPECSCII.CHAR_ROWS; row++) {
+      // Find last masked column in this row
+      let lastCol = -1;
+      for (let col = SPECSCII.CHAR_COLS - 1; col >= 0; col--) {
+        const ci = row * 32 + col;
+        if (layer.mask && layer.mask[ci]) {
+          lastCol = col;
+          break;
+        }
+      }
+      if (lastCol < 0) continue; // Skip rows with no user content
+
+      let prevCol = -1;
+      for (let col = 0; col <= lastCol; col++) {
+        const ci = row * 32 + col;
+        if (!layer.mask || !layer.mask[ci]) continue;
+
+        // Position if not sequential
+        if (col !== prevCol + 1) {
+          buf.push(SPECSCII.CC_AT, row, col);
+          // Reset attribute tracking after repositioning
+          curInk = -1; curPaper = -1; curBright = -1; curFlash = -1;
+        }
+
+        const attr = layer.attributes ? layer.attributes[ci] : 0x38;
+        const ink = attr & 0x07;
+        const paper = (attr >> 3) & 0x07;
+        const bright = (attr >> 6) & 0x01;
+        const flash = (attr >> 7) & 0x01;
+
+        if (ink !== curInk) { buf.push(SPECSCII.CC_INK, ink); curInk = ink; }
+        if (paper !== curPaper) { buf.push(SPECSCII.CC_PAPER, paper); curPaper = paper; }
+        if (bright !== curBright) { buf.push(SPECSCII.CC_BRIGHT, bright); curBright = bright; }
+        if (flash !== curFlash) { buf.push(SPECSCII.CC_FLASH, flash); curFlash = flash; }
+
+        buf.push(layer.bitmap[ci]);
+        prevCol = col;
+      }
+    }
+
+    // After upper layer, disable OVER
+    if (layerIdx > 0) {
+      buf.push(SPECSCII.CC_OVER, 0);
+    }
+  }
+
+  return new Uint8Array(buf);
+}
+
+/**
+ * Gets the glyph byte for a given character code and scan line.
+ * @param {number} charCode - Character code (0x20-0x7F ROM font, 0x80+ block graphics)
+ * @param {number} line - Scan line within glyph (0-7)
+ * @returns {number} 8-bit glyph byte
+ */
+function specsciiGetGlyphByte(charCode, line) {
+  if (charCode >= 0x20 && charCode <= 0x7F) {
+    const glyphIndex = charCode - SPECSCII.FIRST_CHAR;
+    const glyphOffset = glyphIndex * 8;
+    if (fontData && glyphOffset + line < fontData.length) {
+      return fontData[glyphOffset + line];
+    }
+    return 0;
+  } else if (charCode >= 0x80) {
+    const pattern = charCode & 0x0F;
+    const inTop = line < 4;
+    let leftSet = false, rightSet = false;
+    if (inTop) {
+      leftSet = (pattern & 0x02) !== 0;
+      rightSet = (pattern & 0x01) !== 0;
+    } else {
+      leftSet = (pattern & 0x08) !== 0;
+      rightSet = (pattern & 0x04) !== 0;
+    }
+    return (leftSet ? 0xF0 : 0x00) | (rightSet ? 0x0F : 0x00);
+  }
+  return 0;
+}
+
+/**
+ * Exports SPECSCII grids to a standard 6912-byte .scr file.
+ * Renders characters using font data into the ZX Spectrum bitmap layout.
+ * When multiple layers exist, uses OVER (XOR) compositing for upper layers.
+ * @returns {Uint8Array} 6912-byte SCR data
+ */
+function exportSpecsciiToScr() {
+  const scrData = new Uint8Array(SCREEN.TOTAL_SIZE);
+
+  const hasLayers = typeof layersEnabled !== 'undefined' && layersEnabled &&
+                    typeof layers !== 'undefined' && layers.length > 1;
+
+  if (hasLayers) {
+    // Multi-layer XOR export
+    const cellAttr = new Uint8Array(768);
+    cellAttr.fill(0x07); // ink 7 (white), paper 0 (black)
+
+    for (let layerIdx = 0; layerIdx < layers.length; layerIdx++) {
+      const layer = layers[layerIdx];
+      if (!layer.visible || !layer.bitmap) continue;
+
+      for (let row = 0; row < SPECSCII.CHAR_ROWS; row++) {
+        for (let col = 0; col < SPECSCII.CHAR_COLS; col++) {
+          const ci = row * 32 + col;
+          if (layerIdx > 0 && (!layer.mask || !layer.mask[ci])) continue;
+
+          const ch = layer.bitmap[ci];
+          const attr = layer.attributes ? layer.attributes[ci] : 0x38;
+          cellAttr[ci] = attr;
+
+          const px = col * 8;
+          const py = row * 8;
+          for (let line = 0; line < 8; line++) {
+            const glyphByte = specsciiGetGlyphByte(ch, line);
+            const addr = getBitmapAddress(px, py + line);
+            if (layerIdx === 0) {
+              scrData[addr] = glyphByte;
+            } else {
+              scrData[addr] ^= glyphByte; // XOR — OVER mode
+            }
+          }
+        }
+      }
+    }
+    // Write composited attributes
+    for (let i = 0; i < 768; i++) {
+      scrData[SCREEN.BITMAP_SIZE + i] = cellAttr[i];
+    }
+  } else {
+    // Single layer export from grids
+    if (!specsciiCharGrid || !specsciiAttrGrid) return scrData;
+
+    for (let row = 0; row < SPECSCII.CHAR_ROWS; row++) {
+      for (let col = 0; col < SPECSCII.CHAR_COLS; col++) {
+        const idx = row * 32 + col;
+        const charCode = specsciiCharGrid[idx];
+        const attr = specsciiAttrGrid[idx];
+
+        scrData[SCREEN.BITMAP_SIZE + idx] = attr;
+
+        const px = col * 8;
+        const py = row * 8;
+        for (let line = 0; line < 8; line++) {
+          const addr = getBitmapAddress(px, py + line);
+          scrData[addr] = specsciiGetGlyphByte(charCode, line);
+        }
+      }
+    }
+  }
+
+  return scrData;
+}
+
 /**
  * Checks if format is editable
  * @returns {boolean}
@@ -9666,6 +11096,7 @@ function isFormatEditable() {
   if (currentFormat === FORMAT.MONO_FULL && screenData && screenData.length >= 6144) return true;
   if (currentFormat === FORMAT.MONO_2_3 && screenData && screenData.length >= 4096) return true;
   if (currentFormat === FORMAT.MONO_1_3 && screenData && screenData.length >= 2048) return true;
+  if (currentFormat === FORMAT.SPECSCII && screenData) return true;
   return false;
 }
 
@@ -9675,6 +11106,14 @@ function isFormatEditable() {
  */
 function isAttrEditor() {
   return editorActive && currentFormat === FORMAT.ATTR_53C;
+}
+
+/**
+ * Checks if we're in SPECSCII text editor mode
+ * @returns {boolean}
+ */
+function isSpecsciiEditor() {
+  return editorActive && currentFormat === FORMAT.SPECSCII;
 }
 
 /**
@@ -10969,7 +12408,8 @@ function updateBscEditorInfo(bscCoords) {
  * Called automatically when pictures are loaded or created.
  */
 function updateEditorState() {
-  const canEdit = screenData && screenData.length > 0 && isFormatEditable();
+  // SPECSCII stream can be empty (all spaces), so allow length 0 for that format
+  const canEdit = screenData && (screenData.length > 0 || currentFormat === FORMAT.SPECSCII) && isFormatEditable();
 
   if (canEdit && !editorActive) {
     setEditorEnabled(true);
@@ -10982,6 +12422,19 @@ function updateEditorState() {
       generateGigascreenVirtualPalette();
       updateGigascreenColorPickerUI();
     }
+    // SPECSCII: initialize grids if switching from another editable format
+    // (fallback — normally done in switchToPicture before first render)
+    if (currentFormat === FORMAT.SPECSCII && !specsciiCharGrid) {
+      specsciiStreamToGrids();
+      const specsciiSection = document.getElementById('editorSpecsciiSection');
+      if (specsciiSection) specsciiSection.style.display = '';
+      renderSpecsciiPalette();
+      updateSpecsciiCharInfo();
+    }
+    // Update format-dependent UI (convert options, export button, preview)
+    updateConvertOptions();
+    updateExportAsmButton();
+    if (typeof renderPreview === 'function') renderPreview();
   }
 }
 
@@ -11036,16 +12489,74 @@ function setEditorEnabled(active) {
 
     const snapSelect = document.getElementById('editorSnapMode');
     const exportAsmBtn = document.getElementById('editorExportAsmBtn');
+    // SPECSCII palette section
+    const specsciiSection = document.getElementById('editorSpecsciiSection');
+
     if (currentFormat === FORMAT.ATTR_53C) {
       // .53c editor: hide tools, brush, snap (always grid)
       if (toolsSection) toolsSection.style.display = 'none';
       if (brushSection) brushSection.style.display = 'none';
       if (snapSelect) snapSelect.parentElement.style.display = 'none';
+      if (specsciiSection) specsciiSection.style.display = 'none';
+    } else if (currentFormat === FORMAT.SPECSCII) {
+      // SPECSCII editor: show tools, hide brush/snap, show character palette
+      if (toolsSection) toolsSection.style.display = '';
+      if (brushSection) brushSection.style.display = 'none';
+      if (snapSelect) snapSelect.parentElement.style.display = 'none';
+      if (specsciiSection) specsciiSection.style.display = '';
+
+      // Hide tools not applicable to SPECSCII: airbrush, gradient, fill cell
+      const specsciiHiddenTools = ['airbrush', 'gradient', 'fillcell'];
+      (editorToolButtons || document.querySelectorAll('.editor-tool-btn[data-tool]')).forEach(btn => {
+        const tool = /** @type {HTMLElement} */ (btn).dataset.tool;
+        if (specsciiHiddenTools.includes(tool)) {
+          /** @type {HTMLElement} */ (btn).style.display = 'none';
+        }
+      });
+      // If current tool is unavailable, switch to pixel
+      if (specsciiHiddenTools.includes(currentTool)) {
+        setEditorTool(EDITOR.TOOL_PIXEL);
+      }
+
+      // Limit brush paint modes to set/invert/recolor
+      const paintMode = /** @type {HTMLSelectElement|null} */ (document.getElementById('brushPaintMode'));
+      if (paintMode) {
+        for (let i = 0; i < paintMode.options.length; i++) {
+          const val = paintMode.options[i].value;
+          paintMode.options[i].style.display = (val === 'set' || val === 'invert' || val === 'recolor') ? '' : 'none';
+        }
+        // If current mode is not available, switch to set
+        if (paintMode.value !== 'set' && paintMode.value !== 'invert' && paintMode.value !== 'recolor') {
+          paintMode.value = 'set';
+          brushPaintMode = 'set';
+        }
+      }
+
+      // Initialize grids from stream if needed (fallback — normally done in switchToPicture)
+      if (!specsciiCharGrid) {
+        specsciiStreamToGrids();
+      }
+      renderSpecsciiPalette();
+      updateSpecsciiCharInfo();
     } else {
       // SCR editor: show everything
       if (toolsSection) toolsSection.style.display = '';
       if (brushSection) brushSection.style.display = '';
       if (snapSelect) snapSelect.parentElement.style.display = '';
+      if (specsciiSection) specsciiSection.style.display = 'none';
+
+      // Restore all tool buttons (may have been hidden by SPECSCII mode)
+      (editorToolButtons || document.querySelectorAll('.editor-tool-btn[data-tool]')).forEach(btn => {
+        /** @type {HTMLElement} */ (btn).style.display = '';
+      });
+
+      // Restore all brush paint mode options
+      const paintMode = /** @type {HTMLSelectElement|null} */ (document.getElementById('brushPaintMode'));
+      if (paintMode) {
+        for (let i = 0; i < paintMode.options.length; i++) {
+          paintMode.options[i].style.display = '';
+        }
+      }
     }
     // Show Export ASM button for BSC, Gigascreen, and RGB3 formats
     updateExportAsmButton();
@@ -11086,6 +12597,8 @@ function setEditorEnabled(active) {
     if (clipboardSection) clipboardSection.style.display = '';
     const exportAsmBtn = document.getElementById('editorExportAsmBtn');
     if (exportAsmBtn) exportAsmBtn.style.display = 'none';
+    const specsciiSection = document.getElementById('editorSpecsciiSection');
+    if (specsciiSection) specsciiSection.style.display = 'none';
     hidePreviewPanel();
   }
 }
@@ -13348,6 +14861,12 @@ function updateExportAsmButton() {
   const embedDataChk = document.getElementById('editorEmbedDataChk');
   if (!exportAsmBtn) return;
 
+  // SPECSCII Export .scr button
+  const specsciiExportBtn = document.getElementById('specsciiExportScrBtn');
+  if (specsciiExportBtn) {
+    specsciiExportBtn.style.display = currentFormat === FORMAT.SPECSCII ? 'inline-block' : 'none';
+  }
+
   const supportsAsm = currentFormat === FORMAT.BSC || currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.RGB3 || currentFormat === FORMAT.IFL;
 
   // Always show, but disable if format doesn't support export
@@ -14114,6 +15633,13 @@ function showTextToolSection(show) {
     isPlacingText = true;
     const input = /** @type {HTMLInputElement|null} */ (document.getElementById('textToolInput'));
     if (input) input.focus();
+
+    // SPECSCII: hide font/size selectors (characters come from the SPECSCII set)
+    const isSpecscii = typeof currentFormat !== 'undefined' && currentFormat === FORMAT.SPECSCII;
+    const fontSelectRow = document.getElementById('textFontSelect');
+    const fontBtnRow = document.getElementById('loadFont768Btn');
+    if (fontSelectRow) fontSelectRow.parentElement.style.display = isSpecscii ? 'none' : '';
+    if (fontBtnRow) fontBtnRow.parentElement.style.display = isSpecscii ? 'none' : '';
   } else {
     isPlacingText = false;
     textPreviewPos = null;
@@ -14784,6 +16310,25 @@ function initEditor() {
   document.getElementById('editorRedoBtn')?.addEventListener('click', redo);
   document.getElementById('editorClearBtn')?.addEventListener('click', clearScreen);
 
+  // SPECSCII palette click handler
+  document.getElementById('specsciiPaletteCanvas')?.addEventListener('click', handleSpecsciiPaletteClick);
+
+  // SPECSCII export .scr button
+  document.getElementById('specsciiExportScrBtn')?.addEventListener('click', () => {
+    if (currentFormat !== FORMAT.SPECSCII || !specsciiCharGrid) return;
+    const scrData = exportSpecsciiToScr();
+    const blob = new Blob([scrData], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+    a.download = baseName + '.scr';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
+
   // Reset to defaults button
   document.getElementById('resetSettingsBtn')?.addEventListener('click', () => {
     if (confirm('Reset all settings to defaults?\n\nThis will clear saved settings, brushes, and reload the page.')) {
@@ -15155,8 +16700,8 @@ function initEditor() {
       }
     }
 
-    // Brush size shortcuts — skip for .53c editor
-    if (!isAttrEditor()) {
+    // Brush size shortcuts — skip for .53c and SPECSCII editors (no brush concept)
+    if (!isAttrEditor() && !isSpecsciiEditor()) {
       if (e.key === '[') {
         setBrushSize(brushSize - 1);
       }

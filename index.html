@@ -1490,7 +1490,7 @@
           </div>
           <div class="control-group" style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-color);">
             <div style="display: flex; align-items: center; gap: 8px;">
-              <a href="../index.html" id="appTitle" style="text-decoration: none; color: var(--text-secondary); font-size: 11px;">SpectraLab v1.41.0</a>
+              <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" id="appTitle" style="text-decoration: none; color: var(--text-secondary); font-size: 11px;">SpectraLab</a>
               <button id="helpBtn" style="padding: 2px 6px; font-size: 10px;" title="Help">?</button>
             </div>
           </div>
@@ -1786,6 +1786,16 @@
                 </div>
               </div>
             </div>
+            <div id="editorSpecsciiSection" style="display:none; margin-bottom: 8px;">
+              <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">CHARACTER</div>
+              <canvas id="specsciiPaletteCanvas" width="64" height="112"
+                      style="cursor:pointer; border:1px solid var(--border-color); display:block; width:100%; image-rendering: pixelated;"></canvas>
+              <div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
+                <canvas id="specsciiCharPreview" width="32" height="32"
+                        style="border:1px solid var(--border-color); image-rendering: pixelated; flex-shrink:0;"></canvas>
+                <div id="specsciiCharInfo" style="font-size: 10px; color: var(--text-secondary);">Char: 0x20 (Space)</div>
+              </div>
+            </div>
             <div id="editorPositionInfo" class="editor-position-info">
               Move cursor over screen
             </div>
@@ -1847,6 +1857,7 @@
                   <input type="checkbox" id="editorEmbedDataChk" checked> Embed
                 </label>
                 <button id="editorExportAsmBtn" title="Export ASM (Pentagon border)" style="display:none; flex: 1;">Export ASM</button>
+                <button id="specsciiExportScrBtn" style="display:none; flex: 1;" title="Export as .scr (render characters to bitmap)">Export .scr</button>
               </div>
             </div>
 
@@ -2177,6 +2188,7 @@
           <option value="mono_2_3">Monochrome 2/3 (.scr) — 256×128, bitmap only</option>
           <option value="mono_1_3">Monochrome 1/3 (.scr) — 256×64, bitmap only</option>
           <option value="atr">Attributes (.atr) — 32×24 color cells</option>
+          <option value="specscii">SPECSCII (.specscii) — 32×24 text mode</option>
         </select>
       </label>
     </div>
@@ -2364,6 +2376,19 @@
           <tr><td style="color: var(--text-secondary);">Reverse</td><td>Swap ink/paper direction</td></tr>
           <tr><td style="color: var(--text-secondary);">Drag</td><td>From start to end point</td></tr>
         </table>
+        <div style="font-weight: bold; margin: 12px 0 6px;">SPECSCII Editor</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td style="width: 90px; color: var(--text-secondary);">Characters</td><td>ROM font (0x20-0x7F) + block graphics (0x80-0x8F)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Palette</td><td>Click tile to select character for drawing</td></tr>
+          <tr><td style="color: var(--text-secondary);">Right click</td><td>Pick character + attributes from screen</td></tr>
+          <tr><td style="color: var(--text-secondary);">OVER layers</td><td>XOR compositing — loaded from stream control codes</td></tr>
+          <tr><td style="color: var(--text-secondary);">Export .scr</td><td>Render characters to bitmap (Transform tab)</td></tr>
+        </table>
+        <table style="width: 100%; font-size: 11px; margin-top: 4px;">
+          <tr><td colspan="2" style="color: var(--text-tertiary); font-style: italic;">Tools: Pixel, Line, Rect, Circle, Flood Fill, Eraser, Text</td></tr>
+          <tr><td colspan="2" style="color: var(--text-tertiary); font-style: italic;">Modes: Set (place char), Invert (swap ink/paper), Recolor (attrs only)</td></tr>
+          <tr><td colspan="2" style="color: var(--text-tertiary); font-style: italic;">Eraser clears cell and removes it from current layer</td></tr>
+        </table>
         <div style="font-weight: bold; margin: 12px 0 6px;">Reference Image</div>
         <table style="width: 100%; font-size: 11px;">
           <tr><td style="width: 60px; color: var(--text-secondary);">Load/Clear</td><td>Load or remove reference image</td></tr>
@@ -2422,11 +2447,11 @@
           <tr><td style="color: var(--text-secondary);">.3</td><td>18432b</td><td>Tricolor RGB</td></tr>
           <tr><td style="color: var(--text-secondary);">.img</td><td>13824b</td><td>Gigascreen (2×SCR)</td></tr>
           <tr><td style="color: var(--text-secondary);">.sca</td><td>var</td><td>Animation (full/attr-only)</td></tr>
+          <tr><td style="color: var(--text-secondary);">.specscii</td><td>var</td><td>Text mode (32×24 chars + OVER layers)</td></tr>
         </table>
         <div style="font-weight: bold; margin: 12px 0 6px;">View-Only Formats</div>
         <table style="width: 100%; font-size: 11px;">
-          <tr><td style="width: 70px; color: var(--text-secondary);">.specscii</td><td>var</td><td>Text mode</td></tr>
-          <tr><td style="color: var(--text-secondary);">.zip</td><td>var</td><td>Archive (auto-extract)</td></tr>
+          <tr><td style="width: 70px; color: var(--text-secondary);">.zip</td><td>var</td><td>Archive (auto-extract)</td></tr>
         </table>
         <div style="font-weight: bold; margin: 12px 0 6px;">Import (convert to ZX)</div>
         <table style="width: 100%; font-size: 11px;">
@@ -2437,7 +2462,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.43.0</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.44.0</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">

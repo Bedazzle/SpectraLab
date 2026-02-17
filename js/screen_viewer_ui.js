@@ -304,7 +304,8 @@ function initScreenViewerUI() {
       // If switching to Edit or Transform tab without an editable picture, show New Picture dialog
       if (tabName === 'edit' || tabName === 'transform') {
         const canEdit = typeof isFormatEditable === 'function' && isFormatEditable() &&
-                        typeof screenData !== 'undefined' && screenData && screenData.length > 0;
+                        typeof screenData !== 'undefined' && screenData &&
+                        (screenData.length > 0 || (typeof currentFormat !== 'undefined' && currentFormat === FORMAT.SPECSCII));
         if (!canEdit && newPictureDialog) {
           newPictureDialog.style.display = '';
           return; // Don't switch tab yet
@@ -438,6 +439,12 @@ function initScreenViewerUI() {
         break;
     }
   });
+
+  // Set app title with version
+  const appTitle = document.getElementById('appTitle');
+  if (appTitle && typeof APP_VERSION !== 'undefined') {
+    appTitle.textContent = 'SpectraLab v' + APP_VERSION;
+  }
 
   // Load ROM font on startup
   loadRomFont();

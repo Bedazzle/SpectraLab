@@ -573,10 +573,61 @@ let flashEnabled = true;
 let showAttributes = true;
 
 /** @type {Uint8Array} - Current font data (768 bytes = 96 chars × 8 bytes) */
-let fontData = new Uint8Array(SPECSCII.FONT_SIZE);
+// Embedded ZX Spectrum ROM font (0x20-0x7F, 96 chars × 8 bytes = 768 bytes)
+// prettier-ignore
+let fontData = new Uint8Array([
+0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x10,0x10,0x10,0x10,0x00,0x10,0x00,
+0x00,0x24,0x24,0x00,0x00,0x00,0x00,0x00,0x00,0x24,0x7E,0x24,0x24,0x7E,0x24,0x00,
+0x00,0x08,0x3E,0x28,0x3E,0x0A,0x3E,0x08,0x00,0x62,0x64,0x08,0x10,0x26,0x46,0x00,
+0x00,0x10,0x28,0x10,0x2A,0x44,0x3A,0x00,0x00,0x08,0x10,0x00,0x00,0x00,0x00,0x00,
+0x00,0x04,0x08,0x08,0x08,0x08,0x04,0x00,0x00,0x20,0x10,0x10,0x10,0x10,0x20,0x00,
+0x00,0x00,0x14,0x08,0x3E,0x08,0x14,0x00,0x00,0x00,0x08,0x08,0x3E,0x08,0x08,0x00,
+0x00,0x00,0x00,0x00,0x00,0x08,0x08,0x10,0x00,0x00,0x00,0x00,0x3E,0x00,0x00,0x00,
+0x00,0x00,0x00,0x00,0x00,0x18,0x18,0x00,0x00,0x00,0x02,0x04,0x08,0x10,0x20,0x00,
+0x00,0x3C,0x46,0x4A,0x52,0x62,0x3C,0x00,0x00,0x18,0x28,0x08,0x08,0x08,0x3E,0x00,
+0x00,0x3C,0x42,0x02,0x3C,0x40,0x7E,0x00,0x00,0x3C,0x42,0x0C,0x02,0x42,0x3C,0x00,
+0x00,0x08,0x18,0x28,0x48,0x7E,0x08,0x00,0x00,0x7E,0x40,0x7C,0x02,0x42,0x3C,0x00,
+0x00,0x3C,0x40,0x7C,0x42,0x42,0x3C,0x00,0x00,0x7E,0x02,0x04,0x08,0x10,0x10,0x00,
+0x00,0x3C,0x42,0x3C,0x42,0x42,0x3C,0x00,0x00,0x3C,0x42,0x42,0x3E,0x02,0x3C,0x00,
+0x00,0x00,0x00,0x10,0x00,0x00,0x10,0x00,0x00,0x00,0x10,0x00,0x00,0x10,0x10,0x20,
+0x00,0x00,0x04,0x08,0x10,0x08,0x04,0x00,0x00,0x00,0x00,0x3E,0x00,0x3E,0x00,0x00,
+0x00,0x00,0x10,0x08,0x04,0x08,0x10,0x00,0x00,0x3C,0x42,0x04,0x08,0x00,0x08,0x00,
+0x00,0x3C,0x4A,0x56,0x5E,0x40,0x3C,0x00,0x00,0x3C,0x42,0x42,0x7E,0x42,0x42,0x00,
+0x00,0x7C,0x42,0x7C,0x42,0x42,0x7C,0x00,0x00,0x3C,0x42,0x40,0x40,0x42,0x3C,0x00,
+0x00,0x78,0x44,0x42,0x42,0x44,0x78,0x00,0x00,0x7E,0x40,0x7C,0x40,0x40,0x7E,0x00,
+0x00,0x7E,0x40,0x7C,0x40,0x40,0x40,0x00,0x00,0x3C,0x42,0x40,0x4E,0x42,0x3C,0x00,
+0x00,0x42,0x42,0x7E,0x42,0x42,0x42,0x00,0x00,0x3E,0x08,0x08,0x08,0x08,0x3E,0x00,
+0x00,0x02,0x02,0x02,0x42,0x42,0x3C,0x00,0x00,0x44,0x48,0x70,0x48,0x44,0x42,0x00,
+0x00,0x40,0x40,0x40,0x40,0x40,0x7E,0x00,0x00,0x42,0x66,0x5A,0x42,0x42,0x42,0x00,
+0x00,0x42,0x62,0x52,0x4A,0x46,0x42,0x00,0x00,0x3C,0x42,0x42,0x42,0x42,0x3C,0x00,
+0x00,0x7C,0x42,0x42,0x7C,0x40,0x40,0x00,0x00,0x3C,0x42,0x42,0x52,0x4A,0x3C,0x00,
+0x00,0x7C,0x42,0x42,0x7C,0x44,0x42,0x00,0x00,0x3C,0x40,0x3C,0x02,0x42,0x3C,0x00,
+0x00,0xFE,0x10,0x10,0x10,0x10,0x10,0x00,0x00,0x42,0x42,0x42,0x42,0x42,0x3C,0x00,
+0x00,0x42,0x42,0x42,0x42,0x24,0x18,0x00,0x00,0x42,0x42,0x42,0x42,0x5A,0x24,0x00,
+0x00,0x42,0x24,0x18,0x18,0x24,0x42,0x00,0x00,0x82,0x44,0x28,0x10,0x10,0x10,0x00,
+0x00,0x7E,0x04,0x08,0x10,0x20,0x7E,0x00,0x00,0x0E,0x08,0x08,0x08,0x08,0x0E,0x00,
+0x00,0x00,0x40,0x20,0x10,0x08,0x04,0x00,0x00,0x70,0x10,0x10,0x10,0x10,0x70,0x00,
+0x00,0x10,0x38,0x54,0x10,0x10,0x10,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xFF,
+0x00,0x1C,0x22,0x78,0x20,0x20,0x7E,0x00,0x00,0x00,0x38,0x04,0x3C,0x44,0x3C,0x00,
+0x00,0x20,0x20,0x3C,0x22,0x22,0x3C,0x00,0x00,0x00,0x1C,0x20,0x20,0x20,0x1C,0x00,
+0x00,0x04,0x04,0x3C,0x44,0x44,0x3C,0x00,0x00,0x00,0x38,0x44,0x78,0x40,0x3C,0x00,
+0x00,0x0C,0x10,0x18,0x10,0x10,0x10,0x00,0x00,0x00,0x3C,0x44,0x44,0x3C,0x04,0x38,
+0x00,0x40,0x40,0x78,0x44,0x44,0x44,0x00,0x00,0x10,0x00,0x30,0x10,0x10,0x38,0x00,
+0x00,0x04,0x00,0x04,0x04,0x04,0x24,0x18,0x00,0x20,0x28,0x30,0x30,0x28,0x24,0x00,
+0x00,0x10,0x10,0x10,0x10,0x10,0x0C,0x00,0x00,0x00,0x68,0x54,0x54,0x54,0x54,0x00,
+0x00,0x00,0x78,0x44,0x44,0x44,0x44,0x00,0x00,0x00,0x38,0x44,0x44,0x44,0x38,0x00,
+0x00,0x00,0x78,0x44,0x44,0x78,0x40,0x40,0x00,0x00,0x3C,0x44,0x44,0x3C,0x04,0x06,
+0x00,0x00,0x1C,0x20,0x20,0x20,0x20,0x00,0x00,0x00,0x38,0x40,0x38,0x04,0x78,0x00,
+0x00,0x10,0x38,0x10,0x10,0x10,0x0C,0x00,0x00,0x00,0x44,0x44,0x44,0x44,0x38,0x00,
+0x00,0x00,0x44,0x44,0x28,0x28,0x10,0x00,0x00,0x00,0x44,0x54,0x54,0x54,0x28,0x00,
+0x00,0x00,0x44,0x28,0x10,0x28,0x44,0x00,0x00,0x00,0x44,0x44,0x44,0x3C,0x04,0x38,
+0x00,0x00,0x7C,0x08,0x10,0x20,0x7C,0x00,0x00,0x0E,0x08,0x30,0x08,0x08,0x0E,0x00,
+0x00,0x08,0x08,0x08,0x08,0x08,0x08,0x00,0x00,0x70,0x10,0x0C,0x10,0x10,0x70,0x00,
+0x00,0x14,0x28,0x00,0x00,0x00,0x00,0x00,0x3C,0x42,0x99,0xA1,0xA1,0x99,0x42,0x3C
+]);
 
 /** @type {boolean} - Whether font has been loaded */
-let fontLoaded = false;
+let fontLoaded = true;
 
 /** @type {string} - Current font file name */
 let currentFontName = 'ROM';
@@ -831,11 +882,12 @@ async function loadRomFont() {
     }
   } catch (error) {
     console.error('Error loading ROM font:', error);
-    // Create a basic placeholder font (all zeros = blank)
-    fontData = new Uint8Array(SPECSCII.FONT_SIZE);
-    fontLoaded = false;
-    currentFontName = 'No font';
-    updateFontInfo();
+    // Keep embedded font data if available, only reset if font is empty
+    if (!fontLoaded) {
+      fontData = new Uint8Array(SPECSCII.FONT_SIZE);
+      currentFontName = 'No font';
+      updateFontInfo();
+    }
   }
 }
 
@@ -1644,6 +1696,161 @@ function renderSpecsciiScreen(ctx, borderOffset) {
   ctx.fillStyle = ZX_PALETTE.REGULAR[0];
   ctx.fillRect(borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom);
 
+  // If editor grids are available, render directly from grids (avoids stream round-trip)
+  if (typeof specsciiCharGrid !== 'undefined' && specsciiCharGrid &&
+      typeof specsciiAttrGrid !== 'undefined' && specsciiAttrGrid) {
+
+    // Multi-layer OVER (XOR) compositing: build pixel buffer from all layers
+    const hasLayers = typeof layersEnabled !== 'undefined' && layersEnabled &&
+                      typeof layers !== 'undefined' && layers.length > 1;
+
+    if (hasLayers) {
+      const W = SCREEN.WIDTH, H = SCREEN.HEIGHT;
+      const pixBuf = new Uint8Array(W * H); // 0=paper, 1=ink
+      const cellAttr = new Uint8Array(768);
+      cellAttr.fill(0x38); // ink 0 (black), paper 7 (white)
+
+      for (let layerIdx = 0; layerIdx < layers.length; layerIdx++) {
+        const layer = layers[layerIdx];
+        if (!layer.visible || !layer.bitmap) continue;
+
+        for (let crow = 0; crow < SPECSCII.CHAR_ROWS; crow++) {
+          for (let ccol = 0; ccol < SPECSCII.CHAR_COLS; ccol++) {
+            const ci = crow * 32 + ccol;
+            // Upper layers: skip cells without mask
+            if (layerIdx > 0 && (!layer.mask || !layer.mask[ci])) continue;
+
+            const ch = layer.bitmap[ci];
+            const attr = layer.attributes ? layer.attributes[ci] : 0x38;
+            // Top visible layer with content sets the attribute
+            cellAttr[ci] = attr;
+
+            // Render glyph pixels into buffer
+            for (let line = 0; line < 8; line++) {
+              for (let bit = 0; bit < 8; bit++) {
+                let isSet = false;
+                if (ch >= 0x20 && ch <= 0x7F) {
+                  isSet = (fontData[(ch - SPECSCII.FIRST_CHAR) * 8 + line] & (0x80 >> bit)) !== 0;
+                } else if (ch >= 0x80) {
+                  const pat = ch & 0x0F;
+                  const inTop = line < 4, inLeft = bit < 4;
+                  if (inTop && inLeft) isSet = (pat & 0x02) !== 0;
+                  else if (inTop && !inLeft) isSet = (pat & 0x01) !== 0;
+                  else if (!inTop && inLeft) isSet = (pat & 0x08) !== 0;
+                  else isSet = (pat & 0x04) !== 0;
+                }
+                if (isSet) {
+                  const pi = (crow * 8 + line) * W + ccol * 8 + bit;
+                  if (layerIdx === 0) {
+                    pixBuf[pi] = 1;
+                  } else {
+                    pixBuf[pi] ^= 1; // XOR — OVER mode
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Render composited pixel buffer to canvas
+      for (let crow = 0; crow < SPECSCII.CHAR_ROWS; crow++) {
+        for (let ccol = 0; ccol < SPECSCII.CHAR_COLS; ccol++) {
+          const ci = crow * 32 + ccol;
+          const attr = cellAttr[ci];
+          const aInk = attr & 0x07, aPaper = (attr >> 3) & 0x07;
+          const aBright = (attr & 0x40) !== 0, aFlash = (attr & 0x80) !== 0;
+          const pal = aBright ? ZX_PALETTE.BRIGHT : ZX_PALETTE.REGULAR;
+          let ink, paper;
+          if (showAttributes) {
+            if (aFlash && flashPhase && flashEnabled) {
+              ink = pal[aPaper]; paper = pal[aInk];
+            } else {
+              ink = pal[aInk]; paper = pal[aPaper];
+            }
+          } else {
+            ink = ZX_PALETTE.REGULAR[7]; paper = ZX_PALETTE.REGULAR[0];
+          }
+          const x = ccol * 8, y = crow * 8;
+          ctx.fillStyle = paper;
+          ctx.fillRect(borderOffset + x * zoom, borderOffset + y * zoom, 8 * zoom, 8 * zoom);
+          ctx.fillStyle = ink;
+          for (let line = 0; line < 8; line++) {
+            for (let bit = 0; bit < 8; bit++) {
+              if (pixBuf[(y + line) * W + x + bit]) {
+                ctx.fillRect(
+                  borderOffset + (x + bit) * zoom,
+                  borderOffset + (y + line) * zoom,
+                  zoom, zoom
+                );
+              }
+            }
+          }
+        }
+      }
+      return;
+    }
+
+    // Single layer or no layers: render directly from charGrid/attrGrid
+    for (let row = 0; row < SPECSCII.CHAR_ROWS; row++) {
+      for (let col = 0; col < SPECSCII.CHAR_COLS; col++) {
+        const idx = row * 32 + col;
+        const charCode = specsciiCharGrid[idx];
+        const attr = specsciiAttrGrid[idx];
+
+        const inkIdx = attr & 0x07;
+        const paperIdx = (attr >> 3) & 0x07;
+        const bright = (attr & 0x40) !== 0;
+        const flash = (attr & 0x80) !== 0;
+
+        const palBright = bright ? ZX_PALETTE.BRIGHT : ZX_PALETTE.REGULAR;
+
+        let ink, paper;
+        if (showAttributes) {
+          if (flash && flashPhase && flashEnabled) {
+            ink = palBright[paperIdx];
+            paper = palBright[inkIdx];
+          } else {
+            ink = palBright[inkIdx];
+            paper = palBright[paperIdx];
+          }
+        } else {
+          ink = ZX_PALETTE.REGULAR[7];
+          paper = ZX_PALETTE.REGULAR[0];
+        }
+
+        const x = col * 8;
+        const y = row * 8;
+
+        // Fill paper background
+        ctx.fillStyle = paper;
+        ctx.fillRect(borderOffset + x * zoom, borderOffset + y * zoom, 8 * zoom, 8 * zoom);
+
+        // Render glyph
+        if (charCode >= 0x20 && charCode <= 0x7F) {
+          const glyphIndex = charCode - SPECSCII.FIRST_CHAR;
+          const glyphOffset = glyphIndex * 8;
+          for (let line = 0; line < 8; line++) {
+            const glyphByte = fontData[glyphOffset + line];
+            for (let bit = 0; bit < 8; bit++) {
+              if (isBitSet(glyphByte, bit)) {
+                ctx.fillStyle = ink;
+                ctx.fillRect(
+                  borderOffset + (x + bit) * zoom,
+                  borderOffset + (y + line) * zoom,
+                  zoom, zoom
+                );
+              }
+            }
+          }
+        } else if (charCode >= 0x80) {
+          renderBlockGraphic(ctx, borderOffset, x, y, charCode, ink, 0);
+        }
+      }
+    }
+    return;
+  }
+
   if (!fontLoaded) {
     // Show message if no font loaded
     ctx.fillStyle = getThemeColors().foreground;
@@ -2344,9 +2551,9 @@ function parseScaHeader(data) {
 
   const version = data[3];
 
-  // Check version - only v1 is supported
-  if (version !== 1) {
-    alert(`Warning: This SCA file is version ${version}, but only version 1 is supported. The animation may not display correctly.`);
+  // Check version - v0 and v1 are supported
+  if (version !== 0 && version !== 1) {
+    alert(`Warning: This SCA file is version ${version}, but only versions 0 and 1 are supported. The animation may not display correctly.`);
   }
   const width = data[4] | (data[5] << 8);
   const height = data[6] | (data[7] << 8);
@@ -2933,26 +3140,31 @@ async function loadFileFromZip(fileName) {
     }
 
     const arrayBuffer = await zipEntry.async('arraybuffer');
+    const data = new Uint8Array(arrayBuffer);
+    const fullName = `${currentZipName}/${fileName}`;
+    const format = detectFormat(fileName, data.length);
+
+    // Check for invalid format (e.g., .img file with wrong size)
+    if (format === FORMAT.UNKNOWN) {
+      const ext = fileName.toLowerCase().split('.').pop();
+      if (ext === 'img') {
+        alert(`Invalid Gigascreen file: expected ${GIGASCREEN.TOTAL_SIZE} bytes (2×6912), got ${data.length} bytes.`);
+        return;
+      }
+    }
 
     // Stop any existing timers
     stopFlashTimer();
     resetScaState();
 
-    screenData = new Uint8Array(arrayBuffer);
-    currentFileName = `${currentZipName}/${fileName}`;
-    currentFormat = detectFormat(fileName, screenData.length);
-
-    // Check for invalid format (e.g., .img file with wrong size)
-    if (currentFormat === FORMAT.UNKNOWN) {
-      const ext = fileName.toLowerCase().split('.').pop();
-      if (ext === 'img') {
-        alert(`Invalid Gigascreen file: expected ${GIGASCREEN.TOTAL_SIZE} bytes (2×6912), got ${screenData.length} bytes.`);
-        return;
-      }
-    }
+    // Initialize ULA+ mode based on format
+    initUlaPlusMode(data, format);
 
     // Handle SCA format
-    if (currentFormat === FORMAT.SCA) {
+    if (format === FORMAT.SCA) {
+      screenData = data;
+      currentFileName = fullName;
+      currentFormat = format;
       scaHeader = parseScaHeader(screenData);
       if (scaHeader) {
         borderColor = scaHeader.borderColor;
@@ -2963,6 +3175,22 @@ async function loadFileFromZip(fileName) {
       } else {
         currentFormat = FORMAT.UNKNOWN;
       }
+    } else if (typeof addPicture === 'function') {
+      // Use multi-picture system for editable formats
+      const result = addPicture(fullName, format, data);
+      if (result >= 0) {
+        // addPicture -> switchToPicture handles all rendering and UI updates
+        updateFlashTimer();
+        return;
+      }
+      // Failed to add (max pictures reached) - fall through to direct load
+      screenData = data;
+      currentFileName = fullName;
+      currentFormat = format;
+    } else {
+      screenData = data;
+      currentFileName = fullName;
+      currentFormat = format;
     }
 
     toggleScaControlsVisibility();
@@ -3062,8 +3290,8 @@ function renderScreen() {
   ctx.fillStyle = ZX_PALETTE.REGULAR[borderColor];
   ctx.fillRect(0, 0, screenCanvas.width, screenCanvas.height);
 
-  if (screenData.length === 0) {
-    // Draw placeholder text
+  if (screenData.length === 0 && currentFormat !== FORMAT.SPECSCII) {
+    // Draw placeholder text (SPECSCII can have empty stream for blank screen)
     ctx.fillStyle = getThemeColors().foreground;
     ctx.font = '14px Consolas, Monaco, monospace';
     ctx.textAlign = 'center';
@@ -4038,13 +4266,15 @@ function loadScreenFile(file) {
       // For editable formats, use multi-picture system if available
       if (typeof addPicture === 'function') {
         const result = addPicture(fileName, format, data);
-        if (result < 0) {
-          // Failed to add (max pictures reached) - still load as current
-          screenData = data;
-          currentFileName = fileName;
-          currentFormat = format;
+        if (result >= 0) {
+          // addPicture -> switchToPicture handles all rendering and UI updates
+          updateFlashTimer();
+          return;
         }
-        // addPicture handles switching and rendering
+        // Failed to add (max pictures reached) - fall through to direct load
+        screenData = data;
+        currentFileName = fileName;
+        currentFormat = format;
       } else {
         // Editor not loaded - use direct assignment
         screenData = data;
