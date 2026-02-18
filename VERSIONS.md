@@ -1,5 +1,61 @@
 # SpectraLab Version History
 
+## v1.45.0
+- ULA+ palette loading & editing in image import
+  - Palette source dropdown: Auto (generate optimal), Load .pal file, From ULA+ picture (.scr)
+  - 8×8 palette preview grid with CLUT gap separators
+  - Ctrl+click any color to edit via the ULA+ color picker (R/G/B sliders, GRB332)
+  - Eyedropper: click output preview to pick a color and open it for editing
+  - Auto palette promotes to editable on first eyedropper click
+  - Reset button reverts to auto-generated palette
+  - State fully cleaned on dialog close or format switch
+- RGB3 per-channel dithering
+  - Each R/G/B bitplane now dithered independently as 1-bit monochrome
+  - Produces much richer color blending than previous 8-color joint dithering
+  - All dithering methods benefit (error diffusion, threshold-based, blue noise, etc.)
+  - Simplified bitplane encoding via direct channel thresholding
+- 12 ULA+ palette files in palettes/ folder
+  - grayscale, sepia, c64, cga, vivid, warm_sunset, ocean, pastel, earth_tones, neon, skin_tones, spectrum_plus
+  - 64-byte .pal files (GRB332), loadable via import dialog "Load .pal..." option
+- Dithering bug fixes
+  - Cell-aware dithering modes (cell-floyd, cell-none, etc.) now work correctly with non-cell formats (RGB3, Mono)
+  - Fixed cell-floyd mapping: cell-floyd → floyd-steinberg (was incorrectly stripped to "floyd", missing the switch case)
+  - Fixed ULA+ cell-none: default case was applying ordered dithering instead of no dithering
+  - Added missing cell-pattern case to ULA+ converter
+  - Removed duplicate ULA+ color dialog from HTML
+- SPECSCII copy/cut/paste
+  - Full clipboard support for SPECSCII cells (characters, attributes, mask data)
+  - Cut clears cells to space (0x20) with default attributes, syncs layers
+  - Paste supports invert mode (swap ink/paper) and recolor mode (change attributes only)
+  - Paste preview renders SPECSCII characters using font glyph data
+  - Snap-to-grid for paste positions (8x8 cell boundaries)
+- SPECSCII export to .tap: generates self-running ZX Spectrum BASIC program
+  - BORDER 7: PAPER 7: INK 0: BRIGHT 0: FLASH 0: CLS + PRINT with embedded control codes
+  - Supports all attributes (INK, PAPER, BRIGHT, FLASH), AT positioning, and OVER (XOR) layers
+  - Handles double-quote character (0x22) via CHR$ 34 concatenation
+  - Auto-runs on load (autostart line 10)
+- BMC4 border support in image import
+  - BMC4 now encodes real border colors from the 384x304 source image
+  - Renders full 384x304 area with top, side, and bottom border segments
+  - Respects ZX Spectrum timing: 24px minimum for interior segments
+  - Edge segments (at screen edge or touching paper) can be 8px or 16px
+  - Side borders use 8px granularity (no interior segments)
+  - Previously border data was all-black zeros
+- .53c attribute preview
+  - Live preview strip showing current ink/paper/pattern combination
+  - Flash animation via CSS transform (compositor-level, bypasses main-thread paint)
+- .53c import: pattern-aware color selection
+  - Computes overall cell average color instead of separate ink/paper averages
+  - Finds ink/paper pair whose pattern-blended color is closest to the cell average
+  - Blended = ink × inkRatio + paper × (1 − inkRatio), where inkRatio is derived from pattern bit count
+  - Produces visible halftone dither instead of flat ink ≈ paper results
+- .53c rendering performance: ImageData + drawImage fast path replaces per-pixel fillRect
+- Unified export UI: single dropdown + button replaces separate per-format export buttons
+  - Dynamically populated with format-relevant options (ASM, .scr, .tap)
+  - Generate (QR) section hidden for non-bitmap formats (SPECSCII, .53c)
+  - Embed checkbox shown only for formats supporting ASM export
+- Image import module renamed from png_import.js to image_import.js
+
 ## v1.44.0
 - SPECSCII text editor (.specscii format)
   - 32x24 character grid editor using ZX Spectrum ROM font (0x20-0x7F) + block graphics (0x80-0x8F)

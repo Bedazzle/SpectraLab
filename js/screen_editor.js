@@ -671,7 +671,7 @@ let transformSelectionRect = null;
  * @returns {boolean}
  */
 function isSnapActive() {
-  return snapMode !== 'off' || currentFormat === FORMAT.ATTR_53C;
+  return snapMode !== 'off' || currentFormat === FORMAT.ATTR_53C || currentFormat === FORMAT.SPECSCII;
 }
 
 /**
@@ -700,7 +700,7 @@ function getFormatHeight() {
  * @returns {{x:number, y:number}}
  */
 function snapPastePosition(x, y) {
-  const effectiveMode = currentFormat === FORMAT.ATTR_53C ? 'grid' : snapMode;
+  const effectiveMode = (currentFormat === FORMAT.ATTR_53C || currentFormat === FORMAT.SPECSCII) ? 'grid' : snapMode;
 
   if (effectiveMode === 'grid') {
     return { x: Math.floor(x / 8) * 8, y: Math.floor(y / 8) * 8 };
@@ -4971,7 +4971,29 @@ function copySelection() {
     return;
   }
 
-  if (currentFormat === FORMAT.ATTR_53C) {
+  if (currentFormat === FORMAT.SPECSCII) {
+    // SPECSCII: copy character codes + attributes + mask
+    if (!specsciiCharGrid || !specsciiAttrGrid) return;
+    const cellLeft = Math.floor(rect.left / 8);
+    const cellTop = Math.floor(rect.top / 8);
+    const cellCols = Math.ceil(rect.width / 8);
+    const cellRows = Math.ceil(rect.height / 8);
+    const chars = new Uint8Array(cellCols * cellRows);
+    const attrs = new Uint8Array(cellCols * cellRows);
+    const mask = new Uint8Array(cellCols * cellRows);
+
+    for (let cr = 0; cr < cellRows; cr++) {
+      for (let cc = 0; cc < cellCols; cc++) {
+        const srcIdx = (cellTop + cr) * 32 + (cellLeft + cc);
+        const dstIdx = cr * cellCols + cc;
+        chars[dstIdx] = specsciiCharGrid[srcIdx];
+        attrs[dstIdx] = specsciiAttrGrid[srcIdx];
+        mask[dstIdx] = specsciiMask ? specsciiMask[srcIdx] : 1;
+      }
+    }
+
+    clipboardData = { format: 'specscii', cellCols, cellRows, chars, attrs, mask };
+  } else if (currentFormat === FORMAT.ATTR_53C) {
     // .53c: copy attributes only
     const cellLeft = Math.floor(rect.left / 8);
     const cellTop = Math.floor(rect.top / 8);
@@ -5141,12 +5163,41 @@ function cutSelection() {
   // Save undo state before erasing
   saveUndoState();
 
-  // Erase the selected region (fill with paper)
-  for (let py = 0; py < rect.height; py++) {
-    for (let px = 0; px < rect.width; px++) {
-      const x = rect.left + px;
-      const y = rect.top + py;
-      setPixelDirect(x, y, false);  // false = paper (erase)
+  // Erase the selected region
+  if (currentFormat === FORMAT.SPECSCII && specsciiCharGrid && specsciiAttrGrid) {
+    // SPECSCII: clear cells to space with default attribute
+    const cellLeft = Math.floor(rect.left / 8);
+    const cellTop = Math.floor(rect.top / 8);
+    const cellCols = Math.ceil(rect.width / 8);
+    const cellRows = Math.ceil(rect.height / 8);
+    for (let cr = 0; cr < cellRows; cr++) {
+      for (let cc = 0; cc < cellCols; cc++) {
+        const col = cellLeft + cc;
+        const row = cellTop + cr;
+        if (col < 0 || col >= SPECSCII.CHAR_COLS || row < 0 || row >= SPECSCII.CHAR_ROWS) continue;
+        const idx = row * 32 + col;
+        specsciiCharGrid[idx] = 0x20;
+        specsciiAttrGrid[idx] = 0x38;
+        if (specsciiMask) specsciiMask[idx] = 0;
+        if (layersEnabled && layers.length > 0) {
+          const layer = layers[activeLayerIndex];
+          if (layer) {
+            if (layer.bitmap) layer.bitmap[idx] = 0x20;
+            if (layer.attributes) layer.attributes[idx] = 0x38;
+            if (layer.mask) layer.mask[idx] = 0;
+          }
+        }
+      }
+    }
+    specsciiSyncToStream();
+  } else {
+    // Bitmap formats: fill with paper
+    for (let py = 0; py < rect.height; py++) {
+      for (let px = 0; px < rect.width; px++) {
+        const x = rect.left + px;
+        const y = rect.top + py;
+        setPixelDirect(x, y, false);  // false = paper (erase)
+      }
     }
   }
 
@@ -5256,7 +5307,8 @@ function startPasteMode() {
   }
 
   // Validate format match
-  const editorFormat = currentFormat === FORMAT.ATTR_53C ? '53c' :
+  const editorFormat = currentFormat === FORMAT.SPECSCII ? 'specscii' :
+                       currentFormat === FORMAT.ATTR_53C ? '53c' :
                        currentFormat === FORMAT.IFL ? 'ifl' :
                        currentFormat === FORMAT.MLT ? 'mlt' : 'scr';
   if (clipboardData.format !== editorFormat) {
@@ -5466,6 +5518,47 @@ function executePaste(x, y) {
         }
       }
     }
+  } else if (clipboardData.format === 'specscii') {
+    // SPECSCII: write character codes + attributes + mask to grids
+    if (!specsciiCharGrid || !specsciiAttrGrid) { isPasting = false; return; }
+    const cellLeft = Math.floor(x / 8);
+    const cellTop = Math.floor(y / 8);
+    for (let cr = 0; cr < clipboardData.cellRows; cr++) {
+      for (let cc = 0; cc < clipboardData.cellCols; cc++) {
+        const destCol = cellLeft + cc;
+        const destRow = cellTop + cr;
+        if (destCol < 0 || destCol >= SPECSCII.CHAR_COLS || destRow < 0 || destRow >= SPECSCII.CHAR_ROWS) continue;
+        const destIdx = destRow * 32 + destCol;
+        const srcIdx = cr * clipboardData.cellCols + cc;
+
+        if (brushPaintMode === 'invert') {
+          // Swap ink/paper of destination cell
+          const old = specsciiAttrGrid[destIdx];
+          const oldInk = old & 0x07;
+          const oldPaper = (old >> 3) & 0x07;
+          specsciiAttrGrid[destIdx] = (oldPaper & 0x07) | ((oldInk & 0x07) << 3) | (old & 0xC0);
+        } else if (brushPaintMode === 'recolor') {
+          // Change attribute only, keep existing character
+          specsciiAttrGrid[destIdx] = clipboardData.attrs[srcIdx];
+        } else {
+          // Replace: write both character and attribute
+          specsciiCharGrid[destIdx] = clipboardData.chars[srcIdx];
+          specsciiAttrGrid[destIdx] = clipboardData.attrs[srcIdx];
+        }
+        if (specsciiMask) specsciiMask[destIdx] = clipboardData.mask ? clipboardData.mask[srcIdx] : 1;
+
+        // Sync to layer if layers enabled
+        if (layersEnabled && layers.length > 0) {
+          const layer = layers[activeLayerIndex];
+          if (layer) {
+            if (layer.bitmap) layer.bitmap[destIdx] = specsciiCharGrid[destIdx];
+            if (layer.attributes) layer.attributes[destIdx] = specsciiAttrGrid[destIdx];
+            if (layer.mask) layer.mask[destIdx] = specsciiMask ? specsciiMask[destIdx] : 1;
+          }
+        }
+      }
+    }
+    specsciiSyncToStream();
   }
 
   isPasting = false;
@@ -5620,6 +5713,38 @@ function drawPastePreview(x, y) {
             if (dx < 0 || dx >= SCREEN.WIDTH || dy < 0 || dy >= SCREEN.HEIGHT) continue;
 
             const isInk = (patternByte & (1 << (7 - px))) !== 0;
+            const rgb = isInk ? inkRgb : paperRgb;
+
+            ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+            ctx.fillRect(
+              borderPixels + dx * zoom,
+              borderPixels + dy * zoom,
+              zoom,
+              zoom
+            );
+          }
+        }
+      }
+    }
+  } else if (clipboardData.format === 'specscii') {
+    // SPECSCII: draw characters with attributes using font data
+    for (let cr = 0; cr < clipboardData.cellRows; cr++) {
+      for (let cc = 0; cc < clipboardData.cellCols; cc++) {
+        const cellX = x + cc * 8;
+        const cellY = y + cr * 8;
+        const srcIdx = cr * clipboardData.cellCols + cc;
+        const ch = clipboardData.chars[srcIdx];
+        const attr = clipboardData.attrs[srcIdx];
+        const { inkRgb, paperRgb } = getColorsRgb(attr);
+
+        for (let py = 0; py < 8; py++) {
+          const glyphByte = typeof specsciiGetGlyphByte === 'function' ? specsciiGetGlyphByte(ch, py) : 0;
+          for (let px = 0; px < 8; px++) {
+            const dx = cellX + px;
+            const dy = cellY + py;
+            if (dx < 0 || dx >= SCREEN.WIDTH || dy < 0 || dy >= SCREEN.HEIGHT) continue;
+
+            const isInk = (glyphByte & (1 << (7 - px))) !== 0;
             const rgb = isInk ? inkRgb : paperRgb;
 
             ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
@@ -8925,6 +9050,75 @@ function updateColorPreview() {
     });
   }
 
+  updateAttrPreview();
+}
+
+// Toggle variable for attr preview flash — flipped by the rAF loop every 320ms.
+// Controls CSS transform to slide the double-width canvas between normal/swapped halves.
+var attrPreviewFlashSwap = false;
+
+/**
+ * Updates visibility of the attr preview row and renders.
+ */
+function updateAttrPreview() {
+  var row = document.getElementById('attrPreviewRow');
+  if (!row) return;
+
+  var isAttr = (currentFormat === FORMAT.ATTR_53C);
+  row.style.display = isAttr ? '' : 'none';
+  if (!isAttr) return;
+
+  renderAttrPreview();
+}
+
+/**
+ * Draws the attr preview canvas with current settings.
+ * Flash phase uses attrPreviewFlashSwap toggle (flipped by permanent setInterval).
+ */
+function renderAttrPreview() {
+  var canvas = document.getElementById('attrPreviewCanvas');
+  if (!canvas) return;
+  var ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  var select = document.getElementById('pattern53cSelect');
+  var patternName = (select && select.value) || 'checker';
+  var patternArray;
+  if (patternName === 'stripes') {
+    patternArray = APP_CONFIG.PATTERN_53C_STRIPES;
+  } else if (patternName === 'dd77') {
+    patternArray = APP_CONFIG.PATTERN_53C_DD77;
+  } else {
+    patternArray = APP_CONFIG.PATTERN_53C_CHECKER;
+  }
+
+  var attr = getCurrentDrawingAttribute();
+  var colors = getColorsRgb(attr);
+  var inkRgb = colors.inkRgb;
+  var paperRgb = colors.paperRgb;
+
+  // Canvas is 128x8: left half = normal, right half = ink/paper swapped.
+  // Flash animation uses CSS transform to slide between halves (compositor-level,
+  // immune to main-thread rendering blocking canvas repaints).
+  var halfW = 64;
+  var h = canvas.height;
+  var imageData = ctx.createImageData(canvas.width, h);
+  var data = imageData.data;
+  for (var y = 0; y < h; y++) {
+    var patternByte = patternArray[y % 8];
+    for (var x = 0; x < halfW; x++) {
+      var isInk = (patternByte & (1 << (7 - (x % 8)))) !== 0;
+      // Left half: normal
+      var rgb = isInk ? inkRgb : paperRgb;
+      var idx = (y * canvas.width + x) * 4;
+      data[idx] = rgb[0]; data[idx + 1] = rgb[1]; data[idx + 2] = rgb[2]; data[idx + 3] = 255;
+      // Right half: swapped
+      var rgbS = isInk ? paperRgb : inkRgb;
+      var idxS = (y * canvas.width + halfW + x) * 4;
+      data[idxS] = rgbS[0]; data[idxS + 1] = rgbS[1]; data[idxS + 2] = rgbS[2]; data[idxS + 3] = 255;
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
 }
 
 function updateColorSelectors() {
@@ -9560,6 +9754,13 @@ function applyUlaPlusColor() {
 
   const grb = (g3 << 5) | (r3 << 2) | b2;
 
+  // If called from import context, route to import callback
+  if (importUlaPlusApplyCallback) {
+    importUlaPlusApplyCallback(grb);
+    closeUlaPlusColorPicker();
+    return;
+  }
+
   // Save undo state
   saveUndoState();
 
@@ -9591,8 +9792,20 @@ function applyUlaPlusColor() {
  */
 function closeUlaPlusColorPicker() {
   const dialog = document.getElementById('ulaPlusColorDialog');
-  if (dialog) dialog.style.display = 'none';
+  if (dialog) {
+    dialog.style.display = 'none';
+    dialog.style.zIndex = '';
+  }
   ulaPlusEditingColorIndex = -1;
+  // Clean up import state if cancel was pressed during import context
+  if (importUlaPlusApplyCallback) {
+    // Restore editor palette that was temporarily swapped
+    if (importUlaPlusSavedEditorPalette !== null) {
+      ulaPlusPalette = importUlaPlusSavedEditorPalette;
+      importUlaPlusSavedEditorPalette = null;
+    }
+    importUlaPlusApplyCallback = null;
+  }
 }
 
 /**
@@ -11080,6 +11293,144 @@ function exportSpecsciiToScr() {
 }
 
 /**
+ * Exports SPECSCII picture as a .TAP file containing a self-running BASIC program.
+ * The program does: BORDER 7: PAPER 7: INK 0: BRIGHT 0: FLASH 0: CLS : PRINT "..."
+ * The PRINT string contains embedded ZX Spectrum control codes (INK, PAPER, AT, etc.)
+ * which the ROM PRINT routine interprets natively.
+ * @returns {Uint8Array} TAP file data
+ */
+function exportSpecsciiToTap() {
+  // --- Get SPECSCII stream ---
+  /** @type {Uint8Array} */
+  let stream;
+  const hasLayers = typeof layersEnabled !== 'undefined' && layersEnabled &&
+                    typeof layers !== 'undefined' && layers.length > 1;
+  if (hasLayers) {
+    stream = specsciiLayersToStream();
+  } else {
+    stream = specsciiGridsToStream();
+  }
+
+  // --- Helper: 5-byte FP for small non-negative integer ---
+  function fpInt(n) {
+    return [0x00, 0x00, n & 0xFF, (n >> 8) & 0xFF, 0x00];
+  }
+
+  // --- Helper: number literal (ASCII digits + 0x0E + 5-byte FP) ---
+  function basicNum(n) {
+    const digits = String(n).split('').map(c => c.charCodeAt(0));
+    return [...digits, 0x0E, ...fpInt(n)];
+  }
+
+  // --- Helper: wrap content bytes as a BASIC line ---
+  function basicLine(lineNum, content) {
+    const len = content.length + 1; // +1 for 0x0D terminator
+    return [
+      (lineNum >> 8) & 0xFF, lineNum & 0xFF, // line number (big-endian)
+      len & 0xFF, (len >> 8) & 0xFF,          // text length (little-endian)
+      ...content,
+      0x0D                                     // line terminator
+    ];
+  }
+
+  // --- Helper: create a TAP block ---
+  function tapBlock(flag, payload) {
+    const blockLen = payload.length + 2; // +2 for flag + checksum
+    let checksum = flag;
+    for (let i = 0; i < payload.length; i++) checksum ^= payload[i];
+    return [
+      blockLen & 0xFF, (blockLen >> 8) & 0xFF, // block length (LE)
+      flag,
+      ...payload,
+      checksum & 0xFF
+    ];
+  }
+
+  // --- Build Line 10: BORDER 7: PAPER 7: INK 0: BRIGHT 0: FLASH 0: POKE 23659,0: CLS ---
+  const TK_BORDER = 0xE7, TK_PAPER = 0xDA, TK_INK = 0xD9;
+  const TK_BRIGHT = 0xDC, TK_FLASH = 0xDB, TK_CLS = 0xFB;
+  const TK_PRINT = 0xF5, TK_CHRS = 0xC2;
+  const TK_POKE = 0xF4, TK_PAUSE = 0xF2;
+
+  const line10Content = [
+    TK_BORDER, ...basicNum(7), 0x3A,       // BORDER 7:
+    TK_PAPER, ...basicNum(7), 0x3A,        // PAPER 7:
+    TK_INK, ...basicNum(0), 0x3A,          // INK 0:
+    TK_BRIGHT, ...basicNum(0), 0x3A,       // BRIGHT 0:
+    TK_FLASH, ...basicNum(0), 0x3A,        // FLASH 0:
+    TK_CLS, 0x3A,                           // CLS:
+    TK_POKE, ...basicNum(23659), 0x2C, ...basicNum(0) // POKE 23659,0
+  ];
+  const line10 = basicLine(10, line10Content);
+
+  // --- Build Line 20: PRINT "...stream..." (split on 0x22 for embedded quotes) ---
+  const line20Content = [];
+  line20Content.push(TK_PRINT);
+
+  // Split stream on 0x22 (double quote) bytes
+  const segments = [];
+  let segStart = 0;
+  for (let i = 0; i <= stream.length; i++) {
+    if (i === stream.length || stream[i] === 0x22) {
+      segments.push(stream.slice(segStart, i));
+      if (i < stream.length) {
+        segments.push(null); // marker for a quote character
+      }
+      segStart = i + 1;
+    }
+  }
+
+  let first = true;
+  for (const seg of segments) {
+    if (seg === null) {
+      // Insert +CHR$ 34+ for the quote character
+      if (!first) line20Content.push(0x2B); // +
+      line20Content.push(TK_CHRS, ...basicNum(34));
+      first = false;
+    } else if (seg.length > 0 || first) {
+      if (!first) line20Content.push(0x2B); // +
+      line20Content.push(0x22); // opening quote
+      for (let i = 0; i < seg.length; i++) {
+        line20Content.push(seg[i]);
+      }
+      line20Content.push(0x22); // closing quote
+      first = false;
+    }
+  }
+
+  // If stream was empty, ensure we have at least PRINT ""
+  if (first) {
+    line20Content.push(0x22, 0x22); // ""
+  }
+
+  const line20 = basicLine(20, line20Content);
+
+  // --- Build Line 30: PAUSE 0 ---
+  const line30Content = [TK_PAUSE, ...basicNum(0)];
+  const line30 = basicLine(30, line30Content);
+
+  // --- Assemble BASIC program ---
+  const program = [...line10, ...line20, ...line30];
+
+  // --- TAP header block (17 bytes payload) ---
+  const filename = 'SPECSCII  '; // 10 chars, space-padded
+  const headerPayload = [
+    0x00,                                              // Type: Program
+    ...filename.split('').map(c => c.charCodeAt(0)),   // 10-char filename
+    program.length & 0xFF, (program.length >> 8) & 0xFF, // Data length (LE)
+    0x0A, 0x00,                                        // Autostart line 10 (LE)
+    program.length & 0xFF, (program.length >> 8) & 0xFF  // Variable area offset = program length (LE)
+  ];
+  const headerBlock = tapBlock(0x00, headerPayload);
+
+  // --- TAP data block ---
+  const dataBlock = tapBlock(0xFF, program);
+
+  // --- Combine ---
+  return new Uint8Array([...headerBlock, ...dataBlock]);
+}
+
+/**
  * Checks if format is editable
  * @returns {boolean}
  */
@@ -12458,6 +12809,13 @@ function setEditorEnabled(active) {
   const transformInactiveHint = document.getElementById('transformInactiveHint');
   if (transformControls) transformControls.style.display = editorActive ? '' : 'none';
   if (transformInactiveHint) transformInactiveHint.style.display = editorActive ? 'none' : '';
+
+  // Hide Generate/QR section for formats that don't support it
+  const generateSection = document.getElementById('generateSection');
+  if (generateSection) {
+    const hideGenerate = currentFormat === FORMAT.SPECSCII || currentFormat === FORMAT.ATTR_53C;
+    generateSection.style.display = hideGenerate ? 'none' : '';
+  }
 
   if (screenCanvas) {
     if (editorActive) {
@@ -14853,47 +15211,57 @@ function convertUlaPlusToScr() {
 }
 
 /**
- * Updates Export ASM button visibility and title based on current format
+ * Updates Export dropdown options and visibility based on current format
  */
 function updateExportAsmButton() {
-  const exportAsmBtn = document.getElementById('editorExportAsmBtn');
+  const exportSelect = /** @type {HTMLSelectElement|null} */ (document.getElementById('editorExportSelect'));
+  const exportBtn = document.getElementById('editorExportBtn');
   const embedDataLabel = document.getElementById('editorEmbedDataLabel');
   const embedDataChk = document.getElementById('editorEmbedDataChk');
-  if (!exportAsmBtn) return;
-
-  // SPECSCII Export .scr button
-  const specsciiExportBtn = document.getElementById('specsciiExportScrBtn');
-  if (specsciiExportBtn) {
-    specsciiExportBtn.style.display = currentFormat === FORMAT.SPECSCII ? 'inline-block' : 'none';
-  }
+  if (!exportSelect || !exportBtn) return;
 
   const supportsAsm = currentFormat === FORMAT.BSC || currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.RGB3 || currentFormat === FORMAT.IFL;
+  const isSpecscii = currentFormat === FORMAT.SPECSCII;
 
-  // Always show, but disable if format doesn't support export
-  exportAsmBtn.style.display = 'inline-block';
-  exportAsmBtn.disabled = !supportsAsm;
-  exportAsmBtn.style.opacity = supportsAsm ? '1' : '0.5';
+  // Build export options based on current format
+  const options = [];
+  if (supportsAsm) {
+    if (currentFormat === FORMAT.BSC) {
+      options.push({ value: 'asm', label: 'ASM (Pentagon border)' });
+    } else if (currentFormat === FORMAT.GIGASCREEN) {
+      options.push({ value: 'asm', label: 'ASM (Pentagon dual-screen)' });
+    } else if (currentFormat === FORMAT.RGB3) {
+      options.push({ value: 'asm', label: 'ASM (Pentagon RGB flicker)' });
+    } else if (currentFormat === FORMAT.IFL) {
+      options.push({ value: 'asm', label: 'ASM (Pentagon 8x2 multicolor)' });
+    }
+  }
+  if (isSpecscii) {
+    options.push({ value: 'scr', label: '.scr (bitmap render)' });
+    options.push({ value: 'tap', label: '.tap (BASIC program)' });
+  }
 
-  // RGB3 always embeds data in code (LD HL,nn instructions) - disable checkbox
+  // Populate dropdown
+  exportSelect.innerHTML = '';
+  for (const opt of options) {
+    const el = document.createElement('option');
+    el.value = opt.value;
+    el.textContent = opt.label;
+    exportSelect.appendChild(el);
+  }
+
+  const hasOptions = options.length > 0;
+  exportSelect.style.display = hasOptions ? '' : 'none';
+  exportBtn.style.display = hasOptions ? '' : 'none';
+
+  // Embed checkbox: only for ASM formats (except RGB3 which always embeds)
   const supportsEmbed = supportsAsm && currentFormat !== FORMAT.RGB3;
   if (embedDataLabel) {
-    embedDataLabel.style.display = 'inline';
+    embedDataLabel.style.display = supportsAsm ? 'inline' : 'none';
     embedDataLabel.style.opacity = supportsEmbed ? '1' : '0.5';
   }
   if (embedDataChk) {
     embedDataChk.disabled = !supportsEmbed;
-  }
-
-  if (currentFormat === FORMAT.BSC) {
-    exportAsmBtn.title = 'Export ASM (Pentagon border)';
-  } else if (currentFormat === FORMAT.GIGASCREEN) {
-    exportAsmBtn.title = 'Export ASM (Pentagon dual-screen)';
-  } else if (currentFormat === FORMAT.RGB3) {
-    exportAsmBtn.title = 'Export ASM (Pentagon RGB flicker)';
-  } else if (currentFormat === FORMAT.IFL) {
-    exportAsmBtn.title = 'Export ASM (Pentagon 8x2 multicolor)';
-  } else {
-    exportAsmBtn.title = 'Export ASM (not available for this format)';
   }
 }
 
@@ -16221,6 +16589,7 @@ function initEditor() {
   if (flashCb) {
     flashCb.addEventListener('change', (e) => {
       editorFlash = /** @type {HTMLInputElement} */ (e.target).checked;
+      updateColorPreview();
     });
   }
 
@@ -16282,15 +16651,42 @@ function initEditor() {
 
   // Action buttons
   document.getElementById('editorSaveBtn')?.addEventListener('click', () => saveScrFile());
-  document.getElementById('editorExportAsmBtn')?.addEventListener('click', () => {
-    if (currentFormat === FORMAT.BSC) {
-      exportBscAsm();
-    } else if (currentFormat === FORMAT.GIGASCREEN) {
-      exportGigascreenAsm();
-    } else if (currentFormat === FORMAT.RGB3) {
-      exportRgb3Asm();
-    } else if (currentFormat === FORMAT.IFL) {
-      exportIflAsm();
+  document.getElementById('editorExportBtn')?.addEventListener('click', () => {
+    const exportSelect = /** @type {HTMLSelectElement|null} */ (document.getElementById('editorExportSelect'));
+    if (!exportSelect) return;
+    const value = exportSelect.value;
+
+    if (value === 'asm') {
+      if (currentFormat === FORMAT.BSC) exportBscAsm();
+      else if (currentFormat === FORMAT.GIGASCREEN) exportGigascreenAsm();
+      else if (currentFormat === FORMAT.RGB3) exportRgb3Asm();
+      else if (currentFormat === FORMAT.IFL) exportIflAsm();
+    } else if (value === 'scr') {
+      if (currentFormat !== FORMAT.SPECSCII || !specsciiCharGrid) return;
+      const scrData = exportSpecsciiToScr();
+      const blob = new Blob([scrData], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      a.download = baseName + '.scr';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } else if (value === 'tap') {
+      if (currentFormat !== FORMAT.SPECSCII || !specsciiCharGrid) return;
+      const tapData = exportSpecsciiToTap();
+      const blob = new Blob([tapData], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      a.download = baseName + '.tap';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
     }
   });
 
@@ -16312,22 +16708,6 @@ function initEditor() {
 
   // SPECSCII palette click handler
   document.getElementById('specsciiPaletteCanvas')?.addEventListener('click', handleSpecsciiPaletteClick);
-
-  // SPECSCII export .scr button
-  document.getElementById('specsciiExportScrBtn')?.addEventListener('click', () => {
-    if (currentFormat !== FORMAT.SPECSCII || !specsciiCharGrid) return;
-    const scrData = exportSpecsciiToScr();
-    const blob = new Blob([scrData], { type: 'application/octet-stream' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
-    a.download = baseName + '.scr';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  });
 
   // Reset to defaults button
   document.getElementById('resetSettingsBtn')?.addEventListener('click', () => {
@@ -16712,6 +17092,34 @@ function initEditor() {
   });
 
   updateColorSelectors();
+
+  // Attr preview flash animation via CSS transform (compositor-level).
+  // The canvas has both normal and swapped states side by side.
+  // Every 320ms, slide between halves using translateX — this bypasses
+  // the main-thread paint pipeline that gets blocked by the flash timer's renderScreen().
+  var _apLastSwapTime = 0;
+  (function _apFlashLoop(timestamp) {
+    if (currentFormat === FORMAT.ATTR_53C && editorFlash) {
+      if (timestamp - _apLastSwapTime >= 320) {
+        _apLastSwapTime = timestamp;
+        attrPreviewFlashSwap = !attrPreviewFlashSwap;
+        // Slide canvas via CSS transform (compositor-level, always repaints).
+        // Left half = normal, right half = swapped.
+        var apCanvas = document.getElementById('attrPreviewCanvas');
+        if (apCanvas) {
+          apCanvas.style.transform = attrPreviewFlashSwap ? 'translateX(-50%)' : 'translateX(0)';
+        }
+      }
+    } else {
+      // Reset position when flash is off
+      var apCanvas2 = document.getElementById('attrPreviewCanvas');
+      if (apCanvas2 && apCanvas2.style.transform) {
+        apCanvas2.style.transform = '';
+        attrPreviewFlashSwap = false;
+      }
+    }
+    requestAnimationFrame(_apFlashLoop);
+  })(performance.now());
 }
 
 if (document.readyState === 'loading') {

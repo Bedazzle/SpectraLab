@@ -1,10 +1,10 @@
-// SpectraLab v1.38.0 - PNG/GIF Image Import
+// SpectraLab - Image Import
 // @ts-check
 "use strict";
 
 // ============================================================================
-// PNG Import Module
-// Converts PNG/GIF/JPG images to ZX Spectrum SCR format (6912 bytes)
+// Image Import Module
+// Converts images (PNG/GIF/JPG/WebP/BMP) to ZX Spectrum screen formats
 // ============================================================================
 
 // ============================================================================
@@ -2241,7 +2241,7 @@ function findUlaPlusCellColors(pixels, cellX, cellY, palette) {
 /**
  * Convert image to ULA+ format with optimal palette
  */
-function convertToUlaPlus(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0) {
+function convertToUlaPlus(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, externalPalette = null) {
   updateColorDistanceMode();
 
   const ctx = sourceCanvas.getContext('2d');
@@ -2273,8 +2273,10 @@ function convertToUlaPlus(sourceCanvas, dithering, brightness, contrast, saturat
     floatPixels[i * 3 + 2] = pixels[i * 4 + 2];
   }
 
-  // Generate optimal palette
-  const palette = generateOptimalUlaPlusPalette(floatPixels);
+  // Generate optimal palette or use external one
+  const palette = externalPalette
+    ? new Uint8Array(externalPalette)
+    : generateOptimalUlaPlusPalette(floatPixels);
 
   // Create output buffer (SCR + palette)
   const output = new Uint8Array(ULAPLUS.TOTAL_SIZE);
@@ -2314,8 +2316,12 @@ function convertToUlaPlus(sourceCanvas, dithering, brightness, contrast, saturat
           case 'blue-noise':
             bitmap = ditherCellBlueNoise(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
             break;
-          default:
-            bitmap = ditherCellOrdered(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+          case 'pattern':
+            bitmap = ditherCellPattern(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          default: // 'none' or unknown
+            bitmap = ditherCellNone(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
         }
       } else {
         // Simple nearest-color mapping
@@ -3368,7 +3374,7 @@ function ditherBlock4None(pixels, blockX, blockY, width, inkRgb, paperRgb) {
 
 /**
  * Convert image to BMC4 format (8×4 multicolor blocks with border)
- * Note: Border is filled with black (0) - full border support would require BSC-style border sampling
+ * @param {HTMLCanvasElement} sourceCanvas - Source canvas (384x304)
  */
 function convertToBmc4(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, monoOutput = false) {
   updateColorDistanceMode();
@@ -3376,10 +3382,10 @@ function convertToBmc4(sourceCanvas, dithering, brightness, contrast, saturation
   const ctx = sourceCanvas.getContext('2d');
   if (!ctx) throw new Error('Cannot get canvas context');
 
-  const imageData = ctx.getImageData(0, 0, 256, 192);
+  const imageData = ctx.getImageData(0, 0, 384, 304);
   const pixels = imageData.data;
 
-  // Apply image adjustments
+  // Apply adjustments to full 384x304 image
   if (grayscale) {
     applyGrayscale(pixels);
   } else {
@@ -3391,19 +3397,32 @@ function convertToBmc4(sourceCanvas, dithering, brightness, contrast, saturation
   if (gamma !== 1.0) applyGamma(pixels, gamma);
   if (blackPoint > 0 || whitePoint < 255) applyLevels(pixels, blackPoint, whitePoint);
   if (brightness !== 0 || contrast !== 0) applyBrightnessContrast(pixels, brightness, contrast);
-  if (smoothing > 0) applyBilateralFilter(pixels, 256, 192, smoothing);
-  if (sharpness > 0) applySharpening(pixels, 256, 192, sharpness);
+  if (smoothing > 0) applyBilateralFilter(pixels, 384, 304, smoothing);
+  if (sharpness > 0) applySharpening(pixels, 384, 304, sharpness);
+
+  // Extract main screen area (256x192 at offset 64,64)
+  const mainPixels = new Uint8ClampedArray(256 * 192 * 4);
+  for (let y = 0; y < 192; y++) {
+    for (let x = 0; x < 256; x++) {
+      const srcIdx = ((y + 64) * 384 + (x + 64)) * 4;
+      const dstIdx = (y * 256 + x) * 4;
+      mainPixels[dstIdx] = pixels[srcIdx];
+      mainPixels[dstIdx + 1] = pixels[srcIdx + 1];
+      mainPixels[dstIdx + 2] = pixels[srcIdx + 2];
+      mainPixels[dstIdx + 3] = 255;
+    }
+  }
 
   // For mono output, convert to grayscale before dithering
   if (monoOutput && !grayscale) {
-    applyGrayscale(pixels);
+    applyGrayscale(mainPixels);
   }
 
   const floatPixels = new Float32Array(256 * 192 * 3);
   for (let i = 0; i < 256 * 192; i++) {
-    floatPixels[i * 3] = pixels[i * 4];
-    floatPixels[i * 3 + 1] = pixels[i * 4 + 1];
-    floatPixels[i * 3 + 2] = pixels[i * 4 + 2];
+    floatPixels[i * 3] = mainPixels[i * 4];
+    floatPixels[i * 3 + 1] = mainPixels[i * 4 + 1];
+    floatPixels[i * 3 + 2] = mainPixels[i * 4 + 2];
   }
 
   const palette = getCombinedPalette();
@@ -3473,7 +3492,70 @@ function convertToBmc4(sourceCanvas, dithering, brightness, contrast, saturation
     }
   }
 
-  // Border data (7680-11903) is left as zeros (black)
+  // Encode border data at offset 7680 (same layout as BSC)
+  const regularPalette = palette.regular;
+  let borderOffset = 7680;
+
+  const encodeFullBorderLine = (y) => {
+    const segColors = new Array(48);
+
+    // First block (segments 0-2): edge, 8px granularity
+    segColors[0] = findNearestBorderColor(getBlockAverageColor(pixels, 384, 0, y, 8), regularPalette);
+    segColors[1] = findNearestBorderColor(getBlockAverageColor(pixels, 384, 8, y, 8), regularPalette);
+    segColors[2] = findNearestBorderColor(getBlockAverageColor(pixels, 384, 16, y, 8), regularPalette);
+
+    // Interior blocks (segments 3-44): 24px granularity
+    for (let block = 1; block < 15; block++) {
+      const x = block * 24;
+      const color = findNearestBorderColor(getBlockAverageColor(pixels, 384, x, y, 24), regularPalette);
+      segColors[block * 3] = color;
+      segColors[block * 3 + 1] = color;
+      segColors[block * 3 + 2] = color;
+    }
+
+    // Last block (segments 45-47): edge, 8px granularity
+    segColors[45] = findNearestBorderColor(getBlockAverageColor(pixels, 384, 360, y, 8), regularPalette);
+    segColors[46] = findNearestBorderColor(getBlockAverageColor(pixels, 384, 368, y, 8), regularPalette);
+    segColors[47] = findNearestBorderColor(getBlockAverageColor(pixels, 384, 376, y, 8), regularPalette);
+
+    // Encode to bytes (2 segments per byte)
+    for (let i = 0; i < 24; i++) {
+      bmc4[borderOffset++] = segColors[i * 2] | (segColors[i * 2 + 1] << 3);
+    }
+  };
+
+  const encodeSideBorderLine = (y) => {
+    // Left border (64 pixels = 8 segments, 4 bytes)
+    for (let i = 0; i < 4; i++) {
+      const x = i * 16;
+      const color1 = findNearestBorderColor(getBlockAverageColor(pixels, 384, x, y, 8), regularPalette);
+      const color2 = findNearestBorderColor(getBlockAverageColor(pixels, 384, x + 8, y, 8), regularPalette);
+      bmc4[borderOffset++] = color1 | (color2 << 3);
+    }
+
+    // Right border (64 pixels = 8 segments, 4 bytes)
+    for (let i = 0; i < 4; i++) {
+      const x = 320 + i * 16;
+      const color1 = findNearestBorderColor(getBlockAverageColor(pixels, 384, x, y, 8), regularPalette);
+      const color2 = findNearestBorderColor(getBlockAverageColor(pixels, 384, x + 8, y, 8), regularPalette);
+      bmc4[borderOffset++] = color1 | (color2 << 3);
+    }
+  };
+
+  // Top border: 64 lines × 24 bytes
+  for (let y = 0; y < 64; y++) {
+    encodeFullBorderLine(y);
+  }
+
+  // Side borders: 192 lines × 8 bytes
+  for (let y = 0; y < 192; y++) {
+    encodeSideBorderLine(y + 64);
+  }
+
+  // Bottom border: 48 lines × 24 bytes
+  for (let y = 0; y < 48; y++) {
+    encodeFullBorderLine(y + 256);
+  }
 
   return bmc4;
 }
@@ -3481,6 +3563,53 @@ function convertToBmc4(sourceCanvas, dithering, brightness, contrast, saturation
 // ============================================================================
 // MONOCHROME FORMAT CONVERSION (bitmap only, no attributes)
 // ============================================================================
+
+/**
+ * Map cell-aware dithering names to global equivalents.
+ * Cell-aware dithering is only meaningful for attribute-cell formats (Spectrum, Gigascreen, etc).
+ * For non-cell formats (RGB3, Mono, ULA+), strip the cell- prefix and fix name mismatches.
+ * @param {string} dithering - Dithering mode name (possibly with cell- prefix)
+ * @returns {string} Global dithering name for use in switch statements
+ */
+function mapCellDithering(dithering) {
+  if (!dithering.startsWith('cell-')) return dithering;
+  const stripped = dithering.substring(5);
+  if (stripped === 'floyd') return 'floyd-steinberg';
+  return stripped;  // 'none' falls through switch (no dithering), others match directly
+}
+
+/**
+ * Dither for RGB3: each color channel independently as 1-bit.
+ * RGB3 has 3 independent bitplanes, so per-channel dithering produces
+ * better color blending than dithering against 8 whole colors.
+ * @param {Float32Array} floatPixels - RGB pixel data (modified in place)
+ * @param {number} width - Image width
+ * @param {number} height - Image height
+ * @param {function} ditherFn - Dithering function (pixels, width, height, palette)
+ */
+function ditherRgb3PerChannel(floatPixels, width, height, ditherFn) {
+  const numPixels = width * height;
+  const bwPalette = [[0, 0, 0], [255, 255, 255]];
+  const channelBuf = new Float32Array(numPixels * 3);
+
+  for (let ch = 0; ch < 3; ch++) {
+    // Extract channel as grayscale image (R=G=B=channel value)
+    for (let i = 0; i < numPixels; i++) {
+      const val = floatPixels[i * 3 + ch];
+      channelBuf[i * 3] = val;
+      channelBuf[i * 3 + 1] = val;
+      channelBuf[i * 3 + 2] = val;
+    }
+
+    // Dither as monochrome
+    ditherFn(channelBuf, width, height, bwPalette);
+
+    // Write dithered channel back
+    for (let i = 0; i < numPixels; i++) {
+      floatPixels[i * 3 + ch] = channelBuf[i * 3];
+    }
+  }
+}
 
 /**
  * Convert image to monochrome format (bitmap only)
@@ -3529,7 +3658,9 @@ function convertToMono(sourceCanvas, dithering, brightness, contrast, saturation
   const monoPalette = [palette.bright[0], palette.bright[7]];
 
   // Apply dithering
-  switch (dithering) {
+  // Map cell-aware names to global equivalents (mono has no attribute cells)
+  const monoDithering = mapCellDithering(dithering);
+  switch (monoDithering) {
     case 'floyd-steinberg': floydSteinbergDither(floatPixels, 256, height, monoPalette); break;
     case 'jarvis': jarvisDither(floatPixels, 256, height, monoPalette); break;
     case 'stucki': stuckiDither(floatPixels, 256, height, monoPalette); break;
@@ -3632,36 +3763,27 @@ function convertToRgb3(sourceCanvas, dithering, brightness, contrast, saturation
     floatPixels[i * 3 + 2] = pixels[i * 4 + 2];
   }
 
-  // RGB3 uses 8 pure RGB colors (no bright variants)
-  // Index 0=Black, 1=Blue, 2=Red, 3=Magenta, 4=Green, 5=Cyan, 6=Yellow, 7=White
-  const rgb3Palette = [
-    [0, 0, 0],       // 0: Black (000)
-    [0, 0, 255],     // 1: Blue (001)
-    [255, 0, 0],     // 2: Red (010) - note: ZX uses GRB order, bit1=red
-    [255, 0, 255],   // 3: Magenta (011)
-    [0, 255, 0],     // 4: Green (100) - note: bit2=green
-    [0, 255, 255],   // 5: Cyan (101)
-    [255, 255, 0],   // 6: Yellow (110)
-    [255, 255, 255]  // 7: White (111)
-  ];
-
-  // Apply dithering with RGB3 palette
-  switch (dithering) {
-    case 'floyd-steinberg': floydSteinbergDither(floatPixels, 256, 192, rgb3Palette); break;
-    case 'jarvis': jarvisDither(floatPixels, 256, 192, rgb3Palette); break;
-    case 'stucki': stuckiDither(floatPixels, 256, 192, rgb3Palette); break;
-    case 'burkes': burkesDither(floatPixels, 256, 192, rgb3Palette); break;
-    case 'sierra': sierraDither(floatPixels, 256, 192, rgb3Palette); break;
-    case 'sierra-lite': sierraLiteDither(floatPixels, 256, 192, rgb3Palette); break;
-    case 'sierra2': sierra2Dither(floatPixels, 256, 192, rgb3Palette); break;
-    case 'serpentine': serpentineDither(floatPixels, 256, 192, rgb3Palette); break;
-    case 'riemersma': riemersmaDither(floatPixels, 256, 192, rgb3Palette); break;
-    case 'blue-noise': blueNoiseDither(floatPixels, 256, 192, rgb3Palette); break;
-    case 'pattern': patternDither(floatPixels, 256, 192, rgb3Palette); break;
-    case 'atkinson': atkinsonDither(floatPixels, 256, 192, rgb3Palette); break;
-    case 'ordered': orderedDither(floatPixels, 256, 192, rgb3Palette); break;
-    case 'ordered8': ordered8Dither(floatPixels, 256, 192, rgb3Palette); break;
-    case 'noise': noiseDither(floatPixels, 256, 192, rgb3Palette); break;
+  // Apply dithering — each RGB channel independently as 1-bit.
+  // RGB3 has 3 independent bitplanes, so per-channel dithering produces
+  // better color blending than joint 8-color dithering (which looks like SCR).
+  const rgb3Dithering = mapCellDithering(dithering);
+  switch (rgb3Dithering) {
+    case 'floyd-steinberg': ditherRgb3PerChannel(floatPixels, 256, 192, floydSteinbergDither); break;
+    case 'jarvis': ditherRgb3PerChannel(floatPixels, 256, 192, jarvisDither); break;
+    case 'stucki': ditherRgb3PerChannel(floatPixels, 256, 192, stuckiDither); break;
+    case 'burkes': ditherRgb3PerChannel(floatPixels, 256, 192, burkesDither); break;
+    case 'sierra': ditherRgb3PerChannel(floatPixels, 256, 192, sierraDither); break;
+    case 'sierra-lite': ditherRgb3PerChannel(floatPixels, 256, 192, sierraLiteDither); break;
+    case 'sierra2': ditherRgb3PerChannel(floatPixels, 256, 192, sierra2Dither); break;
+    case 'serpentine': ditherRgb3PerChannel(floatPixels, 256, 192, serpentineDither); break;
+    case 'riemersma': ditherRgb3PerChannel(floatPixels, 256, 192, riemersmaDither); break;
+    case 'blue-noise': ditherRgb3PerChannel(floatPixels, 256, 192, blueNoiseDither); break;
+    case 'pattern': ditherRgb3PerChannel(floatPixels, 256, 192, patternDither); break;
+    case 'atkinson': ditherRgb3PerChannel(floatPixels, 256, 192, atkinsonDither); break;
+    case 'ordered': ditherRgb3PerChannel(floatPixels, 256, 192, orderedDither); break;
+    case 'ordered8': ditherRgb3PerChannel(floatPixels, 256, 192, ordered8Dither); break;
+    case 'noise': ditherRgb3PerChannel(floatPixels, 256, 192, noiseDither); break;
+    // 'none': no dithering applied
   }
 
   // Create output buffer (3 × 6144 bytes)
@@ -3679,26 +3801,12 @@ function convertToRgb3(sourceCanvas, dithering, brightness, contrast, saturation
       for (let bit = 0; bit < 8; bit++) {
         const x = col * 8 + bit;
         const idx = (y * 256 + x) * 3;
-        const r = floatPixels[idx];
-        const g = floatPixels[idx + 1];
-        const b = floatPixels[idx + 2];
 
-        // Find nearest color from RGB3 palette
-        let minDist = Infinity;
-        let nearestIdx = 0;
-        for (let i = 0; i < 8; i++) {
-          const dist = colorDistance([r, g, b], rgb3Palette[i]);
-          if (dist < minDist) {
-            minDist = dist;
-            nearestIdx = i;
-          }
-        }
-
-        // Set bits based on color index
-        // ZX color bits: bit0=Blue, bit1=Red, bit2=Green
-        if (nearestIdx & 1) blueByte |= (0x80 >> bit);   // Blue
-        if (nearestIdx & 2) redByte |= (0x80 >> bit);    // Red
-        if (nearestIdx & 4) greenByte |= (0x80 >> bit);  // Green
+        // After per-channel dithering, each channel is 0 or 255
+        // Threshold at 128 to set the corresponding bitplane bit
+        if (floatPixels[idx] >= 128) redByte |= (0x80 >> bit);
+        if (floatPixels[idx + 1] >= 128) greenByte |= (0x80 >> bit);
+        if (floatPixels[idx + 2] >= 128) blueByte |= (0x80 >> bit);
       }
 
       rgb3[RGB3_CONST.RED_OFFSET + bitmapOffset + col] = redByte;
@@ -3715,12 +3823,12 @@ function convertToRgb3(sourceCanvas, dithering, brightness, contrast, saturation
  * @param {Uint8Array} rgb3Data - RGB3 screen data
  * @param {HTMLCanvasElement} canvas - Target canvas
  */
-function renderRgb3ToCanvas(rgb3Data, canvas) {
+function renderRgb3ToCanvas(rgb3Data, canvas, zoom = 2) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
-  canvas.width = 256;
-  canvas.height = 192;
+  canvas.width = 256 * zoom;
+  canvas.height = 192 * zoom;
 
   const imageData = ctx.createImageData(256, 192);
   const data = imageData.data;
@@ -3748,7 +3856,12 @@ function renderRgb3ToCanvas(rgb3Data, canvas) {
     }
   }
 
-  ctx.putImageData(imageData, 0, 0);
+  const temp = getImportTempCanvas(256, 192);
+  if (temp) {
+    temp.ctx.putImageData(imageData, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(temp.canvas, 0, 0, 256 * zoom, 192 * zoom);
+  }
 }
 
 // BSC format constants
@@ -3876,47 +3989,37 @@ function convertTo53c(sourceCanvas, brightness, contrast, saturation = 0, gamma 
   // Get combined palette once for all cells (matches rendering palette)
   const combinedPalette = getCombinedPalette();
 
+  // Compute ink ratio from pattern (count set bits across all 8 bytes / 64)
+  let inkBitCount = 0;
+  for (let py = 0; py < 8; py++) {
+    const patternByte = patternArray[py];
+    for (let px = 0; px < 8; px++) {
+      if (patternByte & (1 << (7 - px))) inkBitCount++;
+    }
+  }
+  const inkRatio = inkBitCount / 64;
+
   // Process each 8x8 character cell
   for (let row = 0; row < 24; row++) {
     for (let col = 0; col < 32; col++) {
       const cellX = col * 8;
       const cellY = row * 8;
 
-      // Collect ink and paper pixels based on pattern
-      let inkR = 0, inkG = 0, inkB = 0, inkCount = 0;
-      let paperR = 0, paperG = 0, paperB = 0, paperCount = 0;
+      // Compute overall cell average color (all 64 pixels)
+      let totalR = 0, totalG = 0, totalB = 0;
 
       for (let py = 0; py < 8; py++) {
-        const patternByte = patternArray[py];
         for (let px = 0; px < 8; px++) {
-          const bit = 7 - px; // MSB first
-          const isInk = (patternByte & (1 << bit)) !== 0;
-
           const pixelIdx = ((cellY + py) * 256 + (cellX + px)) * 4;
-          const r = pixels[pixelIdx];
-          const g = pixels[pixelIdx + 1];
-          const b = pixels[pixelIdx + 2];
-
-          if (isInk) {
-            inkR += r;
-            inkG += g;
-            inkB += b;
-            inkCount++;
-          } else {
-            paperR += r;
-            paperG += g;
-            paperB += b;
-            paperCount++;
-          }
+          totalR += pixels[pixelIdx];
+          totalG += pixels[pixelIdx + 1];
+          totalB += pixels[pixelIdx + 2];
         }
       }
 
-      // Calculate average colors
-      const avgInk = inkCount > 0 ? [inkR / inkCount, inkG / inkCount, inkB / inkCount] : [0, 0, 0];
-      const avgPaper = paperCount > 0 ? [paperR / paperCount, paperG / paperCount, paperB / paperCount] : [255, 255, 255];
+      const cellAvg = [totalR / 64, totalG / 64, totalB / 64];
 
-      // Find best matching ZX colors
-      // Try both regular and bright palettes, pick best overall match
+      // Find best ink/paper pair whose pattern-blended color is closest to cell average
       let bestInkIdx = 0, bestPaperIdx = 0, bestBright = 0;
       let bestTotalDist = Infinity;
 
@@ -3924,14 +4027,16 @@ function convertTo53c(sourceCanvas, brightness, contrast, saturation = 0, gamma 
         const palette = bright ? combinedPalette.bright : combinedPalette.regular;
 
         for (let inkIdx = 0; inkIdx < 8; inkIdx++) {
-          const inkDist = colorDistance(avgInk, palette[inkIdx]);
-
           for (let paperIdx = 0; paperIdx < 8; paperIdx++) {
-            const paperDist = colorDistance(avgPaper, palette[paperIdx]);
-            const totalDist = inkDist + paperDist;
+            const blended = [
+              palette[inkIdx][0] * inkRatio + palette[paperIdx][0] * (1 - inkRatio),
+              palette[inkIdx][1] * inkRatio + palette[paperIdx][1] * (1 - inkRatio),
+              palette[inkIdx][2] * inkRatio + palette[paperIdx][2] * (1 - inkRatio)
+            ];
+            const dist = colorDistance(blended, cellAvg);
 
-            if (totalDist < bestTotalDist) {
-              bestTotalDist = totalDist;
+            if (dist < bestTotalDist) {
+              bestTotalDist = dist;
               bestInkIdx = inkIdx;
               bestPaperIdx = paperIdx;
               bestBright = bright;
@@ -4596,20 +4701,20 @@ function renderMltToCanvas(mltData, canvas, zoom = 2) {
 }
 
 /**
- * Render BMC4 data to a canvas (8×4 multicolor attributes)
- * Note: Only renders the main 256x192 area, not border
+ * Render BMC4 data to a canvas (8×4 multicolor attributes with border)
  */
 function renderBmc4ToCanvas(bmc4Data, canvas, zoom = 2) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
-  canvas.width = 256 * zoom;
-  canvas.height = 192 * zoom;
+  canvas.width = 384 * zoom;
+  canvas.height = 304 * zoom;
 
-  const imageData = ctx.createImageData(256, 192);
+  const imageData = ctx.createImageData(384, 304);
   const pixels = imageData.data;
   const palette = getCombinedPalette();
 
+  // Render main screen area (256x192 at offset 64,64)
   for (let y = 0; y < 192; y++) {
     const bitmapOffset = getBitmapOffset(y);
 
@@ -4632,7 +4737,7 @@ function renderBmc4ToCanvas(bmc4Data, canvas, zoom = 2) {
       const isInk = (byte & (0x80 >> bitPos)) !== 0;
       const color = isInk ? pal[ink] : pal[paper];
 
-      const idx = (y * 256 + x) * 4;
+      const idx = ((y + 64) * 384 + (x + 64)) * 4;
       pixels[idx] = color[0];
       pixels[idx + 1] = color[1];
       pixels[idx + 2] = color[2];
@@ -4640,11 +4745,107 @@ function renderBmc4ToCanvas(bmc4Data, canvas, zoom = 2) {
     }
   }
 
-  const temp = getImportTempCanvas(256, 192);
+  // Render borders using regular palette only
+  const regularPalette = palette.regular;
+  let borderOffset = 7680;
+
+  // Top border: 64 lines
+  for (let y = 0; y < 64; y++) {
+    for (let bx = 0; bx < 24; bx++) {
+      const byte = bmc4Data[borderOffset++];
+      const color1 = byte & 0x07;
+      const color2 = (byte >> 3) & 0x07;
+      for (let px = 0; px < 8; px++) {
+        const idx = (y * 384 + bx * 16 + px) * 4;
+        pixels[idx] = regularPalette[color1][0];
+        pixels[idx + 1] = regularPalette[color1][1];
+        pixels[idx + 2] = regularPalette[color1][2];
+        pixels[idx + 3] = 255;
+      }
+      for (let px = 0; px < 8; px++) {
+        const idx = (y * 384 + bx * 16 + 8 + px) * 4;
+        pixels[idx] = regularPalette[color2][0];
+        pixels[idx + 1] = regularPalette[color2][1];
+        pixels[idx + 2] = regularPalette[color2][2];
+        pixels[idx + 3] = 255;
+      }
+    }
+  }
+
+  // Side borders: 192 lines
+  for (let y = 0; y < 192; y++) {
+    const screenY = y + 64;
+    // Left border
+    for (let bx = 0; bx < 4; bx++) {
+      const byte = bmc4Data[borderOffset++];
+      const color1 = byte & 0x07;
+      const color2 = (byte >> 3) & 0x07;
+      for (let px = 0; px < 8; px++) {
+        const idx = (screenY * 384 + bx * 16 + px) * 4;
+        pixels[idx] = regularPalette[color1][0];
+        pixels[idx + 1] = regularPalette[color1][1];
+        pixels[idx + 2] = regularPalette[color1][2];
+        pixels[idx + 3] = 255;
+      }
+      for (let px = 0; px < 8; px++) {
+        const idx = (screenY * 384 + bx * 16 + 8 + px) * 4;
+        pixels[idx] = regularPalette[color2][0];
+        pixels[idx + 1] = regularPalette[color2][1];
+        pixels[idx + 2] = regularPalette[color2][2];
+        pixels[idx + 3] = 255;
+      }
+    }
+    // Right border
+    for (let bx = 0; bx < 4; bx++) {
+      const byte = bmc4Data[borderOffset++];
+      const color1 = byte & 0x07;
+      const color2 = (byte >> 3) & 0x07;
+      for (let px = 0; px < 8; px++) {
+        const idx = (screenY * 384 + 320 + bx * 16 + px) * 4;
+        pixels[idx] = regularPalette[color1][0];
+        pixels[idx + 1] = regularPalette[color1][1];
+        pixels[idx + 2] = regularPalette[color1][2];
+        pixels[idx + 3] = 255;
+      }
+      for (let px = 0; px < 8; px++) {
+        const idx = (screenY * 384 + 320 + bx * 16 + 8 + px) * 4;
+        pixels[idx] = regularPalette[color2][0];
+        pixels[idx + 1] = regularPalette[color2][1];
+        pixels[idx + 2] = regularPalette[color2][2];
+        pixels[idx + 3] = 255;
+      }
+    }
+  }
+
+  // Bottom border: 48 lines
+  for (let y = 0; y < 48; y++) {
+    const screenY = y + 256;
+    for (let bx = 0; bx < 24; bx++) {
+      const byte = bmc4Data[borderOffset++];
+      const color1 = byte & 0x07;
+      const color2 = (byte >> 3) & 0x07;
+      for (let px = 0; px < 8; px++) {
+        const idx = (screenY * 384 + bx * 16 + px) * 4;
+        pixels[idx] = regularPalette[color1][0];
+        pixels[idx + 1] = regularPalette[color1][1];
+        pixels[idx + 2] = regularPalette[color1][2];
+        pixels[idx + 3] = 255;
+      }
+      for (let px = 0; px < 8; px++) {
+        const idx = (screenY * 384 + bx * 16 + 8 + px) * 4;
+        pixels[idx] = regularPalette[color2][0];
+        pixels[idx + 1] = regularPalette[color2][1];
+        pixels[idx + 2] = regularPalette[color2][2];
+        pixels[idx + 3] = 255;
+      }
+    }
+  }
+
+  const temp = getImportTempCanvas(384, 304);
   if (temp) {
     temp.ctx.putImageData(imageData, 0, 0);
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(temp.canvas, 0, 0, 256 * zoom, 192 * zoom);
+    ctx.drawImage(temp.canvas, 0, 0, 384 * zoom, 304 * zoom);
   }
 }
 
@@ -4845,8 +5046,20 @@ let importPaletteColors = { regular: [], bright: [] };
 /** @type {Function|null} - Reference to updatePreview for mouse handlers */
 let updateImportPreview = null;
 
+/** @type {Uint8Array|null} - External ULA+ palette (64 bytes GRB332) for import, null = auto */
+let importUlaPlusPalette = null;
+
+/** @type {Function|null} - Callback for color picker integration from import context */
+let importUlaPlusApplyCallback = null;
+
+/** @type {Uint8Array|null} - Saved editor palette while import color picker is open */
+let importUlaPlusSavedEditorPalette = null;
+
+/** @type {Uint8Array|null} - Last auto-generated ULA+ palette from preview render */
+let lastImportUlaPlusAutoPalette = null;
+
 /**
- * Cached DOM elements for import dialog - populated in initPngImport()
+ * Cached DOM elements for import dialog - populated in initImageImport()
  */
 const importElements = {
   // Crop inputs
@@ -4894,7 +5107,17 @@ const importElements = {
   /** @type {HTMLElement|null} */ levelsValue: null,
   /** @type {HTMLElement|null} */ colorBalanceValue: null,
   // Dialog
-  /** @type {HTMLElement|null} */ dialog: null
+  /** @type {HTMLElement|null} */ dialog: null,
+  // ULA+ palette import
+  /** @type {HTMLSelectElement|null} */ ulaPlusPaletteSource: null,
+  /** @type {HTMLElement|null} */ ulaPlusPaletteRow: null,
+  /** @type {HTMLElement|null} */ ulaPlusPaletteGrid: null,
+  /** @type {HTMLElement|null} */ ulaPlusPalettePreview: null,
+  /** @type {HTMLButtonElement|null} */ ulaPlusPaletteReset: null,
+  /** @type {HTMLInputElement|null} */ ulaPlusPalFile: null,
+  /** @type {HTMLInputElement|null} */ ulaPlusScrFile: null,
+  // Standard palette row (hidden when ULA+ is selected)
+  /** @type {HTMLElement|null} */ paletteRow: null
 };
 
 /**
@@ -5371,7 +5594,7 @@ function drawImportPreviewGrid(canvas, zoom, format) {
 
   // Determine dimensions based on format
   let width, height;
-  if (format === 'bsc') {
+  if (format === 'bsc' || format === 'bmc4') {
     width = 384;
     height = 304;
   } else if (format === 'mono_2_3') {
@@ -5413,10 +5636,101 @@ function drawImportPreviewGrid(canvas, zoom, format) {
 }
 
 /**
- * Initialize PNG import dialog
+ * Build the 8x8 palette grid for the import ULA+ palette preview
  */
-function initPngImport() {
-  importElements.dialog = document.getElementById('pngImportDialog');
+function buildImportUlaPlusPaletteGrid() {
+  const container = importElements.ulaPlusPaletteGrid;
+  if (!container || !importUlaPlusPalette) return;
+
+  container.innerHTML = '';
+
+  for (let i = 0; i < 64; i++) {
+    const cell = document.createElement('div');
+    cell.className = 'ulaplus-grid-cell';
+    cell.dataset.index = String(i);
+
+    const rgb = grb332ToRgb(importUlaPlusPalette[i]);
+    cell.style.backgroundColor = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+
+    const clut = Math.floor(i / 16);
+    const pos = i % 16;
+    const isInk = pos < 8;
+    cell.title = `CLUT ${clut}, ${isInk ? 'INK' : 'PAPER'} ${pos % 8} (#${i}) - Ctrl+click to edit`;
+
+    // Add gap class for CLUT separation
+    if ((i >= 16 && i <= 23) || (i >= 32 && i <= 39) || (i >= 48 && i <= 55)) {
+      cell.classList.add('clut-gap');
+    }
+
+    cell.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (e.ctrlKey || e.metaKey) {
+        openImportUlaPlusColorPicker(i);
+      }
+    });
+
+    container.appendChild(cell);
+  }
+}
+
+/**
+ * Show the import palette grid
+ */
+function showImportPaletteGrid() {
+  if (importElements.ulaPlusPalettePreview) {
+    importElements.ulaPlusPalettePreview.style.display = '';
+  }
+}
+
+/**
+ * Hide the import palette grid
+ */
+function hideImportPaletteGrid() {
+  if (importElements.ulaPlusPalettePreview) {
+    importElements.ulaPlusPalettePreview.style.display = 'none';
+  }
+}
+
+/**
+ * Open ULA+ color picker from import context for a specific palette index
+ * @param {number} index - Palette index (0-63)
+ */
+function openImportUlaPlusColorPicker(index) {
+  if (!importUlaPlusPalette || index < 0 || index >= 64) return;
+
+  // Save editor palette state
+  importUlaPlusSavedEditorPalette = ulaPlusPalette;
+
+  // Temporarily set ulaPlusPalette so the dialog reads import colors
+  ulaPlusPalette = importUlaPlusPalette;
+
+  // Set callback for apply
+  importUlaPlusApplyCallback = (grb) => {
+    importUlaPlusPalette[index] = grb;
+    buildImportUlaPlusPaletteGrid();
+    // Restore editor palette
+    ulaPlusPalette = importUlaPlusSavedEditorPalette;
+    importUlaPlusSavedEditorPalette = null;
+    importUlaPlusApplyCallback = null;
+    // Remove z-index override
+    const dialog = document.getElementById('ulaPlusColorDialog');
+    if (dialog) dialog.style.zIndex = '';
+    updateImportPreview?.();
+  };
+
+  // Raise color picker above the import dialog
+  const dialog = document.getElementById('ulaPlusColorDialog');
+  if (dialog) dialog.style.zIndex = '10001';
+
+  // Open the existing color picker
+  openUlaPlusColorPicker(index);
+}
+
+/**
+ * Initialize image import dialog
+ */
+function initImageImport() {
+  importElements.dialog = document.getElementById('imageImportDialog');
   if (!importElements.dialog) return;
 
   // Get canvas elements
@@ -5469,6 +5783,16 @@ function initPngImport() {
   importElements.smoothingValue = document.getElementById('importSmoothingValue');
   importElements.levelsValue = document.getElementById('importLevelsValue');
   importElements.colorBalanceValue = document.getElementById('importColorBalanceValue');
+
+  // ULA+ palette import elements
+  importElements.paletteRow = document.getElementById('importPaletteRow');
+  importElements.ulaPlusPaletteSource = /** @type {HTMLSelectElement} */ (document.getElementById('importUlaPlusPaletteSource'));
+  importElements.ulaPlusPaletteRow = document.getElementById('importUlaPlusPaletteRow');
+  importElements.ulaPlusPaletteGrid = document.getElementById('importUlaPlusPaletteGrid');
+  importElements.ulaPlusPalettePreview = document.getElementById('importUlaPlusPalettePreview');
+  importElements.ulaPlusPaletteReset = /** @type {HTMLButtonElement} */ (document.getElementById('importUlaPlusPaletteReset'));
+  importElements.ulaPlusPalFile = /** @type {HTMLInputElement} */ (document.getElementById('importUlaPlusPalFile'));
+  importElements.ulaPlusScrFile = /** @type {HTMLInputElement} */ (document.getElementById('importUlaPlusScrFile'));
 
   // Tab switching
   const tabImage = document.getElementById('importTabImage');
@@ -5581,12 +5905,12 @@ function initPngImport() {
     } else if (format === 'mlt') {
       const mltData = convertToMlt(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderMltToCanvas(mltData, importPreviewCanvas, currentZoom);
-    } else if (format === 'bmc4') {
-      const bmc4Data = convertToBmc4(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+    } else if (format === 'bmc4' && importSourceCanvasBsc) {
+      const bmc4Data = convertToBmc4(importSourceCanvasBsc, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderBmc4ToCanvas(bmc4Data, importPreviewCanvas, currentZoom);
     } else if (format === 'rgb3') {
       const rgb3Data = convertToRgb3(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
-      renderRgb3ToCanvas(rgb3Data, importPreviewCanvas);
+      renderRgb3ToCanvas(rgb3Data, importPreviewCanvas, currentZoom);
     } else if (format === 'mono_full') {
       const monoData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 3);
       renderMonoToCanvas(monoData, importPreviewCanvas, currentZoom, 3);
@@ -5597,8 +5921,9 @@ function initPngImport() {
       const monoData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 1);
       renderMonoToCanvas(monoData, importPreviewCanvas, currentZoom, 1);
     } else if (format === 'ulaplus') {
-      const result = convertToUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      const result = convertToUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette);
       renderUlaPlusToCanvas(result.data, importPreviewCanvas, currentZoom);
+      if (!importUlaPlusPalette) lastImportUlaPlusAutoPalette = result.palette;
     } else {
       const scrData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderScrToCanvas(scrData, importPreviewCanvas, currentZoom);
@@ -5779,7 +6104,7 @@ function initPngImport() {
     // Update size defaults based on format
     const format = formatSelect?.value || 'scr';
     let defaultW = 256, defaultH = 192;
-    if (format === 'bsc') {
+    if (format === 'bsc' || format === 'bmc4') {
       defaultW = 384; defaultH = 304;
     } else if (format === 'mono_2_3') {
       defaultH = 128;
@@ -5790,11 +6115,11 @@ function initPngImport() {
     importSize.h = defaultH;
     if (importElements.sizeW) {
       importElements.sizeW.value = String(defaultW);
-      importElements.sizeW.max = String(format === 'bsc' ? 384 : 256);
+      importElements.sizeW.max = String((format === 'bsc' || format === 'bmc4') ? 384 : 256);
     }
     if (importElements.sizeH) {
       importElements.sizeH.value = String(defaultH);
-      importElements.sizeH.max = String(format === 'bsc' ? 304 : 192);
+      importElements.sizeH.max = String((format === 'bsc' || format === 'bmc4') ? 304 : 192);
     }
     // Also reset offset for format change
     importOffset.x = 0;
@@ -5805,6 +6130,27 @@ function initPngImport() {
     const patternRow = document.getElementById('import53cPatternRow');
     if (patternRow) {
       patternRow.style.display = format === '53c' ? 'flex' : 'none';
+    }
+    // Show/hide ULA+ palette row and standard palette row
+    if (importElements.ulaPlusPaletteRow) {
+      importElements.ulaPlusPaletteRow.style.display = format === 'ulaplus' ? 'flex' : 'none';
+    }
+    // Crosshair cursor on preview for ULA+ eyedropper
+    if (importPreviewCanvas) {
+      importPreviewCanvas.style.cursor = format === 'ulaplus' ? 'crosshair' : '';
+    }
+    // Hide standard Palette: row for ULA+ (it has its own palette system)
+    if (importElements.paletteRow) {
+      importElements.paletteRow.style.display = format === 'ulaplus' ? 'none' : 'flex';
+    }
+    // Reset ULA+ palette state when switching away; re-apply standard palette for safety
+    if (format !== 'ulaplus') {
+      applyImportPalette(importElements.palette?.value || importPaletteId || 'default');
+      importUlaPlusPalette = null;
+      lastImportUlaPlusAutoPalette = null;
+      if (importElements.ulaPlusPaletteSource) importElements.ulaPlusPaletteSource.value = 'auto';
+      hideImportPaletteGrid();
+      if (importElements.ulaPlusPaletteReset) importElements.ulaPlusPaletteReset.style.display = 'none';
     }
     updatePreview();
   });
@@ -5912,6 +6258,52 @@ function initPngImport() {
   // Grid checkbox
   showGridCheckbox?.addEventListener('change', updatePreview);
 
+  // Eyedropper: click output preview to find and edit ULA+ palette color
+  importPreviewCanvas?.addEventListener('click', (e) => {
+    const fmt = importElements.format?.value || 'scr';
+    if (fmt !== 'ulaplus') return;
+
+    const palette = importUlaPlusPalette || lastImportUlaPlusAutoPalette;
+    if (!palette) return;
+
+    // Get click position on canvas, accounting for CSS scaling
+    const rect = importPreviewCanvas.getBoundingClientRect();
+    const scaleX = importPreviewCanvas.width / rect.width;
+    const scaleY = importPreviewCanvas.height / rect.height;
+    const canvasX = Math.floor((e.clientX - rect.left) * scaleX);
+    const canvasY = Math.floor((e.clientY - rect.top) * scaleY);
+
+    const ctx = importPreviewCanvas.getContext('2d');
+    if (!ctx) return;
+    const pixel = ctx.getImageData(canvasX, canvasY, 1, 1).data;
+
+    // Find closest matching palette entry
+    let bestIndex = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < 64; i++) {
+      const rgb = grb332ToRgb(palette[i]);
+      const dr = rgb[0] - pixel[0];
+      const dg = rgb[1] - pixel[1];
+      const db = rgb[2] - pixel[2];
+      const dist = dr * dr + dg * dg + db * db;
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestIndex = i;
+        if (dist === 0) break;
+      }
+    }
+
+    // If auto mode, promote auto palette to editable
+    if (!importUlaPlusPalette) {
+      importUlaPlusPalette = new Uint8Array(palette);
+      buildImportUlaPlusPaletteGrid();
+      showImportPaletteGrid();
+      if (importElements.ulaPlusPaletteReset) importElements.ulaPlusPaletteReset.style.display = '';
+    }
+
+    openImportUlaPlusColorPicker(bestIndex);
+  });
+
   // Offset controls
   const onOffsetChange = () => {
     importOffset.x = Math.max(0, Math.min(248, parseInt(importElements.offsetX?.value || '0', 10) || 0));
@@ -5926,8 +6318,8 @@ function initPngImport() {
   // Size controls with aspect ratio lock
   const getSourceAspect = () => importCrop.w / importCrop.h;
   const format = () => formatSelect?.value || 'scr';
-  const maxW = () => format() === 'bsc' ? 384 : 256;
-  const maxH = () => format() === 'bsc' ? 304 : 192;
+  const maxW = () => (format() === 'bsc' || format() === 'bmc4') ? 384 : 256;
+  const maxH = () => (format() === 'bsc' || format() === 'bmc4') ? 304 : 192;
 
   const onSizeWChange = () => {
     const newW = Math.max(8, Math.min(maxW(), parseInt(importElements.sizeW?.value || String(maxW()), 10) || maxW()));
@@ -5963,6 +6355,91 @@ function initPngImport() {
   // Palette control
   paletteSelect?.addEventListener('change', function() {
     applyImportPalette(this.value);
+    updatePreview();
+  });
+
+  // ULA+ palette source dropdown
+  importElements.ulaPlusPaletteSource?.addEventListener('change', function() {
+    const val = this.value;
+    if (val === 'auto') {
+      importUlaPlusPalette = null;
+      hideImportPaletteGrid();
+      if (importElements.ulaPlusPaletteReset) importElements.ulaPlusPaletteReset.style.display = 'none';
+      updatePreview();
+    } else if (val === 'file') {
+      importElements.ulaPlusPalFile?.click();
+    } else if (val === 'picture') {
+      importElements.ulaPlusScrFile?.click();
+    }
+  });
+
+  // .pal file input
+  importElements.ulaPlusPalFile?.addEventListener('change', function() {
+    const file = this.files?.[0];
+    if (!file) {
+      importElements.ulaPlusPaletteSource.value = 'auto';
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const data = new Uint8Array(/** @type {ArrayBuffer} */ (e.target?.result));
+      if (data.length !== 64) {
+        alert('Invalid .pal file: expected 64 bytes, got ' + data.length);
+        importElements.ulaPlusPaletteSource.value = 'auto';
+        return;
+      }
+      importUlaPlusPalette = data;
+      buildImportUlaPlusPaletteGrid();
+      showImportPaletteGrid();
+      if (importElements.ulaPlusPaletteReset) importElements.ulaPlusPaletteReset.style.display = '';
+      updatePreview();
+    };
+    reader.onerror = () => {
+      importElements.ulaPlusPaletteSource.value = 'auto';
+    };
+    reader.readAsArrayBuffer(file);
+    this.value = '';
+  });
+
+  // .scr file input (ULA+ picture)
+  importElements.ulaPlusScrFile?.addEventListener('change', function() {
+    const file = this.files?.[0];
+    if (!file) {
+      importElements.ulaPlusPaletteSource.value = 'auto';
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const data = new Uint8Array(/** @type {ArrayBuffer} */ (e.target?.result));
+      if (data.length === ULAPLUS.TOTAL_SIZE) {
+        // Extract last 64 bytes as palette
+        importUlaPlusPalette = data.slice(ULAPLUS.PALETTE_OFFSET, ULAPLUS.PALETTE_OFFSET + 64);
+      } else if (data.length === 64) {
+        // Treat as raw palette
+        importUlaPlusPalette = data;
+      } else {
+        alert('Invalid file: expected ULA+ .scr (6976 bytes) or .pal (64 bytes), got ' + data.length + ' bytes');
+        importElements.ulaPlusPaletteSource.value = 'auto';
+        return;
+      }
+      buildImportUlaPlusPaletteGrid();
+      showImportPaletteGrid();
+      if (importElements.ulaPlusPaletteReset) importElements.ulaPlusPaletteReset.style.display = '';
+      updatePreview();
+    };
+    reader.onerror = () => {
+      importElements.ulaPlusPaletteSource.value = 'auto';
+    };
+    reader.readAsArrayBuffer(file);
+    this.value = '';
+  });
+
+  // ULA+ palette reset button
+  importElements.ulaPlusPaletteReset?.addEventListener('click', () => {
+    importUlaPlusPalette = null;
+    if (importElements.ulaPlusPaletteSource) importElements.ulaPlusPaletteSource.value = 'auto';
+    hideImportPaletteGrid();
+    if (importElements.ulaPlusPaletteReset) importElements.ulaPlusPaletteReset.style.display = 'none';
     updatePreview();
   });
 
@@ -6019,8 +6496,8 @@ function initPngImport() {
       outputData = convertToMlt(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.MLT;
       fileExt = '.mlt';
-    } else if (format === 'bmc4') {
-      outputData = convertToBmc4(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+    } else if (format === 'bmc4' && importSourceCanvasBsc) {
+      outputData = convertToBmc4(importSourceCanvasBsc, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.BMC4;
       fileExt = '.bmc4';
     } else if (format === 'rgb3') {
@@ -6041,7 +6518,7 @@ function initPngImport() {
       fileExt = '.scr';
     } else if (format === 'ulaplus') {
       // ULA+ format: SCR + 64-byte optimal palette
-      const result = convertToUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      const result = convertToUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette);
       outputData = result.data;
       outputFormat = FORMAT.SCR_ULAPLUS;
       fileExt = '.scr';
@@ -6234,7 +6711,7 @@ function openImportDialog(file) {
     // Reset size to defaults based on current format
     const format = importElements.format?.value || 'scr';
     let defaultW = 256, defaultH = 192;
-    if (format === 'bsc') {
+    if (format === 'bsc' || format === 'bmc4') {
       defaultW = 384; defaultH = 304;
     } else if (format === 'mono_2_3') {
       defaultH = 128;
@@ -6244,11 +6721,11 @@ function openImportDialog(file) {
     importSize = { w: defaultW, h: defaultH };
     if (importElements.sizeW) {
       importElements.sizeW.value = String(defaultW);
-      importElements.sizeW.max = String(format === 'bsc' ? 384 : 256);
+      importElements.sizeW.max = String((format === 'bsc' || format === 'bmc4') ? 384 : 256);
     }
     if (importElements.sizeH) {
       importElements.sizeH.value = String(defaultH);
-      importElements.sizeH.max = String(format === 'bsc' ? 304 : 192);
+      importElements.sizeH.max = String((format === 'bsc' || format === 'bmc4') ? 304 : 192);
     }
 
     // Apply crop and render source
@@ -6278,8 +6755,9 @@ function openImportDialog(file) {
 
     // Render initial preview based on format
     if (format === 'ulaplus') {
-      const result = convertToUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      const result = convertToUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette);
       renderUlaPlusToCanvas(result.data, importPreviewCanvas, importZoom);
+      if (!importUlaPlusPalette) lastImportUlaPlusAutoPalette = result.palette;
     } else if (format === '53c') {
       const pattern = importElements.pattern53c?.value || 'checker';
       const attrData = convertTo53c(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, pattern);
@@ -6290,12 +6768,12 @@ function openImportDialog(file) {
     } else if (format === 'mlt') {
       const mltData = convertToMlt(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderMltToCanvas(mltData, importPreviewCanvas, importZoom);
-    } else if (format === 'bmc4') {
-      const bmc4Data = convertToBmc4(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+    } else if (format === 'bmc4' && importSourceCanvasBsc) {
+      const bmc4Data = convertToBmc4(importSourceCanvasBsc, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderBmc4ToCanvas(bmc4Data, importPreviewCanvas, importZoom);
     } else if (format === 'rgb3') {
       const rgb3Data = convertToRgb3(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
-      renderRgb3ToCanvas(rgb3Data, importPreviewCanvas);
+      renderRgb3ToCanvas(rgb3Data, importPreviewCanvas, importZoom);
     } else if (format === 'mono_full') {
       const monoData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 3);
       renderMonoToCanvas(monoData, importPreviewCanvas, importZoom, 3);
@@ -6336,6 +6814,19 @@ function closeImportDialog() {
     importElements.dialog.style.display = 'none';
   }
   importFile = null;
+
+  // Reset ULA+ palette import state
+  importUlaPlusPalette = null;
+  lastImportUlaPlusAutoPalette = null;
+  if (importUlaPlusSavedEditorPalette !== null) {
+    ulaPlusPalette = importUlaPlusSavedEditorPalette;
+    importUlaPlusSavedEditorPalette = null;
+  }
+  importUlaPlusApplyCallback = null;
+  if (importElements.ulaPlusPaletteSource) importElements.ulaPlusPaletteSource.value = 'auto';
+  hideImportPaletteGrid();
+  if (importElements.ulaPlusPaletteReset) importElements.ulaPlusPaletteReset.style.display = 'none';
+  if (importPreviewCanvas) importPreviewCanvas.style.cursor = '';
 }
 
 /**

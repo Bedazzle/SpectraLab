@@ -137,6 +137,7 @@ function initScreenViewerUI() {
   document.getElementById('pattern53cSelect')?.addEventListener('change', function() {
     renderScreen();
     if (typeof renderPreview === 'function') renderPreview();
+    if (typeof updateAttrPreview === 'function') updateAttrPreview();
     saveSettings();
   });
 
@@ -452,9 +453,9 @@ function initScreenViewerUI() {
   // Load palettes from JSON
   loadPalettes();
 
-  // Initialize PNG import dialog
-  if (typeof initPngImport === 'function') {
-    initPngImport();
+  // Initialize image import dialog
+  if (typeof initImageImport === 'function') {
+    initImageImport();
   }
 
   // Load saved settings

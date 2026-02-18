@@ -1065,39 +1065,54 @@ function render53cScreen(ctx, borderOffset) {
     patternArray = APP_CONFIG.PATTERN_53C_CHECKER;
   }
 
+  // Fast path: render to 1:1 ImageData, then scale with drawImage (GPU accelerated)
+  const imageData = ctx.createImageData(SCREEN.WIDTH, SCREEN.HEIGHT);
+  const data = imageData.data;
+  const defaultInkRgb = [255, 255, 255];
+  const defaultPaperRgb = [0, 0, 0];
+
   for (let row = 0; row < SCREEN.CHAR_ROWS; row++) {
     for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
       const attrIndex = col + row * 32;
       const attr = screenData[attrIndex];
-      let ink, paper;
+      let inkRgb, paperRgb;
       if (showAttributes) {
-        ({ ink, paper } = getColors(attr));
+        ({ inkRgb, paperRgb } = getColorsRgb(attr));
       } else {
-        ink = ZX_PALETTE.REGULAR[7]; // white
-        paper = ZX_PALETTE.REGULAR[0]; // black
+        inkRgb = defaultInkRgb;
+        paperRgb = defaultPaperRgb;
       }
 
-      // Draw 8x8 pattern for this cell
       const cellX = col * 8;
       const cellY = row * 8;
 
       for (let py = 0; py < 8; py++) {
         const patternByte = patternArray[py];
+        const y = cellY + py;
+        const rowOffset = y * SCREEN.WIDTH;
         for (let px = 0; px < 8; px++) {
-          const bit = 7 - px; // MSB first
-          const isInk = (patternByte & (1 << bit)) !== 0;
-
-          ctx.fillStyle = isInk ? ink : paper;
-          ctx.fillRect(
-            borderOffset + (cellX + px) * zoom,
-            borderOffset + (cellY + py) * zoom,
-            zoom,
-            zoom
-          );
+          const isInk = (patternByte & (1 << (7 - px))) !== 0;
+          const rgb = isInk ? inkRgb : paperRgb;
+          const pixelIndex = (rowOffset + cellX + px) * 4;
+          data[pixelIndex] = rgb[0];
+          data[pixelIndex + 1] = rgb[1];
+          data[pixelIndex + 2] = rgb[2];
+          data[pixelIndex + 3] = 255;
         }
       }
     }
   }
+
+  const temp = getTempRenderCanvas(SCREEN.WIDTH, SCREEN.HEIGHT);
+  if (!temp) return;
+  temp.ctx.putImageData(imageData, 0, 0);
+
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(
+    temp.canvas,
+    0, 0, SCREEN.WIDTH, SCREEN.HEIGHT,
+    borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom
+  );
 }
 
 /**
