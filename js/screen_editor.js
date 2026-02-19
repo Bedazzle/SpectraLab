@@ -2912,18 +2912,17 @@ function saveProject() {
     project.layers.push(layerData);
   }
 
-  const json = JSON.stringify(project, null, 2);
-  const blob = new Blob([json], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
+  // Include sprite sheet if available
+  if (typeof getSpriteSheetForProject === 'function') {
+    const spriteData = getSpriteSheetForProject();
+    if (spriteData) {
+      project.spriteSheet = spriteData;
+    }
+  }
 
-  const a = document.createElement('a');
-  a.href = url;
+  const json = JSON.stringify(project, null, 2);
   const baseName = currentFileName.replace(/\.[^.]+$/, '') || 'project';
-  a.download = baseName + '.slp';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  downloadFile(json, baseName + '.slp', 'application/json');
 
   // Reset modified flag after successful save
   if (activePictureIndex >= 0 && activePictureIndex < openPictures.length) {
@@ -3114,6 +3113,11 @@ function loadProject(file) {
         openPictures[result].layersEnabled = layersEnabled;
       }
 
+      // Restore sprite sheet if present
+      if (project.spriteSheet && typeof restoreSpriteSheetFromProject === 'function') {
+        restoreSpriteSheetFromProject(project.spriteSheet);
+      }
+
       renderScreen();
       updatePictureTabBar();
       if (typeof updateEditorState === 'function') updateEditorState();
@@ -3248,16 +3252,7 @@ function saveWorkspace() {
   }
 
   const json = JSON.stringify(workspace, null, 2);
-  const blob = new Blob([json], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'workspace.slw';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  downloadFile(json, 'workspace.slw', 'application/json');
 
   // Mark all pictures as unmodified after save
   for (const pic of openPictures) {
@@ -8164,12 +8159,6 @@ function saveScrFile(filename) {
     defaultExt = '.scr';
   }
 
-  const blob = new Blob([saveData], { type: 'application/octet-stream' });
-  const url = URL.createObjectURL(blob);
-
-  const a = document.createElement('a');
-  a.href = url;
-
   if (!filename) {
     if (currentFileName) {
       const baseName = currentFileName.replace(/\.[^.]+$/, '');
@@ -8185,11 +8174,7 @@ function saveScrFile(filename) {
     }
   }
 
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  downloadFile(new Blob([saveData], { type: 'application/octet-stream' }), filename);
 
   // Reset modified flag after successful save
   if (activePictureIndex >= 0 && activePictureIndex < openPictures.length) {
@@ -9575,19 +9560,8 @@ function saveUlaPlusPalette() {
     ? screenData.slice(ULAPLUS.PALETTE_OFFSET, ULAPLUS.PALETTE_OFFSET + 64)
     : ulaPlusPalette;
 
-  // Create blob and download
-  const blob = new Blob([palette], { type: 'application/octet-stream' });
-  const url = URL.createObjectURL(blob);
-
-  const a = document.createElement('a');
-  a.href = url;
-  // Use current filename as base, or default
   const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'palette';
-  a.download = baseName + '.pal';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  downloadFile(new Blob([palette], { type: 'application/octet-stream' }), baseName + '.pal');
 }
 
 /**
@@ -12648,15 +12622,7 @@ function exportBarcodes() {
   }
 
   const json = JSON.stringify(data);
-  const blob = new Blob([json], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'barcodes.slbc';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  downloadFile(json, 'barcodes.slbc', 'application/json');
 }
 
 /**
@@ -13601,12 +13567,13 @@ function exitTransformSelectMode() {
  * Updates visibility of transform and export sections based on selection state
  */
 function updateTransformSectionsVisibility() {
-  const hasSelection = clipboardData && transformSelectionRect;
+  const hasClipboard = clipboardData && transformSelectionRect;
+  const hasRect = !!transformSelectionRect;
   const opsSection = document.getElementById('transformOpsSection');
   const exportSection = document.getElementById('transformExportSection');
 
-  if (opsSection) opsSection.style.display = hasSelection ? '' : 'none';
-  if (exportSection) exportSection.style.display = hasSelection ? '' : 'none';
+  if (opsSection) opsSection.style.display = hasClipboard ? '' : 'none';
+  if (exportSection) exportSection.style.display = hasRect ? '' : 'none';
 }
 
 /**
@@ -13896,7 +13863,7 @@ function generateSelectionAsmText() {
   const attrBase = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.ASM_ATTR_BASE) || 'hex';
 
   const asmLines = [];
-  asmLines.push('; Selection export');
+  asmLines.push('; Selection export — SpectraLab v' + APP_VERSION);
 
   const w = clipboardData.width || clipboardData.cellCols * 8;
   const h = clipboardData.height || clipboardData.cellRows * 8;
@@ -14027,15 +13994,7 @@ function exportSelectionAsm() {
   }
 
   // Download as .asm file
-  const blob = new Blob([asmText], { type: 'text/plain' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'selection.asm';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  downloadFile(asmText, 'selection.asm');
 }
 
 /**
@@ -14782,6 +14741,9 @@ function selectTile(idx) {
  * @returns {{width:number, height:number, data:Uint8Array, mask?:Uint8Array}|null}
  */
 function getActiveBrush() {
+  if (activeCustomBrush === -3 && typeof activeSpriteBrush !== 'undefined' && activeSpriteBrush) {
+    return activeSpriteBrush;
+  }
   if (activeCustomBrush === -2 && activeTileBrush) {
     return activeTileBrush;
   }
@@ -14827,15 +14789,7 @@ function exportCurrentTab() {
       return;
     }
     const ext = tab.tileCount > 96 ? '.bin' : '.768';
-    const blob = new Blob([tab.data], { type: 'application/octet-stream' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = (tab.name || 'tileset') + ext;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    downloadFile(new Blob([tab.data], { type: 'application/octet-stream' }), (tab.name || 'tileset') + ext);
     return;
   }
 
@@ -14856,15 +14810,7 @@ function exportCurrentTab() {
   }
 
   const json = JSON.stringify(arr);
-  const blob = new Blob([json], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = (tab.name || 'brushes') + '.slb';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  downloadFile(json, (tab.name || 'brushes') + '.slb', 'application/json');
 }
 
 /**
@@ -14971,15 +14917,7 @@ function exportBrushesToFile() {
   }
 
   const json = JSON.stringify(arr);
-  const blob = new Blob([json], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'brushes.slb';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  downloadFile(json, 'brushes.slb', 'application/json');
 }
 
 /**
@@ -15220,7 +15158,7 @@ function updateExportAsmButton() {
   const embedDataChk = document.getElementById('editorEmbedDataChk');
   if (!exportSelect || !exportBtn) return;
 
-  const supportsAsm = currentFormat === FORMAT.BSC || currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.RGB3 || currentFormat === FORMAT.IFL;
+  const supportsAsm = currentFormat === FORMAT.BSC || currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.RGB3 || currentFormat === FORMAT.IFL || currentFormat === FORMAT.SCR_ULAPLUS;
   const isSpecscii = currentFormat === FORMAT.SPECSCII;
 
   // Build export options based on current format
@@ -15234,6 +15172,8 @@ function updateExportAsmButton() {
       options.push({ value: 'asm', label: 'ASM (Pentagon RGB flicker)' });
     } else if (currentFormat === FORMAT.IFL) {
       options.push({ value: 'asm', label: 'ASM (Pentagon 8x2 multicolor)' });
+    } else if (currentFormat === FORMAT.SCR_ULAPLUS) {
+      options.push({ value: 'asm', label: 'ASM (ULA+ palette)' });
     }
   }
   if (isSpecscii) {
@@ -16661,32 +16601,17 @@ function initEditor() {
       else if (currentFormat === FORMAT.GIGASCREEN) exportGigascreenAsm();
       else if (currentFormat === FORMAT.RGB3) exportRgb3Asm();
       else if (currentFormat === FORMAT.IFL) exportIflAsm();
+      else if (currentFormat === FORMAT.SCR_ULAPLUS) exportUlaPlusAsm();
     } else if (value === 'scr') {
       if (currentFormat !== FORMAT.SPECSCII || !specsciiCharGrid) return;
       const scrData = exportSpecsciiToScr();
-      const blob = new Blob([scrData], { type: 'application/octet-stream' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
       const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
-      a.download = baseName + '.scr';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      downloadFile(new Blob([scrData], { type: 'application/octet-stream' }), baseName + '.scr');
     } else if (value === 'tap') {
       if (currentFormat !== FORMAT.SPECSCII || !specsciiCharGrid) return;
       const tapData = exportSpecsciiToTap();
-      const blob = new Blob([tapData], { type: 'application/octet-stream' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
       const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
-      a.download = baseName + '.tap';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      downloadFile(new Blob([tapData], { type: 'application/octet-stream' }), baseName + '.tap');
     }
   });
 

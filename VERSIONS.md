@@ -1,5 +1,87 @@
 # SpectraLab Version History
 
+## v1.48.0
+- SNA/Z80 snapshot loading
+  - Load .sna snapshot files (48K and 128K formats)
+  - Load .z80 snapshot files (V1, V2, V3 formats with RLE decompression)
+  - Extracts ZX Spectrum screen(s) from snapshot RAM and opens as SCR pictures
+  - 128K snapshots: both normal screen (bank 5) and shadow screen (bank 7) extracted
+  - Empty screens (all zeroes) skipped automatically
+  - Border color set from snapshot header
+  - Snapshot files detected inside .zip archives
+- Memory Viewer — floating panel for browsing snapshot RAM as 1-bit graphics
+  - Renders any memory bank as green-on-black bitmap (16 bytes per row)
+  - Bank selector for 128K snapshots (empty banks filtered out)
+  - Address navigation: byte, line, row (8 lines), sprite, page steps
+  - Vertical scrollbar for fast navigation through memory
+  - Mouse wheel scrolling through memory
+  - Mouse-driven selection: click to position red rectangle, drag to resize
+  - Width/height inputs update live during drag
+  - Address label shows effective address of selection in decimal and hex
+  - Adjustable sprite size: width (1-8 bytes) and height (1-64 rows)
+  - Red selection rectangle movable anywhere within the dump viewport
+  - Preview canvas shows selected sprite at 2x zoom
+  - Linear and Char addressing modes (char mode uses 8x8 tile layout)
+  - Invert display toggle (black on green)
+  - Grid overlay (per byte vertical, per 8 rows horizontal)
+  - Zoom levels: x1, x2, x3, x4 (default x3)
+  - Draggable floating panel (same pattern as sprite editor)
+- Grab to Sprites from memory viewer
+  - Four grab modes matching picture grab: Single sprite, Sprite phases, Singles grid, Phases grid
+  - Grid sizing: by cell size (W×H) or by column/row count
+  - Grid ordering: row-first or column-first
+  - Respects char/linear addressing mode
+  - Sprite automatically added to sprite sheet
+
+## v1.47.0
+- Sprite editor — new "Sprites" sidebar tab with full-featured floating pixel editor
+  - Multi-tile sprites: NxM cells of 8x8 pixels (up to 8x8 = 64x64)
+  - Monochrome and attributed modes (per-cell ink/paper/bright)
+  - Drawing tools: draw, erase, fill (flood), line, rectangle, selection
+  - Mask editing layer with visual red overlay
+  - Transform tools: flip H/V, rotate CW/CCW (square sprites), shift 1px in any direction, invert, clear
+  - Animation frames: add, duplicate, delete, navigate, onion skinning
+  - Animation playback with adjustable speed; no layout jitter during playback
+  - Frame bar uses CSS grid for uniform thumbnail alignment
+  - Undo/redo for all pixel operations (Ctrl+Z/Ctrl+Shift+Z)
+  - Grid display with cell boundaries, toggleable
+  - Double-click sprite in list to open editor
+  - Save/load sprite sheets (.sls JSON format)
+  - Export as ASM (sjasmplus DB lines with labels and visual binary comments █·) or raw binary (.bin)
+  - ASM export includes SpectraLab version in header
+  - "Use as Brush" stamps current sprite frame onto the main canvas
+  - Sprite sheet included in project save/load (.slp)
+  - Draggable floating editor panel with keyboard shortcuts (D/E/F/L/R/S/M)
+- Grab from screen — rectangle-drag mode to extract sprites from loaded pictures
+  - Four grab modes: Single sprite, Sprite phases, Singles grid, Phases grid
+  - Single sprite: drag any rectangle, creates one sprite of that exact size
+  - Sprite phases: drag scattered sprites one by one, each adds a frame to the same sprite
+  - Singles grid: drag region, split into grid of separate sprites
+  - Phases grid: drag region, split into grid of animation frames for one sprite
+  - Grid sizing: by cell size (W×H) or by column/row count (divides evenly)
+  - Grid ordering: left→right then top→bottom, or top→bottom then left→right
+  - Mono or attributed mode per grab
+  - Grab stays active for multiple drags; Cancel button or Escape to exit
+- Xform tab: export section now appears immediately on selection (no longer requires clipboard copy)
+- Selection ASM export includes SpectraLab version in header
+
+## v1.46.0
+- ASM export for ULA+ pictures
+  - Programs 64-entry GRB332 palette via I/O ports (#BF3B register select, #FF3B data)
+  - Copies 6912 bytes screen data to #4000, enables ULA+ palette mode (register 64)
+  - Screen data supports embed (DB lines) or INCBIN; palette always embedded (64 bytes)
+  - sjasmplus compatible, SAVESNA output, ZXSPECTRUM48 device
+- Import dialog: dithering options filtered by format
+  - Cell-Aware group hidden for RGB3 and Mono (no attribute cells — cell dithering was silently mapped to global equivalents)
+  - Dithering row hidden for 53c format (uses pattern selector instead)
+  - Auto-switches to global equivalent when switching from cell format to non-cell format
+- Code deduplication and optimization
+  - Shared ASM export utilities: formatDbLines, getAsmBaseName, getAsmEmbedData, downloadFile (asm_export_utils.js)
+  - Removed duplicate formatDbLines from 4 ASM export files (bsc, flicker, ifl, ulaplus)
+  - Shared downloadFile replaces 20+ copy-paste download patterns across all JS files
+  - applyImageAdjustments helper replaces 8 identical adjustment blocks in image_import.js
+  - rgbaToFloat helper replaces 8 identical RGBA→float conversion loops in image_import.js
+
 ## v1.45.0
 - ULA+ palette loading & editing in image import
   - Palette source dropdown: Auto (generate optimal), Load .pal file, From ULA+ picture (.scr)

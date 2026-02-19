@@ -462,7 +462,7 @@
   }
 
   .panel-tab {
-    padding: 4px 12px;
+    padding: 4px 8px;
     font-size: 11px;
     background: transparent;
     border: 1px solid transparent;
@@ -1238,6 +1238,113 @@
     border-color: var(--accent-color);
     color: white;
   }
+
+  /* Sprite list in sidebar */
+  .sprite-list {
+    max-height: 120px;
+    overflow-y: auto;
+    border: 1px solid var(--border-secondary);
+    border-radius: 2px;
+    background: var(--bg-tertiary);
+  }
+  .sprite-list-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 4px;
+    font-size: 10px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border-secondary);
+  }
+  .sprite-list-item:hover { background: var(--bg-secondary); }
+  .sprite-list-item.selected { background: var(--accent-primary); color: #fff; }
+  .sprite-list-item canvas { image-rendering: pixelated; image-rendering: crisp-edges; }
+
+  /* Floating sprite editor panel */
+  .sprite-editor-panel {
+    position: fixed;
+    top: 100px;
+    left: 300px;
+    z-index: 9000;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: 4px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+    min-width: 320px;
+  }
+  .sprite-editor-titlebar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 8px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-secondary);
+    cursor: move;
+    font-size: 11px;
+    font-weight: bold;
+    user-select: none;
+  }
+  .sprite-editor-close {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 16px;
+    cursor: pointer;
+    padding: 0 4px;
+  }
+  .sprite-editor-close:hover { color: #ff6b6b; }
+  .sprite-editor-body { padding: 8px; }
+
+  #spriteEditorCanvas {
+    border: 1px solid var(--border-secondary);
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    cursor: crosshair;
+    background: #000;
+  }
+  #spritePreviewCanvas {
+    border: 1px solid var(--border-secondary);
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    background: #000;
+  }
+
+  .sprite-tool-btn {
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 3px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .sprite-tool-btn:hover { background: var(--bg-secondary); }
+  .sprite-tool-btn.active { background: var(--accent-primary); color: #fff; border-color: var(--accent-primary); }
+
+  .sprite-editor-tools {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    align-items: center;
+  }
+
+  .sprite-color-row {
+    display: flex;
+    gap: 1px;
+    margin-bottom: 2px;
+  }
+  .sprite-color-cell {
+    width: 14px;
+    height: 14px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 1px;
+    cursor: pointer;
+  }
+  .sprite-color-cell.selected { border-color: #fff; box-shadow: 0 0 2px #fff; }
 </style>
 </head>
 <body>
@@ -1250,7 +1357,7 @@
       <div class="panel-content">
         <!-- File input -->
         <div class="control-group">
-          <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.bmc4,.ifl,.mlt,.mc,.3,.img,.specscii,.sca,.slp,.slw,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
+          <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.bmc4,.ifl,.mlt,.mc,.3,.img,.specscii,.sca,.slp,.slw,.sna,.z80,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
         </div>
 
         <!-- New and Save buttons -->
@@ -1263,7 +1370,8 @@
         <div class="panel-tabs">
           <button class="panel-tab active" data-tab="view">View</button>
           <button class="panel-tab" data-tab="edit">Edit</button>
-          <button class="panel-tab" data-tab="transform">Transform</button>
+          <button class="panel-tab" data-tab="transform">Xform</button>
+          <button class="panel-tab" data-tab="sprites">Sprites</button>
         </div>
 
         <!-- View Tab Content -->
@@ -1948,6 +2056,102 @@
           </div>
         </div>
 
+        <!-- Sprites Tab Content -->
+        <div id="tabSprites" class="panel-tab-content">
+          <!-- Sprite list -->
+          <div id="spriteList" class="sprite-list"></div>
+          <!-- Add sprite button -->
+          <div style="display:flex; gap:4px; margin-top:4px;">
+            <button id="spriteAddBtn" class="editor-btn" title="Add new sprite">+ Add</button>
+            <button id="spriteDeleteBtn" class="editor-btn" title="Delete selected sprite">Delete</button>
+          </div>
+          <!-- Sprite properties (shown when sprite selected) -->
+          <div id="spriteProps" style="display:none; margin-top:6px;">
+            <label style="display:flex; align-items:center; gap:4px; font-size:10px;">
+              Name: <input id="spriteName" type="text" maxlength="16" style="flex:1; font-size:10px;">
+            </label>
+            <div style="display:flex; gap:4px; margin-top:4px; font-size:10px;">
+              <label>W: <select id="spriteCellsW" style="font-size:10px;">
+                <option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
+              </select></label>
+              <label>H: <select id="spriteCellsH" style="font-size:10px;">
+                <option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
+              </select></label>
+              <label>Mode: <select id="spriteMode" style="font-size:10px;">
+                <option value="mono">Mono</option><option value="attr">Attributed</option>
+              </select></label>
+            </div>
+            <!-- Frame bar -->
+            <div id="spriteFrameBar" style="display:grid; grid-template-columns:repeat(auto-fill, 24px); gap:2px; margin-top:6px;">
+            </div>
+            <div style="display:flex; gap:4px; margin-top:4px;">
+              <button id="spriteEditBtn" class="editor-btn" title="Open pixel editor">Edit</button>
+              <button id="spriteUseBrushBtn" class="editor-btn" title="Use as brush on canvas">Use as Brush</button>
+            </div>
+          </div>
+          <!-- Grab from screen (always visible, independent of sprite selection) -->
+          <div style="margin-top:6px; border-top:1px solid var(--border-secondary); padding-top:4px;">
+            <div style="display:flex; gap:4px; align-items:center;">
+              <button id="spriteGrabBtn" class="editor-btn" title="Grab sprites from loaded picture by dragging a rectangle">Grab</button>
+              <button id="spriteGrabStopBtn" class="editor-btn" style="display:none;" title="Stop grabbing (Escape)">Stop</button>
+              <span id="spriteGrabStatus" style="font-size:9px; color:var(--text-secondary);"></span>
+            </div>
+            <div id="spriteGrabConfig" style="display:none; margin-top:4px; padding:4px; border:1px solid var(--border-secondary); border-radius:2px; font-size:10px;">
+              <div style="font-size:9px; color:var(--text-secondary); margin-bottom:3px;">Drag rectangle on canvas to grab sprites</div>
+              <div style="display:flex; gap:4px; align-items:center; flex-wrap:wrap;">
+                <label>Grab: <select id="spriteGrabMode" style="font-size:10px;">
+                  <option value="single">Single sprite</option>
+                  <option value="phases">Sprite phases</option>
+                  <option value="grid">Singles grid</option>
+                  <option value="gridphases">Phases grid</option>
+                </select></label>
+                <label><select id="spriteGrabAttrMode" style="font-size:10px;">
+                  <option value="mono">Mono</option>
+                  <option value="attr">Attr</option>
+                </select></label>
+              </div>
+              <div id="spriteGrabGridOpts" style="display:none; margin-top:3px;">
+                <div style="display:flex; gap:4px; align-items:center; flex-wrap:wrap;">
+                  <label>Size by: <select id="spriteGrabSizeBy" style="font-size:10px;">
+                    <option value="cells">Cell size</option>
+                    <option value="count">Count</option>
+                  </select></label>
+                </div>
+                <div id="spriteGrabByCells" style="display:flex; gap:4px; margin-top:2px; align-items:center;">
+                  <label>W: <select id="spriteGrabW" style="font-size:10px;">
+                    <option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
+                  </select></label>
+                  <label>H: <select id="spriteGrabH" style="font-size:10px;">
+                    <option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
+                  </select></label>
+                </div>
+                <div id="spriteGrabByCount" style="display:none; gap:4px; margin-top:2px; align-items:center;">
+                  <label>Cols: <input id="spriteGrabCols" type="number" min="1" max="32" value="4" style="width:36px; font-size:10px;"></label>
+                  <label>Rows: <input id="spriteGrabRows" type="number" min="1" max="24" value="4" style="width:36px; font-size:10px;"></label>
+                </div>
+                <div style="display:flex; gap:4px; margin-top:2px; align-items:center;">
+                  <label>Order: <select id="spriteGrabOrder" style="font-size:10px;">
+                    <option value="row">L→R, T→B</option>
+                    <option value="col">T→B, L→R</option>
+                  </select></label>
+                </div>
+              </div>
+            </div>
+          </div>
+          <!-- Import/Export -->
+          <div style="display:flex; gap:4px; margin-top:6px; flex-wrap:wrap;">
+            <button id="spriteSaveBtn" class="editor-btn" title="Save sprite sheet">Save .sls</button>
+            <button id="spriteLoadBtn" class="editor-btn" title="Load sprite sheet">Load .sls</button>
+            <button id="spriteExportAsmBtn" class="editor-btn" title="Export as ASM">Export ASM</button>
+            <button id="spriteExportBinBtn" class="editor-btn" title="Export as binary">Export BIN</button>
+          </div>
+          <input type="file" id="spriteFileInput" accept=".sls" style="display:none;">
+          <!-- Memory Viewer (visible after snapshot loaded) -->
+          <div id="memViewerSection" style="display:none; margin-top:6px; border-top:1px solid var(--border-secondary); padding-top:4px;">
+            <button id="memViewerBtn" class="editor-btn" title="Browse snapshot memory as 1-bit graphics">Memory Viewer</button>
+          </div>
+        </div>
+
         <!-- SCA Animation Controls (always outside tabs) -->
         <div class="control-group" id="scaControls" style="display: none; flex-direction: column;">
           <div class="control-group-title" style="display: block; width: 100%; margin-bottom: 6px;">Animation</div>
@@ -2023,6 +2227,193 @@
   <div class="floating-palette-section" style="display: flex; align-items: center; gap: 6px;">
     <div class="floating-palette-colors" id="floatingColors"></div>
     <label style="font-size: 10px;"><input type="checkbox" id="floatingBright"> B</label>
+  </div>
+</div>
+
+<!-- Floating Sprite Editor Panel -->
+<div id="spriteEditorPanel" class="sprite-editor-panel" style="display:none;">
+  <div class="sprite-editor-titlebar">
+    <span id="spriteEditorTitle">Sprite Editor</span>
+    <button id="spriteEditorClose" class="sprite-editor-close">&times;</button>
+  </div>
+  <div class="sprite-editor-body">
+    <div style="display:flex; gap:8px;">
+      <!-- Main editing canvas -->
+      <div>
+        <canvas id="spriteEditorCanvas" width="256" height="256"></canvas>
+      </div>
+      <!-- Tool palette -->
+      <div class="sprite-editor-tools">
+        <button id="spriteToolDraw" class="sprite-tool-btn active" title="Draw (D)">&#9998;</button>
+        <button id="spriteToolErase" class="sprite-tool-btn" title="Erase (E)">&#9003;</button>
+        <button id="spriteToolFill" class="sprite-tool-btn" title="Fill (F)">&#9724;</button>
+        <button id="spriteToolLine" class="sprite-tool-btn" title="Line (L)">&#9585;</button>
+        <button id="spriteToolRect" class="sprite-tool-btn" title="Rectangle (R)">&#9634;</button>
+        <button id="spriteToolSelect" class="sprite-tool-btn" title="Select (S)">&#11036;</button>
+        <hr style="width:100%; border-color:var(--border-secondary);">
+        <button id="spriteToolMask" class="sprite-tool-btn" title="Toggle mask editing (M)">Mask</button>
+        <hr style="width:100%; border-color:var(--border-secondary);">
+        <!-- Attributed mode: color selectors -->
+        <div id="spriteAttrControls" style="display:none;">
+          <label style="font-size:9px;">Ink:</label>
+          <div id="spriteInkPalette" class="sprite-color-row"></div>
+          <label style="font-size:9px;">Paper:</label>
+          <div id="spritePaperPalette" class="sprite-color-row"></div>
+          <label style="font-size:9px;"><input type="checkbox" id="spriteBrightChk"> Bright</label>
+        </div>
+      </div>
+    </div>
+    <!-- Preview + frame controls -->
+    <div style="display:flex; gap:8px; margin-top:6px; align-items:center;">
+      <canvas id="spritePreviewCanvas" width="64" height="64" title="1x preview"></canvas>
+      <div style="display:flex; flex-direction:column; gap:2px; font-size:10px;">
+        <label><input type="checkbox" id="spriteOnionSkin"> Onion skin</label>
+        <label><input type="checkbox" id="spriteShowGrid" checked> Grid</label>
+        <label><input type="checkbox" id="spriteShowMask"> Show mask</label>
+        <div style="display:flex; gap:2px; margin-top:4px;">
+          <button id="spriteFramePrev" class="editor-btn" title="Previous frame">&lt;</button>
+          <span id="spriteFrameInfo" style="min-width:40px; text-align:center;">1/1</span>
+          <button id="spriteFrameNext" class="editor-btn" title="Next frame">&gt;</button>
+          <button id="spriteFrameAdd" class="editor-btn" title="Add frame">+</button>
+          <button id="spriteFrameDup" class="editor-btn" title="Duplicate frame">Dup</button>
+          <button id="spriteFrameDel" class="editor-btn" title="Delete frame">Del</button>
+        </div>
+        <div style="display:flex; gap:2px; margin-top:2px;">
+          <button id="spritePlayBtn" class="editor-btn">&#9654; Play</button>
+          <label style="font-size:9px;">Speed: <input type="range" id="spriteAnimSpeed" min="1" max="30" value="10" style="width:60px;"></label>
+        </div>
+      </div>
+    </div>
+    <!-- Transform buttons -->
+    <div style="display:flex; gap:2px; margin-top:6px; flex-wrap:wrap;">
+      <button id="spriteFlipH" class="editor-btn" title="Flip horizontal">FlipH</button>
+      <button id="spriteFlipV" class="editor-btn" title="Flip vertical">FlipV</button>
+      <button id="spriteRotCW" class="editor-btn" title="Rotate clockwise">RotCW</button>
+      <button id="spriteRotCCW" class="editor-btn" title="Rotate counter-clockwise">RotCCW</button>
+      <button id="spriteShiftL" class="editor-btn" title="Shift left 1px">&larr;</button>
+      <button id="spriteShiftR" class="editor-btn" title="Shift right 1px">&rarr;</button>
+      <button id="spriteShiftU" class="editor-btn" title="Shift up 1px">&uarr;</button>
+      <button id="spriteShiftD" class="editor-btn" title="Shift down 1px">&darr;</button>
+      <button id="spriteInvert" class="editor-btn" title="Invert pixels">Inv</button>
+      <button id="spriteClear" class="editor-btn" title="Clear frame">Clr</button>
+    </div>
+  </div>
+</div>
+
+<!-- Floating Memory Viewer Panel -->
+<div id="memViewerPanel" style="display:none; position:fixed; top:80px; left:200px; z-index:9000; background:var(--bg-primary); border:1px solid var(--border-primary); border-radius:4px; box-shadow:0 4px 16px rgba(0,0,0,0.3); min-width:340px;">
+  <div id="memViewerTitle" style="display:flex; justify-content:space-between; align-items:center; padding:4px 8px; background:var(--bg-secondary); border-bottom:1px solid var(--border-secondary); cursor:move; font-size:11px; font-weight:bold; user-select:none;">
+    <span>Memory Viewer</span>
+    <button id="memViewerClose" style="background:none; border:none; color:var(--text-secondary); font-size:16px; cursor:pointer; padding:0 4px;">&times;</button>
+  </div>
+  <div style="padding:8px;">
+    <div style="display:flex; gap:8px;">
+      <!-- Main dump canvas + scrollbar -->
+      <div style="display:flex; gap:0;">
+        <div>
+          <canvas id="memDumpCanvas" width="256" height="384" style="border:1px solid var(--border-secondary); image-rendering:pixelated; image-rendering:crisp-edges; background:#000; cursor:crosshair;"></canvas>
+          <div id="memAddrLabel" style="font-size:9px; color:var(--text-secondary); margin-top:2px;">Click to show address</div>
+        </div>
+        <input type="range" id="memScrollbar" min="0" max="16383" value="0" style="writing-mode:vertical-lr; direction:ltr; width:18px; margin:0; padding:0; cursor:ns-resize; align-self:stretch;">
+      </div>
+      <!-- Controls column -->
+      <div style="display:flex; flex-direction:column; gap:8px; font-size:12px; min-width:140px;">
+        <!-- Bank selector (128K) -->
+        <div id="memBankRow" style="display:none;">
+          <label style="display:flex; align-items:center; gap:6px;">Bank: <select id="memBankSelect" style="font-size:12px; width:54px; padding:3px;">
+            <option value="0">0</option><option value="1">1</option><option value="2">2</option>
+            <option value="3">3</option><option value="4">4</option><option value="5" selected>5</option>
+            <option value="6">6</option><option value="7">7</option>
+          </select></label>
+        </div>
+        <!-- Address -->
+        <div>
+          <label style="display:flex; align-items:center; gap:6px;">Address: <input id="memAddrInput" type="number" min="0" max="16383" value="0" style="width:64px; font-size:12px; padding:3px;"></label>
+        </div>
+        <!-- Navigation -->
+        <div style="display:flex; flex-direction:column; gap:3px;">
+          <div style="display:flex; gap:3px;">
+            <button id="memNavPrevByte" class="editor-btn" style="font-size:11px; padding:4px 0; flex:1;" title="-1 byte">&lt; B</button>
+            <button id="memNavNextByte" class="editor-btn" style="font-size:11px; padding:4px 0; flex:1;" title="+1 byte">B &gt;</button>
+          </div>
+          <div style="display:flex; gap:3px;">
+            <button id="memNavPrevLine" class="editor-btn" style="font-size:11px; padding:4px 0; flex:1;" title="-1 line">&lt; Line</button>
+            <button id="memNavNextLine" class="editor-btn" style="font-size:11px; padding:4px 0; flex:1;" title="+1 line">Line &gt;</button>
+          </div>
+          <div style="display:flex; gap:3px;">
+            <button id="memNavPrevRow" class="editor-btn" style="font-size:11px; padding:4px 0; flex:1;" title="-8 lines">&lt; Row</button>
+            <button id="memNavNextRow" class="editor-btn" style="font-size:11px; padding:4px 0; flex:1;" title="+8 lines">Row &gt;</button>
+          </div>
+          <div style="display:flex; gap:3px;">
+            <button id="memNavPrevSprite" class="editor-btn" style="font-size:11px; padding:4px 0; flex:1;" title="-1 sprite">&lt; Spr</button>
+            <button id="memNavNextSprite" class="editor-btn" style="font-size:11px; padding:4px 0; flex:1;" title="+1 sprite">Spr &gt;</button>
+          </div>
+          <div style="display:flex; gap:3px;">
+            <button id="memNavPrevPage" class="editor-btn" style="font-size:11px; padding:4px 0; flex:1;" title="-1 page">&lt; Page</button>
+            <button id="memNavNextPage" class="editor-btn" style="font-size:11px; padding:4px 0; flex:1;" title="+1 page">Page &gt;</button>
+          </div>
+        </div>
+        <!-- Width/Height -->
+        <div style="display:flex; flex-direction:column; gap:4px;">
+          <label style="display:flex; align-items:center; gap:6px;">W: <input id="memWidthInput" type="number" min="1" max="8" value="2" style="width:44px; font-size:12px; padding:3px;"> bytes</label>
+          <label style="display:flex; align-items:center; gap:6px;">H: <input id="memHeightInput" type="number" min="1" max="64" value="16" style="width:44px; font-size:12px; padding:3px;"> rows</label>
+        </div>
+        <!-- Options -->
+        <div style="display:flex; flex-direction:column; gap:5px;">
+          <label style="display:flex; align-items:center; gap:4px;"><input type="checkbox" id="memInvertChk" style="width:14px; height:14px;"> Invert</label>
+          <label style="display:flex; align-items:center; gap:4px;"><input type="checkbox" id="memGridChk" checked style="width:14px; height:14px;"> Grid</label>
+          <label style="display:flex; align-items:center; gap:4px;"><input type="checkbox" id="memCharChk" style="width:14px; height:14px;"> Char mode</label>
+        </div>
+        <!-- Zoom -->
+        <div style="display:flex; gap:8px; align-items:center;">
+          <span>Zoom:</span>
+          <label style="display:flex; align-items:center; gap:2px;"><input type="radio" name="memZoom" id="memZoom1" value="1" style="width:14px; height:14px;"> x1</label>
+          <label style="display:flex; align-items:center; gap:2px;"><input type="radio" name="memZoom" id="memZoom2" value="2" style="width:14px; height:14px;"> x2</label>
+          <label style="display:flex; align-items:center; gap:2px;"><input type="radio" name="memZoom" id="memZoom3" value="3" checked style="width:14px; height:14px;"> x3</label>
+          <label style="display:flex; align-items:center; gap:2px;"><input type="radio" name="memZoom" id="memZoom4" value="4" style="width:14px; height:14px;"> x4</label>
+        </div>
+        <!-- Preview -->
+        <div>
+          <div style="color:var(--text-secondary); margin-bottom:3px;">Preview:</div>
+          <canvas id="memPreviewCanvas" width="32" height="32" style="border:1px solid var(--border-secondary); image-rendering:pixelated; image-rendering:crisp-edges; background:#000;"></canvas>
+        </div>
+        <!-- Grab -->
+        <div style="margin-top:6px; border-top:1px solid var(--border-secondary); padding-top:6px; display:flex; flex-direction:column; gap:5px;">
+          <div style="display:flex; gap:6px; align-items:center;">
+            <button id="memGrabBtn" class="editor-btn" style="font-size:12px; padding:5px 10px;">Grab</button>
+            <span id="memGrabStatus" style="font-size:11px; color:var(--text-secondary);"></span>
+          </div>
+          <label style="display:flex; align-items:center; gap:6px;">Mode: <select id="memGrabModeSelect" style="font-size:12px; padding:3px;">
+            <option value="single">Single sprite</option>
+            <option value="phases">Sprite phases</option>
+            <option value="grid">Singles grid</option>
+            <option value="gridphases">Phases grid</option>
+          </select></label>
+          <div id="memGrabGridOpts" style="display:none; flex-direction:column; gap:4px;">
+            <label style="display:flex; align-items:center; gap:6px;">Size by: <select id="memGrabSizeBy" style="font-size:12px; padding:3px;">
+              <option value="cells">Cell size</option>
+              <option value="count">Count</option>
+            </select></label>
+            <div id="memGrabByCells" style="display:flex; gap:6px; align-items:center;">
+              <label style="display:flex; align-items:center; gap:4px;">W: <select id="memGrabCellsW" style="font-size:12px; padding:3px;">
+                <option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
+              </select></label>
+              <label style="display:flex; align-items:center; gap:4px;">H: <select id="memGrabCellsH" style="font-size:12px; padding:3px;">
+                <option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
+              </select></label>
+            </div>
+            <div id="memGrabByCount" style="display:none; gap:6px; align-items:center;">
+              <label style="display:flex; align-items:center; gap:4px;">Cols: <input id="memGrabCols" type="number" min="1" max="32" value="4" style="width:44px; font-size:12px; padding:3px;"></label>
+              <label style="display:flex; align-items:center; gap:4px;">Rows: <input id="memGrabRows" type="number" min="1" max="24" value="4" style="width:44px; font-size:12px; padding:3px;"></label>
+            </div>
+            <label style="display:flex; align-items:center; gap:6px;">Order: <select id="memGrabOrder" style="font-size:12px; padding:3px;">
+              <option value="row">L&#8594;R, T&#8594;B</option>
+              <option value="col">T&#8594;B, L&#8594;R</option>
+            </select></label>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -2542,10 +2933,10 @@
               <option value="fit-height">Fit height</option>
             </select>
           </label>
-          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;">
+          <label id="importDitheringRow" style="font-size: 11px; display: flex; align-items: center; gap: 4px;">
             <span style="width: 36px;">Dither:</span>
             <select id="importDithering" style="width: 100px; padding: 2px; font-size: 11px;">
-              <optgroup label="Cell-Aware">
+              <optgroup id="importDitherCellGroup" label="Cell-Aware">
                 <option value="cell-floyd" selected>Cell Floyd</option>
                 <option value="cell-atkinson">Cell Atkinson</option>
                 <option value="cell-serpentine">Cell Serpentine</option>
@@ -2791,12 +3182,16 @@
 <script src="js/app_config.js"></script>
 <script src="js/screen_viewer.js"></script>
 <script src="js/image_import.js"></script>
+<script src="js/asm_export_utils.js"></script>
 <script src="js/bsc_asm_export.js"></script>
 <script src="js/flicker_asm_export.js"></script>
 <script src="js/ifl_asm_export.js"></script>
+<script src="js/ulaplus_asm_export.js"></script>
+<script src="js/snapshot_loader.js"></script>
 <script src="js/screen_viewer_ui.js"></script>
 <script src="js/sca_editor.js"></script>
 <script src="js/qrcode.js"></script>
 <script src="js/screen_editor.js"></script>
+<script src="js/sprite_editor.js"></script>
 </body>
 </html>

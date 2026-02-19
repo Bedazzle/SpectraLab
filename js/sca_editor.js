@@ -1376,16 +1376,7 @@ function saveTrimmedSca() {
   }
   const newFileName = `${baseName}${suffix}.sca`;
 
-  // Create download
-  const blob = new Blob([newData], { type: 'application/octet-stream' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = newFileName;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  downloadFile(new Blob([newData], { type: 'application/octet-stream' }), newFileName);
 }
 
 /**
@@ -1465,14 +1456,7 @@ async function exportToScrSeries() {
   // Generate and download ZIP
   try {
     const content = await zip.generateAsync({ type: 'blob' });
-    const url = URL.createObjectURL(content);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${baseName}_frames.zip`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    downloadFile(content, `${baseName}_frames.zip`);
   } catch (error) {
     alert('Error creating ZIP file: ' + error.message);
   }
@@ -1537,14 +1521,7 @@ async function exportTo53cSeries() {
   // Generate and download ZIP
   try {
     const content = await zip.generateAsync({ type: 'blob' });
-    const url = URL.createObjectURL(content);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${baseName}_attrs.zip`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    downloadFile(content, `${baseName}_attrs.zip`);
   } catch (error) {
     alert('Error creating ZIP file: ' + error.message);
   }

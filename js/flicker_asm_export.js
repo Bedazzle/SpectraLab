@@ -16,15 +16,6 @@ function generateGigascreenAsm(imgData, baseName = 'gigascreen', embedData = tru
   const frame1 = Array.from(imgData.slice(0, 6912));
   const frame2 = Array.from(imgData.slice(6912, 13824));
 
-  function formatDbLines(data, bytesPerLine) {
-    const lines = [];
-    for (let i = 0; i < data.length; i += bytesPerLine) {
-      const chunk = data.slice(i, Math.min(i + bytesPerLine, data.length));
-      lines.push('    DB ' + chunk.map(b => '#' + b.toString(16).toUpperCase().padStart(2, '0')).join(','));
-    }
-    return lines.join('\n');
-  }
-
   const asm = [];
 
   // === Header ===
@@ -364,29 +355,11 @@ function exportGigascreenAsm() {
     return;
   }
 
-  let baseName = 'gigascreen';
-  if (currentFileName) {
-    const fileName = currentFileName.includes('/')
-      ? currentFileName.substring(currentFileName.lastIndexOf('/') + 1)
-      : currentFileName;
-    baseName = fileName.replace(/\.[^.]+$/, '');
-  }
-
-  const embedChk = document.getElementById('editorEmbedDataChk');
-  const embedData = embedChk ? embedChk.checked : true;
-
-  const result = generateGigascreenAsm(screenData, baseName, embedData);
+  const baseName = getAsmBaseName(currentFileName, 'gigascreen');
+  const result = generateGigascreenAsm(screenData, baseName, getAsmEmbedData());
   if (!result) return;
 
-  const blob = new Blob([result.asm], { type: 'text/plain' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = baseName + '.asm';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  downloadFile(result.asm, baseName + '.asm');
 }
 
 /**
@@ -398,26 +371,10 @@ function exportRgb3Asm() {
     return;
   }
 
-  let baseName = 'rgb3';
-  if (currentFileName) {
-    const fileName = currentFileName.includes('/')
-      ? currentFileName.substring(currentFileName.lastIndexOf('/') + 1)
-      : currentFileName;
-    baseName = fileName.replace(/\.[^.]+$/, '');
-  }
-
+  const baseName = getAsmBaseName(currentFileName, 'rgb3');
   // RGB3 always embeds data in code (LD HL,nn) - checkbox is ignored
   const result = generateRgb3Asm(screenData, baseName);
   if (!result) return;
 
-  const blob = new Blob([result.asm], { type: 'text/plain' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = baseName + '.asm';
-
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  downloadFile(result.asm, baseName + '.asm');
 }

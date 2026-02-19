@@ -142,16 +142,6 @@ function generateBscAsm(baseName = 'border', embedData = true) {
     return curColor;
   }
 
-  // --- Format DB lines for screen data ---
-  function formatDbLines(data, bytesPerLine) {
-    const lines = [];
-    for (let i = 0; i < data.length; i += bytesPerLine) {
-      const chunk = data.slice(i, Math.min(i + bytesPerLine, data.length));
-      lines.push('    DB ' + chunk.map(b => '#' + b.toString(16).toUpperCase().padStart(2, '0')).join(','));
-    }
-    return lines.join('\n');
-  }
-
   const scrData = Array.from(screenData.slice(0, SCREEN.TOTAL_SIZE));
   const asm = [];
 
@@ -331,28 +321,9 @@ function exportBscAsm() {
     return;
   }
 
-  // Extract just the filename (handle zip paths like "archive.zip/image.bsc")
-  let baseName = 'border';
-  if (currentFileName) {
-    const fileName = currentFileName.includes('/')
-      ? currentFileName.substring(currentFileName.lastIndexOf('/') + 1)
-      : currentFileName;
-    baseName = fileName.replace(/\.[^.]+$/, '');
-  }
-
-  const embedChk = document.getElementById('editorEmbedDataChk');
-  const embedData = embedChk ? embedChk.checked : true;
-
-  const result = generateBscAsm(baseName, embedData);
+  const baseName = getAsmBaseName(currentFileName, 'border');
+  const result = generateBscAsm(baseName, getAsmEmbedData());
   if (!result) return;
 
-  const blob = new Blob([result.asm], { type: 'text/plain' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = baseName + '.asm';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  downloadFile(result.asm, baseName + '.asm');
 }

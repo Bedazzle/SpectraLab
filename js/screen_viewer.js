@@ -3027,7 +3027,7 @@ function getUlaPlusPaletteIndex(attr, isInk) {
 // ============================================================================
 
 /** @type {string[]} - List of supported file extensions */
-const SUPPORTED_EXTENSIONS = ['scr', '53c', 'atr', 'bsc', 'ifl', 'bmc4', 'mlt', 'mc', '3', 'img', 'mem', 'specscii', 'sca'];
+const SUPPORTED_EXTENSIONS = ['scr', '53c', 'atr', 'bsc', 'ifl', 'bmc4', 'mlt', 'mc', '3', 'img', 'mem', 'specscii', 'sca', 'sna', 'z80'];
 const IMAGE_EXTENSIONS = ['png', 'gif', 'jpg', 'jpeg', 'webp', 'bmp'];
 
 /** @type {JSZip|null} - Current loaded ZIP archive */
@@ -3157,6 +3157,17 @@ async function loadFileFromZip(fileName) {
     const arrayBuffer = await zipEntry.async('arraybuffer');
     const data = new Uint8Array(arrayBuffer);
     const fullName = `${currentZipName}/${fileName}`;
+
+    // Handle snapshot files (.sna/.z80) from ZIP
+    if (typeof isSnapshotFile === 'function' && isSnapshotFile(fileName)) {
+      const blob = new Blob([arrayBuffer]);
+      const file = new File([blob], fileName);
+      if (typeof loadSnapshotFile === 'function') {
+        loadSnapshotFile(file);
+      }
+      return;
+    }
+
     const format = detectFormat(fileName, data.length);
 
     // Check for invalid format (e.g., .img file with wrong size)

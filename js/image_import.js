@@ -1752,6 +1752,46 @@ function getBitmapOffset(y) {
 }
 
 /**
+ * Apply all image adjustments in standard order.
+ * Used by all convert functions except convertTo53c (which uses different order).
+ * @param {Uint8ClampedArray} pixels - RGBA pixel data (modified in place)
+ * @param {number} width - Image width
+ * @param {number} height - Image height
+ * @param {Object} adj - Adjustment parameters
+ */
+function applyImageAdjustments(pixels, width, height, adj) {
+  if (adj.grayscale) {
+    applyGrayscale(pixels);
+  } else {
+    if (adj.saturation !== 0) applySaturation(pixels, adj.saturation);
+    if (adj.balanceR !== 0 || adj.balanceG !== 0 || adj.balanceB !== 0) {
+      applyColorBalance(pixels, adj.balanceR, adj.balanceG, adj.balanceB);
+    }
+  }
+  if (adj.gamma !== 1.0) applyGamma(pixels, adj.gamma);
+  if (adj.blackPoint > 0 || adj.whitePoint < 255) applyLevels(pixels, adj.blackPoint, adj.whitePoint);
+  if (adj.brightness !== 0 || adj.contrast !== 0) applyBrightnessContrast(pixels, adj.brightness, adj.contrast);
+  if (adj.smoothing > 0) applyBilateralFilter(pixels, width, height, adj.smoothing);
+  if (adj.sharpness > 0) applySharpening(pixels, width, height, adj.sharpness);
+}
+
+/**
+ * Convert RGBA pixel data (Uint8ClampedArray) to float RGB array for dithering.
+ * @param {Uint8ClampedArray} pixels - RGBA pixel data
+ * @param {number} numPixels - Number of pixels (width * height)
+ * @returns {Float32Array} Float RGB array (3 values per pixel)
+ */
+function rgbaToFloat(pixels, numPixels) {
+  const floatPixels = new Float32Array(numPixels * 3);
+  for (let i = 0; i < numPixels; i++) {
+    floatPixels[i * 3] = pixels[i * 4];
+    floatPixels[i * 3 + 1] = pixels[i * 4 + 1];
+    floatPixels[i * 3 + 2] = pixels[i * 4 + 2];
+  }
+  return floatPixels;
+}
+
+/**
  * Convert image to SCR format
  * @param {HTMLCanvasElement} sourceCanvas - Source canvas (256x192)
  * @param {string} dithering - Dithering method: 'none', 'floyd-steinberg', 'ordered', 'atkinson'
@@ -1769,7 +1809,6 @@ function getBitmapOffset(y) {
  * @returns {Uint8Array} 6912-byte SCR data
  */
 function convertToScr(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, monoOutput = false) {
-  // Cache color distance mode setting once at start
   updateColorDistanceMode();
 
   const ctx = sourceCanvas.getContext('2d');
@@ -1778,60 +1817,15 @@ function convertToScr(sourceCanvas, dithering, brightness, contrast, saturation 
   const imageData = ctx.getImageData(0, 0, 256, 192);
   const pixels = imageData.data;
 
-  // Apply grayscale first (if enabled, skip saturation and color balance)
-  if (grayscale) {
-    applyGrayscale(pixels);
-  } else {
-    // Apply saturation
-    if (saturation !== 0) {
-      applySaturation(pixels, saturation);
-    }
-    // Apply color balance
-    if (balanceR !== 0 || balanceG !== 0 || balanceB !== 0) {
-      applyColorBalance(pixels, balanceR, balanceG, balanceB);
-    }
-  }
-
-  // Apply gamma correction
-  if (gamma !== 1.0) {
-    applyGamma(pixels, gamma);
-  }
-
-  // Apply levels adjustment
-  if (blackPoint > 0 || whitePoint < 255) {
-    applyLevels(pixels, blackPoint, whitePoint);
-  }
-
-  // Apply brightness/contrast
-  if (brightness !== 0 || contrast !== 0) {
-    applyBrightnessContrast(pixels, brightness, contrast);
-  }
-
-  // Apply smoothing (bilateral filter) - before sharpening to reduce noise first
-  if (smoothing > 0) {
-    applyBilateralFilter(pixels, 256, 192, smoothing);
-  }
-
-  // Apply sharpening
-  if (sharpness > 0) {
-    applySharpening(pixels, 256, 192, sharpness);
-  }
+  applyImageAdjustments(pixels, 256, 192, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
 
   // For mono output, convert to grayscale BEFORE dithering
-  // This ensures dithering works on luminance values, not colors
   if (monoOutput && !grayscale) {
     applyGrayscale(pixels);
   }
 
-  // Convert to float array for dithering
-  const floatPixels = new Float32Array(256 * 192 * 3);
-  for (let i = 0; i < 256 * 192; i++) {
-    floatPixels[i * 3] = pixels[i * 4];
-    floatPixels[i * 3 + 1] = pixels[i * 4 + 1];
-    floatPixels[i * 3 + 2] = pixels[i * 4 + 2];
-  }
+  const floatPixels = rgbaToFloat(pixels, 256 * 192);
 
-  // Get palette
   const palette = getCombinedPalette();
   const fullPalette = [...palette.regular, ...palette.bright];
 
@@ -2250,28 +2244,9 @@ function convertToUlaPlus(sourceCanvas, dithering, brightness, contrast, saturat
   const imageData = ctx.getImageData(0, 0, 256, 192);
   const pixels = imageData.data;
 
-  // Apply image adjustments
-  if (grayscale) {
-    applyGrayscale(pixels);
-  } else {
-    if (saturation !== 0) applySaturation(pixels, saturation);
-    if (balanceR !== 0 || balanceG !== 0 || balanceB !== 0) {
-      applyColorBalance(pixels, balanceR, balanceG, balanceB);
-    }
-  }
-  if (gamma !== 1.0) applyGamma(pixels, gamma);
-  if (blackPoint > 0 || whitePoint < 255) applyLevels(pixels, blackPoint, whitePoint);
-  if (brightness !== 0 || contrast !== 0) applyBrightnessContrast(pixels, brightness, contrast);
-  if (smoothing > 0) applyBilateralFilter(pixels, 256, 192, smoothing);
-  if (sharpness > 0) applySharpening(pixels, 256, 192, sharpness);
+  applyImageAdjustments(pixels, 256, 192, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
 
-  // Convert to float array
-  const floatPixels = new Float32Array(256 * 192 * 3);
-  for (let i = 0; i < 256 * 192; i++) {
-    floatPixels[i * 3] = pixels[i * 4];
-    floatPixels[i * 3 + 1] = pixels[i * 4 + 1];
-    floatPixels[i * 3 + 2] = pixels[i * 4 + 2];
-  }
+  const floatPixels = rgbaToFloat(pixels, 256 * 192);
 
   // Generate optimal palette or use external one
   const palette = externalPalette
@@ -2669,33 +2644,13 @@ function convertToIfl(sourceCanvas, dithering, brightness, contrast, saturation 
   const imageData = ctx.getImageData(0, 0, 256, 192);
   const pixels = imageData.data;
 
-  // Apply image adjustments (same as SCR)
-  if (grayscale) {
-    applyGrayscale(pixels);
-  } else {
-    if (saturation !== 0) applySaturation(pixels, saturation);
-    if (balanceR !== 0 || balanceG !== 0 || balanceB !== 0) {
-      applyColorBalance(pixels, balanceR, balanceG, balanceB);
-    }
-  }
-  if (gamma !== 1.0) applyGamma(pixels, gamma);
-  if (blackPoint > 0 || whitePoint < 255) applyLevels(pixels, blackPoint, whitePoint);
-  if (brightness !== 0 || contrast !== 0) applyBrightnessContrast(pixels, brightness, contrast);
-  if (smoothing > 0) applyBilateralFilter(pixels, 256, 192, smoothing);
-  if (sharpness > 0) applySharpening(pixels, 256, 192, sharpness);
+  applyImageAdjustments(pixels, 256, 192, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
 
-  // For mono output, convert to grayscale before dithering
   if (monoOutput && !grayscale) {
     applyGrayscale(pixels);
   }
 
-  // Convert to float array for processing
-  const floatPixels = new Float32Array(256 * 192 * 3);
-  for (let i = 0; i < 256 * 192; i++) {
-    floatPixels[i * 3] = pixels[i * 4];
-    floatPixels[i * 3 + 1] = pixels[i * 4 + 1];
-    floatPixels[i * 3 + 2] = pixels[i * 4 + 2];
-  }
+  const floatPixels = rgbaToFloat(pixels, 256 * 192);
 
   const palette = getCombinedPalette();
   const fullPalette = [...palette.regular, ...palette.bright];
@@ -3049,33 +3004,13 @@ function convertToMlt(sourceCanvas, dithering, brightness, contrast, saturation 
   const imageData = ctx.getImageData(0, 0, 256, 192);
   const pixels = imageData.data;
 
-  // Apply image adjustments (same as SCR)
-  if (grayscale) {
-    applyGrayscale(pixels);
-  } else {
-    if (saturation !== 0) applySaturation(pixels, saturation);
-    if (balanceR !== 0 || balanceG !== 0 || balanceB !== 0) {
-      applyColorBalance(pixels, balanceR, balanceG, balanceB);
-    }
-  }
-  if (gamma !== 1.0) applyGamma(pixels, gamma);
-  if (blackPoint > 0 || whitePoint < 255) applyLevels(pixels, blackPoint, whitePoint);
-  if (brightness !== 0 || contrast !== 0) applyBrightnessContrast(pixels, brightness, contrast);
-  if (smoothing > 0) applyBilateralFilter(pixels, 256, 192, smoothing);
-  if (sharpness > 0) applySharpening(pixels, 256, 192, sharpness);
+  applyImageAdjustments(pixels, 256, 192, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
 
-  // For mono output, convert to grayscale before dithering
   if (monoOutput && !grayscale) {
     applyGrayscale(pixels);
   }
 
-  // Convert to float array for processing
-  const floatPixels = new Float32Array(256 * 192 * 3);
-  for (let i = 0; i < 256 * 192; i++) {
-    floatPixels[i * 3] = pixels[i * 4];
-    floatPixels[i * 3 + 1] = pixels[i * 4 + 1];
-    floatPixels[i * 3 + 2] = pixels[i * 4 + 2];
-  }
+  const floatPixels = rgbaToFloat(pixels, 256 * 192);
 
   const palette = getCombinedPalette();
   const fullPalette = [...palette.regular, ...palette.bright];
@@ -3385,20 +3320,7 @@ function convertToBmc4(sourceCanvas, dithering, brightness, contrast, saturation
   const imageData = ctx.getImageData(0, 0, 384, 304);
   const pixels = imageData.data;
 
-  // Apply adjustments to full 384x304 image
-  if (grayscale) {
-    applyGrayscale(pixels);
-  } else {
-    if (saturation !== 0) applySaturation(pixels, saturation);
-    if (balanceR !== 0 || balanceG !== 0 || balanceB !== 0) {
-      applyColorBalance(pixels, balanceR, balanceG, balanceB);
-    }
-  }
-  if (gamma !== 1.0) applyGamma(pixels, gamma);
-  if (blackPoint > 0 || whitePoint < 255) applyLevels(pixels, blackPoint, whitePoint);
-  if (brightness !== 0 || contrast !== 0) applyBrightnessContrast(pixels, brightness, contrast);
-  if (smoothing > 0) applyBilateralFilter(pixels, 384, 304, smoothing);
-  if (sharpness > 0) applySharpening(pixels, 384, 304, sharpness);
+  applyImageAdjustments(pixels, 384, 304, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
 
   // Extract main screen area (256x192 at offset 64,64)
   const mainPixels = new Uint8ClampedArray(256 * 192 * 4);
@@ -3418,12 +3340,7 @@ function convertToBmc4(sourceCanvas, dithering, brightness, contrast, saturation
     applyGrayscale(mainPixels);
   }
 
-  const floatPixels = new Float32Array(256 * 192 * 3);
-  for (let i = 0; i < 256 * 192; i++) {
-    floatPixels[i * 3] = mainPixels[i * 4];
-    floatPixels[i * 3 + 1] = mainPixels[i * 4 + 1];
-    floatPixels[i * 3 + 2] = mainPixels[i * 4 + 2];
-  }
+  const floatPixels = rgbaToFloat(mainPixels, 256 * 192);
 
   const palette = getCombinedPalette();
   const fullPalette = [...palette.regular, ...palette.bright];
@@ -3625,33 +3542,14 @@ function convertToMono(sourceCanvas, dithering, brightness, contrast, saturation
   const imageData = ctx.getImageData(0, 0, 256, height);
   const pixels = imageData.data;
 
-  // Apply image adjustments
-  if (grayscale) {
-    applyGrayscale(pixels);
-  } else {
-    if (saturation !== 0) applySaturation(pixels, saturation);
-    if (balanceR !== 0 || balanceG !== 0 || balanceB !== 0) {
-      applyColorBalance(pixels, balanceR, balanceG, balanceB);
-    }
-  }
-  if (gamma !== 1.0) applyGamma(pixels, gamma);
-  if (blackPoint > 0 || whitePoint < 255) applyLevels(pixels, blackPoint, whitePoint);
-  if (brightness !== 0 || contrast !== 0) applyBrightnessContrast(pixels, brightness, contrast);
-  if (smoothing > 0) applyBilateralFilter(pixels, 256, height, smoothing);
-  if (sharpness > 0) applySharpening(pixels, 256, height, sharpness);
+  applyImageAdjustments(pixels, 256, height, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
 
-  // For mono format, convert to grayscale before dithering (if not already done)
-  // This ensures dithering works on luminance values, not colors
+  // For mono format, always convert to grayscale before dithering
   if (!grayscale) {
     applyGrayscale(pixels);
   }
 
-  const floatPixels = new Float32Array(256 * height * 3);
-  for (let i = 0; i < 256 * height; i++) {
-    floatPixels[i * 3] = pixels[i * 4];
-    floatPixels[i * 3 + 1] = pixels[i * 4 + 1];
-    floatPixels[i * 3 + 2] = pixels[i * 4 + 2];
-  }
+  const floatPixels = rgbaToFloat(pixels, 256 * height);
 
   const palette = getCombinedPalette();
   // Monochrome uses only black and white
@@ -3741,27 +3639,9 @@ function convertToRgb3(sourceCanvas, dithering, brightness, contrast, saturation
   const imageData = ctx.getImageData(0, 0, 256, 192);
   const pixels = imageData.data;
 
-  // Apply image adjustments
-  if (grayscale) {
-    applyGrayscale(pixels);
-  } else {
-    if (saturation !== 0) applySaturation(pixels, saturation);
-    if (balanceR !== 0 || balanceG !== 0 || balanceB !== 0) {
-      applyColorBalance(pixels, balanceR, balanceG, balanceB);
-    }
-  }
-  if (gamma !== 1.0) applyGamma(pixels, gamma);
-  if (blackPoint > 0 || whitePoint < 255) applyLevels(pixels, blackPoint, whitePoint);
-  if (brightness !== 0 || contrast !== 0) applyBrightnessContrast(pixels, brightness, contrast);
-  if (smoothing > 0) applyBilateralFilter(pixels, 256, 192, smoothing);
-  if (sharpness > 0) applySharpening(pixels, 256, 192, sharpness);
+  applyImageAdjustments(pixels, 256, 192, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
 
-  const floatPixels = new Float32Array(256 * 192 * 3);
-  for (let i = 0; i < 256 * 192; i++) {
-    floatPixels[i * 3] = pixels[i * 4];
-    floatPixels[i * 3 + 1] = pixels[i * 4 + 1];
-    floatPixels[i * 3 + 2] = pixels[i * 4 + 2];
-  }
+  const floatPixels = rgbaToFloat(pixels, 256 * 192);
 
   // Apply dithering — each RGB channel independently as 1-bit.
   // RGB3 has 3 independent bitplanes, so per-channel dithering produces
@@ -4072,7 +3952,6 @@ function convertTo53c(sourceCanvas, brightness, contrast, saturation = 0, gamma 
  * @returns {Uint8Array} 11136-byte BSC data
  */
 function convertToBsc(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, monoOutput = false) {
-  // Cache color distance mode setting once at start
   updateColorDistanceMode();
 
   const ctx = sourceCanvas.getContext('2d');
@@ -4081,20 +3960,7 @@ function convertToBsc(sourceCanvas, dithering, brightness, contrast, saturation 
   const imageData = ctx.getImageData(0, 0, 384, 304);
   const pixels = imageData.data;
 
-  // Apply adjustments to full image
-  if (grayscale) {
-    applyGrayscale(pixels);
-  } else {
-    if (saturation !== 0) applySaturation(pixels, saturation);
-    if (balanceR !== 0 || balanceG !== 0 || balanceB !== 0) {
-      applyColorBalance(pixels, balanceR, balanceG, balanceB);
-    }
-  }
-  if (gamma !== 1.0) applyGamma(pixels, gamma);
-  if (blackPoint > 0 || whitePoint < 255) applyLevels(pixels, blackPoint, whitePoint);
-  if (brightness !== 0 || contrast !== 0) applyBrightnessContrast(pixels, brightness, contrast);
-  if (smoothing > 0) applyBilateralFilter(pixels, 384, 304, smoothing);
-  if (sharpness > 0) applySharpening(pixels, 384, 304, sharpness);
+  applyImageAdjustments(pixels, 384, 304, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
 
   // Extract main screen area (256x192 at offset 64,64)
   const mainCanvas = document.createElement('canvas');
@@ -6126,10 +5992,28 @@ function initImageImport() {
     importOffset.y = 0;
     if (importElements.offsetX) importElements.offsetX.value = '0';
     if (importElements.offsetY) importElements.offsetY.value = '0';
-    // Show/hide 53c pattern selector
+    // Show/hide 53c pattern selector and dithering row
     const patternRow = document.getElementById('import53cPatternRow');
     if (patternRow) {
       patternRow.style.display = format === '53c' ? 'flex' : 'none';
+    }
+    const ditheringRow = document.getElementById('importDitheringRow');
+    if (ditheringRow) {
+      ditheringRow.style.display = format === '53c' ? 'none' : 'flex';
+    }
+    // Hide cell-aware dithering for formats without attribute cells (RGB3, Mono)
+    const cellGroup = document.getElementById('importDitherCellGroup');
+    const noCellFormats = format === 'rgb3' || format === 'mono' || format === 'mono_2_3' || format === 'mono_1_3';
+    if (cellGroup) {
+      cellGroup.style.display = noCellFormats ? 'none' : '';
+    }
+    // If switching to non-cell format while a cell-aware method is selected, switch to global equivalent
+    const ditherSelect = document.getElementById('importDithering');
+    if (noCellFormats && ditherSelect && ditherSelect.value.startsWith('cell-')) {
+      const mapped = mapCellDithering(ditherSelect.value);
+      // Find matching option in global group, or fall back to floyd-steinberg
+      const hasOption = Array.from(ditherSelect.options).some(o => o.value === mapped);
+      ditherSelect.value = hasOption ? mapped : 'floyd-steinberg';
     }
     // Show/hide ULA+ palette row and standard palette row
     if (importElements.ulaPlusPaletteRow) {

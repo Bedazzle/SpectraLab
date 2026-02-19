@@ -48,6 +48,8 @@ function initScreenViewerUI() {
         }
       } else if (typeof isImageFile === 'function' && isImageFile(file.name)) {
         openImportDialog(file);
+      } else if (typeof isSnapshotFile === 'function' && isSnapshotFile(file.name)) {
+        loadSnapshotFile(file);
       } else if (isZipFile(file.name)) {
         handleZipFile(file);
       } else {

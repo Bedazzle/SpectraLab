@@ -32,14 +32,6 @@ function generateIflAsm(iflData, baseName = 'ifl', embedData = true) {
     }
   }
 
-  function formatDbLines(data, bytesPerLine) {
-    const lines = [];
-    for (let i = 0; i < data.length; i += bytesPerLine) {
-      const chunk = data.slice(i, Math.min(i + bytesPerLine, data.length));
-      lines.push('    DB ' + chunk.map(b => '#' + b.toString(16).toUpperCase().padStart(2, '0')).join(','));
-    }
-    return lines.join('\n');
-  }
 
   const asm = [];
 
@@ -231,15 +223,7 @@ function generateTestIfl() {
 
 function downloadTestIfl() {
   const testData = generateTestIfl();
-  const blob = new Blob([testData], { type: 'application/octet-stream' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'timing-test.ifl';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  downloadFile(new Blob([testData], { type: 'application/octet-stream' }), 'timing-test.ifl');
 }
 
 function exportIflAsm() {
@@ -248,27 +232,9 @@ function exportIflAsm() {
     return;
   }
 
-  let baseName = 'ifl';
-  if (currentFileName) {
-    const fileName = currentFileName.includes('/')
-      ? currentFileName.substring(currentFileName.lastIndexOf('/') + 1)
-      : currentFileName;
-    baseName = fileName.replace(/\.[^.]+$/, '');
-  }
-
-  const embedChk = document.getElementById('editorEmbedDataChk');
-  const embedData = embedChk ? embedChk.checked : true;
-
-  const result = generateIflAsm(screenData, baseName, embedData);
+  const baseName = getAsmBaseName(currentFileName, 'ifl');
+  const result = generateIflAsm(screenData, baseName, getAsmEmbedData());
   if (!result) return;
 
-  const blob = new Blob([result.asm], { type: 'text/plain' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = baseName + '.asm';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  downloadFile(result.asm, baseName + '.asm');
 }
