@@ -4900,6 +4900,9 @@ let importSize = { w: 256, h: 192 };
 /** @type {string} - Fit mode: 'stretch', 'fit', 'fill' */
 let importFitMode = 'stretch';
 
+/** @type {string} - Alignment within fitted area */
+let importAlign = 'center';
+
 /** @type {HTMLImageElement|null} - Loaded source image */
 let importImage = null;
 
@@ -4941,6 +4944,7 @@ const importElements = {
   /** @type {HTMLSelectElement|null} */ pattern53c: null,
   /** @type {HTMLSelectElement|null} */ zoom: null,
   /** @type {HTMLSelectElement|null} */ fitMode: null,
+  /** @type {HTMLSelectElement|null} */ align: null,
   // Sliders
   /** @type {HTMLInputElement|null} */ contrast: null,
   /** @type {HTMLInputElement|null} */ brightness: null,
@@ -4987,6 +4991,16 @@ const importElements = {
 };
 
 /**
+ * Get horizontal and vertical alignment factors from importAlign.
+ * Returns { h, v } where 0 = start, 0.5 = center, 1 = end.
+ */
+function getAlignFactors() {
+  const h = importAlign.includes('left') ? 0 : importAlign.includes('right') ? 1 : 0.5;
+  const v = importAlign.includes('top') ? 0 : importAlign.includes('bottom') ? 1 : 0.5;
+  return { h, v };
+}
+
+/**
  * Apply crop and fit mode to source canvas
  */
 function applyCropAndFit() {
@@ -5014,6 +5028,7 @@ function applyCropAndFit() {
   // Calculate destination based on fit mode (fit within available area)
   let destX = importOffset.x, destY = importOffset.y, destW = availW, destH = availH;
   const srcAspect = srcW / srcH;
+  const { h: alignH, v: alignV } = getAlignFactors();
 
   if (importFitMode === 'stretch') {
     // Stretch source region to fill available area
@@ -5026,29 +5041,29 @@ function applyCropAndFit() {
       destW = availW;
       destH = availW / srcAspect;
       destX = importOffset.x;
-      destY = importOffset.y + (availH - destH) / 2;
+      destY = importOffset.y + (availH - destH) * alignV;
     } else {
       // Source is taller - fit to height
       destH = availH;
       destW = availH * srcAspect;
-      destX = importOffset.x + (availW - destW) / 2;
+      destX = importOffset.x + (availW - destW) * alignH;
       destY = importOffset.y;
     }
   } else if (importFitMode === 'fill') {
-    // Fill available area with source region, cropping excess (center crop)
+    // Fill available area with source region, cropping excess
     const destAspect = availW / availH;
     if (srcAspect > destAspect) {
       // Source is wider - fit to height, crop sides
       destH = availH;
       destW = availH * srcAspect;
-      destX = importOffset.x + (availW - destW) / 2;
+      destX = importOffset.x + (availW - destW) * alignH;
       destY = importOffset.y;
     } else {
       // Source is taller - fit to width, crop top/bottom
       destW = availW;
       destH = availW / srcAspect;
       destX = importOffset.x;
-      destY = importOffset.y + (availH - destH) / 2;
+      destY = importOffset.y + (availH - destH) * alignV;
     }
   } else if (importFitMode === 'fit-width') {
     // Scale to fit width, clamp height to available area
@@ -5058,8 +5073,8 @@ function applyCropAndFit() {
       destH = availH;
       destW = availH * srcAspect;
     }
-    destX = importOffset.x + (availW - destW) / 2;
-    destY = importOffset.y + (availH - destH) / 2;
+    destX = importOffset.x + (availW - destW) * alignH;
+    destY = importOffset.y + (availH - destH) * alignV;
   } else if (importFitMode === 'fit-height') {
     // Scale to fit height, clamp width to available area
     destH = availH;
@@ -5068,8 +5083,8 @@ function applyCropAndFit() {
       destW = availW;
       destH = availW / srcAspect;
     }
-    destX = importOffset.x + (availW - destW) / 2;
-    destY = importOffset.y + (availH - destH) / 2;
+    destX = importOffset.x + (availW - destW) * alignH;
+    destY = importOffset.y + (availH - destH) * alignV;
   }
 
   ctx.drawImage(importImage, srcX, srcY, srcW, srcH, destX, destY, destW, destH);
@@ -5101,24 +5116,24 @@ function applyCropAndFit() {
           destWBsc = bscAvailW;
           destHBsc = bscAvailW / srcAspect;
           destXBsc = bscOffsetX;
-          destYBsc = bscOffsetY + (bscAvailH - destHBsc) / 2;
+          destYBsc = bscOffsetY + (bscAvailH - destHBsc) * alignV;
         } else {
           destHBsc = bscAvailH;
           destWBsc = bscAvailH * srcAspect;
-          destXBsc = bscOffsetX + (bscAvailW - destWBsc) / 2;
+          destXBsc = bscOffsetX + (bscAvailW - destWBsc) * alignH;
           destYBsc = bscOffsetY;
         }
       } else if (importFitMode === 'fill') {
         if (srcAspect > bscAspect) {
           destHBsc = bscAvailH;
           destWBsc = bscAvailH * srcAspect;
-          destXBsc = bscOffsetX + (bscAvailW - destWBsc) / 2;
+          destXBsc = bscOffsetX + (bscAvailW - destWBsc) * alignH;
           destYBsc = bscOffsetY;
         } else {
           destWBsc = bscAvailW;
           destHBsc = bscAvailW / srcAspect;
           destXBsc = bscOffsetX;
-          destYBsc = bscOffsetY + (bscAvailH - destHBsc) / 2;
+          destYBsc = bscOffsetY + (bscAvailH - destHBsc) * alignV;
         }
       } else if (importFitMode === 'fit-width') {
         destWBsc = bscAvailW;
@@ -5127,8 +5142,8 @@ function applyCropAndFit() {
           destHBsc = bscAvailH;
           destWBsc = bscAvailH * srcAspect;
         }
-        destXBsc = bscOffsetX + (bscAvailW - destWBsc) / 2;
-        destYBsc = bscOffsetY + (bscAvailH - destHBsc) / 2;
+        destXBsc = bscOffsetX + (bscAvailW - destWBsc) * alignH;
+        destYBsc = bscOffsetY + (bscAvailH - destHBsc) * alignV;
       } else if (importFitMode === 'fit-height') {
         destHBsc = bscAvailH;
         destWBsc = bscAvailH * srcAspect;
@@ -5136,8 +5151,8 @@ function applyCropAndFit() {
           destWBsc = bscAvailW;
           destHBsc = bscAvailW / srcAspect;
         }
-        destXBsc = bscOffsetX + (bscAvailW - destWBsc) / 2;
-        destYBsc = bscOffsetY + (bscAvailH - destHBsc) / 2;
+        destXBsc = bscOffsetX + (bscAvailW - destWBsc) * alignH;
+        destYBsc = bscOffsetY + (bscAvailH - destHBsc) * alignV;
       }
 
       ctxBsc.drawImage(importImage, srcX, srcY, srcW, srcH, destXBsc, destYBsc, destWBsc, destHBsc);
@@ -5625,6 +5640,7 @@ function initImageImport() {
   importElements.format = /** @type {HTMLSelectElement} */ (document.getElementById('importFormat'));
   importElements.pattern53c = /** @type {HTMLSelectElement} */ (document.getElementById('import53cPattern'));
   importElements.fitMode = /** @type {HTMLSelectElement} */ (document.getElementById('importFitMode'));
+  importElements.align = /** @type {HTMLSelectElement} */ (document.getElementById('importAlign'));
   importElements.grayscale = /** @type {HTMLInputElement} */ (document.getElementById('importGrayscale'));
   importElements.monoOutput = /** @type {HTMLInputElement} */ (document.getElementById('importMonoOutput'));
   importElements.saturation = /** @type {HTMLInputElement} */ (document.getElementById('importSaturation'));
@@ -5963,6 +5979,12 @@ function initImageImport() {
     } else {
       updatePreview();
     }
+  });
+
+  // Alignment within fitted area
+  importElements.align?.addEventListener('change', function() {
+    importAlign = this.value;
+    updateAll();
   });
 
   ditheringSelect?.addEventListener('change', updatePreview);
@@ -6553,9 +6575,11 @@ function openImportDialog(file) {
   if (importElements.palette) importElements.palette.value = currentPaletteId;
   applyImportPalette(currentPaletteId);
 
-  // Reset fit mode
+  // Reset fit mode and alignment
   if (importElements.fitMode) importElements.fitMode.value = 'stretch';
   importFitMode = 'stretch';
+  if (importElements.align) importElements.align.value = 'center';
+  importAlign = 'center';
 
   // Load image
   const img = new Image();

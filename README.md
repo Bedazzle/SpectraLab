@@ -160,6 +160,27 @@ View 9216-byte .ifl 8x2 multicolor files:
   - 224T per scanline × 2 lines = 448T per attribute row
   - SAVESNA output for direct emulator testing
 
+## Sprite Editor
+
+Full-featured sprite editor for ZX Spectrum game graphics:
+
+- **Multi-tile sprites**: NxM cells of 8x8 pixels (up to 8x8 = 64x64)
+- **Three modes**: Monochrome, Attributed (color per 8x8 cell), Multicolour (color per 8x2 cell)
+- **Drawing tools**: Draw, Erase, Flood Fill, Line, Rectangle, Selection
+- **Mask editing**: Toggle mask layer with visual red overlay
+- **Transforms**: Flip H/V, Rotate CW/CCW, Shift 1px in any direction, Invert, Clear
+- **Attributes**: Unified color palette — left-click ink, right-click paper, bright toggle
+- **Animation**: Multiple frames per sprite with onion skinning, playback with adjustable speed
+- **Grab from screen**: Drag a rectangle on any loaded picture to extract sprites
+  - Modes: Single sprite, Sprite phases, Singles grid, Phases grid
+  - Auto-detects multicolour source formats (IFL, MLT, BMC4)
+- **Grab from memory**: Extract sprites from snapshot RAM via Memory Viewer
+- **Export ASM**: sjasmplus-compatible source with visual binary comments
+- **Export BIN**: Raw binary or Nirvana engine format (.btile/.wtile for multicolour sprites)
+- **Save/Load**: Sprite sheets as .sls files, included in project save/load
+- **Use as Brush**: Stamp current sprite frame onto the main canvas
+- **Keyboard shortcuts**: D (draw), E (erase), F (fill), L (line), R (rect), S (select), M (mask)
+
 ## Supported Formats
 
 | Extension | Size | Description |
@@ -179,6 +200,7 @@ View 9216-byte .ifl 8x2 multicolor files:
 | `.sca` | variable | Animation (type 0: full frames, type 1: attr-only) |
 | `.slp` | variable | Project file (single picture with layers) |
 | `.slw` | variable | Workspace file (all open pictures) |
+| `.sls` | variable | Sprite sheet (sprites with frames and attributes) |
 | `.zip` | - | Archive (auto-extract) |
 
 ## Keyboard Shortcuts

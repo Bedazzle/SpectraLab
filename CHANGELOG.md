@@ -1,5 +1,36 @@
 # SpectraLab Version History
 
+## v1.50.0
+- Sprite editor: multicolour (8x2 attribute) mode
+  - Full editing support: draw, erase, fill, line, rectangle with 8x2 cell attributes
+  - Mode conversion between mono, attributed, and multicolour preserves pixel and attribute data
+  - Attributed→multicolour replicates each 8x8 attr into four 8x2 sub-rows
+  - Multicolour→attributed takes first sub-row of each group
+  - Resize preserves multicolour attribute layout (4 attr rows per cell row)
+  - Grid overlay shows 8x2 cell boundaries in multicolour mode
+  - Flip H/V correctly reorders multicolour attribute rows
+  - Rotation disabled for multicolour (8x2 cells cannot rotate 90°)
+  - Undo/redo handles variable attribute array sizes
+  - Export format selector (Raw / Nirvana) shown for multicolour sprites
+- Sprite grab from multicolour screens (IFL, MLT, BMC4)
+  - Format-aware attribute extraction using correct attribute address functions
+  - Attr mode dropdown auto-locked to Multicolour when source is a multicolour format
+  - Multicolour option hidden from dropdown when source is non-multicolour
+  - Phase grab converts existing frames when attr mode differs from sprite
+- Sprite editor: onion skin fix
+  - Onion skin now renders on top of current frame (was invisible due to draw order)
+  - Previous frame's ink pixels only overlaid at 25% opacity (paper pixels skipped)
+- Sprite editor: animation playback fix
+  - Zoomed editor canvas now updates during animation (was static, only preview moved)
+
+## v1.49.0
+- Image import: alignment control for fitted images
+  - Align dropdown with 9 positions: Top-Left, Top, Top-Right, Left, Center, Right, Bottom-Left, Bottom, Bottom-Right
+  - Applies to all fit modes: Letterbox, Fill/crop, Fit width, Fit height
+  - Both main canvas and BSC canvas respect alignment setting
+  - Stretch mode unaffected (fills entire area)
+  - Resets to Center on new image load
+
 ## v1.48.0
 - SNA/Z80 snapshot loading
   - Load .sna snapshot files (48K and 128K formats)
