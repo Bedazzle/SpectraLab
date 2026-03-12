@@ -1,5 +1,51 @@
 # SpectraLab Version History
 
+## v1.52.1
+- Sprite editor: fixed animation playback not working (stale closure in setInterval callback; fresh sprite reference now fetched each tick)
+- Sprite editor: animation stops when switching to a different sprite
+- Sprite editor: rearranged layout — preview canvas, play/speed, frame navigation and checkboxes moved under main editing canvas
+- Sprite editor: renamed "Spd:" label to "Speed"
+- Screen viewer: fixed attributes-off rendering — ink (1 bits) now renders as black, paper (0 bits) as white, matching ZX Spectrum convention (was inverted)
+- Image import: fixed paper color rule (Darker/Lighter) for single-color cells — when both ink and paper are the same color, luminance is checked against midpoint to determine if the color should be paper or ink; two-color cells still use relative luminance comparison
+
+## v1.52.0
+- Sprite editor: frame bar moved from sidebar to floating editor panel
+- Sprite editor: multi-select frames with Ctrl+Click (toggle) and Shift+Click (range select)
+- Sprite editor: Move Left/Right buttons (◄ / ►) to reorder selected frames
+- Sprite editor: Del button deletes all selected frames (keeps at least 1)
+- Sprite list: multi-select with Ctrl+Click (toggle) and Shift+Click (range select)
+- Sprite list: right-click context menu with operations:
+  - Merge selected to animation — combine selected sprites (same dimensions/mode) into one sprite with multiple frames
+  - Add frames to… — copy frames from selected sprites to a chosen target sprite
+  - Move frames to… — move frames to a target sprite, removing source sprites
+  - Split frames to sprites — split a multi-frame sprite into separate single-frame sprites
+  - Delete selected — remove all selected sprites
+- Split/Merge buttons moved from sidebar into the context menu
+- Import Nirvana tile files (`.btile`, `.wtile`): opens file, prompts for tiles per row, creates IFL picture with tiles laid out in a grid and a spriteset with each tile as a multicolour sprite
+
+## v1.51.1
+- Image import: fixed crash when using Darker/Lighter paper rule (analyzeCell and block analysis functions now return inkRgb/paperRgb needed by perceptual luminance calculation)
+- Sprite editor: right mouse button now draws paper (clears pixels), matching main canvas behavior
+  - Applies to all drawing tools: Draw, Erase, Line, Rectangle, Fill
+  - Left click = ink (set bit), Right click = paper (clear bit)
+  - Erase tool inverts: left = clear, right = set
+  - Fill tool: left click fills with ink, right click fills with paper
+- Sprite grab: fixed black/white sprites when grabbing in multicolour mode (Firefox/Win7)
+  - Multicolour `<option>` was hidden from a previous session; Firefox refuses to set `<select>` value to a hidden option, so attr mode silently fell back to mono
+- Sprite grab: fixed drawing on main canvas while dragging grab rectangle
+  - Changed `stopPropagation()` to `stopImmediatePropagation()` to prevent editor mousedown from firing
+  - Added `spriteGrabMode` guard in screen editor's mousedown handler
+
+## v1.51.0
+- Image import: default dithering changed to None (nearest color, no dithering)
+- Image import: paper color rule control
+  - Auto — default, ink/paper assigned by palette index order
+  - Darker color — darker of the two cell colors becomes paper (per cell, perceptual luminance)
+  - Lighter color — lighter of the two cell colors becomes paper
+  - First pixel paper — top-left pixel's color in each cell becomes paper (useful for spritesheets)
+  - Applied to all formats: SCR, ULA+, IFL, MLT, BMC4, 53c, BSC
+  - Skipped for mono output (fixed ink=black, paper=white)
+
 ## v1.50.0
 - Sprite editor: multicolour (8x2 attribute) mode
   - Full editing support: draw, erase, fill, line, rectangle with 8x2 cell attributes
@@ -672,7 +718,7 @@
 ## v1.17.0
 - Moved Attrs checkbox to viewer controls (same row as Flash/Grid)
   - Now available in viewer mode, not just the editor
-  - Toggles monochrome (white on black) display across all formats
+  - Toggles monochrome (black on white) display across all formats
   - Affects: SCR, 53c/ATR, IFL, MLT, BSC, BMC4, SPECSCII, SCA
   - Setting persisted to localStorage
 - Fixed rectangle/line tool with custom brush in replace mode
@@ -736,7 +782,7 @@
   - Changes only the attribute byte (ink/paper/bright/flash) without modifying bitmap data
   - Works like Fill Cell but preserves existing pixel patterns
 - Added Attributes toggle checkbox in editor
-  - Uncheck to view screen in monochrome (white on black)
+  - Uncheck to view screen in monochrome (black on white)
   - Reveals hidden pixels where ink color equals paper color
 
 ## v1.12.0

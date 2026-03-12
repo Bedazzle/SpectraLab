@@ -165,6 +165,66 @@ function colorDistance(rgb1, rgb2) {
 }
 
 /**
+ * Perceptual luminance (ITU-R BT.709)
+ * @param {number[]} rgb - Color as [R, G, B] (0-255)
+ * @returns {number} Luminance value (0-255 range)
+ */
+function perceptualLuminance(rgb) {
+  return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+}
+
+/**
+ * Apply paper color rule — swap ink/paper if needed so paper matches the rule.
+ * For Uint8Array bitmaps, inverts all bytes. For single-byte bitmap (number), inverts the byte.
+ * @param {object} colors - Object with ink, paper, bright, inkRgb, paperRgb properties
+ * @param {Uint8Array|number|null} bitmap - Bitmap data (Uint8Array for multi-row, number for single-row, null if not yet generated)
+ * @returns {{colors: object, bitmap: Uint8Array|number|null}} Potentially swapped result
+ */
+function applyPaperRule(colors, bitmap) {
+  if (importPaperRule === 'auto') return { colors, bitmap };
+
+  let needSwap = false;
+
+  if (importPaperRule === 'first-pixel') {
+    // Leftmost pixel (bit 7) should be paper. If bit 7 is 1 (ink), swap so that color becomes paper.
+    if (bitmap == null) return { colors, bitmap };
+    const firstByte = (bitmap instanceof Uint8Array) ? bitmap[0] : bitmap;
+    needSwap = (firstByte & 0x80) !== 0;
+  } else {
+    const inkLum = perceptualLuminance(colors.inkRgb);
+    const paperLum = perceptualLuminance(colors.paperRgb);
+    if (inkLum === paperLum) {
+      // Same color: check against midpoint
+      needSwap = (importPaperRule === 'darker' && paperLum >= 128) ||
+                 (importPaperRule === 'lighter' && paperLum < 128);
+    } else {
+      // Different colors: compare to each other
+      needSwap = (importPaperRule === 'darker' && inkLum < paperLum) ||
+                 (importPaperRule === 'lighter' && inkLum > paperLum);
+    }
+  }
+
+  if (!needSwap) return { colors, bitmap };
+
+  const swapped = {
+    ...colors,
+    ink: colors.paper,
+    paper: colors.ink,
+    inkRgb: colors.paperRgb,
+    paperRgb: colors.inkRgb
+  };
+
+  let invertedBitmap = bitmap;
+  if (bitmap instanceof Uint8Array) {
+    invertedBitmap = bitmap.map(b => b ^ 0xFF);
+  } else if (typeof bitmap === 'number') {
+    invertedBitmap = bitmap ^ 0xFF;
+  }
+
+  return { colors: swapped, bitmap: invertedBitmap };
+}
+
+/**
  * Find nearest palette color index
  * @param {number[]} rgb - Target color [R, G, B]
  * @param {number[][]} palette - Array of [R, G, B] colors
@@ -1688,10 +1748,13 @@ function analyzeCell(pixels, cellX, cellY, width) {
     }
   }
 
+  const bestPal = bestBright ? palette.bright : palette.regular;
   return {
     ink: bestInk,
     paper: bestPaper,
     bright: bestBright,
+    inkRgb: bestPal[bestInk],
+    paperRgb: bestPal[bestPaper],
     bitmap: bestBitmap
   };
 }
@@ -1919,17 +1982,20 @@ function convertToScr(sourceCanvas, dithering, brightness, contrast, saturation 
               break;
           }
 
+          // Apply paper color rule
+          const ruled = applyPaperRule(colors, bitmap);
+
           // Write bitmap bytes
           for (let line = 0; line < 8; line++) {
             const y = cellY * 8 + line;
             const offset = getBitmapOffset(y) + cellX;
-            scr[offset] = bitmap[line];
+            scr[offset] = ruled.bitmap[line];
           }
 
           // Write attribute byte
           const attrOffset = 6144 + cellY * 32 + cellX;
-          let attr = (colors.paper << 3) | colors.ink;
-          if (colors.bright) attr |= 0x40;
+          let attr = (ruled.colors.paper << 3) | ruled.colors.ink;
+          if (ruled.colors.bright) attr |= 0x40;
           scr[attrOffset] = attr;
         }
       }
@@ -1995,16 +2061,19 @@ function convertToScr(sourceCanvas, dithering, brightness, contrast, saturation 
           ? analyzeCellMono(floatPixels, cellX, cellY, 256, palette.bright[0], palette.bright[7])
           : analyzeCell(floatPixels, cellX, cellY, 256);
 
+        // Apply paper color rule (skip for mono)
+        const ruled = monoOutput ? { colors: cell, bitmap: cell.bitmap } : applyPaperRule(cell, cell.bitmap);
+
         // Write bitmap bytes
         for (let line = 0; line < 8; line++) {
           const y = cellY * 8 + line;
           const offset = getBitmapOffset(y) + cellX;
-          scr[offset] = cell.bitmap[line];
+          scr[offset] = ruled.bitmap[line];
         }
 
         // Write attribute byte
         const attrOffset = 6144 + cellY * 32 + cellX;
-        let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((cell.paper << 3) | cell.ink | (cell.bright ? 0x40 : 0));
+        let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0));
         scr[attrOffset] = attr;
       }
     }
@@ -2316,19 +2385,22 @@ function convertToUlaPlus(sourceCanvas, dithering, brightness, contrast, saturat
         }
       }
 
+      // Apply paper color rule
+      const ruled = applyPaperRule(colors, bitmap);
+
       // Write bitmap
       for (let line = 0; line < 8; line++) {
         const y = cellY * 8 + line;
         const offset = getBitmapOffset(y) + cellX;
-        output[offset] = bitmap[line];
+        output[offset] = ruled.bitmap[line];
       }
 
       // Write attribute: ULA+ uses standard format, CLUT selected by FLASH+BRIGHT bits
       // CLUT = (FLASH << 1) | BRIGHT
-      const flash = (colors.clut >> 1) & 1;
-      const bright = colors.clut & 1;
+      const flash = (ruled.colors.clut >> 1) & 1;
+      const bright = ruled.colors.clut & 1;
       const attrOffset = 6144 + cellY * 32 + cellX;
-      output[attrOffset] = (flash << 7) | (bright << 6) | (colors.paper << 3) | colors.ink;
+      output[attrOffset] = (flash << 7) | (bright << 6) | (ruled.colors.paper << 3) | ruled.colors.ink;
     }
   }
 
@@ -2467,10 +2539,13 @@ function analyzeBlock2(pixels, blockX, blockY, width) {
     }
   }
 
+  const bestPal = bestBright ? palette.bright : palette.regular;
   return {
     ink: bestInk,
     paper: bestPaper,
     bright: bestBright,
+    inkRgb: bestPal[bestInk],
+    paperRgb: bestPal[bestPaper],
     bitmap: bestBitmap
   };
 }
@@ -2709,15 +2784,18 @@ function convertToIfl(sourceCanvas, dithering, brightness, contrast, saturation 
               break;
           }
 
+          // Apply paper color rule
+          const ruled = applyPaperRule(colors, bitmap);
+
           for (let line = 0; line < 2; line++) {
             const y = blockY * 2 + line;
             const offset = getBitmapOffset(y) + blockX;
-            ifl[offset] = bitmap[line];
+            ifl[offset] = ruled.bitmap[line];
           }
 
           const attrOffset = 6144 + blockY * 32 + blockX;
-          let attr = (colors.paper << 3) | colors.ink;
-          if (colors.bright) attr |= 0x40;
+          let attr = (ruled.colors.paper << 3) | ruled.colors.ink;
+          if (ruled.colors.bright) attr |= 0x40;
           ifl[attrOffset] = attr;
         }
       }
@@ -2781,16 +2859,19 @@ function convertToIfl(sourceCanvas, dithering, brightness, contrast, saturation 
           ? analyzeBlock2Mono(floatPixels, blockX, blockY, 256, palette.bright[0], palette.bright[7])
           : analyzeBlock2(floatPixels, blockX, blockY, 256);
 
+        // Apply paper color rule (skip for mono)
+        const ruled = monoOutput ? { colors: block, bitmap: block.bitmap } : applyPaperRule(block, block.bitmap);
+
         // Write 2 bitmap bytes
         for (let line = 0; line < 2; line++) {
           const y = blockY * 2 + line;
           const offset = getBitmapOffset(y) + blockX;
-          ifl[offset] = block.bitmap[line];
+          ifl[offset] = ruled.bitmap[line];
         }
 
         // Write attribute byte
         const attrOffset = 6144 + blockY * 32 + blockX;
-        let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((block.paper << 3) | block.ink | (block.bright ? 0x40 : 0));
+        let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0));
         ifl[attrOffset] = attr;
       }
     }
@@ -2905,10 +2986,13 @@ function analyzeBlock1(pixels, blockX, y, width) {
     }
   }
 
+  const bestPal = bestBright ? palette.bright : palette.regular;
   return {
     ink: bestInk,
     paper: bestPaper,
     bright: bestBright,
+    inkRgb: bestPal[bestInk],
+    paperRgb: bestPal[bestPaper],
     bitmap: bestBitmap
   };
 }
@@ -3042,14 +3126,17 @@ function convertToMlt(sourceCanvas, dithering, brightness, contrast, saturation 
             break;
         }
 
+        // Apply paper color rule
+        const ruled = applyPaperRule(colors, bitmap);
+
         // Write bitmap byte
         const bitmapOffset = getBitmapOffset(y) + blockX;
-        mlt[bitmapOffset] = bitmap;
+        mlt[bitmapOffset] = ruled.bitmap;
 
         // Write attribute byte
         const attrOffset = 6144 + y * 32 + blockX;
-        let attr = (colors.paper << 3) | colors.ink;
-        if (colors.bright) attr |= 0x40;
+        let attr = (ruled.colors.paper << 3) | ruled.colors.ink;
+        if (ruled.colors.bright) attr |= 0x40;
         mlt[attrOffset] = attr;
       }
     }
@@ -3112,13 +3199,16 @@ function convertToMlt(sourceCanvas, dithering, brightness, contrast, saturation 
           ? analyzeBlock1Mono(floatPixels, blockX, y, 256, palette.bright[0], palette.bright[7])
           : analyzeBlock1(floatPixels, blockX, y, 256);
 
+        // Apply paper color rule (skip for mono)
+        const ruled = monoOutput ? { colors: block, bitmap: block.bitmap } : applyPaperRule(block, block.bitmap);
+
         // Write bitmap byte
         const bitmapOffset = getBitmapOffset(y) + blockX;
-        mlt[bitmapOffset] = block.bitmap;
+        mlt[bitmapOffset] = ruled.bitmap;
 
         // Write attribute byte
         const attrOffset = 6144 + y * 32 + blockX;
-        let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((block.paper << 3) | block.ink | (block.bright ? 0x40 : 0));
+        let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0));
         mlt[attrOffset] = attr;
       }
     }
@@ -3242,10 +3332,13 @@ function analyzeBlock4(pixels, blockX, blockY, width) {
     }
   }
 
+  const bestPal = bestBright ? palette.bright : palette.regular;
   return {
     ink: bestInk,
     paper: bestPaper,
     bright: bestBright,
+    inkRgb: bestPal[bestInk],
+    paperRgb: bestPal[bestPaper],
     bitmap: bestBitmap
   };
 }
@@ -3392,11 +3485,14 @@ function convertToBmc4(sourceCanvas, dithering, brightness, contrast, saturation
         bitmap = block.bitmap;
       }
 
+      // Apply paper color rule (skip for mono)
+      const ruled = monoOutput ? { colors, bitmap } : applyPaperRule(colors, bitmap);
+
       // Write 4 bitmap bytes
       for (let line = 0; line < 4; line++) {
         const y = blockY * 4 + line;
         const offset = getBitmapOffset(y) + blockX;
-        bmc4[offset] = bitmap[line];
+        bmc4[offset] = ruled.bitmap[line];
       }
 
       // Write attribute byte to appropriate bank
@@ -3404,7 +3500,7 @@ function convertToBmc4(sourceCanvas, dithering, brightness, contrast, saturation
       const charRow = Math.floor(blockY / 2);
       const isTopHalf = (blockY % 2) === 0;
       const attrOffset = isTopHalf ? (6144 + charRow * 32 + blockX) : (6912 + charRow * 32 + blockX);
-      let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((colors.paper << 3) | colors.ink | (colors.bright ? 0x40 : 0));
+      let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0));
       bmc4[attrOffset] = attr;
     }
   }
@@ -3925,8 +4021,15 @@ function convertTo53c(sourceCanvas, brightness, contrast, saturation = 0, gamma 
         }
       }
 
+      // Apply paper color rule
+      const pal53c = bestBright ? combinedPalette.bright : combinedPalette.regular;
+      const ruled53c = applyPaperRule(
+        { ink: bestInkIdx, paper: bestPaperIdx, bright: bestBright === 1, inkRgb: pal53c[bestInkIdx], paperRgb: pal53c[bestPaperIdx] },
+        null
+      );
+
       // Build attribute byte: flash(0) | bright | paper(3) | ink(3)
-      const attr = (bestBright << 6) | (bestPaperIdx << 3) | bestInkIdx;
+      const attr = (bestBright << 6) | (ruled53c.colors.paper << 3) | ruled53c.colors.ink;
       attrData[row * 32 + col] = attr;
     }
   }
@@ -4143,15 +4246,18 @@ function convertMainAreaToScr(sourceCanvas, dithering, monoOutput = false) {
             break;
         }
 
+        // Apply paper color rule
+        const ruled = applyPaperRule(colors, bitmap);
+
         for (let line = 0; line < 8; line++) {
           const y = cellY * 8 + line;
           const offset = getBitmapOffset(y) + cellX;
-          scr[offset] = bitmap[line];
+          scr[offset] = ruled.bitmap[line];
         }
 
         const attrOffset = 6144 + cellY * 32 + cellX;
-        let attr = (colors.paper << 3) | colors.ink;
-        if (colors.bright) attr |= 0x40;
+        let attr = (ruled.colors.paper << 3) | ruled.colors.ink;
+        if (ruled.colors.bright) attr |= 0x40;
         scr[attrOffset] = attr;
       }
     }
@@ -4184,14 +4290,17 @@ function convertMainAreaToScr(sourceCanvas, dithering, monoOutput = false) {
           ? analyzeCellMono(floatPixels, cellX, cellY, 256, palette.bright[0], palette.bright[7])
           : analyzeCell(floatPixels, cellX, cellY, 256);
 
+        // Apply paper color rule (skip for mono)
+        const ruled = monoOutput ? { colors: cell, bitmap: cell.bitmap } : applyPaperRule(cell, cell.bitmap);
+
         for (let line = 0; line < 8; line++) {
           const y = cellY * 8 + line;
           const offset = getBitmapOffset(y) + cellX;
-          scr[offset] = cell.bitmap[line];
+          scr[offset] = ruled.bitmap[line];
         }
 
         const attrOffset = 6144 + cellY * 32 + cellX;
-        let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((cell.paper << 3) | cell.ink | (cell.bright ? 0x40 : 0));
+        let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0));
         scr[attrOffset] = attr;
       }
     }
@@ -4900,6 +5009,9 @@ let importSize = { w: 256, h: 192 };
 /** @type {string} - Fit mode: 'stretch', 'fit', 'fill' */
 let importFitMode = 'stretch';
 
+/** @type {string} - Paper color rule: 'auto', 'darker', 'lighter' */
+let importPaperRule = 'auto';
+
 /** @type {string} - Alignment within fitted area */
 let importAlign = 'center';
 
@@ -4945,6 +5057,7 @@ const importElements = {
   /** @type {HTMLSelectElement|null} */ zoom: null,
   /** @type {HTMLSelectElement|null} */ fitMode: null,
   /** @type {HTMLSelectElement|null} */ align: null,
+  /** @type {HTMLSelectElement|null} */ paperRule: null,
   // Sliders
   /** @type {HTMLInputElement|null} */ contrast: null,
   /** @type {HTMLInputElement|null} */ brightness: null,
@@ -5641,6 +5754,7 @@ function initImageImport() {
   importElements.pattern53c = /** @type {HTMLSelectElement} */ (document.getElementById('import53cPattern'));
   importElements.fitMode = /** @type {HTMLSelectElement} */ (document.getElementById('importFitMode'));
   importElements.align = /** @type {HTMLSelectElement} */ (document.getElementById('importAlign'));
+  importElements.paperRule = /** @type {HTMLSelectElement} */ (document.getElementById('importPaperRule'));
   importElements.grayscale = /** @type {HTMLInputElement} */ (document.getElementById('importGrayscale'));
   importElements.monoOutput = /** @type {HTMLInputElement} */ (document.getElementById('importMonoOutput'));
   importElements.saturation = /** @type {HTMLInputElement} */ (document.getElementById('importSaturation'));
@@ -5988,6 +6102,10 @@ function initImageImport() {
   });
 
   ditheringSelect?.addEventListener('change', updatePreview);
+  importElements.paperRule?.addEventListener('change', function() {
+    importPaperRule = this.value;
+    updatePreview();
+  });
   formatSelect?.addEventListener('change', () => {
     // Update size defaults based on format
     const format = formatSelect?.value || 'scr';
@@ -6540,7 +6658,7 @@ function openImportDialog(file) {
   if (!importElements.dialog) return;
 
   // Reset controls using cached elements
-  if (importElements.dithering) importElements.dithering.value = 'floyd-steinberg';
+  if (importElements.dithering) importElements.dithering.value = 'none';
   if (importElements.contrast) importElements.contrast.value = '0';
   if (importElements.brightness) importElements.brightness.value = '0';
   if (importElements.zoom) importElements.zoom.value = '2';
@@ -6575,11 +6693,13 @@ function openImportDialog(file) {
   if (importElements.palette) importElements.palette.value = currentPaletteId;
   applyImportPalette(currentPaletteId);
 
-  // Reset fit mode and alignment
+  // Reset fit mode, alignment, and paper rule
   if (importElements.fitMode) importElements.fitMode.value = 'stretch';
   importFitMode = 'stretch';
   if (importElements.align) importElements.align.value = 'center';
   importAlign = 'center';
+  if (importElements.paperRule) importElements.paperRule.value = 'auto';
+  importPaperRule = 'auto';
 
   // Load image
   const img = new Image();

@@ -50,6 +50,8 @@ function initScreenViewerUI() {
         openImportDialog(file);
       } else if (typeof isSnapshotFile === 'function' && isSnapshotFile(file.name)) {
         loadSnapshotFile(file);
+      } else if (typeof isNirvanaTileFile === 'function' && isNirvanaTileFile(file.name)) {
+        importNirvanaTileFile(file);
       } else if (isZipFile(file.name)) {
         handleZipFile(file);
       } else {

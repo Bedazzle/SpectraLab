@@ -16,8 +16,23 @@ let spriteSheet = { sprites: [], name: 'Untitled' };
 /** @type {number} */
 let selectedSpriteIndex = -1;
 
+/** @type {Set<number>} */
+let selectedSpriteIndices = new Set();
+
+/** @type {number} */
+let spriteSelectionAnchor = -1;
+
+/** @type {HTMLElement|null} */
+let spriteContextMenu = null;
+
 /** @type {number} */
 let currentFrameIndex = 0;
+
+/** @type {Set<number>} */
+let selectedFrameIndices = new Set();
+
+/** @type {number} */
+let frameSelectionAnchor = -1;
 
 /** @type {string} */
 let currentSpriteTool = 'draw';
@@ -50,6 +65,7 @@ let spritePanelDragY = 0;
 
 // Drawing state
 let spriteDrawing = false;
+let spriteDrawRight = false;
 let spriteRenderPending = false;
 let spriteLineStartX = -1;
 let spriteLineStartY = -1;
@@ -82,6 +98,20 @@ const SPRITE_MAX_UNDO = 50;
 /** @type {object|null} */
 let activeSpriteBrush = null;
 
+// ---- Helpers ----
+
+/** Set a single sprite as active (updates index, selection set, and anchor). */
+function setActiveSprite(index) {
+  selectedSpriteIndex = index;
+  selectedSpriteIndices.clear();
+  if (index >= 0) {
+    selectedSpriteIndices.add(index);
+    spriteSelectionAnchor = index;
+  } else {
+    spriteSelectionAnchor = -1;
+  }
+}
+
 // ---- DOM cache ----
 let spriteDOM = {};
 
@@ -92,7 +122,8 @@ let spriteDOM = {};
 function initSpriteEditor() {
   // Cache DOM elements
   const ids = [
-    'spriteList', 'spriteAddBtn', 'spriteDeleteBtn', 'spriteProps', 'spriteName',
+    'spriteList', 'spriteAddBtn', 'spriteDeleteBtn',
+    'spriteProps', 'spriteName',
     'spriteCellsW', 'spriteCellsH', 'spriteMode', 'spriteFrameBar', 'spriteEditBtn',
     'spriteGrabBtn', 'spriteGrabStatus', 'spriteGrabConfig', 'spriteGrabMode',
     'spriteGrabGridOpts', 'spriteGrabSizeBy', 'spriteGrabByCells', 'spriteGrabByCount',
@@ -107,7 +138,8 @@ function initSpriteEditor() {
     'spriteColorPalette', 'spriteBrightChk',
     'spriteOnionSkin', 'spriteShowGrid', 'spriteShowMask',
     'spriteFramePrev', 'spriteFrameInfo', 'spriteFrameNext', 'spriteFrameAdd',
-    'spriteFrameDup', 'spriteFrameDel', 'spritePlayBtn', 'spriteAnimSpeed',
+    'spriteFrameDup', 'spriteFrameDel', 'spriteFrameMoveL', 'spriteFrameMoveR',
+    'spritePlayBtn', 'spriteAnimSpeed',
     'spriteFlipH', 'spriteFlipV', 'spriteRotCW', 'spriteRotCCW',
     'spriteShiftL', 'spriteShiftR', 'spriteShiftU', 'spriteShiftD',
     'spriteInvert', 'spriteClear'
@@ -116,23 +148,50 @@ function initSpriteEditor() {
     spriteDOM[id] = document.getElementById(id);
   }
 
-  // Sprite list click/dblclick via delegation (list items get rebuilt on selection)
+  // Sprite list click/dblclick via delegation
   spriteDOM.spriteList?.addEventListener('click', function(e) {
     const item = e.target.closest('.sprite-list-item');
     if (!item) return;
     const idx = parseInt(item.dataset.index);
-    if (!isNaN(idx)) selectSprite(idx);
+    if (isNaN(idx)) return;
+    if (e.ctrlKey || e.metaKey) {
+      ctrlClickSprite(idx);
+    } else if (e.shiftKey) {
+      shiftClickSprite(idx);
+    } else {
+      plainClickSprite(idx);
+    }
   });
   spriteDOM.spriteList?.addEventListener('dblclick', function(e) {
     const item = e.target.closest('.sprite-list-item');
     if (!item) return;
     const idx = parseInt(item.dataset.index);
-    if (!isNaN(idx)) { selectSprite(idx); openSpriteEditor(); }
+    if (!isNaN(idx)) { plainClickSprite(idx); openSpriteEditor(); }
+  });
+
+  // Right-click context menu on sprite list
+  spriteDOM.spriteList?.addEventListener('contextmenu', function(e) {
+    const item = e.target.closest('.sprite-list-item');
+    if (!item) return;
+    e.preventDefault();
+    const idx = parseInt(item.dataset.index);
+    if (isNaN(idx)) return;
+    // If right-clicked sprite is not in selection, plain-select it first
+    if (!selectedSpriteIndices.has(idx)) {
+      plainClickSprite(idx);
+    }
+    showSpriteContextMenu(e.clientX, e.clientY);
+  });
+
+  // Global dismiss for context menu
+  document.addEventListener('click', dismissSpriteContextMenu);
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dismissSpriteContextMenu();
   });
 
   // Sidebar buttons
   spriteDOM.spriteAddBtn?.addEventListener('click', () => addSprite());
-  spriteDOM.spriteDeleteBtn?.addEventListener('click', deleteSelectedSprite);
+  spriteDOM.spriteDeleteBtn?.addEventListener('click', deleteSelectedSprites);
   spriteDOM.spriteEditBtn?.addEventListener('click', () => openSpriteEditor());
   spriteDOM.spriteGrabBtn?.addEventListener('click', toggleGrabMode);
   spriteDOM.spriteGrabStopBtn?.addEventListener('click', cancelGrabMode);
@@ -198,7 +257,9 @@ function initSpriteEditor() {
   spriteDOM.spriteFrameNext?.addEventListener('click', () => navigateFrame(1));
   spriteDOM.spriteFrameAdd?.addEventListener('click', addFrame);
   spriteDOM.spriteFrameDup?.addEventListener('click', duplicateFrame);
-  spriteDOM.spriteFrameDel?.addEventListener('click', deleteFrame);
+  spriteDOM.spriteFrameDel?.addEventListener('click', deleteSelectedFrames);
+  spriteDOM.spriteFrameMoveL?.addEventListener('click', () => moveSelectedFrames(-1));
+  spriteDOM.spriteFrameMoveR?.addEventListener('click', () => moveSelectedFrames(1));
   spriteDOM.spritePlayBtn?.addEventListener('click', toggleAnimation);
 
   // Checkbox changes trigger re-render
@@ -272,17 +333,31 @@ function addSprite(name, cellsW, cellsH, mode) {
   };
 
   spriteSheet.sprites.push(sprite);
-  selectedSpriteIndex = spriteSheet.sprites.length - 1;
+  setActiveSprite(spriteSheet.sprites.length - 1);
   currentFrameIndex = 0;
   updateSpriteList();
   updateSpriteProps();
 }
 
-function deleteSelectedSprite() {
-  if (selectedSpriteIndex < 0 || selectedSpriteIndex >= spriteSheet.sprites.length) return;
-  spriteSheet.sprites.splice(selectedSpriteIndex, 1);
-  if (selectedSpriteIndex >= spriteSheet.sprites.length) {
-    selectedSpriteIndex = spriteSheet.sprites.length - 1;
+function deleteSelectedSprites() {
+  if (selectedSpriteIndices.size === 0 && selectedSpriteIndex >= 0) {
+    selectedSpriteIndices.add(selectedSpriteIndex);
+  }
+  if (selectedSpriteIndices.size === 0) return;
+  // Delete in descending order so indices stay valid
+  const sorted = Array.from(selectedSpriteIndices).sort((a, b) => b - a);
+  for (const idx of sorted) {
+    if (idx >= 0 && idx < spriteSheet.sprites.length) {
+      spriteSheet.sprites.splice(idx, 1);
+    }
+  }
+  selectedSpriteIndices.clear();
+  // Adjust active index
+  if (spriteSheet.sprites.length === 0) {
+    setActiveSprite(-1);
+  } else {
+    const newIdx = Math.min(sorted[sorted.length - 1], spriteSheet.sprites.length - 1);
+    setActiveSprite(newIdx);
   }
   currentFrameIndex = 0;
   updateSpriteList();
@@ -296,17 +371,94 @@ function deleteSelectedSprite() {
   }
 }
 
+function deepCopyFrame(frame) {
+  return {
+    bitmap: new Uint8Array(frame.bitmap),
+    mask: frame.mask ? new Uint8Array(frame.mask) : null,
+    attrs: frame.attrs ? new Uint8Array(frame.attrs) : null
+  };
+}
+
+function splitFramesToSprites() {
+  const sprite = getSelectedSprite();
+  if (!sprite) return;
+  if (sprite.frames.length <= 1) {
+    alert('This sprite has only 1 frame — nothing to split.');
+    return;
+  }
+  const idx = selectedSpriteIndex;
+  const newSprites = [];
+  for (let i = 0; i < sprite.frames.length; i++) {
+    newSprites.push({
+      name: sprite.name + '_f' + (i + 1),
+      cellsW: sprite.cellsW,
+      cellsH: sprite.cellsH,
+      mode: sprite.mode,
+      frames: [deepCopyFrame(sprite.frames[i])]
+    });
+  }
+  // Replace original sprite with the new ones
+  spriteSheet.sprites.splice(idx, 1, ...newSprites);
+  setActiveSprite(idx);
+  currentFrameIndex = 0;
+  updateSpriteList();
+  updateSpriteProps();
+  if (spriteEditorOpen) renderSpriteEditor();
+}
+
+function mergeSpritesToFrames() {
+  const sprite = getSelectedSprite();
+  if (!sprite) return;
+  const idx = selectedSpriteIndex;
+  // Find consecutive compatible sprites
+  let count = 1;
+  for (let i = idx + 1; i < spriteSheet.sprites.length; i++) {
+    const s = spriteSheet.sprites[i];
+    if (s.cellsW === sprite.cellsW && s.cellsH === sprite.cellsH && s.mode === sprite.mode) {
+      count++;
+    } else {
+      break;
+    }
+  }
+  if (count <= 1) {
+    alert('No compatible consecutive sprites to merge (need same dimensions and mode).');
+    return;
+  }
+  const firstName = spriteSheet.sprites[idx].name;
+  const lastName = spriteSheet.sprites[idx + count - 1].name;
+  if (!confirm('Merge ' + count + ' sprites (' + firstName + ' .. ' + lastName + ') into one sprite with multiple frames?')) {
+    return;
+  }
+  // Collect all frames
+  const mergedFrames = [];
+  for (let i = idx; i < idx + count; i++) {
+    for (const frame of spriteSheet.sprites[i].frames) {
+      mergedFrames.push(deepCopyFrame(frame));
+    }
+  }
+  const merged = {
+    name: firstName,
+    cellsW: sprite.cellsW,
+    cellsH: sprite.cellsH,
+    mode: sprite.mode,
+    frames: mergedFrames
+  };
+  // Replace the range with the single merged sprite
+  spriteSheet.sprites.splice(idx, count, merged);
+  setActiveSprite(idx);
+  currentFrameIndex = 0;
+  updateSpriteList();
+  updateSpriteProps();
+  if (spriteEditorOpen) renderSpriteEditor();
+}
+
 function selectSprite(index) {
   if (index < 0 || index >= spriteSheet.sprites.length) return;
-  selectedSpriteIndex = index;
+  setActiveSprite(index);
   currentFrameIndex = 0;
   spriteUndoStack = [];
   spriteRedoStack = [];
-  // Update selection visuals without rebuilding DOM (preserves dblclick)
-  const items = spriteDOM.spriteList?.querySelectorAll('.sprite-list-item');
-  if (items) {
-    items.forEach((item, i) => item.classList.toggle('selected', i === index));
-  }
+  updateSpriteListSelection();
   updateSpriteProps();
   if (spriteEditorOpen) renderSpriteEditor();
 }
@@ -323,6 +475,256 @@ function getCurrentFrame() {
 }
 
 // ============================================================================
+// Multi-Select & Context Menu
+// ============================================================================
+
+function plainClickSprite(idx) {
+  stopAnimation();
+  setActiveSprite(idx);
+  currentFrameIndex = 0;
+  spriteUndoStack = [];
+  spriteRedoStack = [];
+  updateSpriteListSelection();
+  updateSpriteProps();
+  if (spriteEditorOpen) renderSpriteEditor();
+}
+
+function ctrlClickSprite(idx) {
+  if (selectedSpriteIndices.has(idx)) {
+    selectedSpriteIndices.delete(idx);
+    if (selectedSpriteIndex === idx) {
+      // Pick another selected index as active, or -1
+      const remaining = Array.from(selectedSpriteIndices);
+      selectedSpriteIndex = remaining.length > 0 ? remaining[remaining.length - 1] : -1;
+    }
+  } else {
+    selectedSpriteIndices.add(idx);
+    selectedSpriteIndex = idx;
+  }
+  spriteSelectionAnchor = idx;
+  currentFrameIndex = 0;
+  spriteUndoStack = [];
+  spriteRedoStack = [];
+  updateSpriteListSelection();
+  updateSpriteProps();
+  if (spriteEditorOpen) renderSpriteEditor();
+}
+
+function shiftClickSprite(idx) {
+  const anchor = spriteSelectionAnchor >= 0 ? spriteSelectionAnchor : 0;
+  const lo = Math.min(anchor, idx);
+  const hi = Math.max(anchor, idx);
+  selectedSpriteIndices.clear();
+  for (let i = lo; i <= hi; i++) selectedSpriteIndices.add(i);
+  selectedSpriteIndex = idx;
+  currentFrameIndex = 0;
+  spriteUndoStack = [];
+  spriteRedoStack = [];
+  updateSpriteListSelection();
+  updateSpriteProps();
+  if (spriteEditorOpen) renderSpriteEditor();
+}
+
+/** Update .selected / .multi-selected classes on existing list items without DOM rebuild. */
+function updateSpriteListSelection() {
+  const items = spriteDOM.spriteList?.querySelectorAll('.sprite-list-item');
+  if (!items) return;
+  items.forEach(item => {
+    const idx = parseInt(item.dataset.index);
+    item.classList.toggle('selected', idx === selectedSpriteIndex);
+    item.classList.toggle('multi-selected', idx !== selectedSpriteIndex && selectedSpriteIndices.has(idx));
+  });
+}
+
+// ---- Context Menu ----
+
+function showSpriteContextMenu(x, y) {
+  dismissSpriteContextMenu();
+  const menu = document.createElement('div');
+  menu.className = 'sprite-context-menu';
+
+  const selCount = selectedSpriteIndices.size;
+  const compatible = areSelectedSpritesCompatible();
+  const activeSprite = getSelectedSprite();
+  const hasMultiFrames = activeSprite && activeSprite.frames.length >= 2;
+
+  // Merge selected to animation
+  addContextMenuItem(menu, 'Merge selected to animation (' + selCount + ')',
+    () => { dismissSpriteContextMenu(); mergeSelectedToAnimation(); },
+    selCount < 2 || !compatible);
+
+  // Add frames to… (submenu)
+  addContextSubMenu(menu, 'Add frames to', selCount < 1, false);
+
+  // Move frames to… (submenu)
+  addContextSubMenu(menu, 'Move frames to', selCount < 1, true);
+
+  addContextMenuSeparator(menu);
+
+  // Split frames to sprites
+  addContextMenuItem(menu, 'Split frames to sprites',
+    () => { dismissSpriteContextMenu(); splitFramesToSprites(); },
+    !hasMultiFrames);
+
+  addContextMenuSeparator(menu);
+
+  // Delete selected
+  addContextMenuItem(menu, 'Delete selected (' + selCount + ')',
+    () => { dismissSpriteContextMenu(); deleteSelectedSprites(); },
+    selCount < 1);
+
+  document.body.appendChild(menu);
+  spriteContextMenu = menu;
+
+  // Clamp to viewport
+  const rect = menu.getBoundingClientRect();
+  if (x + rect.width > window.innerWidth) x = window.innerWidth - rect.width - 4;
+  if (y + rect.height > window.innerHeight) y = window.innerHeight - rect.height - 4;
+  if (x < 0) x = 0;
+  if (y < 0) y = 0;
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+
+  // Flip submenus to the left if they'd overflow the viewport
+  const subs = menu.querySelectorAll('.sprite-context-submenu');
+  for (const sub of subs) {
+    if (x + rect.width + 160 > window.innerWidth) sub.classList.add('flip-left');
+  }
+}
+
+function addContextMenuItem(menu, label, onClick, disabled) {
+  const item = document.createElement('div');
+  item.className = 'sprite-context-menu-item' + (disabled ? ' disabled' : '');
+  item.textContent = label;
+  if (!disabled) item.addEventListener('click', onClick);
+  menu.appendChild(item);
+}
+
+function addContextSubMenu(menu, label, disabled, removeSource) {
+  const targets = [];
+  if (!disabled) {
+    for (let i = 0; i < spriteSheet.sprites.length; i++) {
+      if (!selectedSpriteIndices.has(i)) {
+        targets.push({ index: i, sprite: spriteSheet.sprites[i] });
+      }
+    }
+  }
+  const noTargets = targets.length === 0;
+  const item = document.createElement('div');
+  item.className = 'sprite-context-menu-item' + ((disabled || noTargets) ? ' disabled' : ' has-submenu');
+  item.textContent = label;
+  if (!disabled && !noTargets) {
+    const sub = document.createElement('div');
+    sub.className = 'sprite-context-submenu';
+    for (const t of targets) {
+      const si = document.createElement('div');
+      si.className = 'sprite-context-submenu-item';
+      si.textContent = t.sprite.name + ' (' + (t.sprite.cellsW * 8) + '\u00D7' + (t.sprite.cellsH * 8) + ')';
+      const targetIdx = t.index;
+      si.addEventListener('click', (e) => {
+        e.stopPropagation();
+        dismissSpriteContextMenu();
+        addFramesToSprite(targetIdx, removeSource);
+      });
+      sub.appendChild(si);
+    }
+    item.appendChild(sub);
+  }
+  menu.appendChild(item);
+}
+
+function addContextMenuSeparator(menu) {
+  const sep = document.createElement('div');
+  sep.className = 'sprite-context-menu-separator';
+  menu.appendChild(sep);
+}
+
+function dismissSpriteContextMenu() {
+  if (spriteContextMenu) {
+    spriteContextMenu.remove();
+    spriteContextMenu = null;
+  }
+}
+
+function areSelectedSpritesCompatible() {
+  if (selectedSpriteIndices.size < 2) return false;
+  let refW, refH, refMode;
+  for (const idx of selectedSpriteIndices) {
+    const s = spriteSheet.sprites[idx];
+    if (!s) return false;
+    if (refW === undefined) { refW = s.cellsW; refH = s.cellsH; refMode = s.mode; continue; }
+    if (s.cellsW !== refW || s.cellsH !== refH || s.mode !== refMode) return false;
+  }
+  return true;
+}
+
+function mergeSelectedToAnimation() {
+  if (!areSelectedSpritesCompatible()) {
+    alert('Selected sprites must have the same dimensions and mode to merge.');
+    return;
+  }
+  const sorted = Array.from(selectedSpriteIndices).sort((a, b) => a - b);
+  const first = spriteSheet.sprites[sorted[0]];
+  const mergedFrames = [];
+  for (const idx of sorted) {
+    for (const frame of spriteSheet.sprites[idx].frames) {
+      mergedFrames.push(deepCopyFrame(frame));
+    }
+  }
+  const merged = {
+    name: first.name,
+    cellsW: first.cellsW,
+    cellsH: first.cellsH,
+    mode: first.mode,
+    frames: mergedFrames
+  };
+  // Remove originals in descending order, then insert merged at first position
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    spriteSheet.sprites.splice(sorted[i], 1);
+  }
+  spriteSheet.sprites.splice(sorted[0], 0, merged);
+  setActiveSprite(sorted[0]);
+  currentFrameIndex = 0;
+  updateSpriteList();
+  updateSpriteProps();
+  if (spriteEditorOpen) renderSpriteEditor();
+}
+
+function addFramesToSprite(targetIdx, removeSource) {
+  const target = spriteSheet.sprites[targetIdx];
+  if (!target) return;
+
+  // Collect frames from selected sprites (sorted by index)
+  const sorted = Array.from(selectedSpriteIndices).sort((a, b) => a - b);
+  for (const idx of sorted) {
+    const src = spriteSheet.sprites[idx];
+    if (!src) continue;
+    for (const frame of src.frames) {
+      target.frames.push(deepCopyFrame(frame));
+    }
+  }
+
+  if (removeSource) {
+    // Remove source sprites in descending order
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      spriteSheet.sprites.splice(sorted[i], 1);
+    }
+    // Find new index of target after removals
+    let newTargetIdx = targetIdx;
+    for (const idx of sorted) {
+      if (idx < targetIdx) newTargetIdx--;
+    }
+    setActiveSprite(Math.min(newTargetIdx, spriteSheet.sprites.length - 1));
+  } else {
+    setActiveSprite(targetIdx);
+  }
+  currentFrameIndex = 0;
+  updateSpriteList();
+  updateSpriteProps();
+  if (spriteEditorOpen) renderSpriteEditor();
+}
+
+// ============================================================================
 // Sidebar UI
 // ============================================================================
 
@@ -334,7 +736,10 @@ function updateSpriteList() {
   for (let i = 0; i < spriteSheet.sprites.length; i++) {
     const sprite = spriteSheet.sprites[i];
     const item = document.createElement('div');
-    item.className = 'sprite-list-item' + (i === selectedSpriteIndex ? ' selected' : '');
+    let cls = 'sprite-list-item';
+    if (i === selectedSpriteIndex) cls += ' selected';
+    else if (selectedSpriteIndices.has(i)) cls += ' multi-selected';
+    item.className = cls;
 
     // Thumbnail canvas
     const thumbCanvas = document.createElement('canvas');
@@ -344,7 +749,8 @@ function updateSpriteList() {
     renderSpriteThumbnail(thumbCanvas, sprite, 0);
 
     const nameSpan = document.createElement('span');
-    nameSpan.textContent = sprite.name + ' (' + (sprite.cellsW * 8) + 'x' + (sprite.cellsH * 8) + ')';
+    nameSpan.textContent = sprite.name + ' (' + (sprite.cellsW * 8) + 'x' + (sprite.cellsH * 8) +
+      (sprite.frames.length > 1 ? ', ' + sprite.frames.length + 'f' : '') + ')';
     nameSpan.style.flex = '1';
     nameSpan.style.overflow = 'hidden';
     nameSpan.style.textOverflow = 'ellipsis';
@@ -384,16 +790,158 @@ function updateFrameBar() {
 
   bar.innerHTML = '';
   for (let i = 0; i < sprite.frames.length; i++) {
-    const thumb = document.createElement('canvas');
-    thumb.width = 20;
-    thumb.height = 20;
-    thumb.style.border = '2px solid ' + (i === currentFrameIndex ? 'var(--accent-primary)' : 'var(--border-secondary)');
-    thumb.style.cursor = 'pointer';
-    thumb.style.imageRendering = 'pixelated';
-    renderSpriteThumbnail(thumb, sprite, i);
-    thumb.addEventListener('click', () => { currentFrameIndex = i; updateFrameBar(); renderSpriteEditor(); });
-    bar.appendChild(thumb);
+    const wrap = document.createElement('canvas');
+    wrap.width = 20;
+    wrap.height = 20;
+    wrap.className = 'frame-thumb';
+    wrap.dataset.index = i;
+    if (i === currentFrameIndex) wrap.classList.add('current');
+    else if (selectedFrameIndices.has(i)) wrap.classList.add('multi-selected');
+    renderSpriteThumbnail(wrap, sprite, i);
+    wrap.addEventListener('click', (e) => {
+      if (e.ctrlKey || e.metaKey) ctrlClickFrame(i);
+      else if (e.shiftKey) shiftClickFrame(i);
+      else plainClickFrame(i);
+    });
+    bar.appendChild(wrap);
   }
+}
+
+function updateFrameBarSelection() {
+  const bar = spriteDOM.spriteFrameBar;
+  if (!bar) return;
+  const thumbs = bar.children;
+  for (let i = 0; i < thumbs.length; i++) {
+    thumbs[i].classList.toggle('current', i === currentFrameIndex);
+    thumbs[i].classList.toggle('multi-selected', i !== currentFrameIndex && selectedFrameIndices.has(i));
+  }
+}
+
+function plainClickFrame(idx) {
+  selectedFrameIndices.clear();
+  frameSelectionAnchor = idx;
+  currentFrameIndex = idx;
+  updateFrameBarSelection();
+  renderSpriteEditor();
+}
+
+function ctrlClickFrame(idx) {
+  if (idx === currentFrameIndex) {
+    // clicking current: if there are other selected, move current to one of them
+    if (selectedFrameIndices.size > 0) {
+      const first = selectedFrameIndices.values().next().value;
+      selectedFrameIndices.delete(first);
+      currentFrameIndex = first;
+    }
+    // otherwise ignore — can't deselect the only current frame
+  } else {
+    if (selectedFrameIndices.has(idx)) {
+      selectedFrameIndices.delete(idx);
+    } else {
+      selectedFrameIndices.add(idx);
+    }
+    // add old current to set, make clicked the new current
+    selectedFrameIndices.add(currentFrameIndex);
+    currentFrameIndex = idx;
+    selectedFrameIndices.delete(idx);
+  }
+  frameSelectionAnchor = idx;
+  updateFrameBarSelection();
+  renderSpriteEditor();
+}
+
+function shiftClickFrame(idx) {
+  const anchor = frameSelectionAnchor >= 0 ? frameSelectionAnchor : currentFrameIndex;
+  const lo = Math.min(anchor, idx);
+  const hi = Math.max(anchor, idx);
+  selectedFrameIndices.clear();
+  for (let i = lo; i <= hi; i++) {
+    if (i !== currentFrameIndex) selectedFrameIndices.add(i);
+  }
+  // current stays where it was, but make sure it's in range
+  if (currentFrameIndex < lo || currentFrameIndex > hi) {
+    currentFrameIndex = idx;
+  }
+  updateFrameBarSelection();
+  renderSpriteEditor();
+}
+
+function moveSelectedFrames(delta) {
+  const sprite = getSelectedSprite();
+  if (!sprite) return;
+  const frames = sprite.frames;
+
+  // Collect all effective selected indices (include current)
+  const sel = new Set(selectedFrameIndices);
+  sel.add(currentFrameIndex);
+  const sorted = [...sel].sort((a, b) => a - b);
+
+  if (delta === -1) {
+    if (sorted[0] <= 0) return;
+    for (let k = 0; k < sorted.length; k++) {
+      const i = sorted[k];
+      const tmp = frames[i - 1];
+      frames[i - 1] = frames[i];
+      frames[i] = tmp;
+    }
+  } else {
+    if (sorted[sorted.length - 1] >= frames.length - 1) return;
+    for (let k = sorted.length - 1; k >= 0; k--) {
+      const i = sorted[k];
+      const tmp = frames[i + 1];
+      frames[i + 1] = frames[i];
+      frames[i] = tmp;
+    }
+  }
+
+  // Update indices to follow moved positions
+  selectedFrameIndices.clear();
+  for (const i of sorted) {
+    const newIdx = i + delta;
+    if (i === currentFrameIndex) {
+      currentFrameIndex = newIdx;
+    } else {
+      selectedFrameIndices.add(newIdx);
+    }
+  }
+  frameSelectionAnchor = currentFrameIndex;
+
+  updateFrameBar();
+  renderSpriteEditor();
+}
+
+function deleteSelectedFrames() {
+  const sprite = getSelectedSprite();
+  if (!sprite || sprite.frames.length <= 1) return;
+
+  // Collect all indices to delete (selected + current)
+  const toDelete = new Set(selectedFrameIndices);
+  toDelete.add(currentFrameIndex);
+
+  // Must keep at least 1 frame
+  if (toDelete.size >= sprite.frames.length) {
+    // Keep the lowest index that isn't selected, or frame 0
+    let keep = -1;
+    for (let i = 0; i < sprite.frames.length; i++) {
+      if (!toDelete.has(i)) { keep = i; break; }
+    }
+    if (keep === -1) keep = 0;
+    toDelete.delete(keep);
+  }
+
+  // Splice in descending order
+  const descending = [...toDelete].sort((a, b) => b - a);
+  for (const idx of descending) {
+    sprite.frames.splice(idx, 1);
+  }
+
+  // Adjust currentFrameIndex
+  if (currentFrameIndex >= sprite.frames.length) currentFrameIndex = sprite.frames.length - 1;
+  selectedFrameIndices.clear();
+  frameSelectionAnchor = currentFrameIndex;
+
+  updateFrameBar();
+  renderSpriteEditor();
 }
 
 // ============================================================================
@@ -1000,6 +1548,7 @@ function onSpriteCanvasMouseDown(e) {
   }
 
   spriteDrawing = true;
+  spriteDrawRight = rightButton;
   spriteLastDrawX = pos.x;
   spriteLastDrawY = pos.y;
 
@@ -1011,7 +1560,7 @@ function onSpriteCanvasMouseDown(e) {
     } else {
       spSetPixel(frame, pos.x, pos.y, value, pixW);
       // In attr/multicolour mode, set attribute for the cell
-      if ((sprite.mode === 'attr' || sprite.mode === 'multicolour') && !rightButton && currentSpriteTool === 'draw') {
+      if ((sprite.mode === 'attr' || sprite.mode === 'multicolour') && currentSpriteTool === 'draw') {
         const cellX = Math.floor(pos.x / 8);
         const cellY = sprite.mode === 'multicolour' ? Math.floor(pos.y / 2) : Math.floor(pos.y / 8);
         spSetAttr(frame, cellX, cellY, spriteInk, spritePaper, spriteBright, sprite.cellsW);
@@ -1020,12 +1569,13 @@ function onSpriteCanvasMouseDown(e) {
     renderSpriteEditor();
   } else if (currentSpriteTool === 'fill') {
     pushUndo();
+    const fillValue = rightButton ? 0 : 1;
     if (editingMask) {
       const target = spGetMaskPixel(frame, pos.x, pos.y, pixW);
-      spFloodFillMask(frame, pos.x, pos.y, target, target ? 0 : 1, pixW, sprite.cellsH * 8);
+      if (target !== fillValue) spFloodFillMask(frame, pos.x, pos.y, target, fillValue, pixW, sprite.cellsH * 8);
     } else {
       const target = spGetPixel(frame, pos.x, pos.y, pixW);
-      spFloodFill(frame, pos.x, pos.y, target, target ? 0 : 1, pixW, sprite.cellsH * 8);
+      if (target !== fillValue) spFloodFill(frame, pos.x, pos.y, target, fillValue, pixW, sprite.cellsH * 8);
     }
     renderSpriteEditor();
   } else if (currentSpriteTool === 'line' || currentSpriteTool === 'rect') {
@@ -1057,7 +1607,7 @@ function onSpriteCanvasMouseMove(e) {
   const pixW = sprite.cellsW * 8;
 
   if (currentSpriteTool === 'draw' || currentSpriteTool === 'erase') {
-    const value = currentSpriteTool === 'draw' ? 1 : 0;
+    const value = currentSpriteTool === 'draw' ? (spriteDrawRight ? 0 : 1) : (spriteDrawRight ? 1 : 0);
     // Draw line from last position to current for smooth strokes
     spBresenhamLine(spriteLastDrawX, spriteLastDrawY, pos.x, pos.y, (x, y) => {
       if (spIsInBounds(x, y)) {
@@ -1083,15 +1633,16 @@ function onSpriteCanvasMouseMove(e) {
       frame.bitmap.set(undoState.bitmap);
       if (undoState.mask && frame.mask) frame.mask.set(undoState.mask);
     }
+    const drawValue = spriteDrawRight ? 0 : 1;
     if (currentSpriteTool === 'line') {
       spBresenhamLine(spriteLineStartX, spriteLineStartY, pos.x, pos.y, (x, y) => {
         if (spIsInBounds(x, y)) {
-          if (editingMask) spSetMaskPixel(frame, x, y, 1, pixW);
-          else spSetPixel(frame, x, y, 1, pixW);
+          if (editingMask) spSetMaskPixel(frame, x, y, drawValue, pixW);
+          else spSetPixel(frame, x, y, drawValue, pixW);
         }
       });
     } else {
-      spDrawRect(frame, spriteLineStartX, spriteLineStartY, pos.x, pos.y, 1, pixW);
+      spDrawRect(frame, spriteLineStartX, spriteLineStartY, pos.x, pos.y, drawValue, pixW);
     }
     renderSpriteEditor();
   }
@@ -1121,15 +1672,16 @@ function onSpriteCanvasMouseUp(e) {
         frame.bitmap.set(undoState.bitmap);
         if (undoState.mask && frame.mask) frame.mask.set(undoState.mask);
       }
+      const drawValue = spriteDrawRight ? 0 : 1;
       if (currentSpriteTool === 'line') {
         spBresenhamLine(spriteLineStartX, spriteLineStartY, pos.x, pos.y, (x, y) => {
           if (spIsInBounds(x, y)) {
-            if (editingMask) spSetMaskPixel(frame, x, y, 1, pixW);
-            else spSetPixel(frame, x, y, 1, pixW);
+            if (editingMask) spSetMaskPixel(frame, x, y, drawValue, pixW);
+            else spSetPixel(frame, x, y, drawValue, pixW);
           }
         });
       } else {
-        spDrawRect(frame, spriteLineStartX, spriteLineStartY, pos.x, pos.y, 1, pixW);
+        spDrawRect(frame, spriteLineStartX, spriteLineStartY, pos.x, pos.y, drawValue, pixW);
       }
     }
     renderSpriteEditor();
@@ -1579,6 +2131,8 @@ function navigateFrame(delta) {
   const sprite = getSelectedSprite();
   if (!sprite) return;
   currentFrameIndex = Math.max(0, Math.min(sprite.frames.length - 1, currentFrameIndex + delta));
+  selectedFrameIndices.clear();
+  frameSelectionAnchor = currentFrameIndex;
   spriteSelection = null;
   renderSpriteEditor();
 }
@@ -1588,6 +2142,8 @@ function addFrame() {
   if (!sprite) return;
   sprite.frames.push(createEmptyFrame(sprite.cellsW, sprite.cellsH, sprite.mode));
   currentFrameIndex = sprite.frames.length - 1;
+  selectedFrameIndices.clear();
+  frameSelectionAnchor = currentFrameIndex;
   renderSpriteEditor();
 }
 
@@ -1602,14 +2158,8 @@ function duplicateFrame() {
   };
   sprite.frames.splice(currentFrameIndex + 1, 0, dup);
   currentFrameIndex++;
-  renderSpriteEditor();
-}
-
-function deleteFrame() {
-  const sprite = getSelectedSprite();
-  if (!sprite || sprite.frames.length <= 1) return;
-  sprite.frames.splice(currentFrameIndex, 1);
-  if (currentFrameIndex >= sprite.frames.length) currentFrameIndex = sprite.frames.length - 1;
+  selectedFrameIndices.clear();
+  frameSelectionAnchor = currentFrameIndex;
   renderSpriteEditor();
 }
 
@@ -1634,6 +2184,9 @@ function toggleAnimation() {
 }
 
 function startAnimation() {
+  // Stop any existing animation first
+  stopAnimation();
+
   const sprite = getSelectedSprite();
   if (!sprite || sprite.frames.length <= 1) return;
 
@@ -1644,7 +2197,9 @@ function startAnimation() {
   const interval = Math.max(16, Math.floor(1000 / speed));
 
   spriteAnimTimer = setInterval(() => {
-    currentFrameIndex = (currentFrameIndex + 1) % sprite.frames.length;
+    const s = getSelectedSprite();
+    if (!s || s.frames.length <= 1) { stopAnimation(); return; }
+    currentFrameIndex = (currentFrameIndex + 1) % s.frames.length;
     renderSpriteCanvas();
     renderSpritePreview();
     updateFrameInfo();
@@ -1652,7 +2207,8 @@ function startAnimation() {
     const thumbs = spriteDOM.spriteFrameBar?.children;
     if (thumbs) {
       for (let i = 0; i < thumbs.length; i++) {
-        thumbs[i].style.borderColor = i === currentFrameIndex ? 'var(--accent-primary)' : 'var(--border-secondary)';
+        thumbs[i].classList.toggle('current', i === currentFrameIndex);
+        thumbs[i].classList.remove('multi-selected');
       }
     }
   }, interval);
@@ -1739,6 +2295,12 @@ function startGrabMode() {
   if (spriteDOM.spriteGrabConfig) {
     spriteDOM.spriteGrabConfig.style.display = '';
   }
+  // Sync grid options visibility to current grab mode value
+  if (spriteDOM.spriteGrabMode && spriteDOM.spriteGrabGridOpts) {
+    const mode = spriteDOM.spriteGrabMode.value;
+    const isGrid = mode === 'grid' || mode === 'gridphases';
+    spriteDOM.spriteGrabGridOpts.style.display = isGrid ? '' : 'none';
+  }
   if (spriteDOM.spriteGrabStatus) {
     spriteDOM.spriteGrabStatus.textContent = 'Drag on canvas...';
   }
@@ -1748,12 +2310,13 @@ function startGrabMode() {
   if (sel) {
     const isMulticolour = typeof currentFormat !== 'undefined' && typeof FORMAT !== 'undefined' &&
       (currentFormat === FORMAT.IFL || currentFormat === FORMAT.MLT || currentFormat === FORMAT.BMC4);
+    const mcOpt = sel.querySelector('option[value="multicolour"]');
     if (isMulticolour) {
+      if (mcOpt) mcOpt.style.display = '';
       sel.value = 'multicolour';
       sel.disabled = true;
     } else {
       sel.disabled = false;
-      const mcOpt = sel.querySelector('option[value="multicolour"]');
       if (mcOpt) mcOpt.style.display = 'none';
       if (sel.value === 'multicolour') sel.value = 'mono';
     }
@@ -1806,7 +2369,7 @@ function startGrabMode() {
   spriteGrabMouseDown = function(e) {
     if (e.button !== 0) return;
     e.preventDefault();
-    e.stopPropagation();
+    e.stopImmediatePropagation();
     const cell = clientToScreenCell(e);
     spriteGrabStartX = cell.x;
     spriteGrabStartY = cell.y;
@@ -1824,7 +2387,7 @@ function startGrabMode() {
   spriteGrabMouseUp = function(e) {
     if (!spriteGrabDragging) return;
     e.preventDefault();
-    e.stopPropagation();
+    e.stopImmediatePropagation();
     spriteGrabDragging = false;
 
     const cell = clientToScreenCell(e);
@@ -2037,7 +2600,7 @@ function grabRegionFromScreen(regionX, regionY, regionW, regionH) {
         name: 'Grabbed_' + (spriteSheet.sprites.length + 1),
         cellsW: cellsW, cellsH: cellsH, mode: attrMode, frames: frames
       });
-      selectedSpriteIndex = spriteSheet.sprites.length - 1;
+      setActiveSprite(spriteSheet.sprites.length - 1);
       currentFrameIndex = frames.length - 1;
     }
     if (spriteDOM.spriteGrabStatus)
@@ -2050,7 +2613,7 @@ function grabRegionFromScreen(regionX, regionY, regionW, regionH) {
         name: 'Grabbed_' + (baseNum + i),
         cellsW: cellsW, cellsH: cellsH, mode: attrMode, frames: [frames[i]]
       });
-    selectedSpriteIndex = spriteSheet.sprites.length - 1;
+    setActiveSprite(spriteSheet.sprites.length - 1);
     currentFrameIndex = 0;
     if (spriteDOM.spriteGrabStatus)
       spriteDOM.spriteGrabStatus.textContent = frames.length + ' sprites grabbed';
@@ -2060,7 +2623,7 @@ function grabRegionFromScreen(regionX, regionY, regionW, regionH) {
       name: 'Grabbed_' + (spriteSheet.sprites.length + 1),
       cellsW: cellsW, cellsH: cellsH, mode: attrMode, frames: frames
     });
-    selectedSpriteIndex = spriteSheet.sprites.length - 1;
+    setActiveSprite(spriteSheet.sprites.length - 1);
     currentFrameIndex = 0;
     if (spriteDOM.spriteGrabStatus)
       spriteDOM.spriteGrabStatus.textContent = cellsW + 'x' + cellsH + ' sprite grabbed';
@@ -2279,7 +2842,7 @@ function loadSpriteSheetData(data) {
     spriteSheet.sprites.push(sprite);
   }
 
-  selectedSpriteIndex = spriteSheet.sprites.length > 0 ? 0 : -1;
+  setActiveSprite(spriteSheet.sprites.length > 0 ? 0 : -1);
   currentFrameIndex = 0;
   updateSpriteList();
   updateSpriteProps();

@@ -5816,6 +5816,7 @@ function canvasToScreenCoords(canvas, event) {
  */
 function handleEditorMouseDown(event) {
   if (!editorActive) return;
+  if (document.getElementById('spriteGrabOverlay')) return;
   event.preventDefault();
 
   // Ensure canvas has focus for keyboard shortcuts
@@ -17045,6 +17046,135 @@ function initEditor() {
     }
     requestAnimationFrame(_apFlashLoop);
   })(performance.now());
+}
+
+// ============================================================================
+// Nirvana Tile File Import (.btile / .wtile)
+// ============================================================================
+
+/**
+ * Imports a Nirvana .btile or .wtile file.
+ * Creates an IFL picture with tiles laid out in a grid, and a spriteset
+ * with each tile as a multicolour sprite frame.
+ * @param {File} file - The tile file to import
+ */
+function importNirvanaTileFile(file) {
+  const ext = file.name.toLowerCase().split('.').pop() || '';
+  const isBtile = ext === 'btile';
+  const cellsW = isBtile ? 2 : 3;   // 2 for btile, 3 for wtile
+  const cellsH = 2;                  // both are 2 cells high
+  const tilePixW = cellsW * 8;       // 16 or 24
+  const tilePixH = cellsH * 8;       // 16
+  const bitmapSize = tilePixH * cellsW;          // 32 or 48 bytes
+  const attrSize = cellsW * cellsH * 4;          // 16 or 24 bytes (8x2 attrs)
+  const tileSize = bitmapSize + attrSize;         // 48 or 72 bytes
+  const maxTilesPerRow = Math.floor(256 / tilePixW);  // 16 or 10
+  const maxRows = Math.floor(192 / tilePixH);         // 12
+
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const data = new Uint8Array(/** @type {ArrayBuffer} */ (e.target?.result));
+
+    // Validate file size
+    if (data.length === 0 || data.length % tileSize !== 0) {
+      alert('Invalid ' + ext + ' file: size ' + data.length + ' is not a multiple of ' + tileSize + ' bytes.');
+      return;
+    }
+
+    const tileCount = data.length / tileSize;
+
+    // Prompt for tiles per row
+    const defaultPerRow = maxTilesPerRow;
+    const input = window.prompt(
+      'File contains ' + tileCount + ' tile' + (tileCount !== 1 ? 's' : '') +
+      ' (' + tilePixW + '×' + tilePixH + ' each).\n' +
+      'Tiles per row (1–' + maxTilesPerRow + ', default ' + defaultPerRow + '):',
+      String(defaultPerRow)
+    );
+    if (input === null) return; // cancelled
+
+    let tilesPerRow = parseInt(input, 10);
+    if (isNaN(tilesPerRow) || tilesPerRow < 1) tilesPerRow = defaultPerRow;
+    if (tilesPerRow > maxTilesPerRow) tilesPerRow = maxTilesPerRow;
+
+    const gridRows = Math.ceil(tileCount / tilesPerRow);
+    if (gridRows > maxRows) {
+      alert('Too many tiles: ' + tileCount + ' tiles at ' + tilesPerRow + ' per row needs ' +
+        gridRows + ' rows, but max is ' + maxRows + ' (' + (maxRows * tilePixH) + 'px height).');
+      return;
+    }
+
+    // Create IFL data (9216 bytes: 6144 bitmap + 3072 attrs)
+    const iflData = new Uint8Array(IFL.TOTAL_SIZE);
+
+    for (let t = 0; t < tileCount; t++) {
+      const col = t % tilesPerRow;
+      const row = Math.floor(t / tilesPerRow);
+      const tileOffset = t * tileSize;
+      const tileBitmap = data.subarray(tileOffset, tileOffset + bitmapSize);
+      const tileAttrs = data.subarray(tileOffset + bitmapSize, tileOffset + tileSize);
+
+      // Copy bitmap: tile row ty, byte bx -> screen pixel position
+      for (let ty = 0; ty < tilePixH; ty++) {
+        const screenY = row * tilePixH + ty;
+        const screenCharCol = col * cellsW;
+        const iflAddr = getBitmapAddress(screenCharCol * 8, screenY);
+        for (let bx = 0; bx < cellsW; bx++) {
+          iflData[iflAddr + bx] = tileBitmap[ty * cellsW + bx];
+        }
+      }
+
+      // Copy attrs: 8 attr sub-rows (for 16px height at 8x2 resolution)
+      for (let ay = 0; ay < cellsH * 4; ay++) {
+        for (let ax = 0; ax < cellsW; ax++) {
+          const attrIdx = ay * cellsW + ax;
+          const iflAttrAddr = IFL.BITMAP_SIZE + (row * 8 + ay) * 32 + col * cellsW + ax;
+          iflData[iflAttrAddr] = tileAttrs[attrIdx];
+        }
+      }
+    }
+
+    // Add as IFL picture
+    addPicture(file.name, FORMAT.IFL, iflData);
+
+    // Create spriteset with each tile as a sprite
+    spriteSheet.sprites = [];
+    spriteSheet.name = file.name;
+    selectedSpriteIndex = -1;
+    currentFrameIndex = 0;
+
+    for (let t = 0; t < tileCount; t++) {
+      const tileOffset = t * tileSize;
+      const tileBitmap = data.subarray(tileOffset, tileOffset + bitmapSize);
+      const tileAttrs = data.subarray(tileOffset + bitmapSize, tileOffset + tileSize);
+
+      const sprite = {
+        name: 'Tile' + (t + 1),
+        cellsW: cellsW,
+        cellsH: cellsH,
+        mode: 'multicolour',
+        frames: [{
+          bitmap: new Uint8Array(tileBitmap),
+          mask: null,
+          attrs: new Uint8Array(tileAttrs)
+        }]
+      };
+      spriteSheet.sprites.push(sprite);
+    }
+
+    selectedSpriteIndex = spriteSheet.sprites.length > 0 ? 0 : -1;
+    currentFrameIndex = 0;
+    updateSpriteList();
+    updateSpriteProps();
+
+    // Switch to Sprites tab
+    const spritesTab = document.querySelector('.panel-tab[data-tab="sprites"]');
+    if (spritesTab) {
+      /** @type {HTMLElement} */ (spritesTab).click();
+    }
+  };
+
+  reader.readAsArrayBuffer(file);
 }
 
 if (document.readyState === 'loading') {

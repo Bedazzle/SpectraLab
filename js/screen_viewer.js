@@ -992,8 +992,8 @@ function renderScrFast(ctx, borderOffset) {
           if (showAttributes) {
             ({ inkRgb, paperRgb } = getColorsRgb(attr));
           } else {
-            inkRgb = [255, 255, 255];
-            paperRgb = [0, 0, 0];
+            inkRgb = [0, 0, 0];
+            paperRgb = [255, 255, 255];
           }
 
           // Calculate Y position
@@ -1068,8 +1068,8 @@ function render53cScreen(ctx, borderOffset) {
   // Fast path: render to 1:1 ImageData, then scale with drawImage (GPU accelerated)
   const imageData = ctx.createImageData(SCREEN.WIDTH, SCREEN.HEIGHT);
   const data = imageData.data;
-  const defaultInkRgb = [255, 255, 255];
-  const defaultPaperRgb = [0, 0, 0];
+  const defaultInkRgb = [0, 0, 0];
+  const defaultPaperRgb = [255, 255, 255];
 
   for (let row = 0; row < SCREEN.CHAR_ROWS; row++) {
     for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
@@ -1153,8 +1153,8 @@ function renderIflScreen(ctx, borderOffset) {
           if (showAttributes) {
             ({ inkRgb, paperRgb } = getColorsRgb(attr));
           } else {
-            inkRgb = [255, 255, 255];
-            paperRgb = [0, 0, 0];
+            inkRgb = [0, 0, 0];
+            paperRgb = [255, 255, 255];
           }
 
           // Draw 8 pixels to ImageData
@@ -1212,8 +1212,8 @@ function renderMltScreen(ctx, borderOffset) {
       if (showAttributes) {
         ({ inkRgb, paperRgb } = getColorsRgb(attr));
       } else {
-        inkRgb = [255, 255, 255];
-        paperRgb = [0, 0, 0];
+        inkRgb = [0, 0, 0];
+        paperRgb = [255, 255, 255];
       }
 
       const x = col * 8;
@@ -2275,8 +2275,8 @@ function renderBmc4MainScreen(ctx, offsetX, offsetY) {
       if (showAttributes) {
         ({ inkRgb, paperRgb } = getColorsRgb(attr));
       } else {
-        inkRgb = [255, 255, 255];
-        paperRgb = [0, 0, 0];
+        inkRgb = [0, 0, 0];
+        paperRgb = [255, 255, 255];
       }
 
       const x = col * 8;
@@ -2513,8 +2513,8 @@ function renderBscMainScreen(ctx, offsetX, offsetY) {
           if (showAttributes) {
             ({ inkRgb, paperRgb } = getColorsRgb(attr));
           } else {
-            inkRgb = [255, 255, 255];
-            paperRgb = [0, 0, 0];
+            inkRgb = [0, 0, 0];
+            paperRgb = [255, 255, 255];
           }
 
           const x = col * 8;
@@ -2665,8 +2665,8 @@ function renderScaFrame(ctx, borderOffset, frameIndex) {
         if (showAttributes) {
           ({ inkRgb, paperRgb } = getColorsRgb(attr));
         } else {
-          inkRgb = [255, 255, 255];
-          paperRgb = [0, 0, 0];
+          inkRgb = [0, 0, 0];
+          paperRgb = [255, 255, 255];
         }
 
         // Draw 8x8 cell using fill pattern
@@ -2713,8 +2713,8 @@ function renderScaFrame(ctx, borderOffset, frameIndex) {
             if (showAttributes) {
               ({ inkRgb, paperRgb } = getColorsRgb(attr));
             } else {
-              inkRgb = [255, 255, 255];
-              paperRgb = [0, 0, 0];
+              inkRgb = [0, 0, 0];
+              paperRgb = [255, 255, 255];
             }
 
             const x = col * 8;
@@ -3027,7 +3027,7 @@ function getUlaPlusPaletteIndex(attr, isInk) {
 // ============================================================================
 
 /** @type {string[]} - List of supported file extensions */
-const SUPPORTED_EXTENSIONS = ['scr', '53c', 'atr', 'bsc', 'ifl', 'bmc4', 'mlt', 'mc', '3', 'img', 'mem', 'specscii', 'sca', 'sna', 'z80'];
+const SUPPORTED_EXTENSIONS = ['scr', '53c', 'atr', 'bsc', 'ifl', 'bmc4', 'mlt', 'mc', '3', 'img', 'mem', 'specscii', 'sca', 'sna', 'z80', 'btile', 'wtile'];
 const IMAGE_EXTENSIONS = ['png', 'gif', 'jpg', 'jpeg', 'webp', 'bmp'];
 
 /** @type {JSZip|null} - Current loaded ZIP archive */
@@ -3054,6 +3054,16 @@ function isSupportedFile(fileName) {
 function isImageFileExt(fileName) {
   const ext = fileName.toLowerCase().split('.').pop() || '';
   return IMAGE_EXTENSIONS.includes(ext);
+}
+
+/**
+ * Checks if a file is a Nirvana tile file (.btile/.wtile)
+ * @param {string} fileName - The file name to check
+ * @returns {boolean} True if the file is a Nirvana tile file
+ */
+function isNirvanaTileFile(fileName) {
+  const ext = fileName.toLowerCase().split('.').pop() || '';
+  return ext === 'btile' || ext === 'wtile';
 }
 
 /**
@@ -3164,6 +3174,16 @@ async function loadFileFromZip(fileName) {
       const file = new File([blob], fileName);
       if (typeof loadSnapshotFile === 'function') {
         loadSnapshotFile(file);
+      }
+      return;
+    }
+
+    // Handle Nirvana tile files (.btile/.wtile) from ZIP
+    if (isNirvanaTileFile(fileName)) {
+      const blob = new Blob([arrayBuffer]);
+      const file = new File([blob], fileName);
+      if (typeof importNirvanaTileFile === 'function') {
+        importNirvanaTileFile(file);
       }
       return;
     }

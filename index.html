@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.50.0 -->
+<!-- SpectraLab v1.52.0 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -117,6 +117,8 @@
     gap: 10px;
     min-width: 225px;
     max-width: 225px;
+    max-height: calc(100vh - 80px);
+    overflow-y: auto;
   }
 
   /* Controls Panel */
@@ -1241,7 +1243,7 @@
 
   /* Sprite list in sidebar */
   .sprite-list {
-    max-height: 120px;
+    max-height: 290px;
     overflow-y: auto;
     border: 1px solid var(--border-secondary);
     border-radius: 2px;
@@ -1257,8 +1259,73 @@
     border-bottom: 1px solid var(--border-secondary);
   }
   .sprite-list-item:hover { background: var(--bg-secondary); }
-  .sprite-list-item.selected { background: var(--accent-primary); color: #fff; }
+  .sprite-list-item.selected { background: #264f78; color: #fff; }
+  .sprite-list-item.multi-selected { background: #445; color: #fff; }
   .sprite-list-item canvas { image-rendering: pixelated; image-rendering: crisp-edges; }
+
+  /* Frame bar thumbnails */
+  .frame-thumb {
+    border: 2px solid var(--border-secondary);
+    cursor: pointer;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+  }
+  .frame-thumb.current { border-color: #264f78; }
+  .frame-thumb.multi-selected { border-color: #587; }
+
+  /* Right-click context menu */
+  .sprite-context-menu {
+    position: fixed;
+    z-index: 11000;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    padding: 4px 0;
+    min-width: 200px;
+    font-size: 11px;
+  }
+  .sprite-context-menu-item {
+    padding: 5px 12px;
+    cursor: pointer;
+    color: var(--text-primary);
+    white-space: nowrap;
+    position: relative;
+  }
+  .sprite-context-menu-item:hover { background: #264f78; color: #fff; }
+  .sprite-context-menu-item.disabled { color: var(--text-tertiary); pointer-events: none; }
+  .sprite-context-menu-item.has-submenu::after { content: '\25B6'; float: right; margin-left: 12px; font-size: 8px; }
+  .sprite-context-submenu {
+    display: none;
+    position: absolute;
+    left: 100%;
+    top: -4px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    padding: 4px 0;
+    min-width: 160px;
+    max-height: 240px;
+    overflow-y: auto;
+    z-index: 11001;
+  }
+  .sprite-context-menu-item:hover > .sprite-context-submenu { display: block; }
+  .sprite-context-submenu.flip-left { left: auto; right: 100%; }
+  .sprite-context-submenu-item {
+    padding: 4px 12px;
+    cursor: pointer;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sprite-context-submenu-item:hover { background: #264f78; color: #fff; }
+  .sprite-context-menu-separator {
+    height: 1px;
+    background: var(--border-secondary);
+    margin: 4px 0;
+  }
 
   /* Floating sprite editor panel */
   .sprite-editor-panel {
@@ -1323,7 +1390,7 @@
     justify-content: center;
   }
   .sprite-tool-btn:hover { background: var(--bg-secondary); }
-  .sprite-tool-btn.active { background: var(--accent-primary); color: #fff; border-color: var(--accent-primary); }
+  .sprite-tool-btn.active { background: #264f78; color: #fff; border-color: #264f78; }
 
   .sprite-editor-tools {
     display: flex;
@@ -1371,7 +1438,7 @@
       <div class="panel-content">
         <!-- File input -->
         <div class="control-group">
-          <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.bmc4,.ifl,.mlt,.mc,.3,.img,.specscii,.sca,.slp,.slw,.sna,.z80,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
+          <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.bmc4,.ifl,.mlt,.mc,.3,.img,.specscii,.sca,.slp,.slw,.sna,.z80,.btile,.wtile,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
         </div>
 
         <!-- New and Save buttons -->
@@ -2076,7 +2143,7 @@
           <div id="spriteList" class="sprite-list"></div>
           <div style="display:flex; gap:4px; margin-top:4px;">
             <button id="spriteAddBtn" class="editor-btn" title="Add new sprite">+ Add</button>
-            <button id="spriteDeleteBtn" class="editor-btn" title="Delete selected sprite">Delete</button>
+            <button id="spriteDeleteBtn" class="editor-btn" title="Delete selected sprite(s)">Delete</button>
           </div>
 
           <!-- Sprite properties (shown when sprite selected) -->
@@ -2096,9 +2163,7 @@
                 <option value="mono">Mono</option><option value="attr">Attributed</option><option value="multicolour">Multicolour</option>
               </select></label>
             </div>
-            <div id="spriteFrameBar" style="display:grid; grid-template-columns:repeat(auto-fill, 24px); gap:2px; margin-top:6px;">
-            </div>
-            <div style="display:flex; gap:4px; margin-top:4px;">
+            <div style="display:flex; gap:4px; margin-top:6px;">
               <button id="spriteEditBtn" class="editor-btn" title="Open pixel editor">Edit</button>
               <button id="spriteUseBrushBtn" class="editor-btn" title="Use as brush on canvas">Use as Brush</button>
             </div>
@@ -2263,9 +2328,24 @@
   </div>
   <div class="sprite-editor-body">
     <div style="display:flex; gap:8px;">
-      <!-- Main editing canvas -->
+      <!-- Main editing canvas + preview below -->
       <div>
         <canvas id="spriteEditorCanvas" width="256" height="256"></canvas>
+        <div style="display:flex; gap:6px; align-items:center; margin-top:10px;">
+          <canvas id="spritePreviewCanvas" width="64" height="64" title="1x preview"></canvas>
+          <button id="spritePlayBtn" class="editor-btn" style="font-size:10px;">&#9654; Play</button>
+          <label style="font-size:9px;">Speed: <input type="range" id="spriteAnimSpeed" min="1" max="30" value="10" style="width:50px;"></label>
+        </div>
+        <div style="display:flex; gap:2px; align-items:center; margin-top:2px; font-size:10px;">
+          <button id="spriteFramePrev" class="editor-btn" title="Previous frame">&lt;</button>
+          <span id="spriteFrameInfo" style="min-width:40px; text-align:center;">1/1</span>
+          <button id="spriteFrameNext" class="editor-btn" title="Next frame">&gt;</button>
+        </div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; font-size:10px;">
+          <label><input type="checkbox" id="spriteOnionSkin"> Onion</label>
+          <label><input type="checkbox" id="spriteShowGrid" checked> Grid</label>
+          <label><input type="checkbox" id="spriteShowMask"> Mask</label>
+        </div>
       </div>
       <!-- Tool palette -->
       <div class="sprite-editor-tools">
@@ -2285,26 +2365,15 @@
         </div>
       </div>
     </div>
-    <!-- Preview + frame controls -->
-    <div style="display:flex; gap:8px; margin-top:6px; align-items:center;">
-      <canvas id="spritePreviewCanvas" width="64" height="64" title="1x preview"></canvas>
-      <div style="display:flex; flex-direction:column; gap:2px; font-size:10px;">
-        <label><input type="checkbox" id="spriteOnionSkin"> Onion skin</label>
-        <label><input type="checkbox" id="spriteShowGrid" checked> Grid</label>
-        <label><input type="checkbox" id="spriteShowMask"> Show mask</label>
-        <div style="display:flex; gap:2px; margin-top:4px;">
-          <button id="spriteFramePrev" class="editor-btn" title="Previous frame">&lt;</button>
-          <span id="spriteFrameInfo" style="min-width:40px; text-align:center;">1/1</span>
-          <button id="spriteFrameNext" class="editor-btn" title="Next frame">&gt;</button>
-          <button id="spriteFrameAdd" class="editor-btn" title="Add frame">+</button>
-          <button id="spriteFrameDup" class="editor-btn" title="Duplicate frame">Dup</button>
-          <button id="spriteFrameDel" class="editor-btn" title="Delete frame">Del</button>
-        </div>
-        <div style="display:flex; gap:2px; margin-top:2px;">
-          <button id="spritePlayBtn" class="editor-btn">&#9654; Play</button>
-          <label style="font-size:9px;">Speed: <input type="range" id="spriteAnimSpeed" min="1" max="30" value="10" style="width:60px;"></label>
-        </div>
-      </div>
+    <!-- Frame bar -->
+    <div id="spriteFrameBar" style="display:grid; grid-template-columns:repeat(auto-fill, 24px); gap:2px; margin-top:6px;"></div>
+    <!-- Frame operations -->
+    <div style="display:flex; gap:2px; margin-top:2px; font-size:10px;">
+      <button id="spriteFrameMoveL" class="editor-btn" title="Move frame(s) left">&#9664;</button>
+      <button id="spriteFrameMoveR" class="editor-btn" title="Move frame(s) right">&#9654;</button>
+      <button id="spriteFrameAdd" class="editor-btn" title="Add frame">+</button>
+      <button id="spriteFrameDup" class="editor-btn" title="Duplicate frame">Dup</button>
+      <button id="spriteFrameDel" class="editor-btn" title="Delete frame">Del</button>
     </div>
     <!-- Transform buttons -->
     <div style="display:flex; gap:2px; margin-top:6px; flex-wrap:wrap;">
@@ -2881,7 +2950,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.50.0</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.52.0</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">
@@ -2973,7 +3042,7 @@
             <span style="width: 36px;">Dither:</span>
             <select id="importDithering" style="width: 100px; padding: 2px; font-size: 11px;">
               <optgroup id="importDitherCellGroup" label="Cell-Aware">
-                <option value="cell-floyd" selected>Cell Floyd</option>
+                <option value="cell-floyd">Cell Floyd</option>
                 <option value="cell-atkinson">Cell Atkinson</option>
                 <option value="cell-serpentine">Cell Serpentine</option>
                 <option value="cell-sierra2">Cell Sierra 2</option>
@@ -2999,8 +3068,17 @@
                 <option value="blue-noise">Blue Noise</option>
                 <option value="pattern">Pattern</option>
                 <option value="noise">Noise</option>
-                <option value="none">None</option>
+                <option value="none" selected>None</option>
               </optgroup>
+            </select>
+          </label>
+          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="How to assign ink and paper colors in each cell">
+            <span style="width: 36px;">Paper:</span>
+            <select id="importPaperRule" style="width: 100px; padding: 2px; font-size: 11px;">
+              <option value="auto" selected>Auto</option>
+              <option value="darker">Darker color</option>
+              <option value="lighter">Lighter color</option>
+              <option value="first-pixel">First pixel paper</option>
             </select>
           </label>
         </div>
