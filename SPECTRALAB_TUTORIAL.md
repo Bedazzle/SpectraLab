@@ -328,6 +328,19 @@ Click the **Adjustments** tab to access:
 
 All adjustments update the preview in real time.
 
+### Tile to Screens
+
+To split a large image into a grid of ZX Spectrum pictures:
+
+1. In the **Output** section, check **Tile to screens**
+2. The info line shows the grid size (e.g. 3×4 = 12 pictures)
+3. Yellow dashed lines on the original canvas show tile boundaries
+4. Use the ◄/► buttons to navigate between tiles — the preview shows the actual converted output for each tile, and the current tile is highlighted on the original canvas
+5. Click **Import** — each tile is added as a separate picture tab
+6. Edge tiles (last column/row) are padded with black if the source doesn't divide evenly
+
+Position, Size, Fit mode, and Align controls are disabled during tiling since each tile's placement is calculated automatically.
+
 ### Apply
 
 Click **Import** to apply the conversion and load the result as an editable picture.

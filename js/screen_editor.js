@@ -852,7 +852,7 @@ let activePictureIndex = -1;
 let nextPictureId = 1;
 
 /** @type {number} - Maximum number of pictures that can be open */
-const MAX_PICTURES = 8;
+const MAX_PICTURES = 15;
 
 /**
  * Deep clones a layer array including all Uint8Array data

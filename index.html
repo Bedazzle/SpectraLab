@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.52.0 -->
+<!-- SpectraLab v1.53.0 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -863,11 +863,13 @@
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border-secondary);
     padding: 4px 8px;
+    align-self: stretch;
   }
   #pictureTabList {
     display: flex;
     gap: 2px;
     overflow-x: auto;
+    scrollbar-width: thin;
   }
   .picture-tab {
     display: flex;
@@ -880,6 +882,8 @@
     cursor: pointer;
     font-size: 11px;
     max-width: 150px;
+    min-width: 0;
+    flex-shrink: 1;
   }
   .picture-tab.active {
     background: var(--bg-primary);
@@ -2183,7 +2187,7 @@
                   <option value="single">Single sprite</option>
                   <option value="phases">Sprite phases</option>
                   <option value="grid">Singles grid</option>
-                  <option value="gridphases">Phases grid</option>
+                  <option value="gridphases" selected>Phases grid</option>
                 </select>
                 <select id="spriteGrabAttrMode" style="font-size:10px;">
                   <option value="mono">Mono</option>
@@ -2191,7 +2195,7 @@
                   <option value="multicolour">Multicolour</option>
                 </select>
               </div>
-              <div id="spriteGrabGridOpts" style="display:none; margin-top:3px;">
+              <div id="spriteGrabGridOpts" style="margin-top:3px;">
                 <div style="display:flex; gap:4px; align-items:center; flex-wrap:wrap;">
                   <label>Size by: <select id="spriteGrabSizeBy" style="font-size:10px;">
                     <option value="cells">Cell size</option>
@@ -2200,7 +2204,7 @@
                 </div>
                 <div id="spriteGrabByCells" style="display:flex; gap:4px; margin-top:2px; align-items:center;">
                   <label>W: <select id="spriteGrabW" style="font-size:10px;">
-                    <option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
+                    <option value="1">1</option><option value="2">2</option><option value="3" selected>3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
                   </select></label>
                   <label>H: <select id="spriteGrabH" style="font-size:10px;">
                     <option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
@@ -2478,16 +2482,16 @@
             <option value="single">Single sprite</option>
             <option value="phases">Sprite phases</option>
             <option value="grid">Singles grid</option>
-            <option value="gridphases">Phases grid</option>
+            <option value="gridphases" selected>Phases grid</option>
           </select></label>
-          <div id="memGrabGridOpts" style="display:none; flex-direction:column; gap:4px;">
+          <div id="memGrabGridOpts" style="flex-direction:column; gap:4px;">
             <label style="display:flex; align-items:center; gap:6px;">Size by: <select id="memGrabSizeBy" style="font-size:12px; padding:3px;">
               <option value="cells">Cell size</option>
               <option value="count">Count</option>
             </select></label>
             <div id="memGrabByCells" style="display:flex; gap:6px; align-items:center;">
               <label style="display:flex; align-items:center; gap:4px;">W: <select id="memGrabCellsW" style="font-size:12px; padding:3px;">
-                <option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
+                <option value="1">1</option><option value="2">2</option><option value="3" selected>3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
               </select></label>
               <label style="display:flex; align-items:center; gap:4px;">H: <select id="memGrabCellsH" style="font-size:12px; padding:3px;">
                 <option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
@@ -2950,7 +2954,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.52.0</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.53.0</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">
@@ -3075,8 +3079,7 @@
           <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="How to assign ink and paper colors in each cell">
             <span style="width: 36px;">Paper:</span>
             <select id="importPaperRule" style="width: 100px; padding: 2px; font-size: 11px;">
-              <option value="auto" selected>Auto</option>
-              <option value="darker">Darker color</option>
+              <option value="darker" selected>Darker color</option>
               <option value="lighter">Lighter color</option>
               <option value="first-pixel">First pixel paper</option>
             </select>
@@ -3155,6 +3158,20 @@
             <label style="display: flex; align-items: center; gap: 2px;">W:<input type="number" id="importSizeW" value="256" min="8" max="384" style="width: 44px; padding: 2px; font-size: 10px;"></label>
             <label style="display: flex; align-items: center; gap: 2px;">H:<input type="number" id="importSizeH" value="192" min="8" max="304" style="width: 44px; padding: 2px; font-size: 10px;"></label>
             <label style="font-size: 11px; display: flex; align-items: center;" title="Lock aspect ratio"><input type="checkbox" id="importLockAspect" style="margin: 0 2px 0 0;">🔗</label>
+          </div>
+        </div>
+        <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-secondary);">
+          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;">
+            <input type="checkbox" id="importTile" style="margin: 0;">Tile to screens
+          </label>
+          <div id="importTileInfo" style="visibility: hidden; font-size: 10px; color: var(--text-tertiary); margin-top: 4px;">
+            <span id="importTileGrid"></span> = <span id="importTileCount"></span> pictures
+            <div style="display: flex; align-items: center; gap: 4px; margin-top: 3px;">
+              <span style="color: var(--text-secondary);">Preview:</span>
+              <button id="importTilePrev" style="padding: 0 4px; font-size: 11px; line-height: 16px; cursor: pointer;" title="Previous tile">◄</button>
+              <span id="importTileLabel" style="min-width: 28px; text-align: center;">0_0</span>
+              <button id="importTileNext" style="padding: 0 4px; font-size: 11px; line-height: 16px; cursor: pointer;" title="Next tile">►</button>
+            </div>
           </div>
         </div>
       </div>

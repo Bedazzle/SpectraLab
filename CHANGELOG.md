@@ -1,5 +1,20 @@
 # SpectraLab Version History
 
+## v1.53.1
+- Image import: **Tile to screens** — split a large source image into a grid of ZX Spectrum pictures covering the entire source
+  - Checkbox in Output section enables tiling mode
+  - Automatically calculates grid (cols × rows) based on crop area and output format dimensions
+  - Edge tiles padded with black to fill full output dimensions
+  - Tile naming: `filename_col_row.ext` (e.g. `image_0_0.scr`, `image_1_0.scr`, `image_2_3.scr`)
+  - Yellow dashed grid overlay on original canvas shows tile boundaries and labels
+  - Per-tile preview with ◄/► navigation — preview shows the actual converted output for each tile
+  - Position/Size/Fit/Align controls disabled during tiling (overridden by tile logic)
+  - Confirms with user if more tiles than available picture slots
+- Image import: fixed ULA+ conversion producing wrong colors when Paper rule is set to Darker/Lighter (paper rule is now skipped for ULA+ since ink/paper indices reference independent CLUT halves)
+- Image import: removed Auto option from Paper rule (Darker color is now the default)
+- Multi-picture: maximum pictures increased from 8 to 15
+- Picture tab bar: fixed overflow when many tabs are open (tabs now shrink and scroll horizontally)
+
 ## v1.52.1
 - Sprite editor: fixed animation playback not working (stale closure in setInterval callback; fresh sprite reference now fetched each tick)
 - Sprite editor: animation stops when switching to a different sprite

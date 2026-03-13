@@ -4,7 +4,7 @@
 
 **SpectraLab** is a web-based ZX Spectrum graphics editor and viewer. It supports multiple ZX Spectrum graphics formats for viewing, editing, converting, and importing external images with advanced dithering algorithms.
 
-- **Version:** 1.52.0
+- **Version:** 1.53.0
 - **License:** MIT
 - **Browser:** Any modern browser (Chrome, Firefox, Edge, Safari)
 - **No installation required** — runs entirely in the browser
@@ -632,9 +632,8 @@ Crop the source image:
 
   Default dithering is **None** (nearest color, no dithering applied).
 
-- **Paper color rule** — controls how ink and paper colors are assigned in each cell:
-  - **Auto** — default; assignment determined by palette index order
-  - **Darker color** — the darker of the two cell colors becomes paper (per cell, using perceptual luminance). For single-color cells (both ink and paper are the same), the color is checked against a midpoint: dark colors become paper (0 bits), light colors become ink (1 bits)
+- **Paper color rule** — controls how ink and paper colors are assigned in each cell (not applied to ULA+ format, which uses independent CLUT halves):
+  - **Darker color** — default; the darker of the two cell colors becomes paper (per cell, using perceptual luminance). For single-color cells (both ink and paper are the same), the color is checked against a midpoint: dark colors become paper (0 bits), light colors become ink (1 bits)
   - **Lighter color** — the lighter of the two cell colors becomes paper. For single-color cells, the color is checked against a midpoint: light colors become paper (0 bits), dark colors become ink (1 bits)
   - **First pixel paper** — the color of the top-left pixel in each cell becomes paper; useful for spritesheets where a frame pixel marks the background color
 
@@ -650,6 +649,14 @@ Crop the source image:
 - **ULA+ Palette:** Auto, Load .pal, From picture
 - **Position:** X, Y offset
 - **Size:** W, H (with lock aspect ratio)
+- **Tile to screens** — split the cropped source into a grid of pictures:
+  - Each tile is one full output format (e.g. 256×192 for SCR)
+  - Grid size is calculated automatically (cols × rows = total pictures)
+  - Edge tiles are padded with black
+  - Files named `filename_col_row.ext`
+  - Yellow dashed overlay shows tile boundaries on the original canvas
+  - ◄/► buttons navigate between tiles; preview shows the actual converted output for each tile
+  - Position/Size/Fit/Align controls are disabled when tiling is active
 
 ### Adjustments Tab
 

@@ -7,7 +7,7 @@ A pure JavaScript viewer and editor for ZX Spectrum graphics formats. No server 
 - **View** various ZX Spectrum screen formats
 - **Edit** SCR screens with pixel-accurate tools (like Art Studio)
 - **Edit** .53c/.atr attribute files with cell painting
-- **Multi-picture editing**: Open and edit up to 8 pictures simultaneously with tab switching
+- **Multi-picture editing**: Open and edit up to 15 pictures simultaneously with tab switching
 - **Workspace files**: Save/load all open pictures as a single .slw file
 - **Import** PNG/GIF/JPG images and convert to SCR format
 - **Play** SCA animations with frame-by-frame control
@@ -97,6 +97,7 @@ Import standard image formats (PNG, GIF, JPG, WebP, BMP) and convert to ZX Spect
 - **Cell-aware conversion**: Respects 8x8 cell attribute constraints (2 colors per cell)
 - **Palette support**: Uses the currently selected display palette
 - **Live preview**: See the converted result before importing
+- **Tile to screens**: Split a large image into a grid of output-format-sized pictures with automatic edge padding
 
 The converter analyzes each 8x8 cell to find the optimal ink/paper combination from both normal and bright color sets, minimizing color error.
 

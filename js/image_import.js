@@ -2385,22 +2385,21 @@ function convertToUlaPlus(sourceCanvas, dithering, brightness, contrast, saturat
         }
       }
 
-      // Apply paper color rule
-      const ruled = applyPaperRule(colors, bitmap);
-
+      // ULA+ ink/paper indices map to independent CLUT halves — swapping them
+      // would reference wrong palette entries, so skip paper rule for ULA+
       // Write bitmap
       for (let line = 0; line < 8; line++) {
         const y = cellY * 8 + line;
         const offset = getBitmapOffset(y) + cellX;
-        output[offset] = ruled.bitmap[line];
+        output[offset] = bitmap[line];
       }
 
       // Write attribute: ULA+ uses standard format, CLUT selected by FLASH+BRIGHT bits
       // CLUT = (FLASH << 1) | BRIGHT
-      const flash = (ruled.colors.clut >> 1) & 1;
-      const bright = ruled.colors.clut & 1;
+      const flash = (colors.clut >> 1) & 1;
+      const bright = colors.clut & 1;
       const attrOffset = 6144 + cellY * 32 + cellX;
-      output[attrOffset] = (flash << 7) | (bright << 6) | (ruled.colors.paper << 3) | ruled.colors.ink;
+      output[attrOffset] = (flash << 7) | (bright << 6) | (colors.paper << 3) | colors.ink;
     }
   }
 
@@ -5009,11 +5008,20 @@ let importSize = { w: 256, h: 192 };
 /** @type {string} - Fit mode: 'stretch', 'fit', 'fill' */
 let importFitMode = 'stretch';
 
-/** @type {string} - Paper color rule: 'auto', 'darker', 'lighter' */
-let importPaperRule = 'auto';
+/** @type {string} - Paper color rule: 'darker', 'lighter', 'first-pixel' */
+let importPaperRule = 'darker';
 
 /** @type {string} - Alignment within fitted area */
 let importAlign = 'center';
+
+/** @type {boolean} - Whether tile-to-screens mode is enabled */
+let importTileEnabled = false;
+
+/** @type {number} - Currently previewed tile column (0-based) */
+let importTileCol = 0;
+
+/** @type {number} - Currently previewed tile row (0-based) */
+let importTileRow = 0;
 
 /** @type {HTMLImageElement|null} - Loaded source image */
 let importImage = null;
@@ -5100,7 +5108,15 @@ const importElements = {
   /** @type {HTMLInputElement|null} */ ulaPlusPalFile: null,
   /** @type {HTMLInputElement|null} */ ulaPlusScrFile: null,
   // Standard palette row (hidden when ULA+ is selected)
-  /** @type {HTMLElement|null} */ paletteRow: null
+  /** @type {HTMLElement|null} */ paletteRow: null,
+  // Tile to screens
+  /** @type {HTMLInputElement|null} */ tile: null,
+  /** @type {HTMLElement|null} */ tileInfo: null,
+  /** @type {HTMLElement|null} */ tileGrid: null,
+  /** @type {HTMLElement|null} */ tileCount: null,
+  /** @type {HTMLButtonElement|null} */ tilePrev: null,
+  /** @type {HTMLButtonElement|null} */ tileNext: null,
+  /** @type {HTMLElement|null} */ tileLabel: null
 };
 
 /**
@@ -5111,6 +5127,71 @@ function getAlignFactors() {
   const h = importAlign.includes('left') ? 0 : importAlign.includes('right') ? 1 : 0.5;
   const v = importAlign.includes('top') ? 0 : importAlign.includes('bottom') ? 1 : 0.5;
   return { h, v };
+}
+
+/**
+ * Get output dimensions for a given format.
+ * @param {string} format - Format identifier
+ * @returns {{w: number, h: number}}
+ */
+function getFormatDimensions(format) {
+  if (format === 'bsc' || format === 'bmc4') return { w: 384, h: 304 };
+  if (format === 'mono_2_3') return { w: 256, h: 128 };
+  if (format === 'mono_1_3') return { w: 256, h: 64 };
+  return { w: 256, h: 192 };
+}
+
+/**
+ * Calculate tile grid dimensions for covering a source area with tiles.
+ * @param {number} sourceW - Source crop width
+ * @param {number} sourceH - Source crop height
+ * @param {number} tileW - Single tile width (output format width)
+ * @param {number} tileH - Single tile height (output format height)
+ * @returns {{cols: number, rows: number, total: number}}
+ */
+function calculateTileGrid(sourceW, sourceH, tileW, tileH) {
+  const cols = Math.max(1, Math.ceil(sourceW / tileW));
+  const rows = Math.max(1, Math.ceil(sourceH / tileH));
+  return { cols, rows, total: cols * rows };
+}
+
+/**
+ * Update tile info display text based on current crop and format.
+ */
+function updateTileInfo() {
+  if (!importTileEnabled || !importElements.tileGrid || !importElements.tileCount) return;
+  if (!importImage) return;
+
+  const format = importElements.format?.value || 'scr';
+  const dims = getFormatDimensions(format);
+  const grid = calculateTileGrid(importCrop.w, importCrop.h, dims.w, dims.h);
+
+  importElements.tileGrid.textContent = grid.cols + '\u00d7' + grid.rows;
+  importElements.tileCount.textContent = String(grid.total);
+
+  // Clamp tile preview index if grid shrank
+  if (importTileCol >= grid.cols) importTileCol = grid.cols - 1;
+  if (importTileRow >= grid.rows) importTileRow = grid.rows - 1;
+  updateTileLabel();
+
+  // Warn if exceeds available picture slots
+  const available = (typeof MAX_PICTURES !== 'undefined' && typeof openPictures !== 'undefined')
+    ? MAX_PICTURES - openPictures.length : 8;
+  if (grid.total > available) {
+    importElements.tileCount.style.color = 'var(--text-warning, #f80)';
+    importElements.tileCount.textContent = grid.total + ' (max ' + available + ')';
+  } else {
+    importElements.tileCount.style.color = '';
+  }
+}
+
+/**
+ * Update tile navigation label text.
+ */
+function updateTileLabel() {
+  if (importElements.tileLabel) {
+    importElements.tileLabel.textContent = importTileCol + '_' + importTileRow;
+  }
 }
 
 /**
@@ -5329,6 +5410,69 @@ function renderOriginalWithCrop() {
   ];
   for (const [cx, cy] of corners) {
     ctx.fillRect(cx * scale - handleSize / 2, cy * scale - handleSize / 2, handleSize, handleSize);
+  }
+
+  // Draw tile grid overlay when tiling is enabled
+  if (importTileEnabled) {
+    const format = importElements.format?.value || 'scr';
+    const dims = getFormatDimensions(format);
+    const grid = calculateTileGrid(importCrop.w, importCrop.h, dims.w, dims.h);
+
+    if (grid.total > 1) {
+      ctx.save();
+      ctx.strokeStyle = '#ff0';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.font = '9px monospace';
+      ctx.fillStyle = 'rgba(255, 255, 0, 0.7)';
+      ctx.textBaseline = 'top';
+
+      const cropStartX = importCrop.x * scale;
+      const cropStartY = importCrop.y * scale;
+
+      // Vertical tile lines
+      for (let col = 1; col < grid.cols; col++) {
+        const x = cropStartX + col * dims.w * scale;
+        ctx.beginPath();
+        ctx.moveTo(x, cropStartY);
+        ctx.lineTo(x, cropStartY + importCrop.h * scale);
+        ctx.stroke();
+      }
+      // Horizontal tile lines
+      for (let row = 1; row < grid.rows; row++) {
+        const y = cropStartY + row * dims.h * scale;
+        ctx.beginPath();
+        ctx.moveTo(cropStartX, y);
+        ctx.lineTo(cropStartX + importCrop.w * scale, y);
+        ctx.stroke();
+      }
+      // Highlight the currently previewed tile
+      const curCol = Math.min(importTileCol, grid.cols - 1);
+      const curRow = Math.min(importTileRow, grid.rows - 1);
+      const hlX = cropStartX + curCol * dims.w * scale;
+      const hlY = cropStartY + curRow * dims.h * scale;
+      const hlW = Math.min(dims.w, importCrop.w - curCol * dims.w) * scale;
+      const hlH = Math.min(dims.h, importCrop.h - curRow * dims.h) * scale;
+      ctx.fillStyle = 'rgba(255, 255, 0, 0.15)';
+      ctx.fillRect(hlX, hlY, hlW, hlH);
+      ctx.strokeStyle = '#ff0';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([]);
+      ctx.strokeRect(hlX, hlY, hlW, hlH);
+
+      // Labels in each cell
+      ctx.setLineDash([3, 3]);
+      ctx.lineWidth = 1;
+      ctx.fillStyle = 'rgba(255, 255, 0, 0.7)';
+      for (let row = 0; row < grid.rows; row++) {
+        for (let col = 0; col < grid.cols; col++) {
+          const lx = cropStartX + col * dims.w * scale + 3;
+          const ly = cropStartY + row * dims.h * scale + 2;
+          ctx.fillText(col + '_' + row, lx, ly);
+        }
+      }
+      ctx.restore();
+    }
   }
 }
 
@@ -5790,6 +5934,15 @@ function initImageImport() {
   importElements.ulaPlusPalFile = /** @type {HTMLInputElement} */ (document.getElementById('importUlaPlusPalFile'));
   importElements.ulaPlusScrFile = /** @type {HTMLInputElement} */ (document.getElementById('importUlaPlusScrFile'));
 
+  // Tile to screens elements
+  importElements.tile = /** @type {HTMLInputElement} */ (document.getElementById('importTile'));
+  importElements.tileInfo = document.getElementById('importTileInfo');
+  importElements.tileGrid = document.getElementById('importTileGrid');
+  importElements.tileCount = document.getElementById('importTileCount');
+  importElements.tilePrev = /** @type {HTMLButtonElement} */ (document.getElementById('importTilePrev'));
+  importElements.tileNext = /** @type {HTMLButtonElement} */ (document.getElementById('importTileNext'));
+  importElements.tileLabel = document.getElementById('importTileLabel');
+
   // Tab switching
   const tabImage = document.getElementById('importTabImage');
   const tabAdjust = document.getElementById('importTabAdjust');
@@ -5867,6 +6020,32 @@ function initImageImport() {
   const updatePreviewImmediate = () => {
     if (!importSourceCanvas || !importPreviewCanvas) return;
 
+    // When tiling is enabled, render the currently selected tile
+    let tileSavedCrop, tileSavedFitMode, tileSavedOffset, tileSavedSize;
+    if (importTileEnabled && importImage) {
+      const fmt = formatSelect?.value || 'scr';
+      const dims = getFormatDimensions(fmt);
+      const grid = calculateTileGrid(importCrop.w, importCrop.h, dims.w, dims.h);
+      // Clamp tile col/row to grid bounds
+      if (importTileCol >= grid.cols) importTileCol = grid.cols - 1;
+      if (importTileRow >= grid.rows) importTileRow = grid.rows - 1;
+
+      tileSavedCrop = { ...importCrop };
+      tileSavedFitMode = importFitMode;
+      tileSavedOffset = { ...importOffset };
+      tileSavedSize = { ...importSize };
+
+      const tileX = importCrop.x + importTileCol * dims.w;
+      const tileY = importCrop.y + importTileRow * dims.h;
+      const tileW = Math.min(dims.w, importCrop.x + importCrop.w - tileX);
+      const tileH = Math.min(dims.h, importCrop.y + importCrop.h - tileY);
+
+      importCrop = { x: tileX, y: tileY, w: tileW, h: tileH };
+      importSize = { w: tileW, h: tileH };
+      importOffset = { x: 0, y: 0 };
+      importFitMode = 'stretch';
+    }
+
     // Apply crop and fit to source canvas
     applyCropAndFit();
 
@@ -5929,6 +6108,14 @@ function initImageImport() {
     if (showGridCheckbox?.checked && importPreviewCanvas) {
       drawImportPreviewGrid(importPreviewCanvas, currentZoom, format);
     }
+
+    // Restore state after tile preview
+    if (tileSavedCrop) {
+      importCrop = tileSavedCrop;
+      importFitMode = tileSavedFitMode;
+      importOffset = tileSavedOffset;
+      importSize = tileSavedSize;
+    }
   };
 
   // Debounced wrapper - allows UI to update before heavy calculation
@@ -5948,6 +6135,7 @@ function initImageImport() {
 
   // Update both canvases (original with crop overlay + preview)
   const updateAll = () => {
+    updateTileInfo();
     renderOriginalWithCrop();
     // Force immediate update to ensure changes are applied
     if (previewDebounceTimer) {
@@ -6176,6 +6364,7 @@ function initImageImport() {
       hideImportPaletteGrid();
       if (importElements.ulaPlusPaletteReset) importElements.ulaPlusPaletteReset.style.display = 'none';
     }
+    updateTileInfo();
     updatePreview();
   });
   importElements.pattern53c?.addEventListener('change', updatePreview);
@@ -6376,6 +6565,69 @@ function initImageImport() {
   importElements.sizeW?.addEventListener('input', onSizeWChange);
   importElements.sizeH?.addEventListener('input', onSizeHChange);
 
+  // Tile to screens checkbox
+  importElements.tile?.addEventListener('change', function() {
+    importTileEnabled = this.checked;
+    if (importElements.tileInfo) {
+      importElements.tileInfo.style.visibility = importTileEnabled ? 'visible' : 'hidden';
+    }
+    // Disable Position/Size/FitMode/LockAspect when tiling (they're overridden)
+    const disabled = importTileEnabled;
+    if (importElements.offsetX) importElements.offsetX.disabled = disabled;
+    if (importElements.offsetY) importElements.offsetY.disabled = disabled;
+    if (importElements.sizeW) importElements.sizeW.disabled = disabled;
+    if (importElements.sizeH) importElements.sizeH.disabled = disabled;
+    if (importElements.lockAspect) importElements.lockAspect.disabled = disabled;
+    if (importElements.fitMode) importElements.fitMode.disabled = disabled;
+    if (importElements.align) importElements.align.disabled = disabled;
+    // Dim the Position/Size labels
+    const posLabel = importElements.offsetX?.closest('div')?.previousElementSibling;
+    const sizeLabel = importElements.sizeW?.closest('div')?.previousElementSibling;
+    if (posLabel) posLabel.style.opacity = disabled ? '0.4' : '';
+    if (sizeLabel) sizeLabel.style.opacity = disabled ? '0.4' : '';
+
+    importTileCol = 0;
+    importTileRow = 0;
+    if (importTileEnabled) {
+      updateTileInfo();
+    }
+    updateTileLabel();
+    updateAll();
+  });
+
+  // Tile navigation buttons
+  importElements.tilePrev?.addEventListener('click', () => {
+    if (!importTileEnabled || !importImage) return;
+    const format = importElements.format?.value || 'scr';
+    const dims = getFormatDimensions(format);
+    const grid = calculateTileGrid(importCrop.w, importCrop.h, dims.w, dims.h);
+    // Move to previous tile (col-major: col changes first)
+    importTileCol--;
+    if (importTileCol < 0) {
+      importTileCol = grid.cols - 1;
+      importTileRow--;
+      if (importTileRow < 0) importTileRow = grid.rows - 1;
+    }
+    updateTileLabel();
+    updateAll();
+  });
+
+  importElements.tileNext?.addEventListener('click', () => {
+    if (!importTileEnabled || !importImage) return;
+    const format = importElements.format?.value || 'scr';
+    const dims = getFormatDimensions(format);
+    const grid = calculateTileGrid(importCrop.w, importCrop.h, dims.w, dims.h);
+    // Move to next tile (col-major: col changes first)
+    importTileCol++;
+    if (importTileCol >= grid.cols) {
+      importTileCol = 0;
+      importTileRow++;
+      if (importTileRow >= grid.rows) importTileRow = 0;
+    }
+    updateTileLabel();
+    updateAll();
+  });
+
   // Palette control
   paletteSelect?.addEventListener('change', function() {
     applyImportPalette(this.value);
@@ -6482,6 +6734,174 @@ function initImageImport() {
   // Import button
   importBtn?.addEventListener('click', () => {
     if (!importSourceCanvas) return;
+
+    // --- Tile to screens path ---
+    if (importTileEnabled && importImage && typeof addPicture === 'function') {
+      const tileFormat = formatSelect?.value || 'scr';
+      const dims = getFormatDimensions(tileFormat);
+      const grid = calculateTileGrid(importCrop.w, importCrop.h, dims.w, dims.h);
+
+      // Check available slots
+      const available = (typeof MAX_PICTURES !== 'undefined' && typeof openPictures !== 'undefined')
+        ? MAX_PICTURES - openPictures.length : 8;
+      if (grid.total > available) {
+        if (!confirm('Only ' + available + ' of ' + grid.total + ' tiles can be added (picture limit). Continue?')) {
+          return;
+        }
+      }
+
+      // Determine file extension
+      let tileExt;
+      if (tileFormat === '53c') tileExt = '.53c';
+      else if (tileFormat === 'bsc') tileExt = '.bsc';
+      else if (tileFormat === 'ifl') tileExt = '.ifl';
+      else if (tileFormat === 'mlt') tileExt = '.mlt';
+      else if (tileFormat === 'bmc4') tileExt = '.bmc4';
+      else if (tileFormat === 'rgb3') tileExt = '.3';
+      else tileExt = '.scr';
+
+      const baseName = importFile ? importFile.name.replace(/\.[^.]+$/, '') : 'imported';
+
+      // Read current adjustment parameters
+      const tileDithering = ditheringSelect?.value || 'floyd-steinberg';
+      const tileContrast = parseInt(contrastSlider?.value || '0', 10);
+      const tileBrightness = parseInt(brightnessSlider?.value || '0', 10);
+      const tileSaturation = parseInt(saturationSlider?.value || '0', 10);
+      const tileGamma = parseInt(gammaSlider?.value || '100', 10) / 100;
+      const tileGrayscale = grayscaleCheckbox?.checked || false;
+      const tileMonoOutput = monoOutputCheckbox?.checked || false;
+      const tileSharpness = parseInt(sharpnessSlider?.value || '0', 10);
+      const tileSmoothing = parseInt(smoothingSlider?.value || '0', 10);
+      const tileBlackPoint = parseInt(blackPointSlider?.value || '0', 10);
+      const tileWhitePoint = parseInt(whitePointSlider?.value || '255', 10);
+      const tileBalanceR = parseInt(balanceRSlider?.value || '0', 10);
+      const tileBalanceG = parseInt(balanceGSlider?.value || '0', 10);
+      const tileBalanceB = parseInt(balanceBSlider?.value || '0', 10);
+
+      // For ULA+ auto palette: generate once from full image, reuse for all tiles
+      let tileUlaPlusPalette = importUlaPlusPalette;
+      if (tileFormat === 'ulaplus' && !tileUlaPlusPalette) {
+        // Render full crop to source canvas first to generate auto palette
+        const savedCrop = { ...importCrop };
+        const savedFitMode = importFitMode;
+        const savedOffset = { ...importOffset };
+        const savedSize = { ...importSize };
+        importFitMode = 'stretch';
+        importOffset = { x: 0, y: 0 };
+        importSize = { w: dims.w, h: dims.h };
+        applyCropAndFit();
+        const fullResult = convertToUlaPlus(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, null);
+        tileUlaPlusPalette = fullResult.palette;
+        importCrop = savedCrop;
+        importFitMode = savedFitMode;
+        importOffset = savedOffset;
+        importSize = savedSize;
+      }
+
+      // Save original state
+      const savedCrop = { ...importCrop };
+      const savedFitMode = importFitMode;
+      const savedOffset = { ...importOffset };
+      const savedSize = { ...importSize };
+
+      // Force stretch mode with no offset for tiling
+      importFitMode = 'stretch';
+      importOffset = { x: 0, y: 0 };
+
+      let stopped = false;
+      for (let row = 0; row < grid.rows && !stopped; row++) {
+        for (let col = 0; col < grid.cols && !stopped; col++) {
+          // Calculate tile sub-region in source coordinates
+          const tileX = savedCrop.x + col * dims.w;
+          const tileY = savedCrop.y + row * dims.h;
+          const tileW = Math.min(dims.w, savedCrop.x + savedCrop.w - tileX);
+          const tileH = Math.min(dims.h, savedCrop.y + savedCrop.h - tileY);
+
+          // Set crop to this tile's sub-region
+          importCrop = { x: tileX, y: tileY, w: tileW, h: tileH };
+          // Set size to actual tile dimensions (edge tiles may be smaller → black padding)
+          importSize = { w: tileW, h: tileH };
+
+          // Render this tile to source canvas
+          applyCropAndFit();
+
+          // Convert using the same format conversion chain
+          let tileData;
+          let tileOutputFormat;
+
+          if (tileFormat === '53c') {
+            const pattern = importElements.pattern53c?.value || 'checker';
+            tileData = convertTo53c(importSourceCanvas, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, pattern);
+            tileOutputFormat = FORMAT.ATTR_53C;
+          } else if (tileFormat === 'bsc' && importSourceCanvasBsc) {
+            tileData = convertToBsc(importSourceCanvasBsc, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileMonoOutput);
+            tileOutputFormat = FORMAT.BSC;
+          } else if (tileFormat === 'ifl') {
+            tileData = convertToIfl(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileMonoOutput);
+            tileOutputFormat = FORMAT.IFL;
+          } else if (tileFormat === 'mlt') {
+            tileData = convertToMlt(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileMonoOutput);
+            tileOutputFormat = FORMAT.MLT;
+          } else if (tileFormat === 'bmc4' && importSourceCanvasBsc) {
+            tileData = convertToBmc4(importSourceCanvasBsc, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileMonoOutput);
+            tileOutputFormat = FORMAT.BMC4;
+          } else if (tileFormat === 'rgb3') {
+            tileData = convertToRgb3(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB);
+            tileOutputFormat = FORMAT.RGB3;
+          } else if (tileFormat === 'mono_full') {
+            tileData = convertToMono(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, 3);
+            tileOutputFormat = FORMAT.MONO_FULL;
+          } else if (tileFormat === 'mono_2_3') {
+            tileData = convertToMono(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, 2);
+            tileOutputFormat = FORMAT.MONO_2_3;
+          } else if (tileFormat === 'mono_1_3') {
+            tileData = convertToMono(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, 1);
+            tileOutputFormat = FORMAT.MONO_1_3;
+          } else if (tileFormat === 'ulaplus') {
+            const result = convertToUlaPlus(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileUlaPlusPalette);
+            tileData = result.data;
+            tileOutputFormat = FORMAT.SCR_ULAPLUS;
+            // Set ULA+ palette from first tile
+            if (row === 0 && col === 0) {
+              ulaPlusPalette = result.palette;
+              isUlaPlusMode = true;
+            }
+          } else {
+            tileData = convertToScr(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileMonoOutput);
+            tileOutputFormat = FORMAT.SCR;
+          }
+
+          const tileFileName = baseName + '_' + col + '_' + row + tileExt;
+          const addResult = addPicture(tileFileName, tileOutputFormat, tileData);
+          if (addResult < 0) {
+            stopped = true;
+          }
+        }
+      }
+
+      // Restore original state
+      importCrop = savedCrop;
+      importFitMode = savedFitMode;
+      importOffset = savedOffset;
+      importSize = savedSize;
+
+      // Close dialog and update UI
+      closeImportDialog();
+
+      if (typeof setPalette === 'function' && importPaletteId) {
+        const paletteDropdown = /** @type {HTMLSelectElement} */ (document.getElementById('paletteSelect'));
+        if (paletteDropdown) paletteDropdown.value = importPaletteId;
+        setPalette(importPaletteId);
+      }
+
+      updateFileInfo();
+      toggleFormatControlsVisibility();
+      renderScreen();
+      if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
+      if (typeof updateEditorState === 'function') updateEditorState();
+      if (typeof initLayers === 'function') initLayers();
+      return; // Skip single-import path
+    }
 
     const dithering = ditheringSelect?.value || 'floyd-steinberg';
     const contrast = parseInt(contrastSlider?.value || '0', 10);
@@ -6698,8 +7118,23 @@ function openImportDialog(file) {
   importFitMode = 'stretch';
   if (importElements.align) importElements.align.value = 'center';
   importAlign = 'center';
-  if (importElements.paperRule) importElements.paperRule.value = 'auto';
-  importPaperRule = 'auto';
+  if (importElements.paperRule) importElements.paperRule.value = 'darker';
+  importPaperRule = 'darker';
+
+  // Reset tile state
+  importTileEnabled = false;
+  importTileCol = 0;
+  importTileRow = 0;
+  if (importElements.tile) importElements.tile.checked = false;
+  if (importElements.tileInfo) importElements.tileInfo.style.visibility = 'hidden';
+  // Re-enable controls that tile mode disables
+  if (importElements.offsetX) importElements.offsetX.disabled = false;
+  if (importElements.offsetY) importElements.offsetY.disabled = false;
+  if (importElements.sizeW) importElements.sizeW.disabled = false;
+  if (importElements.sizeH) importElements.sizeH.disabled = false;
+  if (importElements.lockAspect) importElements.lockAspect.disabled = false;
+  if (importElements.fitMode) importElements.fitMode.disabled = false;
+  if (importElements.align) importElements.align.disabled = false;
 
   // Load image
   const img = new Image();
