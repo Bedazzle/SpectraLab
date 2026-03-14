@@ -98,7 +98,23 @@ const SPRITE_MAX_UNDO = 50;
 /** @type {object|null} */
 let activeSpriteBrush = null;
 
+// Attr scroll state
+let spriteAttrScrollEnabled = false;
+let attrScrollAccum = { dx: 0, dy: 0 };
+
 // ---- Helpers ----
+
+/** Get the pixel height of one attribute cell for a sprite */
+function getAttrCellH(sprite) {
+  if (sprite.mode === 'multicolour') return sprite.attrCellH || 2;
+  if (sprite.mode === 'attr') return 8;
+  return 8;
+}
+
+/** Get the number of attribute rows per 8x8 cell */
+function getAttrRowsPerCell(sprite) {
+  return 8 / getAttrCellH(sprite);
+}
 
 /** Set a single sprite as active (updates index, selection set, and anchor). */
 function setActiveSprite(index) {
@@ -110,6 +126,7 @@ function setActiveSprite(index) {
   } else {
     spriteSelectionAnchor = -1;
   }
+  attrScrollAccum = { dx: 0, dy: 0 };
 }
 
 // ---- DOM cache ----
@@ -126,9 +143,9 @@ function initSpriteEditor() {
     'spriteProps', 'spriteName',
     'spriteCellsW', 'spriteCellsH', 'spriteMode', 'spriteFrameBar', 'spriteEditBtn',
     'spriteGrabBtn', 'spriteGrabStatus', 'spriteGrabConfig', 'spriteGrabMode',
-    'spriteGrabGridOpts', 'spriteGrabSizeBy', 'spriteGrabByCells', 'spriteGrabByCount',
-    'spriteGrabW', 'spriteGrabH', 'spriteGrabCols', 'spriteGrabRows', 'spriteGrabOrder',
-    'spriteGrabAttrMode', 'spriteGrabStopBtn',
+    'spriteGrabGridOpts', 'spriteGrabSizeBy', 'spriteGrabByCount',
+    'spriteGrabCols', 'spriteGrabRows', 'spriteGrabOrder',
+    'spriteGrabStopBtn',
     'spriteUseBrushBtn', 'spriteSaveBtn', 'spriteLoadBtn', 'spriteExportFormat',
     'spriteExportAsmBtn', 'spriteExportBinBtn', 'spriteFileInput',
     'spriteEditorPanel', 'spriteEditorTitle',
@@ -136,11 +153,12 @@ function initSpriteEditor() {
     'spriteToolDraw', 'spriteToolErase', 'spriteToolFill', 'spriteToolLine',
     'spriteToolRect', 'spriteToolSelect', 'spriteToolMask', 'spriteAttrControls',
     'spriteColorPalette', 'spriteBrightChk',
-    'spriteOnionSkin', 'spriteShowGrid', 'spriteShowMask',
+    'spriteOnionSkin', 'spriteShowGrid', 'spriteShowAttrs', 'spriteShowMask',
     'spriteFramePrev', 'spriteFrameInfo', 'spriteFrameNext', 'spriteFrameAdd',
     'spriteFrameDup', 'spriteFrameDel', 'spriteFrameMoveL', 'spriteFrameMoveR',
     'spritePlayBtn', 'spriteAnimSpeed',
     'spriteFlipH', 'spriteFlipV', 'spriteRotCW', 'spriteRotCCW',
+    'spriteAttrScroll', 'spriteAttrScrollLabel',
     'spriteShiftL', 'spriteShiftR', 'spriteShiftU', 'spriteShiftD',
     'spriteInvert', 'spriteClear'
   ];
@@ -202,7 +220,6 @@ function initSpriteEditor() {
   });
   spriteDOM.spriteGrabSizeBy?.addEventListener('change', () => {
     const byCount = spriteDOM.spriteGrabSizeBy.value === 'count';
-    if (spriteDOM.spriteGrabByCells) spriteDOM.spriteGrabByCells.style.display = byCount ? 'none' : 'flex';
     if (spriteDOM.spriteGrabByCount) spriteDOM.spriteGrabByCount.style.display = byCount ? 'flex' : 'none';
   });
   spriteDOM.spriteUseBrushBtn?.addEventListener('click', useAsBrush);
@@ -265,6 +282,7 @@ function initSpriteEditor() {
   // Checkbox changes trigger re-render
   spriteDOM.spriteOnionSkin?.addEventListener('change', () => renderSpriteEditor());
   spriteDOM.spriteShowGrid?.addEventListener('change', () => renderSpriteEditor());
+  spriteDOM.spriteShowAttrs?.addEventListener('change', () => renderSpriteEditor());
   spriteDOM.spriteShowMask?.addEventListener('change', () => renderSpriteEditor());
 
   // Transform buttons
@@ -272,6 +290,10 @@ function initSpriteEditor() {
   spriteDOM.spriteFlipV?.addEventListener('click', () => transformCurrentFrame('flipV'));
   spriteDOM.spriteRotCW?.addEventListener('click', () => transformCurrentFrame('rotCW'));
   spriteDOM.spriteRotCCW?.addEventListener('click', () => transformCurrentFrame('rotCCW'));
+  spriteDOM.spriteAttrScroll?.addEventListener('change', () => {
+    spriteAttrScrollEnabled = spriteDOM.spriteAttrScroll.checked;
+    attrScrollAccum = { dx: 0, dy: 0 };
+  });
   spriteDOM.spriteShiftL?.addEventListener('click', () => transformCurrentFrame('shiftL'));
   spriteDOM.spriteShiftR?.addEventListener('click', () => transformCurrentFrame('shiftR'));
   spriteDOM.spriteShiftU?.addEventListener('click', () => transformCurrentFrame('shiftU'));
@@ -297,7 +319,7 @@ function initSpriteEditor() {
 // Sprite Management
 // ============================================================================
 
-function createEmptyFrame(cellsW, cellsH, mode) {
+function createEmptyFrame(cellsW, cellsH, mode, attrCellH) {
   const pixelW = cellsW * 8;
   const pixelH = cellsH * 8;
   const bitmapSize = pixelH * Math.ceil(pixelW / 8);
@@ -311,14 +333,14 @@ function createEmptyFrame(cellsW, cellsH, mode) {
     // Default: ink 7, paper 0, bright 0 = 0b00_000_111 = 7
     frame.attrs.fill(7);
   } else if (mode === 'multicolour') {
-    // 8x2 attribute resolution: 4 attr sub-rows per 8x8 cell
-    frame.attrs = new Uint8Array(cellsW * cellsH * 4);
+    const rowsPerCell = 8 / (attrCellH || 2);
+    frame.attrs = new Uint8Array(cellsW * cellsH * rowsPerCell);
     frame.attrs.fill(7);
   }
   return frame;
 }
 
-function addSprite(name, cellsW, cellsH, mode) {
+function addSprite(name, cellsW, cellsH, mode, attrCellH) {
   name = name || 'Sprite' + (spriteSheet.sprites.length + 1);
   cellsW = cellsW || 1;
   cellsH = cellsH || 1;
@@ -329,7 +351,8 @@ function addSprite(name, cellsW, cellsH, mode) {
     cellsW: cellsW,
     cellsH: cellsH,
     mode: mode,
-    frames: [createEmptyFrame(cellsW, cellsH, mode)]
+    attrCellH: mode === 'multicolour' ? (attrCellH || 2) : undefined,
+    frames: [createEmptyFrame(cellsW, cellsH, mode, attrCellH)]
   };
 
   spriteSheet.sprites.push(sprite);
@@ -777,8 +800,11 @@ function updateSpriteProps() {
   spriteDOM.spriteName.value = sprite.name;
   spriteDOM.spriteCellsW.value = String(sprite.cellsW);
   spriteDOM.spriteCellsH.value = String(sprite.cellsH);
-  spriteDOM.spriteMode.value = sprite.mode;
+  spriteDOM.spriteMode.value = sprite.mode === 'multicolour'
+    ? 'multicolour_' + (sprite.attrCellH || 2)
+    : sprite.mode;
 
+  updateSpritePropLocks();
   updateFrameBar();
 }
 
@@ -996,8 +1022,7 @@ function resizeSprite(sprite, newW, newH) {
 
     // Resize attrs
     if (frame.attrs) {
-      const isMulticolour = sprite.mode === 'multicolour';
-      const attrRowsPerCell = isMulticolour ? 4 : 1;
+      const attrRowsPerCell = getAttrRowsPerCell(sprite);
       const oldAttrRows = oldH * attrRowsPerCell;
       const newAttrRows = newH * attrRowsPerCell;
       const newAttrs = new Uint8Array(newW * newAttrRows);
@@ -1027,50 +1052,82 @@ function resizeSprite(sprite, newW, newH) {
 function onSpriteModeChange() {
   const sprite = getSelectedSprite();
   if (!sprite) return;
-  const newMode = spriteDOM.spriteMode.value;
-  if (newMode === sprite.mode) return;
+  const dropdownVal = spriteDOM.spriteMode.value;
+
+  // Parse dropdown value
+  let newMode, newAttrCellH;
+  if (dropdownVal.startsWith('multicolour_')) {
+    newMode = 'multicolour';
+    newAttrCellH = parseInt(dropdownVal.split('_')[1]) || 2;
+  } else {
+    newMode = dropdownVal;
+    newAttrCellH = undefined;
+  }
 
   const oldMode = sprite.mode;
-  sprite.mode = newMode;
+  const oldAttrCellH = sprite.attrCellH || 2;
+
+  // No change?
+  if (newMode === oldMode && (newMode !== 'multicolour' || newAttrCellH === oldAttrCellH)) return;
+
   const cellsW = sprite.cellsW;
   const cellsH = sprite.cellsH;
+  const oldRowsPerCell = oldMode === 'multicolour' ? (8 / oldAttrCellH) : 1;
+  const newRowsPerCell = newMode === 'multicolour' ? (8 / newAttrCellH) : 1;
+
+  sprite.mode = newMode;
+  sprite.attrCellH = newMode === 'multicolour' ? newAttrCellH : undefined;
 
   for (const frame of sprite.frames) {
     if (oldMode === 'mono' && newMode === 'attr') {
       frame.attrs = new Uint8Array(cellsW * cellsH);
       frame.attrs.fill(7);
     } else if (oldMode === 'mono' && newMode === 'multicolour') {
-      frame.attrs = new Uint8Array(cellsW * cellsH * 4);
+      frame.attrs = new Uint8Array(cellsW * cellsH * newRowsPerCell);
       frame.attrs.fill(7);
     } else if (oldMode === 'attr' && newMode === 'multicolour') {
-      // Replicate each 8x8 attr 4 times into 8x2 sub-rows
+      // Replicate each 8x8 attr N times into sub-rows
       const oldAttrs = frame.attrs;
-      const newAttrs = new Uint8Array(cellsW * cellsH * 4);
+      const newAttrs = new Uint8Array(cellsW * cellsH * newRowsPerCell);
       for (let cy = 0; cy < cellsH; cy++) {
         for (let cx = 0; cx < cellsW; cx++) {
           const val = oldAttrs ? oldAttrs[cy * cellsW + cx] : 7;
-          for (let sub = 0; sub < 4; sub++) {
-            newAttrs[(cy * 4 + sub) * cellsW + cx] = val;
+          for (let sub = 0; sub < newRowsPerCell; sub++) {
+            newAttrs[(cy * newRowsPerCell + sub) * cellsW + cx] = val;
           }
         }
       }
       frame.attrs = newAttrs;
     } else if (oldMode === 'multicolour' && newMode === 'attr') {
-      // Take first of each group of 4 sub-rows
+      // Take first of each group of sub-rows
       const oldAttrs = frame.attrs;
       const newAttrs = new Uint8Array(cellsW * cellsH);
       for (let cy = 0; cy < cellsH; cy++) {
         for (let cx = 0; cx < cellsW; cx++) {
-          newAttrs[cy * cellsW + cx] = oldAttrs ? oldAttrs[(cy * 4) * cellsW + cx] : 7;
+          newAttrs[cy * cellsW + cx] = oldAttrs ? oldAttrs[(cy * oldRowsPerCell) * cellsW + cx] : 7;
+        }
+      }
+      frame.attrs = newAttrs;
+    } else if (oldMode === 'multicolour' && newMode === 'multicolour') {
+      // Resample attrs: for each new attr row, pick from the old attr covering the same pixel row
+      const oldAttrs = frame.attrs;
+      const newAttrs = new Uint8Array(cellsW * cellsH * newRowsPerCell);
+      for (let cy = 0; cy < cellsH; cy++) {
+        for (let newSub = 0; newSub < newRowsPerCell; newSub++) {
+          // Pixel row covered by this new attr sub-row
+          const pixRow = cy * 8 + newSub * newAttrCellH;
+          // Which old attr sub-row covers this pixel row
+          const oldSub = Math.floor((pixRow - cy * 8) / oldAttrCellH);
+          const clampedOldSub = Math.min(oldSub, oldRowsPerCell - 1);
+          for (let cx = 0; cx < cellsW; cx++) {
+            newAttrs[(cy * newRowsPerCell + newSub) * cellsW + cx] =
+              oldAttrs ? oldAttrs[(cy * oldRowsPerCell + clampedOldSub) * cellsW + cx] : 7;
+          }
         }
       }
       frame.attrs = newAttrs;
     } else if (newMode === 'mono') {
       frame.attrs = null;
-    } else if (oldMode === 'multicolour' && newMode === 'multicolour') {
-      // no-op
-    } else if (oldMode === 'attr' && newMode === 'attr') {
-      // no-op
     }
   }
 
@@ -1144,6 +1201,9 @@ function updateAttrControlsVisibility() {
   if (spriteDOM.spriteExportFormat) {
     spriteDOM.spriteExportFormat.style.display = sprite.mode === 'multicolour' ? '' : 'none';
   }
+  if (spriteDOM.spriteAttrScrollLabel) {
+    spriteDOM.spriteAttrScrollLabel.style.display = sprite.mode === 'mono' ? 'none' : '';
+  }
 }
 
 // Panel dragging
@@ -1208,14 +1268,15 @@ function renderSpriteCanvas() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   // Render current frame
-  renderFrameToCtx(ctx, sprite, frame, zoom, pixW, pixH, bytesPerRow, true);
+  const showAttrs = spriteDOM.spriteShowAttrs?.checked !== false;
+  renderFrameToCtx(ctx, sprite, frame, zoom, pixW, pixH, bytesPerRow, true, showAttrs);
 
   // Onion skinning: overlay previous frame's ink pixels on top
   const showOnion = spriteDOM.spriteOnionSkin?.checked && currentFrameIndex > 0;
   if (showOnion) {
     const prevFrame = sprite.frames[currentFrameIndex - 1];
     ctx.globalAlpha = 0.25;
-    renderFrameToCtx(ctx, sprite, prevFrame, zoom, pixW, pixH, bytesPerRow, false);
+    renderFrameToCtx(ctx, sprite, prevFrame, zoom, pixW, pixH, bytesPerRow, false, showAttrs);
     ctx.globalAlpha = 1.0;
   }
 
@@ -1257,7 +1318,7 @@ function renderSpriteCanvas() {
       ctx.lineTo(cx * 8 * zoom + 0.5, pixH * zoom);
       ctx.stroke();
     }
-    const cellH = sprite.mode === 'multicolour' ? 2 : 8;
+    const cellH = getAttrCellH(sprite);
     const hLines = pixH / cellH;
     for (let cy = 0; cy <= hLines; cy++) {
       ctx.beginPath();
@@ -1282,10 +1343,24 @@ function renderSpriteCanvas() {
   }
 }
 
-function renderFrameToCtx(ctx, sprite, frame, zoom, pixW, pixH, bytesPerRow, isCurrentFrame) {
-  if (sprite.mode === 'multicolour' && frame.attrs) {
-    // Multicolour mode: color per 8x2 cell
-    const totalAttrRows = sprite.cellsH * 4;
+function renderFrameToCtx(ctx, sprite, frame, zoom, pixW, pixH, bytesPerRow, isCurrentFrame, showAttrs) {
+  if (showAttrs === false || sprite.mode === 'mono' || !frame.attrs) {
+    // Monochrome / no-attrs view: black ink on transparent background
+    for (let y = 0; y < pixH; y++) {
+      for (let x = 0; x < pixW; x++) {
+        if (spGetPixel(frame, x, y, pixW)) {
+          ctx.fillStyle = '#000000';
+          ctx.fillRect(x * zoom, y * zoom, zoom, zoom);
+        } else {
+          ctx.fillStyle = '#FFFFFF';
+          ctx.fillRect(x * zoom, y * zoom, zoom, zoom);
+        }
+      }
+    }
+  } else if (sprite.mode === 'multicolour') {
+    // Multicolour mode: color per attribute cell
+    const attrCellH = getAttrCellH(sprite);
+    const totalAttrRows = sprite.cellsH * getAttrRowsPerCell(sprite);
     for (let attrRow = 0; attrRow < totalAttrRows; attrRow++) {
       for (let cx = 0; cx < sprite.cellsW; cx++) {
         const attr = frame.attrs[attrRow * sprite.cellsW + cx];
@@ -1295,10 +1370,10 @@ function renderFrameToCtx(ctx, sprite, frame, zoom, pixW, pixH, bytesPerRow, isC
         const inkColor = SPRITE_ZX_COLORS[ink + (bright ? 8 : 0)];
         const paperColor = SPRITE_ZX_COLORS[paper + (bright ? 8 : 0)];
 
-        for (let py = 0; py < 2; py++) {
+        for (let py = 0; py < attrCellH; py++) {
           for (let px = 0; px < 8; px++) {
             const x = cx * 8 + px;
-            const y = attrRow * 2 + py;
+            const y = attrRow * attrCellH + py;
             const set = spGetPixel(frame, x, y, pixW);
 
             ctx.fillStyle = set ? inkColor : paperColor;
@@ -1307,7 +1382,7 @@ function renderFrameToCtx(ctx, sprite, frame, zoom, pixW, pixH, bytesPerRow, isC
         }
       }
     }
-  } else if (sprite.mode === 'attr' && frame.attrs) {
+  } else if (sprite.mode === 'attr') {
     // Attributed mode: color per 8x8 cell
     for (let cy = 0; cy < sprite.cellsH; cy++) {
       for (let cx = 0; cx < sprite.cellsW; cx++) {
@@ -1330,16 +1405,6 @@ function renderFrameToCtx(ctx, sprite, frame, zoom, pixW, pixH, bytesPerRow, isC
         }
       }
     }
-  } else {
-    // Monochrome mode
-    for (let y = 0; y < pixH; y++) {
-      for (let x = 0; x < pixW; x++) {
-        if (spGetPixel(frame, x, y, pixW)) {
-          ctx.fillStyle = '#D7D7D7';
-          ctx.fillRect(x * zoom, y * zoom, zoom, zoom);
-        }
-      }
-    }
   }
 }
 
@@ -1357,7 +1422,8 @@ function renderSpritePreview() {
   const bytesPerRow = Math.ceil(pixW / 8);
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  renderFrameToCtx(ctx, sprite, frame, zoom, pixW, pixH, bytesPerRow, true);
+  const showAttrs = spriteDOM.spriteShowAttrs?.checked !== false;
+  renderFrameToCtx(ctx, sprite, frame, zoom, pixW, pixH, bytesPerRow, true, showAttrs);
 }
 
 function renderSpriteThumbnail(canvas, sprite, frameIndex) {
@@ -1551,6 +1617,7 @@ function onSpriteCanvasMouseDown(e) {
   spriteDrawRight = rightButton;
   spriteLastDrawX = pos.x;
   spriteLastDrawY = pos.y;
+  attrScrollAccum = { dx: 0, dy: 0 };
 
   if (currentSpriteTool === 'draw' || currentSpriteTool === 'erase') {
     pushUndo();
@@ -1562,7 +1629,7 @@ function onSpriteCanvasMouseDown(e) {
       // In attr/multicolour mode, set attribute for the cell
       if ((sprite.mode === 'attr' || sprite.mode === 'multicolour') && currentSpriteTool === 'draw') {
         const cellX = Math.floor(pos.x / 8);
-        const cellY = sprite.mode === 'multicolour' ? Math.floor(pos.y / 2) : Math.floor(pos.y / 8);
+        const cellY = Math.floor(pos.y / getAttrCellH(sprite));
         spSetAttr(frame, cellX, cellY, spriteInk, spritePaper, spriteBright, sprite.cellsW);
       }
     }
@@ -1578,6 +1645,7 @@ function onSpriteCanvasMouseDown(e) {
       if (target !== fillValue) spFloodFill(frame, pos.x, pos.y, target, fillValue, pixW, sprite.cellsH * 8);
     }
     renderSpriteEditor();
+    updateSpritePropLocks();
   } else if (currentSpriteTool === 'line' || currentSpriteTool === 'rect') {
     pushUndo();
     spriteLineStartX = pos.x;
@@ -1617,7 +1685,7 @@ function onSpriteCanvasMouseMove(e) {
           spSetPixel(frame, x, y, value, pixW);
           if ((sprite.mode === 'attr' || sprite.mode === 'multicolour') && currentSpriteTool === 'draw') {
             const cellX = Math.floor(x / 8);
-            const cellY = sprite.mode === 'multicolour' ? Math.floor(y / 2) : Math.floor(y / 8);
+            const cellY = Math.floor(y / getAttrCellH(sprite));
             spSetAttr(frame, cellX, cellY, spriteInk, spritePaper, spriteBright, sprite.cellsW);
           }
         }
@@ -1656,6 +1724,7 @@ function onSpriteCanvasMouseUp(e) {
   // After draw/erase stroke, do a full render to update frame bar
   if (currentSpriteTool === 'draw' || currentSpriteTool === 'erase') {
     renderSpriteEditor();
+    updateSpritePropLocks();
     return;
   }
 
@@ -1685,7 +1754,19 @@ function onSpriteCanvasMouseUp(e) {
       }
     }
     renderSpriteEditor();
+    updateSpritePropLocks();
   }
+}
+
+/**
+ * Enable/disable W/H/Mode controls based on whether sprite has non-empty frame data.
+ */
+function updateSpritePropLocks() {
+  const sprite = getSelectedSprite();
+  const hasContent = sprite ? sprite.frames.some(f => f.bitmap.some(b => b !== 0)) : false;
+  if (spriteDOM.spriteCellsW) spriteDOM.spriteCellsW.disabled = hasContent;
+  if (spriteDOM.spriteCellsH) spriteDOM.spriteCellsH.disabled = hasContent;
+  if (spriteDOM.spriteMode) spriteDOM.spriteMode.disabled = hasContent;
 }
 
 // ============================================================================
@@ -1871,16 +1952,38 @@ function transformCurrentFrame(type) {
   const bytesPerRow = Math.ceil(pixW / 8);
 
   switch (type) {
-    case 'flipH': spFlipHorizontal(frame, pixW, pixH); break;
-    case 'flipV': spFlipVertical(frame, pixW, pixH); break;
-    case 'rotCW': spRotateCW(sprite, frame); break;
-    case 'rotCCW': spRotateCCW(sprite, frame); break;
-    case 'shiftL': spShiftPixels(frame, pixW, pixH, -1, 0); break;
-    case 'shiftR': spShiftPixels(frame, pixW, pixH, 1, 0); break;
-    case 'shiftU': spShiftPixels(frame, pixW, pixH, 0, -1); break;
-    case 'shiftD': spShiftPixels(frame, pixW, pixH, 0, 1); break;
-    case 'invert': spInvertPixels(frame); break;
-    case 'clear': spClearFrame(frame); break;
+    case 'flipH': spFlipHorizontal(frame, pixW, pixH); attrScrollAccum = { dx: 0, dy: 0 }; break;
+    case 'flipV': spFlipVertical(frame, pixW, pixH); attrScrollAccum = { dx: 0, dy: 0 }; break;
+    case 'rotCW': spRotateCW(sprite, frame); attrScrollAccum = { dx: 0, dy: 0 }; break;
+    case 'rotCCW': spRotateCCW(sprite, frame); attrScrollAccum = { dx: 0, dy: 0 }; break;
+    case 'shiftL':
+    case 'shiftR':
+    case 'shiftU':
+    case 'shiftD': {
+      const dx = type === 'shiftL' ? -1 : type === 'shiftR' ? 1 : 0;
+      const dy = type === 'shiftU' ? -1 : type === 'shiftD' ? 1 : 0;
+      spShiftPixels(frame, pixW, pixH, dx, dy);
+      if (spriteAttrScrollEnabled && frame.attrs && sprite.mode !== 'mono') {
+        attrScrollAccum.dx += dx;
+        attrScrollAccum.dy += dy;
+        const cellW = 8;
+        const cellH = getAttrCellH(sprite);
+        const totalAttrRows = sprite.cellsH * getAttrRowsPerCell(sprite);
+        let rollX = 0, rollY = 0;
+        if (Math.abs(attrScrollAccum.dx) >= cellW) {
+          rollX = Math.sign(attrScrollAccum.dx);
+          attrScrollAccum.dx -= rollX * cellW;
+        }
+        if (Math.abs(attrScrollAccum.dy) >= cellH) {
+          rollY = Math.sign(attrScrollAccum.dy);
+          attrScrollAccum.dy -= rollY * cellH;
+        }
+        if (rollX || rollY) spShiftAttrs(frame, sprite.cellsW, totalAttrRows, rollX, rollY);
+      }
+      break;
+    }
+    case 'invert': spInvertPixels(frame); attrScrollAccum = { dx: 0, dy: 0 }; break;
+    case 'clear': spClearFrame(frame); attrScrollAccum = { dx: 0, dy: 0 }; break;
   }
 
   renderSpriteEditor();
@@ -2112,6 +2215,18 @@ function spShiftPixels(frame, pixW, pixH, dx, dy) {
   }
 }
 
+function spShiftAttrs(frame, cellsW, totalAttrRows, dCellX, dCellY) {
+  const temp = new Uint8Array(cellsW * totalAttrRows);
+  for (let ay = 0; ay < totalAttrRows; ay++) {
+    for (let ax = 0; ax < cellsW; ax++) {
+      const srcX = ((ax - dCellX) % cellsW + cellsW) % cellsW;
+      const srcY = ((ay - dCellY) % totalAttrRows + totalAttrRows) % totalAttrRows;
+      temp[ay * cellsW + ax] = frame.attrs[srcY * cellsW + srcX];
+    }
+  }
+  frame.attrs.set(temp);
+}
+
 function spInvertPixels(frame) {
   for (let i = 0; i < frame.bitmap.length; i++) {
     frame.bitmap[i] = ~frame.bitmap[i] & 0xFF;
@@ -2134,13 +2249,14 @@ function navigateFrame(delta) {
   selectedFrameIndices.clear();
   frameSelectionAnchor = currentFrameIndex;
   spriteSelection = null;
+  attrScrollAccum = { dx: 0, dy: 0 };
   renderSpriteEditor();
 }
 
 function addFrame() {
   const sprite = getSelectedSprite();
   if (!sprite) return;
-  sprite.frames.push(createEmptyFrame(sprite.cellsW, sprite.cellsH, sprite.mode));
+  sprite.frames.push(createEmptyFrame(sprite.cellsW, sprite.cellsH, sprite.mode, sprite.attrCellH));
   currentFrameIndex = sprite.frames.length - 1;
   selectedFrameIndices.clear();
   frameSelectionAnchor = currentFrameIndex;
@@ -2305,20 +2421,13 @@ function startGrabMode() {
     spriteDOM.spriteGrabStatus.textContent = 'Drag on canvas...';
   }
 
-  // Constrain attr mode dropdown based on source format
-  const sel = spriteDOM.spriteGrabAttrMode;
+  // Auto-set sprite mode based on source format
+  const sel = spriteDOM.spriteMode;
   if (sel) {
     const isMulticolour = typeof currentFormat !== 'undefined' && typeof FORMAT !== 'undefined' &&
       (currentFormat === FORMAT.IFL || currentFormat === FORMAT.MLT || currentFormat === FORMAT.BMC4);
-    const mcOpt = sel.querySelector('option[value="multicolour"]');
-    if (isMulticolour) {
-      if (mcOpt) mcOpt.style.display = '';
-      sel.value = 'multicolour';
-      sel.disabled = true;
-    } else {
-      sel.disabled = false;
-      if (mcOpt) mcOpt.style.display = 'none';
-      if (sel.value === 'multicolour') sel.value = 'mono';
+    if (isMulticolour && !sel.value.startsWith('multicolour_')) {
+      sel.value = 'multicolour_2';
     }
   }
 
@@ -2349,21 +2458,44 @@ function startGrabMode() {
     };
   }
 
-  // Helper: position overlay div from screen coords
+  // Helper: get sprite cell dimensions in pixels for grab snapping
+  function getGrabSnapSize() {
+    const cw = parseInt(spriteDOM.spriteCellsW?.value) || 1;
+    const ch = parseInt(spriteDOM.spriteCellsH?.value) || 1;
+    return { sw: cw * 8, sh: ch * 8 };
+  }
+
+  // Helper: snap drag endpoint so region dimensions are multiples of sprite cell size
+  function snapGrabRegion(startX, startY, endX, endY) {
+    const { sw, sh } = getGrabSnapSize();
+    const dirX = endX >= startX ? 1 : -1;
+    const dirY = endY >= startY ? 1 : -1;
+    const rawW = Math.abs(endX - startX) + 8;
+    const rawH = Math.abs(endY - startY) + 8;
+    const snappedW = Math.max(sw, Math.round(rawW / sw) * sw);
+    const snappedH = Math.max(sh, Math.round(rawH / sh) * sh);
+    const scrW = typeof getFormatWidth === 'function' ? getFormatWidth() : 256;
+    const scrH = typeof getFormatHeight === 'function' ? getFormatHeight() : 192;
+    const left = dirX > 0 ? startX : startX - snappedW + 8;
+    const top = dirY > 0 ? startY : startY - snappedH + 8;
+    // Clamp to screen bounds
+    const clampedLeft = Math.max(0, Math.min(left, scrW - snappedW));
+    const clampedTop = Math.max(0, Math.min(top, scrH - snappedH));
+    return { x: clampedLeft, y: clampedTop, w: snappedW, h: snappedH };
+  }
+
+  // Helper: position overlay div from snapped grab region
   function positionOverlay(x1, y1, x2, y2) {
     const rect = canvas.getBoundingClientRect();
     const z = typeof zoom !== 'undefined' ? zoom : 2;
     const border = typeof borderSize !== 'undefined' ? borderSize : 0;
     const borderPx = border * z;
-    const left = Math.min(x1, x2);
-    const top = Math.min(y1, y2);
-    const w = Math.abs(x2 - x1) + 8; // +8 because coords are cell-snapped
-    const h = Math.abs(y2 - y1) + 8;
+    const rgn = snapGrabRegion(x1, y1, x2, y2);
     spriteGrabOverlay.style.display = '';
-    spriteGrabOverlay.style.left = (rect.left + borderPx + left * z) + 'px';
-    spriteGrabOverlay.style.top = (rect.top + borderPx + top * z) + 'px';
-    spriteGrabOverlay.style.width = (w * z) + 'px';
-    spriteGrabOverlay.style.height = (h * z) + 'px';
+    spriteGrabOverlay.style.left = (rect.left + borderPx + rgn.x * z) + 'px';
+    spriteGrabOverlay.style.top = (rect.top + borderPx + rgn.y * z) + 'px';
+    spriteGrabOverlay.style.width = (rgn.w * z) + 'px';
+    spriteGrabOverlay.style.height = (rgn.h * z) + 'px';
   }
 
   spriteGrabMouseDown = function(e) {
@@ -2391,20 +2523,14 @@ function startGrabMode() {
     spriteGrabDragging = false;
 
     const cell = clientToScreenCell(e);
-    const x1 = Math.min(spriteGrabStartX, cell.x);
-    const y1 = Math.min(spriteGrabStartY, cell.y);
-    const x2 = Math.max(spriteGrabStartX, cell.x) + 8;
-    const y2 = Math.max(spriteGrabStartY, cell.y) + 8;
-    const regionW = x2 - x1; // pixels
-    const regionH = y2 - y1;
+    const rgn = snapGrabRegion(spriteGrabStartX, spriteGrabStartY, cell.x, cell.y);
 
-    if (regionW < 8 || regionH < 8) {
-      // Too small, ignore
+    if (rgn.w < 8 || rgn.h < 8) {
       if (spriteGrabOverlay) spriteGrabOverlay.style.display = 'none';
       return;
     }
 
-    grabRegionFromScreen(x1, y1, regionW, regionH);
+    grabRegionFromScreen(rgn.x, rgn.y, rgn.w, rgn.h);
 
     // Hide overlay after grab but stay in grab mode for more grabs
     if (spriteGrabOverlay) spriteGrabOverlay.style.display = 'none';
@@ -2441,13 +2567,6 @@ function cancelGrabMode() {
     spriteDOM.spriteGrabStatus.textContent = '';
   }
 
-  // Restore attr mode dropdown
-  const sel = spriteDOM.spriteGrabAttrMode;
-  if (sel) {
-    sel.disabled = false;
-    const mcOpt = sel.querySelector('option[value="multicolour"]');
-    if (mcOpt) mcOpt.style.display = '';
-  }
 
   const canvas = document.getElementById('screenCanvas');
   if (canvas && spriteGrabMouseDown) {
@@ -2486,7 +2605,15 @@ function cancelGrabMode() {
  */
 function grabRegionFromScreen(regionX, regionY, regionW, regionH) {
   const mode = spriteDOM.spriteGrabMode?.value || 'single';
-  const attrMode = spriteDOM.spriteGrabAttrMode?.value || 'mono';
+  const dropdownVal = spriteDOM.spriteMode?.value || 'mono';
+  let attrMode, grabAttrCellH;
+  if (dropdownVal.startsWith('multicolour_')) {
+    attrMode = 'multicolour';
+    grabAttrCellH = parseInt(dropdownVal.split('_')[1]) || 2;
+  } else {
+    attrMode = dropdownVal;
+    grabAttrCellH = undefined;
+  }
   const isGrid = mode === 'grid' || mode === 'gridphases';
   const isPhases = mode === 'phases' || mode === 'gridphases';
 
@@ -2516,8 +2643,8 @@ function grabRegionFromScreen(regionX, regionY, regionW, regionH) {
       }
     } else {
       // Each sprite has fixed cell size
-      cellsW = parseInt(spriteDOM.spriteGrabW?.value) || 2;
-      cellsH = parseInt(spriteDOM.spriteGrabH?.value) || 2;
+      cellsW = parseInt(spriteDOM.spriteCellsW?.value) || 2;
+      cellsH = parseInt(spriteDOM.spriteCellsH?.value) || 2;
       cols = Math.floor(regionW / (cellsW * 8));
       rows = Math.floor(regionH / (cellsH * 8));
     }
@@ -2533,97 +2660,69 @@ function grabRegionFromScreen(regionX, regionY, regionW, regionH) {
         for (let row = 0; row < rows; row++)
           frames.push(extractFrameFromScreen(
             regionX + col * cellsW * 8, regionY + row * cellsH * 8,
-            cellsW, cellsH, attrMode));
+            cellsW, cellsH, attrMode, grabAttrCellH));
     } else {
       // Left→Right, then Top→Bottom (reading order)
       for (let row = 0; row < rows; row++)
         for (let col = 0; col < cols; col++)
           frames.push(extractFrameFromScreen(
             regionX + col * cellsW * 8, regionY + row * cellsH * 8,
-            cellsW, cellsH, attrMode));
+            cellsW, cellsH, attrMode, grabAttrCellH));
     }
   } else {
     cellsW = regionCellsW;
     cellsH = regionCellsH;
-    frames.push(extractFrameFromScreen(regionX, regionY, cellsW, cellsH, attrMode));
+    frames.push(extractFrameFromScreen(regionX, regionY, cellsW, cellsH, attrMode, grabAttrCellH));
   }
+
+  // Check if selected sprite is empty and can be reused
+  const sel = getSelectedSprite();
+  const selIsEmpty = sel && sel.frames.length === 1 && sel.frames[0].bitmap.every(b => b === 0)
+    && sel.cellsW === cellsW && sel.cellsH === cellsH && sel.mode === attrMode;
 
   // Add to sprite sheet
   if (isPhases) {
-    // phases / gridphases: append frame(s) to selected sprite, or create one
-    const sprite = getSelectedSprite();
-    if (sprite && sprite.cellsW === cellsW && sprite.cellsH === cellsH) {
-      // Update mode if grab uses a different attr mode, convert existing frames
-      if (sprite.mode !== attrMode) {
-        const oldMode = sprite.mode;
-        sprite.mode = attrMode;
-        for (const existingFrame of sprite.frames) {
-          if (oldMode === 'mono' && attrMode === 'attr') {
-            existingFrame.attrs = new Uint8Array(cellsW * cellsH);
-            existingFrame.attrs.fill(7);
-          } else if (oldMode === 'mono' && attrMode === 'multicolour') {
-            existingFrame.attrs = new Uint8Array(cellsW * cellsH * 4);
-            existingFrame.attrs.fill(7);
-          } else if (oldMode === 'attr' && attrMode === 'multicolour') {
-            const oldAttrs = existingFrame.attrs;
-            const newAttrs = new Uint8Array(cellsW * cellsH * 4);
-            for (let cy = 0; cy < cellsH; cy++) {
-              for (let cx = 0; cx < cellsW; cx++) {
-                const val = oldAttrs ? oldAttrs[cy * cellsW + cx] : 7;
-                for (let sub = 0; sub < 4; sub++) {
-                  newAttrs[(cy * 4 + sub) * cellsW + cx] = val;
-                }
-              }
-            }
-            existingFrame.attrs = newAttrs;
-          } else if (oldMode === 'multicolour' && attrMode === 'attr') {
-            const oldAttrs = existingFrame.attrs;
-            const newAttrs = new Uint8Array(cellsW * cellsH);
-            for (let cy = 0; cy < cellsH; cy++) {
-              for (let cx = 0; cx < cellsW; cx++) {
-                newAttrs[cy * cellsW + cx] = oldAttrs ? oldAttrs[(cy * 4) * cellsW + cx] : 7;
-              }
-            }
-            existingFrame.attrs = newAttrs;
-          } else if (attrMode === 'mono') {
-            existingFrame.attrs = null;
-          }
-        }
-      }
-      for (const f of frames) sprite.frames.push(f);
-      currentFrameIndex = sprite.frames.length - 1;
+    // phases / gridphases: create a new sprite with grabbed frames (or reuse empty)
+    if (selIsEmpty) {
+      sel.frames = frames;
     } else {
-      if (sprite && (sprite.cellsW !== cellsW || sprite.cellsH !== cellsH)) {
-        // Size mismatch — create new sprite for these phases
-      }
       spriteSheet.sprites.push({
         name: 'Grabbed_' + (spriteSheet.sprites.length + 1),
-        cellsW: cellsW, cellsH: cellsH, mode: attrMode, frames: frames
+        cellsW: cellsW, cellsH: cellsH, mode: attrMode, attrCellH: grabAttrCellH, frames: frames
       });
       setActiveSprite(spriteSheet.sprites.length - 1);
-      currentFrameIndex = frames.length - 1;
     }
+    currentFrameIndex = 0;
     if (spriteDOM.spriteGrabStatus)
       spriteDOM.spriteGrabStatus.textContent = frames.length + ' frame(s) added';
   } else if (isGrid) {
-    // grid: each cell = separate sprite
+    // grid: each cell = separate sprite; reuse empty selected sprite for first one
     const baseNum = spriteSheet.sprites.length + 1;
-    for (let i = 0; i < frames.length; i++)
-      spriteSheet.sprites.push({
-        name: 'Grabbed_' + (baseNum + i),
-        cellsW: cellsW, cellsH: cellsH, mode: attrMode, frames: [frames[i]]
-      });
+    for (let i = 0; i < frames.length; i++) {
+      if (i === 0 && selIsEmpty) {
+        sel.frames = [frames[i]];
+      } else {
+        spriteSheet.sprites.push({
+          name: 'Grabbed_' + (baseNum + i),
+          cellsW: cellsW, cellsH: cellsH, mode: attrMode, attrCellH: grabAttrCellH, frames: [frames[i]]
+        });
+      }
+    }
     setActiveSprite(spriteSheet.sprites.length - 1);
     currentFrameIndex = 0;
     if (spriteDOM.spriteGrabStatus)
       spriteDOM.spriteGrabStatus.textContent = frames.length + ' sprites grabbed';
   } else {
-    // single: one new sprite
-    spriteSheet.sprites.push({
-      name: 'Grabbed_' + (spriteSheet.sprites.length + 1),
-      cellsW: cellsW, cellsH: cellsH, mode: attrMode, frames: frames
-    });
-    setActiveSprite(spriteSheet.sprites.length - 1);
+    // single: one new sprite (or reuse empty)
+    if (selIsEmpty) {
+      sel.frames = frames;
+    } else {
+      spriteSheet.sprites.push({
+        name: 'Grabbed_' + (spriteSheet.sprites.length + 1),
+        cellsW: cellsW, cellsH: cellsH, mode: attrMode, attrCellH: grabAttrCellH, frames: frames
+      });
+      setActiveSprite(spriteSheet.sprites.length - 1);
+    }
     currentFrameIndex = 0;
     if (spriteDOM.spriteGrabStatus)
       spriteDOM.spriteGrabStatus.textContent = cellsW + 'x' + cellsH + ' sprite grabbed';
@@ -2662,7 +2761,7 @@ function spGetScreenAttrAddress(x, y) {
   return -1;
 }
 
-function extractFrameFromScreen(startX, startY, cellsW, cellsH, mode) {
+function extractFrameFromScreen(startX, startY, cellsW, cellsH, mode, attrCellH) {
   const pixW = cellsW * 8;
   const pixH = cellsH * 8;
   const bytesPerRow = Math.ceil(pixW / 8);
@@ -2696,12 +2795,14 @@ function extractFrameFromScreen(startX, startY, cellsW, cellsH, mode) {
       }
     }
   } else if (mode === 'multicolour') {
-    const totalAttrRows = cellsH * 4;
+    const extractAttrCellH = attrCellH || 2;
+    const extractRowsPerCell = 8 / extractAttrCellH;
+    const totalAttrRows = cellsH * extractRowsPerCell;
     attrs = new Uint8Array(cellsW * totalAttrRows);
     for (let attrRow = 0; attrRow < totalAttrRows; attrRow++) {
       for (let cx = 0; cx < cellsW; cx++) {
         const scrX = startX + cx * 8;
-        const scrY = startY + attrRow * 2;
+        const scrY = startY + attrRow * extractAttrCellH;
         const addr = screenData ? spGetScreenAttrAddress(scrX, scrY) : -1;
         attrs[attrRow * cellsW + cx] = (addr >= 0 && screenData[addr] != null) ? screenData[addr] : 7;
       }
@@ -2774,6 +2875,7 @@ function saveSpriteSheet() {
       cellsW: sprite.cellsW,
       cellsH: sprite.cellsH,
       mode: sprite.mode,
+      attrCellH: sprite.attrCellH,
       frames: sprite.frames.map(frame => ({
         bitmap: Array.from(frame.bitmap),
         mask: frame.mask ? Array.from(frame.mask) : null,
@@ -2823,6 +2925,7 @@ function loadSpriteSheetData(data) {
       cellsW: spriteData.cellsW || 1,
       cellsH: spriteData.cellsH || 1,
       mode: spriteData.mode || 'mono',
+      attrCellH: spriteData.mode === 'multicolour' ? (spriteData.attrCellH || 2) : undefined,
       frames: []
     };
 
@@ -2836,7 +2939,7 @@ function loadSpriteSheetData(data) {
     }
 
     if (sprite.frames.length === 0) {
-      sprite.frames.push(createEmptyFrame(sprite.cellsW, sprite.cellsH, sprite.mode));
+      sprite.frames.push(createEmptyFrame(sprite.cellsW, sprite.cellsH, sprite.mode, sprite.attrCellH));
     }
 
     spriteSheet.sprites.push(sprite);
@@ -2867,6 +2970,7 @@ function getSpriteSheetForProject() {
       cellsW: sprite.cellsW,
       cellsH: sprite.cellsH,
       mode: sprite.mode,
+      attrCellH: sprite.attrCellH,
       frames: sprite.frames.map(frame => ({
         bitmap: Array.from(frame.bitmap),
         mask: frame.mask ? Array.from(frame.mask) : null,
@@ -2889,6 +2993,18 @@ function restoreSpriteSheetFromProject(data) {
 // ============================================================================
 // ASM Export
 // ============================================================================
+
+/** Convert internal row-major attrs to Nirvana column-major order */
+function attrsToColumnMajor(attrs, cellsW, cellsH) {
+  const rowsPerCol = cellsH * 4;
+  const result = new Uint8Array(attrs.length);
+  for (let ay = 0; ay < rowsPerCol; ay++) {
+    for (let ax = 0; ax < cellsW; ax++) {
+      result[ax * rowsPerCol + ay] = attrs[ay * cellsW + ax];
+    }
+  }
+  return result;
+}
 
 function exportSpriteAsm() {
   if (spriteSheet.sprites.length === 0) {
@@ -2915,10 +3031,18 @@ function exportSpriteAsm() {
       const frameSuffix = sprite.frames.length > 1 ? '_f' + fi : '';
 
       if (exportFormat === 'nirvana' && sprite.mode === 'multicolour') {
-        // Nirvana btile/wtile: all bitmap first (row-major), then attrs row-major (band by band)
+        // Nirvana requires 8×2 multicolour (attrCellH === 2)
+        if ((sprite.attrCellH || 2) !== 2) {
+          asm += '; WARNING: ' + sprite.name + ' uses 8x' + (sprite.attrCellH || 2) + ' multicolour, Nirvana requires 8x2. Skipped.\n\n';
+          continue;
+        }
+        // Nirvana: btile attrs are column-major, wtile attrs are row-major
+        const isBtile = sprite.cellsW === 2 && sprite.cellsH === 2;
+        const exportAttrs = isBtile ? attrsToColumnMajor(frame.attrs, sprite.cellsW, sprite.cellsH) : frame.attrs;
+        const attrsPerLine = isBtile ? (sprite.cellsH * 4) : sprite.cellsW;
         asm += label + frameSuffix + ':\n';
         asm += formatDbLinesVisual(Array.from(frame.bitmap), sprite.cellsW) + '\n';
-        asm += formatDbLines(Array.from(frame.attrs), sprite.cellsW) + '\n';
+        asm += formatDbLines(Array.from(exportAttrs), attrsPerLine) + '\n';
         asm += '\n';
       } else {
         // Raw layout (original)
@@ -2931,7 +3055,7 @@ function exportSpriteAsm() {
         }
 
         if (frame.attrs) {
-          const attrComment = sprite.mode === 'multicolour' ? ' ; 8x2 multicolour attrs' : '';
+          const attrComment = sprite.mode === 'multicolour' ? ' ; 8x' + getAttrCellH(sprite) + ' multicolour attrs' : '';
           asm += label + '_attr' + frameSuffix + ':' + attrComment + '\n';
           asm += formatDbLines(Array.from(frame.attrs), sprite.cellsW) + '\n';
         }
@@ -2949,20 +3073,12 @@ function exportSpriteAsm() {
 // Binary Export
 // ============================================================================
 
-function exportSpriteBin() {
-  if (spriteSheet.sprites.length === 0) {
-    alert('No sprites to export.');
-    return;
-  }
-
-  const exportFormat = spriteDOM.spriteExportFormat ? spriteDOM.spriteExportFormat.value : 'raw';
-
-  // Calculate total size
+function buildSpriteBinBuffer(sprites, exportFormat) {
   let totalSize = 0;
-  for (const sprite of spriteSheet.sprites) {
+  for (const sprite of sprites) {
     for (const frame of sprite.frames) {
       if (exportFormat === 'nirvana' && sprite.mode === 'multicolour') {
-        // Nirvana btile: bitmap + attrs, no mask
+        if ((sprite.attrCellH || 2) !== 2) continue; // skip non-8×2 sprites
         totalSize += frame.bitmap.length + (frame.attrs ? frame.attrs.length : 0);
       } else {
         totalSize += frame.bitmap.length;
@@ -2975,14 +3091,16 @@ function exportSpriteBin() {
   const buffer = new Uint8Array(totalSize);
   let offset = 0;
 
-  for (const sprite of spriteSheet.sprites) {
+  for (const sprite of sprites) {
     for (const frame of sprite.frames) {
       if (exportFormat === 'nirvana' && sprite.mode === 'multicolour') {
-        // Nirvana btile/wtile: all bitmap first (row-major), then attrs row-major (band by band)
+        if ((sprite.attrCellH || 2) !== 2) continue; // skip non-8×2 sprites
+        const isBtile = sprite.cellsW === 2 && sprite.cellsH === 2;
         buffer.set(frame.bitmap, offset);
         offset += frame.bitmap.length;
-        buffer.set(frame.attrs, offset);
-        offset += frame.attrs.length;
+        const exportAttrs = isBtile ? attrsToColumnMajor(frame.attrs, sprite.cellsW, sprite.cellsH) : frame.attrs;
+        buffer.set(exportAttrs, offset);
+        offset += exportAttrs.length;
       } else {
         buffer.set(frame.bitmap, offset);
         offset += frame.bitmap.length;
@@ -2997,15 +3115,69 @@ function exportSpriteBin() {
       }
     }
   }
+  return buffer;
+}
 
-  const baseName = spriteSheet.name.replace(/[^a-zA-Z0-9_-]/g, '_') || 'sprites';
-  let binExt = '.bin';
+function getBinExtension(sprites, exportFormat) {
   if (exportFormat === 'nirvana') {
-    const first = spriteSheet.sprites.find(s => s.mode === 'multicolour');
-    if (first && first.cellsW === 2 && first.cellsH === 2) binExt = '.btile';
-    else if (first && first.cellsW === 3 && first.cellsH === 2) binExt = '.wtile';
+    const first = sprites.find(s => s.mode === 'multicolour');
+    if (first && first.cellsW === 2 && first.cellsH === 2) return '.btile';
+    if (first && first.cellsW === 3 && first.cellsH === 2) return '.wtile';
   }
-  downloadFile(new Blob([buffer], { type: 'application/octet-stream' }), baseName + binExt);
+  return '.bin';
+}
+
+function exportSpriteBin() {
+  if (spriteSheet.sprites.length === 0) {
+    alert('No sprites to export.');
+    return;
+  }
+
+  const exportFormat = spriteDOM.spriteExportFormat ? spriteDOM.spriteExportFormat.value : 'raw';
+  const baseName = spriteSheet.name.replace(/[^a-zA-Z0-9_-]/g, '_') || 'sprites';
+
+  // Check if all sprites have the same dimensions and mode
+  const ref = spriteSheet.sprites[0];
+  const allSame = spriteSheet.sprites.every(s =>
+    s.cellsW === ref.cellsW && s.cellsH === ref.cellsH && s.mode === ref.mode
+  );
+
+  if (!allSame) {
+    // Different sizes or modes — warn and abort
+    const seen = new Map();
+    for (const s of spriteSheet.sprites) {
+      const key = (s.cellsW * 8) + 'x' + (s.cellsH * 8) + ' ' + s.mode;
+      seen.set(key, (seen.get(key) || 0) + 1);
+    }
+    const list = [...seen.entries()].map(([k, n]) => '  • ' + n + '× ' + k).join('\n');
+    alert('Cannot export: sprites have different sizes or color modes.\n\n' + list);
+    return;
+  }
+
+  if (spriteSheet.sprites.length > 1) {
+    // Multiple sprites with same size/mode — confirm, then ask join or split
+    const desc = (ref.cellsW * 8) + 'x' + (ref.cellsH * 8) + ' ' + ref.mode;
+    const n = spriteSheet.sprites.length;
+    if (!confirm('Export ' + n + ' spritesets (' + desc + ')?')) return;
+    if (confirm('Join all into one file?\n\nOK = join\nCancel = split into ' + n + ' separate files')) {
+      const buffer = buildSpriteBinBuffer(spriteSheet.sprites, exportFormat);
+      const binExt = getBinExtension(spriteSheet.sprites, exportFormat);
+      downloadFile(new Blob([buffer], { type: 'application/octet-stream' }), baseName + binExt);
+    } else {
+      for (let i = 0; i < spriteSheet.sprites.length; i++) {
+        const sprite = spriteSheet.sprites[i];
+        const name = sprite.name.replace(/[^a-zA-Z0-9_-]/g, '_') || ('sprite_' + i);
+        const buffer = buildSpriteBinBuffer([sprite], exportFormat);
+        const binExt = getBinExtension([sprite], exportFormat);
+        downloadFile(new Blob([buffer], { type: 'application/octet-stream' }), name + binExt);
+      }
+    }
+  } else {
+    // Single sprite — export directly
+    const buffer = buildSpriteBinBuffer(spriteSheet.sprites, exportFormat);
+    const binExt = getBinExtension(spriteSheet.sprites, exportFormat);
+    downloadFile(new Blob([buffer], { type: 'application/octet-stream' }), baseName + binExt);
+  }
 }
 
 // ============================================================================

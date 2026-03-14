@@ -3251,6 +3251,14 @@ function saveWorkspace() {
     workspace.pictures.push(picData);
   }
 
+  // Save sprite sheet
+  if (typeof getSpriteSheetForProject === 'function') {
+    const spriteData = getSpriteSheetForProject();
+    if (spriteData) {
+      workspace.spriteSheet = spriteData;
+    }
+  }
+
   const json = JSON.stringify(workspace, null, 2);
   downloadFile(json, 'workspace.slw', 'application/json');
 
@@ -3479,6 +3487,11 @@ function loadWorkspace(file) {
       // Flatten layers to screenData if needed
       if (layersEnabled && layers.length > 0) {
         flattenLayersToScreen();
+      }
+
+      // Restore sprite sheet
+      if (workspace.spriteSheet && typeof restoreSpriteSheetFromProject === 'function') {
+        restoreSpriteSheetFromProject(workspace.spriteSheet);
       }
 
       // Update UI
@@ -17125,9 +17138,11 @@ function importNirvanaTileFile(file) {
       }
 
       // Copy attrs: 8 attr sub-rows (for 16px height at 8x2 resolution)
-      for (let ay = 0; ay < cellsH * 4; ay++) {
+      // btile stores attrs column-major; wtile stores attrs row-major
+      const attrRowsPerCol = cellsH * 4;
+      for (let ay = 0; ay < attrRowsPerCol; ay++) {
         for (let ax = 0; ax < cellsW; ax++) {
-          const attrIdx = ay * cellsW + ax;
+          const attrIdx = isBtile ? (ax * attrRowsPerCol + ay) : (ay * cellsW + ax);
           const iflAttrAddr = IFL.BITMAP_SIZE + (row * 8 + ay) * 32 + col * cellsW + ax;
           iflData[iflAttrAddr] = tileAttrs[attrIdx];
         }
@@ -17137,10 +17152,9 @@ function importNirvanaTileFile(file) {
     // Add as IFL picture
     addPicture(file.name, FORMAT.IFL, iflData);
 
-    // Create spriteset with each tile as a sprite
-    spriteSheet.sprites = [];
+    // Add tiles as sprites (append to existing)
     spriteSheet.name = file.name;
-    selectedSpriteIndex = -1;
+    const firstNewIndex = spriteSheet.sprites.length;
     currentFrameIndex = 0;
 
     for (let t = 0; t < tileCount; t++) {
@@ -17148,24 +17162,42 @@ function importNirvanaTileFile(file) {
       const tileBitmap = data.subarray(tileOffset, tileOffset + bitmapSize);
       const tileAttrs = data.subarray(tileOffset + bitmapSize, tileOffset + tileSize);
 
+      // btile: convert attrs from column-major to row-major (internal)
+      // wtile: attrs already row-major, direct copy
+      let spriteAttrs;
+      if (isBtile) {
+        const attrRowsPerCol = cellsH * 4;
+        spriteAttrs = new Uint8Array(tileAttrs.length);
+        for (let ay = 0; ay < attrRowsPerCol; ay++) {
+          for (let ax = 0; ax < cellsW; ax++) {
+            spriteAttrs[ay * cellsW + ax] = tileAttrs[ax * attrRowsPerCol + ay];
+          }
+        }
+      } else {
+        spriteAttrs = new Uint8Array(tileAttrs);
+      }
       const sprite = {
-        name: 'Tile' + (t + 1),
+        name: 'Tile' + (firstNewIndex + t + 1),
         cellsW: cellsW,
         cellsH: cellsH,
         mode: 'multicolour',
         frames: [{
           bitmap: new Uint8Array(tileBitmap),
           mask: null,
-          attrs: new Uint8Array(tileAttrs)
+          attrs: spriteAttrs
         }]
       };
       spriteSheet.sprites.push(sprite);
     }
 
-    selectedSpriteIndex = spriteSheet.sprites.length > 0 ? 0 : -1;
+    selectedSpriteIndex = firstNewIndex;
     currentFrameIndex = 0;
     updateSpriteList();
     updateSpriteProps();
+
+    // Auto-select Nirvana export format
+    const exportFmt = document.getElementById('spriteExportFormat');
+    if (exportFmt) exportFmt.value = 'nirvana';
 
     // Switch to Sprites tab
     const spritesTab = document.querySelector('.panel-tab[data-tab="sprites"]');

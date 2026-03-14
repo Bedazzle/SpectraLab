@@ -1,6 +1,38 @@
 # SpectraLab Version History
 
+## v1.54.0
+- Sprite editor: multicolour sub-modes — **Multicolour 8×1**, **8×2**, and **8×4** attribute cell heights, selectable from the Mode dropdown
+- Sprite editor: switching between multicolour sub-modes resamples attributes to the new resolution
+- Sprite editor: **Attr scroll** checkbox — when enabled, shift arrows (← → ↑ ↓) scroll attributes together with pixels; attributes roll when accumulated shift reaches a cell boundary
+- Sprite editor: Attr scroll checkbox hidden in Mono mode
+- Sprite editor: Nirvana export warns and skips sprites that are not 8×2 multicolour
+- Sprite editor: save/load preserves `attrCellH` property; old projects default to 8×2
+- Sprite editor: grab from screen respects selected multicolour sub-mode; auto-detect no longer overwrites an already-selected sub-mode
+- Sprite editor: **Attributes** checkbox — toggle color display on/off; when unchecked shows black/white bitmap (black = ink, white = paper)
+- Sprite editor: renamed "Attr" checkbox to "Scroll attr" for clarity
+- Zoom: Ctrl+Mouse Wheel now works anywhere in the right panel area (not just directly over the canvas), preventing accidental browser zoom
+- Zoom: Ctrl+Mouse Wheel uses accumulator threshold to prevent trackpads from jumping multiple zoom levels at once
+- Transform tab (Xform): workspace Save/Load buttons are now always accessible, even without a loaded picture
+
 ## v1.53.1
+- Image import: fixed ULA+ conversion producing wrong colors when Paper rule is Darker/Lighter (paper rule now skipped for ULA+ which uses independent CLUT halves)
+- Image import: removed Auto option from Paper rule (Darker color is now the default)
+- Nirvana tiles: fixed `.btile` import producing wrong colors (attributes are column-major in btile format)
+- Nirvana tiles: fixed `.wtile` import/export (attributes are row-major, unlike btile which is column-major)
+- Nirvana tiles: loading `.btile`/`.wtile` now appends to existing sprites instead of replacing them
+- Nirvana tiles: auto-selects Nirvana export format when loading tile files
+- Sprite editor: Edit button moved to sprite list toolbar (between Add and Delete) for quicker access
+- Sprite editor: frame bar now shows exactly 16 frames per row
+- Sprite editor: each new grab creates a new sprite instead of appending frames to the existing one
+- Sprite editor: grab reuses the selected sprite if it is empty and matches grab dimensions/mode
+- Sprite editor: grab rectangle snaps to sprite W/H cell dimensions (e.g. 3×2 cells → widths 24, 48, 72… and heights 16, 32, 48…)
+- Sprite editor: W/H and Mode locked after drawing content (clear all frames to unlock)
+- Sprite editor: removed duplicate W/H and Mode controls from grab section (grab now uses sprite properties)
+- Sprite editor: cleaned up floating editor layout (Play/Speed aligned right, removed separator lines from tool palette)
+- Sprite editor: binary export warns and aborts when sprites have different sizes or color modes; when multiple sprites share the same size/mode, offers to join into one file or split into separate files
+- Workspace: save/load (.slw) now preserves sprite sheet data
+
+## v1.53.0
 - Image import: **Tile to screens** — split a large source image into a grid of ZX Spectrum pictures covering the entire source
   - Checkbox in Output section enables tiling mode
   - Automatically calculates grid (cols × rows) based on crop area and output format dimensions

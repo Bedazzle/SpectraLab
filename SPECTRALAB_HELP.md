@@ -4,7 +4,7 @@
 
 **SpectraLab** is a web-based ZX Spectrum graphics editor and viewer. It supports multiple ZX Spectrum graphics formats for viewing, editing, converting, and importing external images with advanced dithering algorithms.
 
-- **Version:** 1.53.0
+- **Version:** 1.53.1
 - **License:** MIT
 - **Browser:** Any modern browser (Chrome, Firefox, Edge, Safari)
 - **No installation required** — runs entirely in the browser
@@ -88,7 +88,7 @@ The View tab controls how the image is displayed.
 
 ### Zoom
 
-Select zoom level from the dropdown: **x1, x2, x3, x4, x5, x6, x8, x10, x20**. You can also use **Ctrl+Mouse Wheel** to zoom in/out, or press number keys **1-5** for quick zoom.
+Select zoom level from the dropdown: **x1, x2, x3, x4, x5, x6, x8, x10, x20**. You can also use **Ctrl+Mouse Wheel** to zoom in/out (works anywhere in the canvas panel area), or press number keys **1-5** for quick zoom. Ctrl+Mouse Wheel over the left sidebar performs normal browser zoom.
 
 ### View Settings (collapsible)
 
@@ -411,16 +411,18 @@ SPECSCII supports OVER layers (XOR compositing) loaded from stream control codes
 
 ## 15. Transform Tab (Xform)
 
+### Workspace
+
+- **Save Workspace** — save all open pictures and sprites as a `.slw` file
+- **Load Workspace** — load a workspace file (`.slw`)
+
+Workspace buttons are always available, even without a loaded picture. The remaining transform tools require a picture to be loaded or created first.
+
 ### History
 
 - **Undo** (Ctrl+Z) — undo last action (up to 32 levels)
 - **Redo** (Ctrl+Y) — redo undone action
 - **Clear** — clear the entire screen
-
-### Workspace
-
-- **Save Workspace** — save all open pictures as a `.slw` file
-- **Load Workspace** — load a workspace file (`.slw`)
 
 ### Format Conversion
 
@@ -504,24 +506,26 @@ Shows all defined sprites. Click to select.
 When a sprite is selected:
 
 - **Name** — sprite name (max 16 characters)
-- **W / H** — dimensions in cells (1-8 × 1-8, each cell = 8×8 pixels)
-- **Mode** — Mono, Attributed, or Multicolour
+- **W / H** — dimensions in cells (1-8 × 1-8, each cell = 8×8 pixels); locked after drawing (clear all frames to unlock)
+- **Mode** — Mono, Attributed, or Multicolour (8×1 / 8×2 / 8×4 attribute cell height); locked after drawing
+- **+ Add** — add a new empty sprite
 - **Edit** — open the floating sprite editor
+- **Delete** — delete selected sprite(s)
 - **Use as Brush** — use the sprite as a custom brush on the main canvas
 
 ### Grab from Screen
 
-Grab sprites directly from the loaded picture:
+Grab sprites directly from the loaded picture. Set **W / H** and **Mode** in Sprite Properties before grabbing — the grab uses these values for cell size and color mode.
 
 - **Grab** button — enter grab mode, drag a rectangle on the canvas
 - **Stop** button / Escape — exit grab mode
+- Each grab creates a **new sprite** with the grabbed frames
 - **Grab mode:**
   - Single sprite — grab one sprite
   - Sprite phases — grab as animation frames
   - Singles grid — grab grid of individual sprites
   - Phases grid — grab grid of animation frame sets
-- **Attr mode:** Mono, Attr, Multicolour
-- **Grid options:** Size by cell size or count, with column/row settings and ordering (L→R,T→B or T→B,L→R)
+- **Grid options:** Size by cell size (uses W/H from Sprite Properties) or count, with column/row settings and ordering (L→R,T→B or T→B,L→R)
 
 ### File
 
@@ -558,7 +562,7 @@ Mouse buttons work the same as on the main canvas: **left button** draws ink (se
 
 ### Color Controls
 
-For Attributed mode sprites:
+For Attributed and Multicolour mode sprites:
 - 8-color palette for ink/paper selection
 - **Bright** checkbox
 
@@ -567,9 +571,10 @@ For Attributed mode sprites:
 - **Preview canvas** — 1× preview of the sprite
 - **Onion skin** — show previous frame as ghost overlay
 - **Grid** — show pixel grid
+- **Attributes** — show attribute colors (checked by default); when unchecked, displays black/white bitmap only (black = ink, white = paper)
 - **Show mask** — display the sprite mask
 - **Frame navigation:** Previous (**<**), frame counter, Next (**>**)
-- **Frame bar** — animation frame thumbnails with multi-select support
+- **Frame bar** — animation frame thumbnails (16 per row) with multi-select support
   - Click — select a single frame
   - Ctrl+Click — toggle frame in/out of multi-selection
   - Shift+Click — range select from anchor to clicked frame
@@ -584,7 +589,8 @@ For Attributed mode sprites:
 
 - **FlipH** / **FlipV** — flip horizontally/vertically
 - **RotCW** / **RotCCW** — rotate clockwise/counter-clockwise
-- **← → ↑ ↓** — shift sprite 1 pixel in any direction
+- **Scroll attr** checkbox — when checked, shift arrows also scroll attributes; attributes roll when the accumulated pixel shift reaches an attribute cell boundary (e.g. every 2 pixels for 8×2, every 1 pixel for 8×1); hidden in Mono mode
+- **← → ↑ ↓** — shift sprite 1 pixel in any direction (with optional attribute scrolling)
 - **Inv** — invert all pixels
 - **Clr** — clear the current frame
 

@@ -38,7 +38,7 @@ Load a standard `.scr` file by clicking the file input or dragging it onto the c
 
 - Use the **Zoom** dropdown in the View tab (x1 through x20)
 - Press keys **1-5** for quick zoom levels
-- Use **Ctrl+Mouse Wheel** to zoom in/out smoothly
+- Use **Ctrl+Mouse Wheel** to zoom in/out (works anywhere in the canvas panel area; Ctrl+Wheel over the left sidebar performs normal browser zoom)
 
 ### Toggle Grid Overlay
 
@@ -299,9 +299,8 @@ In the **Transform** section, choose a dithering method. Default is **None** (ne
 
 ### Set Paper Color Rule
 
-The **Paper** dropdown controls how ink and paper colors are assigned per cell:
-- **Auto** — default, determined by palette order
-- **Darker color** — darker color becomes paper in each cell. For single-color cells, dark colors become paper (0 bits), light colors become ink (1 bits)
+The **Paper** dropdown controls how ink and paper colors are assigned per cell (not applied to ULA+ format):
+- **Darker color** — default; darker color becomes paper in each cell. For single-color cells, dark colors become paper (0 bits), light colors become ink (1 bits)
 - **Lighter color** — lighter color becomes paper in each cell. For single-color cells, light colors become paper (0 bits), dark colors become ink (1 bits)
 - **First pixel paper** — the top-left pixel's color in each cell becomes paper (useful for spritesheets where a frame pixel marks the background color)
 
@@ -357,12 +356,12 @@ Click **Import** to apply the conversion and load the result as an editable pict
 2. Click **+ Add** to create a new sprite
 3. Set the sprite properties:
    - **Name** — give it a descriptive name
-   - **W / H** — dimensions in 8×8 cells (e.g., 2×2 = 16×16 pixels)
-   - **Mode** — Mono (1-bit), Attributed (with colors), or Multicolour
+   - **W / H** — dimensions in 8×8 cells (e.g., 2×2 = 16×16 pixels); these become locked once you draw content (clear all frames to unlock)
+   - **Mode** — Mono (1-bit), Attributed (with colors), or Multicolour (8×1 / 8×2 / 8×4 attribute cell height); locked after drawing
 
 ### Open the Sprite Editor
 
-Click **Edit** to open the floating Sprite Editor panel.
+Click **Edit** (in the toolbar between Add and Delete) to open the floating Sprite Editor panel.
 
 ### Draw Sprite Pixels
 
@@ -388,10 +387,11 @@ In the Sprite Editor:
 ### Grab Sprites from Screen
 
 1. Make sure you have a picture loaded on the main canvas
-2. Click the **Grab** button in the Sprites tab
-3. Select the grab mode (Single sprite, Sprite phases, etc.)
-4. Drag a rectangle on the canvas to capture sprites
-5. Press **Escape** or click **Stop** when done
+2. Set **W / H** and **Mode** in the Sprite Properties section — these values are used for grab cell size and color mode
+3. Click the **Grab** button in the Sprites tab
+4. Select the grab mode (Single sprite, Sprite phases, etc.)
+5. Drag a rectangle on the canvas to capture sprites — each grab creates a **new sprite**
+6. Press **Escape** or click **Stop** when done
 
 ### Multi-Select and Batch Operations
 
@@ -607,7 +607,7 @@ Click **Clear** to remove the reference image.
 ## 19. Tips and Hidden Features
 
 ### Workspace Save/Load
-Save all your open pictures at once with **Save Workspace** in the Xform tab. Load them back later — preserving layers, settings, and reference images.
+Save all your open pictures at once with **Save Workspace** in the Xform tab. Load them back later — preserving layers, sprites, settings, and reference images. Workspace buttons are always available in the Xform tab, even without a loaded picture.
 
 ### Barcode Brushes
 For BSC/BMC4 border formats, use barcode slots to capture and stamp border stripe patterns. Shift+click a slot to capture from the border.

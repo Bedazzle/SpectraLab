@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.53.0 -->
+<!-- SpectraLab v1.54.0 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -2027,6 +2027,13 @@
 
         <!-- Transform Tab Content -->
         <div id="tabTransform" class="panel-tab-content">
+          <div class="control-group">
+            <div class="editor-actions">
+              <button id="saveWorkspaceBtn" title="Save all open pictures (.slw)" style="flex: 1;">Save Workspace</button>
+              <button id="loadWorkspaceBtn" title="Load workspace file (.slw)" style="flex: 1;">Load Workspace</button>
+              <input type="file" id="workspaceFileInput" accept=".slw" style="display: none;">
+            </div>
+          </div>
           <div id="transformInactiveHint" style="color: var(--text-secondary); font-size: 11px; padding: 8px 0;">
             Load or create a picture to use transform tools.
           </div>
@@ -2040,11 +2047,6 @@
               </div>
             </div>
             <div class="control-group">
-              <div class="editor-actions">
-                <button id="saveWorkspaceBtn" title="Save all open pictures (.slw)" style="flex: 1;">Save Workspace</button>
-                <button id="loadWorkspaceBtn" title="Load workspace file (.slw)" style="flex: 1;">Load Workspace</button>
-                <input type="file" id="workspaceFileInput" accept=".slw" style="display: none;">
-              </div>
               <div class="editor-actions" style="margin-top: 4px;">
                 <select id="editorConvertSelect" title="Convert to different format" style="padding: 2px 4px; font-size: 11px; flex: 1;">
                   <option value="" disabled selected>Convert to...</option>
@@ -2147,6 +2149,7 @@
           <div id="spriteList" class="sprite-list"></div>
           <div style="display:flex; gap:4px; margin-top:4px;">
             <button id="spriteAddBtn" class="editor-btn" title="Add new sprite">+ Add</button>
+            <button id="spriteEditBtn" class="editor-btn" title="Open pixel editor">Edit</button>
             <button id="spriteDeleteBtn" class="editor-btn" title="Delete selected sprite(s)">Delete</button>
           </div>
 
@@ -2164,11 +2167,10 @@
                 <option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
               </select></label>
               <label><select id="spriteMode" style="font-size:10px;">
-                <option value="mono">Mono</option><option value="attr">Attributed</option><option value="multicolour">Multicolour</option>
+                <option value="mono">Mono</option><option value="attr">Attributed</option><option value="multicolour_1">Multicolour 8×1</option><option value="multicolour_2">Multicolour 8×2</option><option value="multicolour_4">Multicolour 8×4</option>
               </select></label>
             </div>
             <div style="display:flex; gap:4px; margin-top:6px;">
-              <button id="spriteEditBtn" class="editor-btn" title="Open pixel editor">Edit</button>
               <button id="spriteUseBrushBtn" class="editor-btn" title="Use as brush on canvas">Use as Brush</button>
             </div>
           </div>
@@ -2189,25 +2191,12 @@
                   <option value="grid">Singles grid</option>
                   <option value="gridphases" selected>Phases grid</option>
                 </select>
-                <select id="spriteGrabAttrMode" style="font-size:10px;">
-                  <option value="mono">Mono</option>
-                  <option value="attr">Attr</option>
-                  <option value="multicolour">Multicolour</option>
-                </select>
               </div>
               <div id="spriteGrabGridOpts" style="margin-top:3px;">
                 <div style="display:flex; gap:4px; align-items:center; flex-wrap:wrap;">
                   <label>Size by: <select id="spriteGrabSizeBy" style="font-size:10px;">
                     <option value="cells">Cell size</option>
                     <option value="count">Count</option>
-                  </select></label>
-                </div>
-                <div id="spriteGrabByCells" style="display:flex; gap:4px; margin-top:2px; align-items:center;">
-                  <label>W: <select id="spriteGrabW" style="font-size:10px;">
-                    <option value="1">1</option><option value="2">2</option><option value="3" selected>3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
-                  </select></label>
-                  <label>H: <select id="spriteGrabH" style="font-size:10px;">
-                    <option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
                   </select></label>
                 </div>
                 <div id="spriteGrabByCount" style="display:none; gap:4px; margin-top:2px; align-items:center;">
@@ -2337,8 +2326,10 @@
         <canvas id="spriteEditorCanvas" width="256" height="256"></canvas>
         <div style="display:flex; gap:6px; align-items:center; margin-top:10px;">
           <canvas id="spritePreviewCanvas" width="64" height="64" title="1x preview"></canvas>
-          <button id="spritePlayBtn" class="editor-btn" style="font-size:10px;">&#9654; Play</button>
-          <label style="font-size:9px;">Speed: <input type="range" id="spriteAnimSpeed" min="1" max="30" value="10" style="width:50px;"></label>
+          <div style="margin-left:auto; display:flex; align-items:center; gap:4px;">
+            <button id="spritePlayBtn" class="editor-btn" style="font-size:10px;">&#9654; Play</button>
+            <label style="font-size:9px;">Speed: <input type="range" id="spriteAnimSpeed" min="1" max="30" value="10" style="width:50px;"></label>
+          </div>
         </div>
         <div style="display:flex; gap:2px; align-items:center; margin-top:2px; font-size:10px;">
           <button id="spriteFramePrev" class="editor-btn" title="Previous frame">&lt;</button>
@@ -2348,6 +2339,7 @@
         <div style="display:flex; gap:6px; flex-wrap:wrap; font-size:10px;">
           <label><input type="checkbox" id="spriteOnionSkin"> Onion</label>
           <label><input type="checkbox" id="spriteShowGrid" checked> Grid</label>
+          <label><input type="checkbox" id="spriteShowAttrs" checked> Attributes</label>
           <label><input type="checkbox" id="spriteShowMask"> Mask</label>
         </div>
       </div>
@@ -2359,9 +2351,7 @@
         <button id="spriteToolLine" class="sprite-tool-btn" title="Line (L)">&#9585;</button>
         <button id="spriteToolRect" class="sprite-tool-btn" title="Rectangle (R)">&#9634;</button>
         <button id="spriteToolSelect" class="sprite-tool-btn" title="Select (S)">&#11036;</button>
-        <hr style="width:100%; border-color:var(--border-secondary);">
         <button id="spriteToolMask" class="sprite-tool-btn" title="Toggle mask editing (M)">Mask</button>
-        <hr style="width:100%; border-color:var(--border-secondary);">
         <!-- Attributed mode: color selectors -->
         <div id="spriteAttrControls" style="display:none;">
           <div id="spriteColorPalette" class="sprite-color-row"></div>
@@ -2370,7 +2360,7 @@
       </div>
     </div>
     <!-- Frame bar -->
-    <div id="spriteFrameBar" style="display:grid; grid-template-columns:repeat(auto-fill, 24px); gap:2px; margin-top:6px;"></div>
+    <div id="spriteFrameBar" style="display:grid; grid-template-columns:repeat(16, 24px); gap:2px; margin-top:6px;"></div>
     <!-- Frame operations -->
     <div style="display:flex; gap:2px; margin-top:2px; font-size:10px;">
       <button id="spriteFrameMoveL" class="editor-btn" title="Move frame(s) left">&#9664;</button>
@@ -2385,6 +2375,9 @@
       <button id="spriteFlipV" class="editor-btn" title="Flip vertical">FlipV</button>
       <button id="spriteRotCW" class="editor-btn" title="Rotate clockwise">RotCW</button>
       <button id="spriteRotCCW" class="editor-btn" title="Rotate counter-clockwise">RotCCW</button>
+      <label id="spriteAttrScrollLabel" style="font-size:10px; display:flex; align-items:center; gap:2px; margin:0 2px;" title="Scroll attributes with pixels">
+        <input type="checkbox" id="spriteAttrScroll" style="margin:0;">Scroll attr
+      </label>
       <button id="spriteShiftL" class="editor-btn" title="Shift left 1px">&larr;</button>
       <button id="spriteShiftR" class="editor-btn" title="Shift right 1px">&rarr;</button>
       <button id="spriteShiftU" class="editor-btn" title="Shift up 1px">&uarr;</button>
@@ -2954,7 +2947,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.53.0</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.54.0</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">

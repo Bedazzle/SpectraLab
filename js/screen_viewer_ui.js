@@ -201,22 +201,32 @@ function initScreenViewerUI() {
     }
   });
 
-  // Mouse wheel zoom handler
+  // Mouse wheel zoom handler — covers entire right panel so Ctrl+wheel
+  // never triggers browser zoom when cursor is near the canvas area
   const canvasContainer = document.getElementById('canvasContainer');
-  canvasContainer?.addEventListener('wheel', function(event) {
+  const previewPanel = canvasContainer?.closest('.preview-panel');
+  let wheelZoomAccum = 0;
+  const WHEEL_ZOOM_THRESHOLD = 50;
+  (previewPanel || canvasContainer)?.addEventListener('wheel', function(event) {
     if (!event.ctrlKey) return;
     event.preventDefault();
+
+    // Accumulate deltaY — trackpads send many small events per gesture
+    wheelZoomAccum += event.deltaY;
+    if (Math.abs(wheelZoomAccum) < WHEEL_ZOOM_THRESHOLD) return;
+    const direction = wheelZoomAccum > 0 ? 1 : -1;
+    wheelZoomAccum = 0;
 
     // Available zoom levels matching the dropdown
     const zoomLevels = [1, 2, 3, 4, 5, 6, 8, 10, 20];
     const currentIndex = zoomLevels.indexOf(zoom);
     let newIndex;
-    if (event.deltaY < 0) {
+    if (direction < 0) {
       // Scroll up = zoom in
-      newIndex = Math.min(currentIndex + 1, zoomLevels.length - 1);
+      newIndex = Math.min((currentIndex < 0 ? 0 : currentIndex) + 1, zoomLevels.length - 1);
     } else {
       // Scroll down = zoom out
-      newIndex = Math.max(currentIndex - 1, 0);
+      newIndex = Math.max((currentIndex < 0 ? zoomLevels.length - 1 : currentIndex) - 1, 0);
     }
     if (zoomLevels[newIndex] !== zoom) {
       const newZoom = zoomLevels[newIndex];
@@ -306,8 +316,8 @@ function initScreenViewerUI() {
         return; // SCA editor handles its own UI
       }
 
-      // If switching to Edit or Transform tab without an editable picture, show New Picture dialog
-      if (tabName === 'edit' || tabName === 'transform') {
+      // If switching to Edit tab without an editable picture, show New Picture dialog
+      if (tabName === 'edit') {
         const canEdit = typeof isFormatEditable === 'function' && isFormatEditable() &&
                         typeof screenData !== 'undefined' && screenData &&
                         (screenData.length > 0 || (typeof currentFormat !== 'undefined' && currentFormat === FORMAT.SPECSCII));
