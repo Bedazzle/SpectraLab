@@ -30,37 +30,52 @@ function initScreenViewerUI() {
   // Event Handlers
   // ============================================================================
 
+  // Shared file-routing logic for input and drag-and-drop
+  function handleOpenFile(file) {
+    const lowerName = file.name.toLowerCase();
+    if (lowerName.endsWith('.slw')) {
+      if (typeof loadWorkspace === 'function') {
+        loadWorkspace(file);
+      }
+    } else if (lowerName.endsWith('.slp')) {
+      if (typeof loadProject === 'function') {
+        loadProject(file);
+      }
+    } else if (typeof isImageFile === 'function' && isImageFile(file.name)) {
+      openImportDialog(file);
+    } else if (typeof isSnapshotFile === 'function' && isSnapshotFile(file.name)) {
+      loadSnapshotFile(file);
+    } else if (typeof isNirvanaTileFile === 'function' && isNirvanaTileFile(file.name)) {
+      importNirvanaTileFile(file);
+    } else if (isZipFile(file.name)) {
+      handleZipFile(file);
+    } else {
+      loadScreenFile(file);
+    }
+  }
+
   // File input handler
   inputFile?.addEventListener('change', function(event) {
     const target = /** @type {HTMLInputElement} */ (event.target);
     const file = target.files?.[0];
     if (file) {
-      const lowerName = file.name.toLowerCase();
-      if (lowerName.endsWith('.slw')) {
-        // SpectraLab Workspace file
-        if (typeof loadWorkspace === 'function') {
-          loadWorkspace(file);
-        }
-      } else if (lowerName.endsWith('.slp')) {
-        // SpectraLab Project file
-        if (typeof loadProject === 'function') {
-          loadProject(file);
-        }
-      } else if (typeof isImageFile === 'function' && isImageFile(file.name)) {
-        openImportDialog(file);
-      } else if (typeof isSnapshotFile === 'function' && isSnapshotFile(file.name)) {
-        loadSnapshotFile(file);
-      } else if (typeof isNirvanaTileFile === 'function' && isNirvanaTileFile(file.name)) {
-        importNirvanaTileFile(file);
-      } else if (isZipFile(file.name)) {
-        handleZipFile(file);
-      } else {
-        loadScreenFile(file);
-      }
+      handleOpenFile(file);
     }
     // Remove focus so keyboard shortcuts work immediately
     /** @type {HTMLElement} */ (document.activeElement)?.blur();
     screenCanvas?.focus();
+  });
+
+  // Drag-and-drop handler
+  document.body.addEventListener('dragover', function(e) {
+    e.preventDefault();
+  });
+  document.body.addEventListener('drop', function(e) {
+    e.preventDefault();
+    const file = e.dataTransfer?.files[0];
+    if (file) {
+      handleOpenFile(file);
+    }
   });
 
   // Zoom select handler
@@ -201,14 +216,16 @@ function initScreenViewerUI() {
     }
   });
 
-  // Mouse wheel zoom handler — covers entire right panel so Ctrl+wheel
-  // never triggers browser zoom when cursor is near the canvas area
+  // Mouse wheel zoom handler — intercepts Ctrl+wheel everywhere except the
+  // left sidebar, so browser zoom only triggers over the controls panel
   const canvasContainer = document.getElementById('canvasContainer');
-  const previewPanel = canvasContainer?.closest('.preview-panel');
+  const leftSidebar = document.querySelector('.left-sidebar');
   let wheelZoomAccum = 0;
   const WHEEL_ZOOM_THRESHOLD = 50;
-  (previewPanel || canvasContainer)?.addEventListener('wheel', function(event) {
+  document.addEventListener('wheel', function(event) {
     if (!event.ctrlKey) return;
+    // Allow browser default zoom on the left sidebar
+    if (leftSidebar && leftSidebar.contains(/** @type {Node} */ (event.target))) return;
     event.preventDefault();
 
     // Accumulate deltaY — trackpads send many small events per gesture
@@ -230,8 +247,27 @@ function initScreenViewerUI() {
     }
     if (zoomLevels[newIndex] !== zoom) {
       const newZoom = zoomLevels[newIndex];
-      if (zoomSelect) zoomSelect.value = String(newZoom);
-      setZoom(newZoom);
+
+      // Zoom toward cursor: keep the canvas point under the mouse stable
+      if (canvasContainer) {
+        const rect = canvasContainer.getBoundingClientRect();
+        // Cursor position within the visible container area
+        const cursorX = event.clientX - rect.left;
+        const cursorY = event.clientY - rect.top;
+        // Canvas coordinate under cursor (in source pixels, accounting for border)
+        const canvasX = (canvasContainer.scrollLeft + cursorX) / zoom;
+        const canvasY = (canvasContainer.scrollTop + cursorY) / zoom;
+
+        if (zoomSelect) zoomSelect.value = String(newZoom);
+        setZoom(newZoom);
+
+        // After zoom, adjust scroll so the same canvas point stays under cursor
+        canvasContainer.scrollLeft = canvasX * newZoom - cursorX;
+        canvasContainer.scrollTop = canvasY * newZoom - cursorY;
+      } else {
+        if (zoomSelect) zoomSelect.value = String(newZoom);
+        setZoom(newZoom);
+      }
     }
   }, { passive: false });
 
@@ -470,6 +506,11 @@ function initScreenViewerUI() {
   // Initialize image import dialog
   if (typeof initImageImport === 'function') {
     initImageImport();
+  }
+
+  // Initialize display filters
+  if (typeof initDisplayFilters === 'function') {
+    initDisplayFilters();
   }
 
   // Load saved settings

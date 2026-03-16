@@ -1027,7 +1027,7 @@ function renderScrFast(ctx, borderOffset) {
   temp.ctx.putImageData(imageData, 0, 0);
 
   // Scale and draw to main canvas using drawImage (GPU accelerated)
-  ctx.imageSmoothingEnabled = false;
+  applyRenderSmoothing(ctx);
   ctx.drawImage(
     temp.canvas,
     0, 0, SCREEN.WIDTH, SCREEN.HEIGHT,
@@ -1107,7 +1107,7 @@ function render53cScreen(ctx, borderOffset) {
   if (!temp) return;
   temp.ctx.putImageData(imageData, 0, 0);
 
-  ctx.imageSmoothingEnabled = false;
+  applyRenderSmoothing(ctx);
   ctx.drawImage(
     temp.canvas,
     0, 0, SCREEN.WIDTH, SCREEN.HEIGHT,
@@ -1180,7 +1180,7 @@ function renderIflScreen(ctx, borderOffset) {
   const temp = getTempRenderCanvas(SCREEN.WIDTH, SCREEN.HEIGHT);
   if (!temp) return;
   temp.ctx.putImageData(imageData, 0, 0);
-  ctx.imageSmoothingEnabled = false;
+  applyRenderSmoothing(ctx);
   ctx.drawImage(temp.canvas, borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom);
 }
 
@@ -1236,7 +1236,7 @@ function renderMltScreen(ctx, borderOffset) {
   const temp = getTempRenderCanvas(SCREEN.WIDTH, SCREEN.HEIGHT);
   if (!temp) return;
   temp.ctx.putImageData(imageData, 0, 0);
-  ctx.imageSmoothingEnabled = false;
+  applyRenderSmoothing(ctx);
   ctx.drawImage(temp.canvas, borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom);
 }
 
@@ -1289,7 +1289,7 @@ function renderRgb3Screen(ctx, borderOffset) {
   const temp = getTempRenderCanvas(SCREEN.WIDTH, SCREEN.HEIGHT);
   if (!temp) return;
   temp.ctx.putImageData(imageData, 0, 0);
-  ctx.imageSmoothingEnabled = false;
+  applyRenderSmoothing(ctx);
   ctx.drawImage(temp.canvas, borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom);
 }
 
@@ -1359,7 +1359,7 @@ function renderRgb3ScreenFlicker(ctx, borderOffset, phase) {
   const temp = getTempRenderCanvas(SCREEN.WIDTH, SCREEN.HEIGHT);
   if (!temp) return;
   temp.ctx.putImageData(imageData, 0, 0);
-  ctx.imageSmoothingEnabled = false;
+  applyRenderSmoothing(ctx);
   ctx.drawImage(temp.canvas, borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom);
 }
 
@@ -1474,7 +1474,7 @@ function renderGigascreenFrame(ctx, borderOffset, frameIndex) {
   const temp = getTempRenderCanvas(SCREEN.WIDTH, SCREEN.HEIGHT);
   if (!temp) return;
   temp.ctx.putImageData(imageData, 0, 0);
-  ctx.imageSmoothingEnabled = false;
+  applyRenderSmoothing(ctx);
   ctx.drawImage(temp.canvas, borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom);
 }
 
@@ -1528,7 +1528,7 @@ function renderGigascreenAverage(ctx, borderOffset) {
   const temp = getTempRenderCanvas(SCREEN.WIDTH, SCREEN.HEIGHT);
   if (!temp) return;
   temp.ctx.putImageData(imageData, 0, 0);
-  ctx.imageSmoothingEnabled = false;
+  applyRenderSmoothing(ctx);
   ctx.drawImage(temp.canvas, borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom);
 }
 
@@ -1695,7 +1695,7 @@ function renderMonoScreen(ctx, borderOffset, thirds) {
   monoOffscreenCtx.putImageData(imageData, 0, 0);
 
   // Draw scaled to main canvas
-  ctx.imageSmoothingEnabled = false;
+  applyRenderSmoothing(ctx);
   ctx.globalAlpha = 1.0;  // Ensure full opacity for monochrome rendering
   ctx.drawImage(monoOffscreenCanvas, borderOffset, borderOffset, width * zoom, height * zoom);
 }
@@ -2299,7 +2299,7 @@ function renderBmc4MainScreen(ctx, offsetX, offsetY) {
   const temp = getTempRenderCanvas(SCREEN.WIDTH, SCREEN.HEIGHT);
   if (!temp) return;
   temp.ctx.putImageData(imageData, 0, 0);
-  ctx.imageSmoothingEnabled = false;
+  applyRenderSmoothing(ctx);
   ctx.drawImage(temp.canvas, offsetX, offsetY, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom);
 }
 
@@ -2540,7 +2540,7 @@ function renderBscMainScreen(ctx, offsetX, offsetY) {
   const temp = getTempRenderCanvas(SCREEN.WIDTH, SCREEN.HEIGHT);
   if (!temp) return;
   temp.ctx.putImageData(imageData, 0, 0);
-  ctx.imageSmoothingEnabled = false;
+  applyRenderSmoothing(ctx);
   ctx.drawImage(temp.canvas, offsetX, offsetY, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom);
 }
 
@@ -2741,7 +2741,7 @@ function renderScaFrame(ctx, borderOffset, frameIndex) {
   temp.ctx.putImageData(imageData, 0, 0);
 
   // Scale and draw to main canvas
-  ctx.imageSmoothingEnabled = false;
+  applyRenderSmoothing(ctx);
   ctx.drawImage(
     temp.canvas,
     0, 0, SCREEN.WIDTH, SCREEN.HEIGHT,
@@ -3330,6 +3330,7 @@ function renderScreen() {
     screenCanvas.height = requiredHeight;
     lastCanvasWidth = requiredWidth;
     lastCanvasHeight = requiredHeight;
+    if (typeof resizeFilterOverlay === 'function') resizeFilterOverlay();
   }
 
   // Draw border (fill entire canvas with border color)
@@ -3339,7 +3340,8 @@ function renderScreen() {
   if (screenData.length === 0 && currentFormat !== FORMAT.SPECSCII) {
     // Draw placeholder text (SPECSCII can have empty stream for blank screen)
     ctx.fillStyle = getThemeColors().foreground;
-    ctx.font = '14px Consolas, Monaco, monospace';
+    const fontSize = Math.max(10, 14 * zoom / 2);
+    ctx.font = fontSize + 'px Consolas, Monaco, monospace';
     ctx.textAlign = 'center';
     ctx.fillText('Load a .scr or other picture file to display', screenCanvas.width / 2, screenCanvas.height / 2);
     // Still draw reference image if loaded
@@ -3359,6 +3361,7 @@ function renderScreen() {
     // BSC format: standard screen + per-line border colors
     // BSC handles its own canvas size and border rendering
     renderBscScreen(ctx);
+    if (typeof applyPostProcessFilters === 'function') applyPostProcessFilters();
     // Draw paper grid overlay if enabled (BSC has different dimensions)
     if (gridSize > 0 || subgridSize > 0) {
       drawCharGrid(ctx, BSC.BORDER_LEFT_PX * zoom, BSC.BORDER_TOP_PX * zoom);
@@ -3373,10 +3376,12 @@ function renderScreen() {
         typeof referenceImage !== 'undefined' && referenceImage) {
       drawReferenceOverlay();
     }
+    if (typeof applyOverlayFilters === 'function') applyOverlayFilters();
     return; // BSC handles everything including grid
   } else if (currentFormat === FORMAT.BMC4) {
     // BMC4 format: border + 8x4 multicolor
     renderBmc4Screen(ctx);
+    if (typeof applyPostProcessFilters === 'function') applyPostProcessFilters();
     // Draw paper grid overlay if enabled (BMC4 has same dimensions as BSC)
     if (gridSize > 0 || subgridSize > 0) {
       drawCharGrid(ctx, BSC.BORDER_LEFT_PX * zoom, BSC.BORDER_TOP_PX * zoom);
@@ -3391,6 +3396,7 @@ function renderScreen() {
         typeof referenceImage !== 'undefined' && referenceImage) {
       drawReferenceOverlay();
     }
+    if (typeof applyOverlayFilters === 'function') applyOverlayFilters();
     return; // BMC4 handles everything including grid
   } else if (currentFormat === FORMAT.IFL) {
     // IFL format: 8x2 multicolor
@@ -3430,6 +3436,9 @@ function renderScreen() {
     renderScrFast(ctx, borderPixels);
   }
 
+  // Apply post-process display filters (composite, curvature) before grids
+  if (typeof applyPostProcessFilters === 'function') applyPostProcessFilters();
+
   // Draw paper grid overlay if enabled
   if (gridSize > 0 || subgridSize > 0) {
     drawCharGrid(ctx, borderPixels);
@@ -3445,6 +3454,9 @@ function renderScreen() {
       typeof referenceImage !== 'undefined' && referenceImage) {
     drawReferenceOverlay();
   }
+
+  // Apply overlay display filters (scanlines, noise, glow, vignette)
+  if (typeof applyOverlayFilters === 'function') applyOverlayFilters();
 }
 
 /**
@@ -3950,7 +3962,8 @@ function saveSettings() {
     pattern53c: pattern53cSelect ? pattern53cSelect.value : 'checker',
     palette: document.getElementById('paletteSelect')?.value || 'default',
     editPreviewTrimmedOnly: typeof editPreviewTrimmedOnly !== 'undefined' ? editPreviewTrimmedOnly : true,
-    editZoom: typeof editZoom !== 'undefined' ? editZoom : 2
+    editZoom: typeof editZoom !== 'undefined' ? editZoom : 2,
+    ...(typeof getFilterSettings === 'function' ? getFilterSettings() : {})
   };
   try {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
@@ -4046,6 +4059,11 @@ function loadSettings() {
     if (settings.editZoom !== undefined) {
       // This will be used by sca_editor.js when it initializes
       window.savedEditZoom = settings.editZoom;
+    }
+
+    // Apply display filter settings
+    if (typeof applyFilterSettings === 'function') {
+      applyFilterSettings(settings);
     }
   } catch (e) {
     // Ignore parse errors

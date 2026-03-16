@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.54.0 -->
+<!-- SpectraLab v1.56.0 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -847,10 +847,19 @@
 
   /* Scrollable canvas container */
   .editor-canvas-container {
+    position: relative;
     overflow: auto;
     max-width: calc(100vw - 300px);
     max-height: calc(100vh - 80px);
     background: #000;
+  }
+
+  #filterOverlayCanvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+    z-index: 5;
   }
 
   .editor-canvas-container canvas {
@@ -1110,6 +1119,14 @@
     display: none !important;
   }
 
+  body.fullscreen-editor #editorPreviewPanel {
+    display: none !important;
+  }
+
+  body.fullscreen-with-tools #editorPreviewPanel {
+    display: block !important;
+  }
+
   body.fullscreen-editor {
     overflow: hidden;
   }
@@ -1132,7 +1149,7 @@
     z-index: 50;
   }
 
-  body.fullscreen-editor #screenCanvas {
+  body.fullscreen-editor #canvasWrapper {
     flex-shrink: 0;
     margin: 20px;
   }
@@ -1153,6 +1170,15 @@
   }
 
   .floating-palette.active {
+    display: block;
+  }
+
+  /* Hide floating palette in fullscreen unless editor tools are active */
+  body.fullscreen-editor .floating-palette.active {
+    display: none;
+  }
+
+  body.fullscreen-with-tools .floating-palette.active {
     display: block;
   }
 
@@ -1568,6 +1594,65 @@
                     <option value="16">16px</option>
                   </select>
                 </label>
+              </div>
+            </div>
+          </div>
+          <div class="control-group" id="displayFiltersSection">
+            <div id="displayFiltersHeader" class="collapsible-header" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 2px 0;">
+              <div style="display: flex; align-items: center; gap: 4px;">
+                <span id="displayFiltersExpandIcon" style="font-size: 10px; width: 12px;">▶</span>
+                <span class="control-group-title" style="margin: 0;">Display Filters</span>
+              </div>
+              <label style="font-size: 11px; display: flex; align-items: center; gap: 2px;" onclick="event.stopPropagation();">
+                <input type="checkbox" id="filtersEnabledCheckbox"> On
+              </label>
+            </div>
+            <div id="displayFiltersContent" style="display: none;">
+              <div style="display: flex; align-items: center; gap: 4px; margin-top: 4px;">
+                <span style="font-size: 11px; min-width: 65px;">Scanlines:</span>
+                <input type="range" id="filterScanlines" min="0" max="100" value="0" style="flex: 1; min-width: 60px;">
+                <span id="filterScanlinesValue" style="font-size: 11px; min-width: 20px; text-align: right;">0</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
+                <span style="font-size: 11px; min-width: 65px;">Noise:</span>
+                <input type="range" id="filterNoise" min="0" max="100" value="0" style="flex: 1; min-width: 60px;">
+                <span id="filterNoiseValue" style="font-size: 11px; min-width: 20px; text-align: right;">0</span>
+              </div>
+              <div style="margin-left: 69px; margin-top: 1px;">
+                <label style="font-size: 11px;"><input type="checkbox" id="filterNoiseAnimate"> Animate</label>
+              </div>
+              <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
+                <span style="font-size: 11px; min-width: 65px;">Composite:</span>
+                <input type="range" id="filterComposite" min="0" max="10" value="0" style="flex: 1; min-width: 60px;">
+                <span id="filterCompositeValue" style="font-size: 11px; min-width: 20px; text-align: right;">0</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
+                <span style="font-size: 11px; min-width: 65px;">Glow:</span>
+                <input type="range" id="filterGlow" min="0" max="100" value="0" style="flex: 1; min-width: 60px;">
+                <span id="filterGlowValue" style="font-size: 11px; min-width: 20px; text-align: right;">0</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
+                <span style="font-size: 11px; min-width: 65px;">Vignette:</span>
+                <input type="range" id="filterVignette" min="0" max="100" value="0" style="flex: 1; min-width: 60px;">
+                <span id="filterVignetteValue" style="font-size: 11px; min-width: 20px; text-align: right;">0</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
+                <span style="font-size: 11px; min-width: 65px;">Curvature:</span>
+                <input type="range" id="filterCurvature" min="0" max="100" value="0" style="flex: 1; min-width: 60px;">
+                <span id="filterCurvatureValue" style="font-size: 11px; min-width: 20px; text-align: right;">0</span>
+              </div>
+              <div style="margin-top: 2px;">
+                <label style="font-size: 11px;"><input type="checkbox" id="filterSmoothing"> Pixel smoothing</label>
+              </div>
+              <div style="display: flex; align-items: center; gap: 4px; margin-top: 4px;">
+                <span style="font-size: 11px; min-width: 65px;">Preset:</span>
+                <select id="filterPresetSelect" style="flex: 1; font-size: 11px;">
+                  <option value="none" selected>None</option>
+                  <option value="crt_tv">CRT TV</option>
+                  <option value="composite">Composite</option>
+                  <option value="vhs">VHS</option>
+                  <option value="arcade">Arcade</option>
+                </select>
               </div>
             </div>
           </div>
@@ -2147,37 +2232,38 @@
         <div id="tabSprites" class="panel-tab-content">
           <!-- Sprite list -->
           <div id="spriteList" class="sprite-list"></div>
-          <div style="display:flex; gap:4px; margin-top:4px;">
+          <div style="display:flex; gap:4px; margin-top:6px;">
             <button id="spriteAddBtn" class="editor-btn" title="Add new sprite">+ Add</button>
             <button id="spriteEditBtn" class="editor-btn" title="Open pixel editor">Edit</button>
             <button id="spriteDeleteBtn" class="editor-btn" title="Delete selected sprite(s)">Delete</button>
+            <button id="spriteClearAllBtn" class="editor-btn" title="Delete all sprites">Clear all</button>
           </div>
 
-          <!-- Sprite properties (shown when sprite selected) -->
-          <div id="spriteProps" style="display:none; margin-top:8px; border-top:1px solid var(--border-secondary); padding-top:6px;">
-            <div style="font-size:10px; color:var(--text-tertiary); margin-bottom:4px; font-weight:500;">SPRITE</div>
-            <label style="display:flex; align-items:center; gap:4px; font-size:10px;">
+          <!-- Sprite properties -->
+          <div id="spriteProps" style="margin-top:12px; border-top:1px solid var(--border-secondary); padding-top:8px;">
+            <div style="font-size:10px; color:var(--text-tertiary); margin-bottom:6px; font-weight:500;">SPRITESET</div>
+            <label id="spriteNameRow" style="display:none; align-items:center; gap:4px; margin-bottom:6px; font-size:10px;">
               Name: <input id="spriteName" type="text" maxlength="16" style="flex:1; font-size:10px;">
             </label>
-            <div style="display:flex; gap:4px; margin-top:4px; font-size:10px;">
+            <div style="display:flex; gap:4px; font-size:10px;">
               <label>W: <select id="spriteCellsW" style="font-size:10px;">
-                <option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
+                <option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
               </select></label>
               <label>H: <select id="spriteCellsH" style="font-size:10px;">
-                <option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
+                <option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
               </select></label>
               <label><select id="spriteMode" style="font-size:10px;">
                 <option value="mono">Mono</option><option value="attr">Attributed</option><option value="multicolour_1">Multicolour 8×1</option><option value="multicolour_2">Multicolour 8×2</option><option value="multicolour_4">Multicolour 8×4</option>
               </select></label>
             </div>
-            <div style="display:flex; gap:4px; margin-top:6px;">
+            <div id="spriteUseBrushRow" style="display:none; gap:4px; margin-top:8px;">
               <button id="spriteUseBrushBtn" class="editor-btn" title="Use as brush on canvas">Use as Brush</button>
             </div>
           </div>
 
           <!-- Grab from screen -->
-          <div style="margin-top:8px; border-top:1px solid var(--border-secondary); padding-top:6px;">
-            <div style="font-size:10px; color:var(--text-tertiary); margin-bottom:4px; font-weight:500;">GRAB</div>
+          <div style="margin-top:12px; border-top:1px solid var(--border-secondary); padding-top:8px;">
+            <div style="font-size:10px; color:var(--text-tertiary); margin-bottom:6px; font-weight:500;">GRAB</div>
             <div style="display:flex; gap:4px; align-items:center;">
               <button id="spriteGrabBtn" class="editor-btn" title="Grab sprites from loaded picture by dragging a rectangle">Grab</button>
               <button id="spriteGrabStopBtn" class="editor-btn" style="display:none;" title="Stop grabbing (Escape)">Stop</button>
@@ -2214,8 +2300,8 @@
           </div>
 
           <!-- File -->
-          <div style="margin-top:8px; border-top:1px solid var(--border-secondary); padding-top:6px;">
-            <div style="font-size:10px; color:var(--text-tertiary); margin-bottom:4px; font-weight:500;">FILE</div>
+          <div style="margin-top:12px; border-top:1px solid var(--border-secondary); padding-top:8px;">
+            <div style="font-size:10px; color:var(--text-tertiary); margin-bottom:6px; font-weight:500;">FILE</div>
             <div style="display:flex; gap:4px; flex-wrap:wrap;">
               <button id="spriteSaveBtn" class="editor-btn" title="Save sprite sheet">Save .sls</button>
               <button id="spriteLoadBtn" class="editor-btn" title="Load sprite sheet">Load .sls</button>
@@ -2260,7 +2346,10 @@
         <div id="pictureTabList"></div>
       </div>
       <div id="canvasContainer" class="editor-canvas-container">
-        <canvas id="screenCanvas" width="512" height="384" tabindex="0"></canvas>
+        <div id="canvasWrapper" style="position: relative; display: inline-block;">
+          <canvas id="screenCanvas" width="512" height="384" tabindex="0"></canvas>
+          <canvas id="filterOverlayCanvas" width="512" height="384"></canvas>
+        </div>
       </div>
     </div>
   </div>
@@ -2360,7 +2449,7 @@
       </div>
     </div>
     <!-- Frame bar -->
-    <div id="spriteFrameBar" style="display:grid; grid-template-columns:repeat(16, 24px); gap:2px; margin-top:6px;"></div>
+    <div id="spriteFrameBar" style="display:grid; grid-template-columns:repeat(16, 24px); gap:2px; margin-top:12px; border-top:1px solid var(--border-secondary); padding-top:8px;"></div>
     <!-- Frame operations -->
     <div style="display:flex; gap:2px; margin-top:2px; font-size:10px;">
       <button id="spriteFrameMoveL" class="editor-btn" title="Move frame(s) left">&#9664;</button>
@@ -2764,7 +2853,7 @@
         <div style="font-weight: bold; margin: 12px 0 6px;">Mouse</div>
         <table style="width: 100%; font-size: 11px;">
           <tr><td style="width: 90px; color: var(--text-secondary);">Drag</td><td>Pan canvas (when zoomed)</td></tr>
-          <tr><td style="color: var(--text-secondary);">Drop file</td><td>Load image</td></tr>
+          <tr><td style="color: var(--text-secondary);">Drop file</td><td>Drop anywhere to open file</td></tr>
         </table>
       </div>
       <!-- Editor Tab -->
@@ -2947,7 +3036,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.54.0</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.56.0</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">
@@ -3305,6 +3394,7 @@
 <!-- Screen Viewer scripts -->
 <script src="js/app_config.js"></script>
 <script src="js/screen_viewer.js"></script>
+<script src="js/display_filters.js"></script>
 <script src="js/image_import.js"></script>
 <script src="js/asm_export_utils.js"></script>
 <script src="js/bsc_asm_export.js"></script>

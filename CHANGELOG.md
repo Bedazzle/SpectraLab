@@ -1,73 +1,114 @@
 # SpectraLab Version History
 
+## v1.56.0
+- Display Filters: new collapsible section in the View tab with CRT/retro post-processing effects
+  - **Scanlines** — Gaussian beam profile with brightness-dependent width (modeled after crt-geom/crt-lottes emulator shaders)
+  - **Noise** — static film grain with optional animation (~12 fps)
+  - **Composite** — chroma blur simulating composite video color bleed (YCbCr horizontal box blur)
+  - **Phosphor Glow** — blurred screen-blend overlay simulating phosphor persistence
+  - **Vignette** — radial gradient darkening at screen edges
+  - **CRT Curvature** — barrel distortion simulating curved CRT glass
+  - **Pixel Smoothing** — toggle bilinear interpolation for softer pixel scaling
+  - **Presets** — None, CRT TV, Composite, VHS, Arcade
+  - Master **On** checkbox to bypass all filters without losing settings
+  - Settings persist to localStorage and workspace (.slw) files
+- Fullscreen mode
+  - Now works in both viewer and editor modes (previously editor-only)
+  - **F11** — toggle fullscreen from any tab
+  - **Escape** — exit fullscreen
+  - Viewer fullscreen shows only the canvas with active display filters
+  - Editor fullscreen shows floating tool palette and preview panel
+- Zoom: Ctrl+Mouse Wheel now zooms toward cursor position
+
+## v1.55.0
+- Drag-and-drop: drop any supported file anywhere on the window to open it (same as Browse — handles .scr, .png, .zip, .slp, .slw, snapshots, etc.)
+- Nirvana tiles
+  - Tiles-per-row dialog now defaults to the actual tile count instead of always 16
+  - Large tile files that exceed one screen are split across multiple IFL pictures automatically
+- Sprite editor
+  - **Clear all** button to delete all spritesets at once (with confirmation)
+  - W/H and Mode controls are always visible, so grab parameters are accessible even when no spriteset is selected
+- Documentation
+  - Clarified sprite/spriteset terminology (spriteset = named entry with frames, sprite = individual frame)
+  - Separated Nirvana tile format from generic custom sprite data layouts in ZX_SPECTRUM_GRAPHICS_GUIDE.md
+
 ## v1.54.0
-- Sprite editor: multicolour sub-modes — **Multicolour 8×1**, **8×2**, and **8×4** attribute cell heights, selectable from the Mode dropdown
-- Sprite editor: switching between multicolour sub-modes resamples attributes to the new resolution
-- Sprite editor: **Attr scroll** checkbox — when enabled, shift arrows (← → ↑ ↓) scroll attributes together with pixels; attributes roll when accumulated shift reaches a cell boundary
-- Sprite editor: Attr scroll checkbox hidden in Mono mode
-- Sprite editor: Nirvana export warns and skips sprites that are not 8×2 multicolour
-- Sprite editor: save/load preserves `attrCellH` property; old projects default to 8×2
-- Sprite editor: grab from screen respects selected multicolour sub-mode; auto-detect no longer overwrites an already-selected sub-mode
-- Sprite editor: **Attributes** checkbox — toggle color display on/off; when unchecked shows black/white bitmap (black = ink, white = paper)
-- Sprite editor: renamed "Attr" checkbox to "Scroll attr" for clarity
-- Zoom: Ctrl+Mouse Wheel now works anywhere in the right panel area (not just directly over the canvas), preventing accidental browser zoom
-- Zoom: Ctrl+Mouse Wheel uses accumulator threshold to prevent trackpads from jumping multiple zoom levels at once
+- Sprite editor
+  - Multicolour sub-modes — **Multicolour 8×1**, **8×2**, and **8×4** attribute cell heights, selectable from the Mode dropdown
+  - Switching between multicolour sub-modes resamples attributes to the new resolution
+  - **Attr scroll** checkbox — when enabled, shift arrows (← → ↑ ↓) scroll attributes together with pixels; attributes roll when accumulated shift reaches a cell boundary
+  - Attr scroll checkbox hidden in Mono mode
+  - Nirvana export warns and skips sprites that are not 8×2 multicolour
+  - Save/load preserves `attrCellH` property; old projects default to 8×2
+  - Grab from screen respects selected multicolour sub-mode; auto-detect no longer overwrites an already-selected sub-mode
+  - **Attributes** checkbox — toggle color display on/off; when unchecked shows black/white bitmap (black = ink, white = paper)
+  - Renamed "Attr" checkbox to "Scroll attr" for clarity
+- Zoom
+  - Ctrl+Mouse Wheel now works anywhere in the right panel area (not just directly over the canvas), preventing accidental browser zoom
+  - Ctrl+Mouse Wheel uses accumulator threshold to prevent trackpads from jumping multiple zoom levels at once
 - Transform tab (Xform): workspace Save/Load buttons are now always accessible, even without a loaded picture
 
 ## v1.53.1
-- Image import: fixed ULA+ conversion producing wrong colors when Paper rule is Darker/Lighter (paper rule now skipped for ULA+ which uses independent CLUT halves)
-- Image import: removed Auto option from Paper rule (Darker color is now the default)
-- Nirvana tiles: fixed `.btile` import producing wrong colors (attributes are column-major in btile format)
-- Nirvana tiles: fixed `.wtile` import/export (attributes are row-major, unlike btile which is column-major)
-- Nirvana tiles: loading `.btile`/`.wtile` now appends to existing sprites instead of replacing them
-- Nirvana tiles: auto-selects Nirvana export format when loading tile files
-- Sprite editor: Edit button moved to sprite list toolbar (between Add and Delete) for quicker access
-- Sprite editor: frame bar now shows exactly 16 frames per row
-- Sprite editor: each new grab creates a new sprite instead of appending frames to the existing one
-- Sprite editor: grab reuses the selected sprite if it is empty and matches grab dimensions/mode
-- Sprite editor: grab rectangle snaps to sprite W/H cell dimensions (e.g. 3×2 cells → widths 24, 48, 72… and heights 16, 32, 48…)
-- Sprite editor: W/H and Mode locked after drawing content (clear all frames to unlock)
-- Sprite editor: removed duplicate W/H and Mode controls from grab section (grab now uses sprite properties)
-- Sprite editor: cleaned up floating editor layout (Play/Speed aligned right, removed separator lines from tool palette)
-- Sprite editor: binary export warns and aborts when sprites have different sizes or color modes; when multiple sprites share the same size/mode, offers to join into one file or split into separate files
+- Image import
+  - Fixed ULA+ conversion producing wrong colors when Paper rule is Darker/Lighter (paper rule now skipped for ULA+ which uses independent CLUT halves)
+  - Removed Auto option from Paper rule (Darker color is now the default)
+- Nirvana tiles
+  - Fixed `.btile` import producing wrong colors (attributes are column-major in btile format)
+  - Fixed `.wtile` import/export (attributes are row-major, unlike btile which is column-major)
+  - Loading `.btile`/`.wtile` now appends to existing sprites instead of replacing them
+  - Auto-selects Nirvana export format when loading tile files
+- Sprite editor
+  - Edit button moved to sprite list toolbar (between Add and Delete) for quicker access
+  - Frame bar now shows exactly 16 frames per row
+  - Each new grab creates a new sprite instead of appending frames to the existing one
+  - Grab reuses the selected sprite if it is empty and matches grab dimensions/mode
+  - Grab rectangle snaps to sprite W/H cell dimensions (e.g. 3×2 cells → widths 24, 48, 72… and heights 16, 32, 48…)
+  - W/H and Mode locked after drawing content (clear all frames to unlock)
+  - Removed duplicate W/H and Mode controls from grab section (grab now uses sprite properties)
+  - Cleaned up floating editor layout (Play/Speed aligned right, removed separator lines from tool palette)
+  - Binary export warns and aborts when sprites have different sizes or color modes; when multiple sprites share the same size/mode, offers to join into one file or split into separate files
 - Workspace: save/load (.slw) now preserves sprite sheet data
 
 ## v1.53.0
-- Image import: **Tile to screens** — split a large source image into a grid of ZX Spectrum pictures covering the entire source
-  - Checkbox in Output section enables tiling mode
-  - Automatically calculates grid (cols × rows) based on crop area and output format dimensions
-  - Edge tiles padded with black to fill full output dimensions
-  - Tile naming: `filename_col_row.ext` (e.g. `image_0_0.scr`, `image_1_0.scr`, `image_2_3.scr`)
-  - Yellow dashed grid overlay on original canvas shows tile boundaries and labels
-  - Per-tile preview with ◄/► navigation — preview shows the actual converted output for each tile
-  - Position/Size/Fit/Align controls disabled during tiling (overridden by tile logic)
-  - Confirms with user if more tiles than available picture slots
-- Image import: fixed ULA+ conversion producing wrong colors when Paper rule is set to Darker/Lighter (paper rule is now skipped for ULA+ since ink/paper indices reference independent CLUT halves)
-- Image import: removed Auto option from Paper rule (Darker color is now the default)
+- Image import
+  - **Tile to screens** — split a large source image into a grid of ZX Spectrum pictures covering the entire source
+    - Checkbox in Output section enables tiling mode
+    - Automatically calculates grid (cols × rows) based on crop area and output format dimensions
+    - Edge tiles padded with black to fill full output dimensions
+    - Tile naming: `filename_col_row.ext` (e.g. `image_0_0.scr`, `image_1_0.scr`, `image_2_3.scr`)
+    - Yellow dashed grid overlay on original canvas shows tile boundaries and labels
+    - Per-tile preview with ◄/► navigation — preview shows the actual converted output for each tile
+    - Position/Size/Fit/Align controls disabled during tiling (overridden by tile logic)
+    - Confirms with user if more tiles than available picture slots
+  - Fixed ULA+ conversion producing wrong colors when Paper rule is set to Darker/Lighter
+  - Removed Auto option from Paper rule (Darker color is now the default)
 - Multi-picture: maximum pictures increased from 8 to 15
 - Picture tab bar: fixed overflow when many tabs are open (tabs now shrink and scroll horizontally)
 
 ## v1.52.1
-- Sprite editor: fixed animation playback not working (stale closure in setInterval callback; fresh sprite reference now fetched each tick)
-- Sprite editor: animation stops when switching to a different sprite
-- Sprite editor: rearranged layout — preview canvas, play/speed, frame navigation and checkboxes moved under main editing canvas
-- Sprite editor: renamed "Spd:" label to "Speed"
+- Sprite editor
+  - Fixed animation playback not working (stale closure in setInterval callback; fresh sprite reference now fetched each tick)
+  - Animation stops when switching to a different sprite
+  - Rearranged layout — preview canvas, play/speed, frame navigation and checkboxes moved under main editing canvas
+  - Renamed "Spd:" label to "Speed"
 - Screen viewer: fixed attributes-off rendering — ink (1 bits) now renders as black, paper (0 bits) as white, matching ZX Spectrum convention (was inverted)
 - Image import: fixed paper color rule (Darker/Lighter) for single-color cells — when both ink and paper are the same color, luminance is checked against midpoint to determine if the color should be paper or ink; two-color cells still use relative luminance comparison
 
 ## v1.52.0
-- Sprite editor: frame bar moved from sidebar to floating editor panel
-- Sprite editor: multi-select frames with Ctrl+Click (toggle) and Shift+Click (range select)
-- Sprite editor: Move Left/Right buttons (◄ / ►) to reorder selected frames
-- Sprite editor: Del button deletes all selected frames (keeps at least 1)
-- Sprite list: multi-select with Ctrl+Click (toggle) and Shift+Click (range select)
-- Sprite list: right-click context menu with operations:
-  - Merge selected to animation — combine selected sprites (same dimensions/mode) into one sprite with multiple frames
-  - Add frames to… — copy frames from selected sprites to a chosen target sprite
-  - Move frames to… — move frames to a target sprite, removing source sprites
-  - Split frames to sprites — split a multi-frame sprite into separate single-frame sprites
-  - Delete selected — remove all selected sprites
-- Split/Merge buttons moved from sidebar into the context menu
+- Sprite editor
+  - Frame bar moved from sidebar to floating editor panel
+  - Multi-select frames with Ctrl+Click (toggle) and Shift+Click (range select)
+  - Move Left/Right buttons (◄ / ►) to reorder selected frames
+  - Del button deletes all selected frames (keeps at least 1)
+- Sprite list
+  - Multi-select with Ctrl+Click (toggle) and Shift+Click (range select)
+  - Right-click context menu with operations:
+    - Merge selected to animation — combine selected sprites (same dimensions/mode) into one sprite with multiple frames
+    - Add frames to… — copy frames from selected sprites to a chosen target sprite
+    - Move frames to… — move frames to a target sprite, removing source sprites
+    - Split frames to sprites — split a multi-frame sprite into separate single-frame sprites
+    - Delete selected — remove all selected sprites
+  - Split/Merge buttons moved from sidebar into the context menu
 - Import Nirvana tile files (`.btile`, `.wtile`): opens file, prompts for tiles per row, creates IFL picture with tiles laid out in a grid and a spriteset with each tile as a multicolour sprite
 
 ## v1.51.1
@@ -77,19 +118,14 @@
   - Left click = ink (set bit), Right click = paper (clear bit)
   - Erase tool inverts: left = clear, right = set
   - Fill tool: left click fills with ink, right click fills with paper
-- Sprite grab: fixed black/white sprites when grabbing in multicolour mode (Firefox/Win7)
-  - Multicolour `<option>` was hidden from a previous session; Firefox refuses to set `<select>` value to a hidden option, so attr mode silently fell back to mono
-- Sprite grab: fixed drawing on main canvas while dragging grab rectangle
-  - Changed `stopPropagation()` to `stopImmediatePropagation()` to prevent editor mousedown from firing
-  - Added `spriteGrabMode` guard in screen editor's mousedown handler
+- Sprite grab
+  - Fixed black/white sprites when grabbing in multicolour mode (Firefox/Win7) — multicolour `<option>` was hidden from a previous session; Firefox refuses to set `<select>` value to a hidden option, so attr mode silently fell back to mono
+  - Fixed drawing on main canvas while dragging grab rectangle — changed `stopPropagation()` to `stopImmediatePropagation()` to prevent editor mousedown from firing; added `spriteGrabMode` guard in screen editor's mousedown handler
 
 ## v1.51.0
-- Image import: default dithering changed to None (nearest color, no dithering)
-- Image import: paper color rule control
-  - Auto — default, ink/paper assigned by palette index order
-  - Darker color — darker of the two cell colors becomes paper (per cell, perceptual luminance)
-  - Lighter color — lighter of the two cell colors becomes paper
-  - First pixel paper — top-left pixel's color in each cell becomes paper (useful for spritesheets)
+- Image import
+  - Default dithering changed to None (nearest color, no dithering)
+  - Paper color rule control: Auto, Darker color, Lighter color, First pixel paper
   - Applied to all formats: SCR, ULA+, IFL, MLT, BMC4, 53c, BSC
   - Skipped for mono output (fixed ink=black, paper=white)
 
@@ -105,16 +141,13 @@
   - Rotation disabled for multicolour (8x2 cells cannot rotate 90°)
   - Undo/redo handles variable attribute array sizes
   - Export format selector (Raw / Nirvana) shown for multicolour sprites
+  - Onion skin fix: now renders on top of current frame (was invisible due to draw order); previous frame's ink pixels only overlaid at 25% opacity (paper pixels skipped)
+  - Animation playback fix: zoomed editor canvas now updates during animation (was static, only preview moved)
 - Sprite grab from multicolour screens (IFL, MLT, BMC4)
   - Format-aware attribute extraction using correct attribute address functions
   - Attr mode dropdown auto-locked to Multicolour when source is a multicolour format
   - Multicolour option hidden from dropdown when source is non-multicolour
   - Phase grab converts existing frames when attr mode differs from sprite
-- Sprite editor: onion skin fix
-  - Onion skin now renders on top of current frame (was invisible due to draw order)
-  - Previous frame's ink pixels only overlaid at 25% opacity (paper pixels skipped)
-- Sprite editor: animation playback fix
-  - Zoomed editor canvas now updates during animation (was static, only preview moved)
 
 ## v1.49.0
 - Image import: alignment control for fitted images
@@ -196,15 +229,13 @@
   - Screen data supports embed (DB lines) or INCBIN; palette always embedded (64 bytes)
   - sjasmplus compatible, SAVESNA output, ZXSPECTRUM48 device
 - Import dialog: dithering options filtered by format
-  - Cell-Aware group hidden for RGB3 and Mono (no attribute cells — cell dithering was silently mapped to global equivalents)
+  - Cell-Aware group hidden for RGB3 and Mono (no attribute cells)
   - Dithering row hidden for 53c format (uses pattern selector instead)
   - Auto-switches to global equivalent when switching from cell format to non-cell format
-- Code deduplication and optimization
+- Code deduplication
   - Shared ASM export utilities: formatDbLines, getAsmBaseName, getAsmEmbedData, downloadFile (asm_export_utils.js)
-  - Removed duplicate formatDbLines from 4 ASM export files (bsc, flicker, ifl, ulaplus)
   - Shared downloadFile replaces 20+ copy-paste download patterns across all JS files
-  - applyImageAdjustments helper replaces 8 identical adjustment blocks in image_import.js
-  - rgbaToFloat helper replaces 8 identical RGBA→float conversion loops in image_import.js
+  - applyImageAdjustments and rgbaToFloat helpers replace 16 identical blocks in image_import.js
 
 ## v1.45.0
 - ULA+ palette loading & editing in image import
@@ -229,37 +260,21 @@
   - Fixed ULA+ cell-none: default case was applying ordered dithering instead of no dithering
   - Added missing cell-pattern case to ULA+ converter
   - Removed duplicate ULA+ color dialog from HTML
-- SPECSCII copy/cut/paste
-  - Full clipboard support for SPECSCII cells (characters, attributes, mask data)
+- SPECSCII
+  - Copy/cut/paste with full clipboard support for cells (characters, attributes, mask data)
   - Cut clears cells to space (0x20) with default attributes, syncs layers
   - Paste supports invert mode (swap ink/paper) and recolor mode (change attributes only)
-  - Paste preview renders SPECSCII characters using font glyph data
-  - Snap-to-grid for paste positions (8x8 cell boundaries)
-- SPECSCII export to .tap: generates self-running ZX Spectrum BASIC program
-  - BORDER 7: PAPER 7: INK 0: BRIGHT 0: FLASH 0: CLS + PRINT with embedded control codes
-  - Supports all attributes (INK, PAPER, BRIGHT, FLASH), AT positioning, and OVER (XOR) layers
-  - Handles double-quote character (0x22) via CHR$ 34 concatenation
-  - Auto-runs on load (autostart line 10)
+  - Paste preview renders characters using font glyph data; snap-to-grid for paste positions
+  - Export to .tap: self-running ZX BASIC program with embedded control codes (INK, PAPER, BRIGHT, FLASH, AT, OVER)
 - BMC4 border support in image import
-  - BMC4 now encodes real border colors from the 384x304 source image
-  - Renders full 384x304 area with top, side, and bottom border segments
-  - Respects ZX Spectrum timing: 24px minimum for interior segments
-  - Edge segments (at screen edge or touching paper) can be 8px or 16px
-  - Side borders use 8px granularity (no interior segments)
+  - Encodes real border colors from the 384x304 source image
+  - Respects ZX Spectrum timing: 24px minimum for interior segments, 8px granularity for side borders
   - Previously border data was all-black zeros
-- .53c attribute preview
-  - Live preview strip showing current ink/paper/pattern combination
-  - Flash animation via CSS transform (compositor-level, bypasses main-thread paint)
-- .53c import: pattern-aware color selection
-  - Computes overall cell average color instead of separate ink/paper averages
-  - Finds ink/paper pair whose pattern-blended color is closest to the cell average
-  - Blended = ink × inkRatio + paper × (1 − inkRatio), where inkRatio is derived from pattern bit count
-  - Produces visible halftone dither instead of flat ink ≈ paper results
-- .53c rendering performance: ImageData + drawImage fast path replaces per-pixel fillRect
+- .53c improvements
+  - Attribute preview strip showing current ink/paper/pattern combination with flash animation
+  - Pattern-aware import: finds ink/paper pair whose blended color is closest to cell average
+  - Rendering performance: ImageData + drawImage fast path replaces per-pixel fillRect
 - Unified export UI: single dropdown + button replaces separate per-format export buttons
-  - Dynamically populated with format-relevant options (ASM, .scr, .tap)
-  - Generate (QR) section hidden for non-bitmap formats (SPECSCII, .53c)
-  - Embed checkbox shown only for formats supporting ASM export
 - Image import module renamed from png_import.js to image_import.js
 
 ## v1.44.0

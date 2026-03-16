@@ -32,7 +32,7 @@ SpectraLab supports many formats: `.scr`, `.53c`, `.atr`, `.bsc`, `.bmc4`, `.ifl
 
 ### Open a .scr File
 
-Load a standard `.scr` file by clicking the file input or dragging it onto the canvas. The image will appear at the default zoom of x2.
+Load a standard `.scr` file by clicking the file input or dragging it anywhere onto the window. The image will appear at the default zoom of x2.
 
 ### Change Zoom Level
 
@@ -350,13 +350,15 @@ Click **Import** to apply the conversion and load the result as an editable pict
 
 ## 12. Working with Sprites
 
-### Create a Sprite
+A **spriteset** is a named entry in the sprite list that holds one or more individual **sprites** (animation frames). Each spriteset has fixed dimensions (W × H) and a color mode.
+
+### Create a Spriteset
 
 1. Switch to the **Sprites** tab
-2. Click **+ Add** to create a new sprite
-3. Set the sprite properties:
+2. Click **+ Add** to create a new spriteset
+3. Set the spriteset properties:
    - **Name** — give it a descriptive name
-   - **W / H** — dimensions in 8×8 cells (e.g., 2×2 = 16×16 pixels); these become locked once you draw content (clear all frames to unlock)
+   - **W / H** — dimensions in 8×8 cells (e.g., 2×2 = 16×16 pixels); these become locked once you draw content (clear all sprites to unlock)
    - **Mode** — Mono (1-bit), Attributed (with colors), or Multicolour (8×1 / 8×2 / 8×4 attribute cell height); locked after drawing
 
 ### Open the Sprite Editor
@@ -372,39 +374,40 @@ In the Sprite Editor:
 - Use **Line** (L) or **Rectangle** (R) for shapes — left click = ink, right click = paper
 - For Attributed mode, select colors from the color palette
 
-### Add Animation Frames
+### Add Animation Sprites
 
-1. Click **+** to add a new frame
-2. Click **Dup** to duplicate the current frame
-3. Use **< / >** to navigate between frames
+1. Click **+** to add a new sprite (animation frame) to the current spriteset
+2. Click **Dup** to duplicate the current sprite
+3. Use **< / >** to navigate between sprites
 4. Click **Play** to preview the animation
 5. Adjust **Speed** slider for animation timing
-6. Use the **frame bar** below the preview to click-select frames
-7. **Ctrl+Click** frames to multi-select, **Shift+Click** for range select
-8. Use **◄ / ►** to reorder selected frames
-9. **Del** removes all selected frames (at least one frame is always kept)
+6. Use the **frame bar** below the preview to click-select sprites
+7. **Ctrl+Click** sprites to multi-select, **Shift+Click** for range select
+8. Use **◄ / ►** to reorder selected sprites
+9. **Del** removes all selected sprites (at least one sprite is always kept)
 
 ### Grab Sprites from Screen
 
 1. Make sure you have a picture loaded on the main canvas
-2. Set **W / H** and **Mode** in the Sprite Properties section — these values are used for grab cell size and color mode
+2. Set **W / H** and **Mode** in the Spriteset Properties section — these values are used for grab cell size and color mode
 3. Click the **Grab** button in the Sprites tab
 4. Select the grab mode (Single sprite, Sprite phases, etc.)
-5. Drag a rectangle on the canvas to capture sprites — each grab creates a **new sprite**
+5. Drag a rectangle on the canvas to capture sprites — each grab creates a **new spriteset**
 6. Press **Escape** or click **Stop** when done
 
 ### Multi-Select and Batch Operations
 
-You can select multiple sprites for batch operations:
+You can select multiple spritesets for batch operations:
 
-1. **Ctrl+Click** sprites to add/remove them from the selection
+1. **Ctrl+Click** spritesets to add/remove them from the selection
 2. **Shift+Click** to select a contiguous range
 3. **Right-click** on the sprite list to open the context menu:
-   - **Merge selected to animation** — combine selected sprites into one multi-frame sprite (sprites must have the same dimensions and mode)
-   - **Add frames to…** — copy frames from selected sprites to another sprite
-   - **Move frames to…** — move frames to another sprite, removing the source sprites
-   - **Split frames to sprites** — break a multi-frame sprite into individual single-frame sprites
-   - **Delete selected** — remove all selected sprites
+   - **Merge selected to animation** — combine selected spritesets into one multi-sprite spriteset (must have the same dimensions and mode)
+   - **Add frames to…** — copy sprites from selected spritesets to another spriteset
+   - **Move frames to…** — move sprites to another spriteset, removing the source spritesets
+   - **Split frames to sprites** — break a multi-sprite spriteset into individual single-sprite spritesets
+   - **Delete selected** — remove all selected spritesets
+   - **Clear all** — remove all spritesets (with confirmation)
 
 ### Export Sprites
 
@@ -630,8 +633,8 @@ After loading a `.sna` or `.z80` snapshot, use the Memory Viewer to browse raw m
 ### Multiple Pictures via Tab Bar
 Open multiple files — each gets its own tab. Switch between them instantly. Modified files are marked with a dot.
 
-### Fullscreen Editor Mode
-Press **F11** to go fullscreen. Press **Tab** to show/hide the floating tool palette. Press **Escape** to exit.
+### Fullscreen Mode
+Press **F11** to toggle fullscreen from any tab. In viewer mode, only the canvas is shown (with active display filters). In editor mode, the floating tool palette and preview panel are also visible. Press **Tab** to show/hide the floating tool palette (editor only). Press **Escape** to exit.
 
 ### Layers
 Use the Layers feature (Edit tab) for non-destructive editing. Add layers, reorder them, and flatten when done. Save projects with layers as `.slp` files.

@@ -481,51 +481,54 @@ Clear all saved settings and reload the application.
 
 ## 16. Sprites Tab
 
-### Sprite List
+A **spriteset** is a named entry in the list that holds one or more individual **sprites** (animation frames). Each spriteset has fixed dimensions (W × H) and a color mode.
 
-Shows all defined sprites. Click to select.
+### Spriteset List
 
-- **Click** — select a single sprite
-- **Ctrl+Click** — toggle a sprite in/out of multi-selection
-- **Shift+Click** — select a range of sprites from the last clicked to the current
+Shows all defined spritesets. Click to select.
+
+- **Click** — select a single spriteset
+- **Ctrl+Click** — toggle a spriteset in/out of multi-selection
+- **Shift+Click** — select a range of spritesets from the last clicked to the current
 - **Double-click** — select and open in the sprite editor
-- **Right-click** — open context menu with operations on selected sprites
-- **+ Add** — add a new sprite
-- **Delete** — delete selected sprite(s)
+- **Right-click** — open context menu with operations on selected spritesets
+- **+ Add** — add a new spriteset
+- **Delete** — delete selected spriteset(s)
+- **Clear all** — delete all spritesets (with confirmation)
 
-### Context Menu (right-click on sprite list)
+### Context Menu (right-click on spriteset list)
 
-- **Merge selected to animation** — combine all selected sprites (must have same dimensions and mode) into one sprite with multiple animation frames
-- **Add frames to…** — copy frames from selected sprites to a chosen target sprite
-- **Move frames to…** — move frames to a chosen target sprite and remove the source sprites
-- **Split frames to sprites** — split a multi-frame sprite into separate single-frame sprites (e.g. `Name_f1`, `_f2`, …)
-- **Delete selected** — remove all selected sprites
+- **Merge selected to animation** — combine all selected spritesets (must have same dimensions and mode) into one spriteset with multiple sprites
+- **Add frames to…** — copy sprites from selected spritesets to a chosen target spriteset
+- **Move frames to…** — move sprites to a chosen target spriteset and remove the source spritesets
+- **Split frames to sprites** — split a multi-sprite spriteset into separate single-sprite spritesets (e.g. `Name_f1`, `_f2`, …)
+- **Delete selected** — remove all selected spritesets
 
-### Sprite Properties
+### Spriteset Properties
 
-When a sprite is selected:
+When a spriteset is selected:
 
-- **Name** — sprite name (max 16 characters)
-- **W / H** — dimensions in cells (1-8 × 1-8, each cell = 8×8 pixels); locked after drawing (clear all frames to unlock)
+- **Name** — spriteset name (max 16 characters)
+- **W / H** — dimensions in cells (1-8 × 1-8, each cell = 8×8 pixels); locked after drawing (clear all sprites to unlock)
 - **Mode** — Mono, Attributed, or Multicolour (8×1 / 8×2 / 8×4 attribute cell height); locked after drawing
-- **+ Add** — add a new empty sprite
+- **+ Add** — add a new empty spriteset
 - **Edit** — open the floating sprite editor
-- **Delete** — delete selected sprite(s)
+- **Delete** — delete selected spriteset(s)
 - **Use as Brush** — use the sprite as a custom brush on the main canvas
 
 ### Grab from Screen
 
-Grab sprites directly from the loaded picture. Set **W / H** and **Mode** in Sprite Properties before grabbing — the grab uses these values for cell size and color mode.
+Grab sprites directly from the loaded picture. Set **W / H** and **Mode** in Spriteset Properties before grabbing — the grab uses these values for cell size and color mode.
 
 - **Grab** button — enter grab mode, drag a rectangle on the canvas
 - **Stop** button / Escape — exit grab mode
-- Each grab creates a **new sprite** with the grabbed frames
+- Each grab creates a **new spriteset** with the grabbed sprites
 - **Grab mode:**
   - Single sprite — grab one sprite
-  - Sprite phases — grab as animation frames
-  - Singles grid — grab grid of individual sprites
-  - Phases grid — grab grid of animation frame sets
-- **Grid options:** Size by cell size (uses W/H from Sprite Properties) or count, with column/row settings and ordering (L→R,T→B or T→B,L→R)
+  - Sprite phases — grab as animation sprites
+  - Singles grid — grab grid of individual spritesets
+  - Phases grid — grab grid of animation sprite sets
+- **Grid options:** Size by cell size (uses W/H from Spriteset Properties) or count, with column/row settings and ordering (L→R,T→B or T→B,L→R)
 
 ### File
 
@@ -569,20 +572,20 @@ For Attributed and Multicolour mode sprites:
 ### Preview and Animation
 
 - **Preview canvas** — 1× preview of the sprite
-- **Onion skin** — show previous frame as ghost overlay
+- **Onion skin** — show previous sprite as ghost overlay
 - **Grid** — show pixel grid
 - **Attributes** — show attribute colors (checked by default); when unchecked, displays black/white bitmap only (black = ink, white = paper)
 - **Show mask** — display the sprite mask
-- **Frame navigation:** Previous (**<**), frame counter, Next (**>**)
-- **Frame bar** — animation frame thumbnails (16 per row) with multi-select support
-  - Click — select a single frame
-  - Ctrl+Click — toggle frame in/out of multi-selection
-  - Shift+Click — range select from anchor to clicked frame
-- **Move Left** (◄) / **Move Right** (►) — reorder selected frame(s)
-- **Add frame** (+) — add new animation frame
-- **Duplicate frame** (Dup) — duplicate current frame
-- **Delete frame** (Del) — delete current or all selected frames (keeps at least 1)
-- **Play** — animate the sprite frames
+- **Sprite navigation:** Previous (**<**), sprite counter, Next (**>**)
+- **Frame bar** — animation sprite thumbnails (16 per row) with multi-select support
+  - Click — select a single sprite
+  - Ctrl+Click — toggle sprite in/out of multi-selection
+  - Shift+Click — range select from anchor to clicked sprite
+- **Move Left** (◄) / **Move Right** (►) — reorder selected sprite(s)
+- **Add sprite** (+) — add new animation sprite
+- **Duplicate sprite** (Dup) — duplicate current sprite
+- **Delete sprite** (Del) — delete current or all selected sprites (keeps at least 1)
+- **Play** — animate the sprites
 - **Speed** — animation speed slider (1-30)
 
 ### Transform Buttons
@@ -592,7 +595,7 @@ For Attributed and Multicolour mode sprites:
 - **Scroll attr** checkbox — when checked, shift arrows also scroll attributes; attributes roll when the accumulated pixel shift reaches an attribute cell boundary (e.g. every 2 pixels for 8×2, every 1 pixel for 8×1); hidden in Mono mode
 - **← → ↑ ↓** — shift sprite 1 pixel in any direction (with optional attribute scrolling)
 - **Inv** — invert all pixels
-- **Clr** — clear the current frame
+- **Clr** — clear the current sprite
 
 ---
 
@@ -806,11 +809,14 @@ Open from Transform tab → QR Code button.
 
 ## 22. Fullscreen Mode
 
-- **F11** — toggle fullscreen editor mode
-- **Tab** — toggle the floating palette (tools + colors) in fullscreen
-- **Escape** — exit fullscreen or cancel current operation
+Press **F11** to toggle fullscreen mode from any tab — viewer or editor.
 
-The floating palette includes all drawing tools, selection/clipboard tools, color palette, and Bright toggle.
+- **Viewer fullscreen** — shows only the canvas with active display filters; no side panel, no floating palette
+- **Editor fullscreen** — shows the canvas with the floating tool palette and preview panel
+- **Tab** — toggle the floating palette visibility (editor fullscreen only)
+- **Escape** — exit fullscreen
+
+The floating palette includes all drawing tools, selection/clipboard tools, color palette, and Bright toggle. It is only shown when fullscreen is entered from the Edit tab.
 
 ---
 
@@ -828,6 +834,8 @@ The floating palette includes all drawing tools, selection/clipboard tools, colo
 | ~ | Toggle preview panel |
 | Space | Play/Pause (SCA animation) |
 | Left/Right | Prev/Next frame (SCA) |
+| F11 | Toggle fullscreen mode |
+| Escape | Exit fullscreen |
 
 ### Editor — Tools
 
@@ -871,7 +879,7 @@ The floating palette includes all drawing tools, selection/clipboard tools, colo
 | Ctrl+Z | Undo (up to 32 levels) |
 | Ctrl+Y | Redo |
 | Ctrl+S | Save |
-| F11 | Toggle fullscreen editor |
+| F11 | Toggle fullscreen mode |
 | Tab | Toggle floating palette (fullscreen) |
 | Escape | Cancel selection/paste, exit fullscreen |
 

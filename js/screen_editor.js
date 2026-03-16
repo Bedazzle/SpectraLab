@@ -133,6 +133,9 @@ let maskStrokeOrigin = null;
 /** @type {boolean} - Fullscreen editor mode */
 let fullscreenMode = false;
 
+/** @type {number|null} - Saved zoom level before fullscreen (restored on exit) */
+let fullscreenSavedZoom = null;
+
 /** @type {number} - Airbrush spray radius (4-32 pixels) */
 let airbrushRadius = 8;
 
@@ -3188,6 +3191,8 @@ function saveWorkspace() {
       borderGridSize: typeof borderGridSize !== 'undefined' ? borderGridSize : 0,
       borderSubgridSize: typeof borderSubgridSize !== 'undefined' ? borderSubgridSize : 0,
       showAttributes: typeof showAttributes !== 'undefined' ? showAttributes : true,
+      // Display filter settings
+      displayFilters: typeof getFilterSettings === 'function' ? getFilterSettings() : undefined,
       // Reference image settings
       referenceImage: getReferenceImageDataURL(),
       referenceOpacity: referenceOpacity,
@@ -3456,6 +3461,10 @@ function loadWorkspace(file) {
           showAttributes = s.showAttributes;
           const showAttrsCb = document.getElementById('showAttrsCheckbox');
           if (showAttrsCb) /** @type {HTMLInputElement} */ (showAttrsCb).checked = showAttributes;
+        }
+        // Display filter settings
+        if (s.displayFilters && typeof applyFilterSettings === 'function') {
+          applyFilterSettings(s.displayFilters);
         }
         // Reference image settings
         if (s.referenceOpacity !== undefined) {
@@ -7727,8 +7736,6 @@ let paletteDragOffset = { x: 0, y: 0 };
  * Toggles fullscreen editor mode
  */
 function toggleFullscreenEditor() {
-  if (!editorActive) return;
-
   fullscreenMode = !fullscreenMode;
 
   if (fullscreenMode) {
@@ -7745,20 +7752,41 @@ function enterFullscreenEditor() {
   fullscreenMode = true;
   document.body.classList.add('fullscreen-editor');
 
+  // Save current zoom and calculate fill zoom
+  fullscreenSavedZoom = zoom;
+  const totalW = SCREEN.WIDTH + borderSize * 2;
+  const totalH = SCREEN.HEIGHT + borderSize * 2;
+  const margin = 40; // 20px margin on each side
+  const fitZoom = Math.max(1, Math.floor(Math.min(
+    (window.innerWidth - margin) / totalW,
+    (window.innerHeight - margin) / totalH
+  )));
+  zoom = fitZoom;
+  const zs = document.getElementById('zoomSelect');
+  if (zs) /** @type {HTMLSelectElement} */ (zs).value = String(zoom);
+
   // Request browser fullscreen
   if (document.documentElement.requestFullscreen) {
     document.documentElement.requestFullscreen().catch(() => {});
   }
 
-  // Show floating palette
+  // Show floating palette only when Edit tab is active
   const palette = document.getElementById('floatingPalette');
-  if (palette) palette.classList.add('active');
+  const editTabActive = document.querySelector('.panel-tab[data-tab="edit"]')?.classList.contains('active');
+  if (editorActive && editTabActive) {
+    document.body.classList.add('fullscreen-with-tools');
+    if (palette) { palette.classList.add('active'); palette.style.display = ''; }
+    updateFloatingPalette();
+  } else {
+    if (palette) { palette.classList.remove('active'); palette.style.display = 'none'; }
+  }
 
-  // Initialize floating palette colors
-  updateFloatingPalette();
-
-  // Re-render with new canvas size
-  editorRender();
+  // Re-render with fill zoom
+  if (editorActive) {
+    editorRender();
+  } else {
+    renderScreen();
+  }
 }
 
 /**
@@ -7778,18 +7806,31 @@ function toggleFloatingPalette() {
 function exitFullscreenEditor() {
   fullscreenMode = false;
   document.body.classList.remove('fullscreen-editor');
+  document.body.classList.remove('fullscreen-with-tools');
+
+  // Restore saved zoom
+  if (fullscreenSavedZoom !== null) {
+    zoom = fullscreenSavedZoom;
+    fullscreenSavedZoom = null;
+    const zs = document.getElementById('zoomSelect');
+    if (zs) /** @type {HTMLSelectElement} */ (zs).value = String(zoom);
+  }
 
   // Exit browser fullscreen
   if (document.fullscreenElement && document.exitFullscreen) {
     document.exitFullscreen().catch(() => {});
   }
 
-  // Hide floating palette
+  // Hide floating palette and clear inline style override
   const palette = document.getElementById('floatingPalette');
-  if (palette) palette.classList.remove('active');
+  if (palette) { palette.classList.remove('active'); palette.style.display = ''; }
 
   // Re-render
-  editorRender();
+  if (editorActive) {
+    editorRender();
+  } else {
+    renderScreen();
+  }
 }
 
 /**
@@ -16366,6 +16407,7 @@ function initEditor() {
   setupCollapsible('fileInfoHeader', 'fileInfoContent', 'fileInfoExpandIcon', 'spectralab_collapse_fileInfo');
   setupCollapsible('layerHeader', 'layerControls', 'layerExpandIcon', 'spectralab_collapse_layers');
   setupCollapsible('customBrushHeader', 'customBrushControls', 'customBrushExpandIcon', 'spectralab_collapse_customBrush');
+  setupCollapsible('displayFiltersHeader', 'displayFiltersContent', 'displayFiltersExpandIcon', 'spectralab_collapse_displayFilters');
 
   const textToolInput = /** @type {HTMLInputElement|null} */ (document.getElementById('textToolInput'));
   textToolInput?.addEventListener('input', (e) => {
@@ -16720,9 +16762,21 @@ function initEditor() {
       // Browser exited fullscreen, sync our state
       fullscreenMode = false;
       document.body.classList.remove('fullscreen-editor');
+      document.body.classList.remove('fullscreen-with-tools');
+      // Restore saved zoom
+      if (fullscreenSavedZoom !== null) {
+        zoom = fullscreenSavedZoom;
+        fullscreenSavedZoom = null;
+        const zs = document.getElementById('zoomSelect');
+        if (zs) /** @type {HTMLSelectElement} */ (zs).value = String(zoom);
+      }
       const palette = document.getElementById('floatingPalette');
-      if (palette) palette.classList.remove('active');
-      editorRender();
+      if (palette) { palette.classList.remove('active'); palette.style.display = ''; }
+      if (editorActive) {
+        editorRender();
+      } else {
+        renderScreen();
+      }
     }
   });
 
@@ -16862,8 +16916,30 @@ function initEditor() {
 
   // Keyboard shortcuts
   document.addEventListener('keydown', (e) => {
-    if (!editorActive) return;
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+
+    // F11: Toggle fullscreen mode (works in both viewer and editor)
+    if (e.key === 'F11') {
+      e.preventDefault();
+      toggleFullscreenEditor();
+      return;
+    }
+
+    // Escape: exit fullscreen (works in both viewer and editor)
+    if (e.key === 'Escape' && fullscreenMode) {
+      e.preventDefault();
+      exitFullscreenEditor();
+      return;
+    }
+
+    // Tab: Toggle floating palette in fullscreen mode (editor only)
+    if (e.key === 'Tab' && fullscreenMode && editorActive) {
+      e.preventDefault();
+      toggleFloatingPalette();
+      return;
+    }
+
+    if (!editorActive) return;
 
     // Use e.code for Ctrl+key combinations (layout-independent)
     if (e.ctrlKey && e.code === 'KeyZ') {
@@ -16977,27 +17053,8 @@ function initEditor() {
       }
     }
 
-    // F11: Toggle fullscreen editor mode
-    if (e.key === 'F11') {
-      e.preventDefault();
-      toggleFullscreenEditor();
-      return;
-    }
-
-    // Tab: Toggle floating palette in fullscreen mode
-    if (e.key === 'Tab' && fullscreenMode) {
-      e.preventDefault();
-      toggleFloatingPalette();
-      return;
-    }
-
-    // Escape: exit fullscreen first, then cancel paste/selection, then brush capture
+    // Escape: cancel paste/selection, then brush capture
     if (e.key === 'Escape') {
-      if (fullscreenMode) {
-        e.preventDefault();
-        exitFullscreenEditor();
-        return;
-      }
       if (isPasting || selectionStartPoint || selectionEndPoint || isSelecting) {
         e.preventDefault();
         cancelSelection();
@@ -17097,7 +17154,7 @@ function importNirvanaTileFile(file) {
     const tileCount = data.length / tileSize;
 
     // Prompt for tiles per row
-    const defaultPerRow = maxTilesPerRow;
+    const defaultPerRow = Math.min(tileCount, maxTilesPerRow);
     const input = window.prompt(
       'File contains ' + tileCount + ' tile' + (tileCount !== 1 ? 's' : '') +
       ' (' + tilePixW + '×' + tilePixH + ' each).\n' +
@@ -17110,47 +17167,50 @@ function importNirvanaTileFile(file) {
     if (isNaN(tilesPerRow) || tilesPerRow < 1) tilesPerRow = defaultPerRow;
     if (tilesPerRow > maxTilesPerRow) tilesPerRow = maxTilesPerRow;
 
-    const gridRows = Math.ceil(tileCount / tilesPerRow);
-    if (gridRows > maxRows) {
-      alert('Too many tiles: ' + tileCount + ' tiles at ' + tilesPerRow + ' per row needs ' +
-        gridRows + ' rows, but max is ' + maxRows + ' (' + (maxRows * tilePixH) + 'px height).');
-      return;
-    }
+    const tilesPerScreen = maxRows * tilesPerRow;
+    const screenCount = Math.ceil(tileCount / tilesPerScreen);
 
-    // Create IFL data (9216 bytes: 6144 bitmap + 3072 attrs)
-    const iflData = new Uint8Array(IFL.TOTAL_SIZE);
+    // Create IFL pictures (split across multiple screens if needed)
+    for (let s = 0; s < screenCount; s++) {
+      const iflData = new Uint8Array(IFL.TOTAL_SIZE);
+      const startTile = s * tilesPerScreen;
+      const endTile = Math.min(startTile + tilesPerScreen, tileCount);
 
-    for (let t = 0; t < tileCount; t++) {
-      const col = t % tilesPerRow;
-      const row = Math.floor(t / tilesPerRow);
-      const tileOffset = t * tileSize;
-      const tileBitmap = data.subarray(tileOffset, tileOffset + bitmapSize);
-      const tileAttrs = data.subarray(tileOffset + bitmapSize, tileOffset + tileSize);
+      for (let t = startTile; t < endTile; t++) {
+        const localIdx = t - startTile;
+        const col = localIdx % tilesPerRow;
+        const row = Math.floor(localIdx / tilesPerRow);
+        const tileOffset = t * tileSize;
+        const tileBitmap = data.subarray(tileOffset, tileOffset + bitmapSize);
+        const tileAttrs = data.subarray(tileOffset + bitmapSize, tileOffset + tileSize);
 
-      // Copy bitmap: tile row ty, byte bx -> screen pixel position
-      for (let ty = 0; ty < tilePixH; ty++) {
-        const screenY = row * tilePixH + ty;
-        const screenCharCol = col * cellsW;
-        const iflAddr = getBitmapAddress(screenCharCol * 8, screenY);
-        for (let bx = 0; bx < cellsW; bx++) {
-          iflData[iflAddr + bx] = tileBitmap[ty * cellsW + bx];
+        // Copy bitmap: tile row ty, byte bx -> screen pixel position
+        for (let ty = 0; ty < tilePixH; ty++) {
+          const screenY = row * tilePixH + ty;
+          const screenCharCol = col * cellsW;
+          const iflAddr = getBitmapAddress(screenCharCol * 8, screenY);
+          for (let bx = 0; bx < cellsW; bx++) {
+            iflData[iflAddr + bx] = tileBitmap[ty * cellsW + bx];
+          }
+        }
+
+        // Copy attrs: 8 attr sub-rows (for 16px height at 8x2 resolution)
+        // btile stores attrs column-major; wtile stores attrs row-major
+        const attrRowsPerCol = cellsH * 4;
+        for (let ay = 0; ay < attrRowsPerCol; ay++) {
+          for (let ax = 0; ax < cellsW; ax++) {
+            const attrIdx = isBtile ? (ax * attrRowsPerCol + ay) : (ay * cellsW + ax);
+            const iflAttrAddr = IFL.BITMAP_SIZE + (row * 8 + ay) * 32 + col * cellsW + ax;
+            iflData[iflAttrAddr] = tileAttrs[attrIdx];
+          }
         }
       }
 
-      // Copy attrs: 8 attr sub-rows (for 16px height at 8x2 resolution)
-      // btile stores attrs column-major; wtile stores attrs row-major
-      const attrRowsPerCol = cellsH * 4;
-      for (let ay = 0; ay < attrRowsPerCol; ay++) {
-        for (let ax = 0; ax < cellsW; ax++) {
-          const attrIdx = isBtile ? (ax * attrRowsPerCol + ay) : (ay * cellsW + ax);
-          const iflAttrAddr = IFL.BITMAP_SIZE + (row * 8 + ay) * 32 + col * cellsW + ax;
-          iflData[iflAttrAddr] = tileAttrs[attrIdx];
-        }
-      }
+      const picName = screenCount > 1
+        ? file.name + ' (' + (s + 1) + '/' + screenCount + ')'
+        : file.name;
+      addPicture(picName, FORMAT.IFL, iflData);
     }
-
-    // Add as IFL picture
-    addPicture(file.name, FORMAT.IFL, iflData);
 
     // Add tiles as sprites (append to existing)
     spriteSheet.name = file.name;

@@ -788,7 +788,7 @@ Generate a thinner font by skipping one vertical column of pixels from each ROM 
 
 ## 7. Nirvana Engine Tile Format
 
-The Nirvana engine is an established sprite/tile system for the ZX Spectrum. There is no single universal sprite format on the Spectrum -- different games and engines use their own layouts. Nirvana defines two standard tile sizes with a specific data layout: **all bitmap bytes first, then all attribute bytes**.
+The Nirvana engine is an established tile system for the ZX Spectrum. It defines two standard tile sizes with a specific data layout: **all bitmap bytes first, then all attribute bytes**.
 
 Bitmaps use **1 bit per pixel**, packed 8 pixels per byte, **MSB-first** (bit 7 = leftmost pixel). Attributes use the standard ZX Spectrum attribute byte format.
 
@@ -812,13 +812,15 @@ Total:   72 bytes
 
 File extension: `.wtile`
 
-Data order: bitmap is stored row-major (left-to-right, top-to-bottom), followed by attributes in the same order.
+Data order: bitmap is stored row-major (left-to-right, top-to-bottom). Attributes in btile are stored column-major (all attr rows of column 0, then column 1); attributes in wtile are stored row-major.
 
-### Sprite Data Layouts
+---
 
-There is no universal sprite format on the ZX Spectrum -- every game and engine defines its own. The layout is chosen to match the drawing routine for maximum speed. Common approaches:
+## 8. Custom Sprite Data Layouts
 
-#### Row-First (Linear)
+There is no universal sprite format on the ZX Spectrum — every game and engine defines its own. The layout is chosen to match the drawing routine for maximum speed. These layouts are unrelated to the Nirvana tile format described above.
+
+### Row-First (Linear)
 
 The most straightforward layout. Bytes are stored left-to-right across each pixel row, then the next row, and so on. For a 2-cell-wide (16 px) sprite:
 
@@ -831,7 +833,7 @@ Row 15: byte0, byte1
 
 Simple to understand but requires address calculation when crossing character row boundaries on screen.
 
-#### Column-First
+### Column-First
 
 Data is stored one full column at a time (all 8 or 16 rows of a column before moving to the next). Optimized for vertical scrolling games, where column data is contiguous in memory. The scroll amount determines how many bytes need to be copied per column:
 
@@ -840,9 +842,9 @@ Col 0: row0, row1, row2, ... row15
 Col 1: row0, row1, row2, ... row15
 ```
 
-#### Zig-Zag Column
+### Zig-Zag Column
 
-A variant used in games like Ghosts 'n Goblins. Data is stored column-by-column, but alternating direction -- first column top-to-bottom, next column bottom-to-top. This matches the screen traversal pattern where `INC L` moves right and `INC H` moves one pixel row down, allowing the drawing routine to snake through screen memory without resetting the address between columns:
+A variant used in games like Ghosts 'n Goblins. Data is stored column-by-column, but alternating direction — first column top-to-bottom, next column bottom-to-top. This matches the screen traversal pattern where `INC L` moves right and `INC H` moves one pixel row down, allowing the drawing routine to snake through screen memory without resetting the address between columns:
 
 ```
 Col 0: row0, row1, ... row15   (top to bottom)
@@ -851,11 +853,11 @@ Col 2: row0, row1, ... row15   (top to bottom)
 ...
 ```
 
-#### Pre-Shifted
+### Pre-Shifted
 
 Multiple copies of the same sprite, each shifted by 1 or 2 pixels, stored as separate data blocks. Eliminates runtime bit-shifting at the cost of 4x (2px steps) or 8x (1px steps) memory per sprite. A 16-pixel-wide sprite with 8 pre-shifted copies occupies 8 times the memory, but the drawing routine becomes a straight copy with no bit manipulation.
 
-#### Interleaved Mask + Sprite
+### Interleaved Mask + Sprite
 
 When using masked drawing (AND mask, then OR sprite), storing mask and sprite bytes alternated per row keeps both in sequential memory, avoiding separate pointer tracking:
 
@@ -867,7 +869,7 @@ Row 1: mask0, sprite0, mask1, sprite1
 
 Alternatively, the mask can be stored as a completely separate block after all sprite data.
 
-#### Bit-Interleaved Zoom (2x)
+### Bit-Interleaved Zoom (2x)
 
 A compact way to store sprites at half resolution and zoom them 2x at runtime. Each sprite byte has its bits interleaved across two screen bytes, doubling the horizontal size. Each pixel row is also written twice, doubling vertically:
 
@@ -880,11 +882,11 @@ Screen byte 2: 66442200   (even bits, each doubled)
 
 An 8 x 8 sprite stored in just 8 bytes produces a 16 x 16 image on screen. The bit separation can be done with a 16-byte lookup table (mapping each 4-bit nibble of extracted odd or even bits to its doubled 8-bit form), or computed directly with shifts and masks.
 
-#### Attribute Mixing
+### Attribute Mixing
 
 Sprite data can include attribute bytes (ink/paper/bright) arranged in different ways relative to the bitmap:
 
-**All bitmap, then all attributes**: Bitmap data for the entire sprite is stored first, followed by all attribute bytes as a separate block. Used by the Nirvana engine. Simple layout, but the drawing routine needs two passes or two separate pointers.
+**All bitmap, then all attributes**: Bitmap data for the entire sprite is stored first, followed by all attribute bytes as a separate block. Simple layout, but the drawing routine needs two passes or two separate pointers.
 
 **Attributes interleaved per cell column**: After each 8-byte vertical strip (one cell column of bitmap), its attribute byte follows immediately. The drawing routine handles bitmap and color in a single pass without jumping between data blocks:
 
@@ -907,7 +909,7 @@ row 1: bitmap[col0], bitmap[col1], ..., attr[col0], attr[col1], ...
 
 ---
 
-## 8. Bit Ordering
+## 9. Bit Ordering
 
 All ZX Spectrum bitmap data uses **MSB-first** (most significant bit first) ordering:
 
@@ -929,7 +931,7 @@ This applies to:
 
 ---
 
-## 9. Format Detection by File Size
+## 10. Format Detection by File Size
 
 Quick-reference table for identifying formats by file size when no file extension is available:
 
@@ -958,7 +960,7 @@ Quick-reference table for identifying formats by file size when no file extensio
 
 ---
 
-## 10. References
+## 11. References
 
 - [World of Spectrum](https://worldofspectrum.org/) -- Archive of ZX Spectrum software and documentation
 - [ZX Spectrum Screen Memory](http://www.breakintoprogram.co.uk/hardware/computers/zx-spectrum/screen-memory-layout) -- Screen layout technical reference

@@ -139,7 +139,7 @@ let spriteDOM = {};
 function initSpriteEditor() {
   // Cache DOM elements
   const ids = [
-    'spriteList', 'spriteAddBtn', 'spriteDeleteBtn',
+    'spriteList', 'spriteAddBtn', 'spriteDeleteBtn', 'spriteClearAllBtn',
     'spriteProps', 'spriteName',
     'spriteCellsW', 'spriteCellsH', 'spriteMode', 'spriteFrameBar', 'spriteEditBtn',
     'spriteGrabBtn', 'spriteGrabStatus', 'spriteGrabConfig', 'spriteGrabMode',
@@ -210,6 +210,7 @@ function initSpriteEditor() {
   // Sidebar buttons
   spriteDOM.spriteAddBtn?.addEventListener('click', () => addSprite());
   spriteDOM.spriteDeleteBtn?.addEventListener('click', deleteSelectedSprites);
+  spriteDOM.spriteClearAllBtn?.addEventListener('click', clearAllSprites);
   spriteDOM.spriteEditBtn?.addEventListener('click', () => openSpriteEditor());
   spriteDOM.spriteGrabBtn?.addEventListener('click', toggleGrabMode);
   spriteDOM.spriteGrabStopBtn?.addEventListener('click', cancelGrabMode);
@@ -392,6 +393,18 @@ function deleteSelectedSprites() {
       closeSpriteEditor();
     }
   }
+}
+
+function clearAllSprites() {
+  if (spriteSheet.sprites.length === 0) return;
+  if (!confirm('Delete all ' + spriteSheet.sprites.length + ' sprites?')) return;
+  spriteSheet.sprites.length = 0;
+  selectedSpriteIndices.clear();
+  setActiveSprite(-1);
+  currentFrameIndex = 0;
+  updateSpriteList();
+  updateSpriteProps();
+  if (spriteEditorOpen) closeSpriteEditor();
 }
 
 function deepCopyFrame(frame) {
@@ -791,11 +804,20 @@ function updateSpriteProps() {
   if (!props) return;
 
   const sprite = getSelectedSprite();
+  const nameRow = document.getElementById('spriteNameRow');
+  const brushRow = document.getElementById('spriteUseBrushRow');
+
   if (!sprite) {
-    props.style.display = 'none';
+    // No spriteset selected — still show W/H/Mode for grab, hide Name and Use as Brush
+    if (nameRow) nameRow.style.display = 'none';
+    if (brushRow) brushRow.style.display = 'none';
+    updateSpritePropLocks();
+    updateFrameBar();
     return;
   }
-  props.style.display = '';
+
+  if (nameRow) nameRow.style.display = 'flex';
+  if (brushRow) brushRow.style.display = 'flex';
 
   spriteDOM.spriteName.value = sprite.name;
   spriteDOM.spriteCellsW.value = String(sprite.cellsW);
