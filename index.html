@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.56.0 -->
+<!-- SpectraLab v1.57.0 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -14,6 +14,39 @@
     --text-tertiary: #707070;
     --border-primary: #444;
     --border-secondary: #333;
+    --accent-color: #4a9eff;
+    --accent-hover: #264f78;
+    --accent-text: #fff;
+    --danger-color: #ff4444;
+    --danger-hover: #ff6b6b;
+    --warning-color: #ff9900;
+    --selected-bg: #264f78;
+    --selected-text: #fff;
+    --shadow-color: rgba(0,0,0,0.4);
+    --checkerboard-light: #444;
+    --checkerboard-dark: #222;
+  }
+
+  [data-theme="light"] {
+    --bg-primary: #f0f0f0;
+    --bg-secondary: #ffffff;
+    --bg-tertiary: #e8e8e8;
+    --text-primary: #1a1a1a;
+    --text-secondary: #555555;
+    --text-tertiary: #888888;
+    --border-primary: #bbb;
+    --border-secondary: #ddd;
+    --accent-color: #2979ff;
+    --accent-hover: #1565c0;
+    --accent-text: #fff;
+    --danger-color: #d32f2f;
+    --danger-hover: #e53935;
+    --warning-color: #ef6c00;
+    --selected-bg: #bbdefb;
+    --selected-text: #1a1a1a;
+    --shadow-color: rgba(0,0,0,0.15);
+    --checkerboard-light: #ddd;
+    --checkerboard-dark: #ccc;
   }
 
   * {
@@ -285,11 +318,11 @@
   }
 
   .filmstrip-frame.selected {
-    border-color: #4a9eff;
+    border-color: var(--accent-color);
   }
 
   .filmstrip-frame.marked-delete {
-    border-color: #ff4444;
+    border-color: var(--danger-color);
   }
 
   .filmstrip-frame.marked-delete::after {
@@ -304,7 +337,7 @@
   }
 
   .filmstrip-frame.marked-optimized {
-    border-color: #ff9900;
+    border-color: var(--warning-color);
   }
 
   .filmstrip-frame.marked-optimized::after {
@@ -502,9 +535,9 @@
   }
 
   .editor-tool-btn.selected {
-    background: #4a9eff;
-    color: #fff;
-    border-color: #4a9eff;
+    background: var(--accent-color);
+    color: var(--accent-text);
+    border-color: var(--accent-color);
   }
 
   .layer-item {
@@ -528,7 +561,7 @@
   .layer-item.active {
     background: var(--bg-active);
     font-weight: 500;
-    border-left: 3px solid #4a9eff;
+    border-left: 3px solid var(--accent-color);
     padding-left: 3px;
   }
 
@@ -607,7 +640,7 @@
   }
 
   .editor-palette-cell.transparent-cell {
-    background: repeating-conic-gradient(#444 0% 25%, #222 0% 50%) 50% / 8px 8px;
+    background: repeating-conic-gradient(var(--checkerboard-light) 0% 25%, var(--checkerboard-dark) 0% 50%) 50% / 8px 8px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -726,7 +759,7 @@
 
   /* ULA+ transparent cell */
   .ulaplus-transparent-cell {
-    background: repeating-conic-gradient(#444 0% 25%, #222 0% 50%) 50% / 8px 8px !important;
+    background: repeating-conic-gradient(var(--checkerboard-light) 0% 25%, var(--checkerboard-dark) 0% 50%) 50% / 8px 8px !important;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -797,6 +830,30 @@
   .gigascreen-palette-cell.ink-selected.paper-selected {
     border-color: #fff;
     border-style: solid;
+  }
+
+  /* 53c Pattern Color Palette */
+  .attr53c-palette-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, 16px);
+    gap: 1px;
+    margin-left: -4px;
+  }
+
+  .attr53c-palette-cell {
+    border: 1px solid var(--border-secondary);
+    cursor: pointer;
+  }
+
+  .attr53c-palette-cell:hover {
+    border-color: var(--border-primary);
+    z-index: 1;
+  }
+
+  .attr53c-palette-cell.selected {
+    border-color: #fff;
+    border-width: 2px;
+    z-index: 2;
   }
 
   .editor-color-preview {
@@ -928,7 +985,7 @@
     border-radius: 4px;
     padding: 8px;
     z-index: 100;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    box-shadow: 0 4px 12px var(--shadow-color);
   }
 
   .editor-preview-panel.active {
@@ -993,7 +1050,7 @@
     border-color: var(--border-primary);
   }
   .custom-brush-slot.selected {
-    border-color: #4a9eff;
+    border-color: var(--accent-color);
   }
 
   /* Brush tab bar */
@@ -1040,7 +1097,7 @@
     padding: 0 2px;
   }
   .brush-tab-close:hover {
-    color: #ff6b6b;
+    color: var(--danger-hover);
   }
   .brush-tab-add {
     font-size: 11px;
@@ -1082,8 +1139,8 @@
     border-color: var(--border-primary);
   }
   .tile-cell.selected {
-    border-color: #4a9eff;
-    box-shadow: 0 0 2px #4a9eff;
+    border-color: var(--accent-color);
+    box-shadow: 0 0 2px var(--accent-color);
   }
 
   .barcode-slot {
@@ -1101,7 +1158,7 @@
     border-color: var(--border-primary);
   }
   .barcode-slot.selected {
-    border-color: #4a9eff;
+    border-color: var(--accent-color);
   }
 
   /* Viewport indicator on preview */
@@ -1145,7 +1202,7 @@
     display: flex !important;
     align-items: center;
     justify-content: center;
-    background: #1a1a1a;
+    background: var(--bg-primary);
     z-index: 50;
   }
 
@@ -1165,7 +1222,7 @@
     border-radius: 6px;
     padding: 8px;
     z-index: 200;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.6);
+    box-shadow: 0 4px 16px var(--shadow-color);
     min-width: 180px;
   }
 
@@ -1244,7 +1301,7 @@
     padding: 16px 20px;
     min-width: 300px;
     max-width: 400px;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    box-shadow: 0 4px 20px var(--shadow-color);
     color: var(--text-primary);
   }
   .modal-title {
@@ -1289,8 +1346,8 @@
     border-bottom: 1px solid var(--border-secondary);
   }
   .sprite-list-item:hover { background: var(--bg-secondary); }
-  .sprite-list-item.selected { background: #264f78; color: #fff; }
-  .sprite-list-item.multi-selected { background: #445; color: #fff; }
+  .sprite-list-item.selected { background: var(--selected-bg); color: var(--selected-text); }
+  .sprite-list-item.multi-selected { background: var(--accent-hover); color: var(--accent-text); }
   .sprite-list-item canvas { image-rendering: pixelated; image-rendering: crisp-edges; }
 
   /* Frame bar thumbnails */
@@ -1300,8 +1357,8 @@
     image-rendering: pixelated;
     image-rendering: crisp-edges;
   }
-  .frame-thumb.current { border-color: #264f78; }
-  .frame-thumb.multi-selected { border-color: #587; }
+  .frame-thumb.current { border-color: var(--selected-bg); }
+  .frame-thumb.multi-selected { border-color: var(--accent-hover); }
 
   /* Right-click context menu */
   .sprite-context-menu {
@@ -1310,7 +1367,7 @@
     background: var(--bg-secondary);
     border: 1px solid var(--border-primary);
     border-radius: 4px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    box-shadow: 0 4px 12px var(--shadow-color);
     padding: 4px 0;
     min-width: 200px;
     font-size: 11px;
@@ -1322,7 +1379,7 @@
     white-space: nowrap;
     position: relative;
   }
-  .sprite-context-menu-item:hover { background: #264f78; color: #fff; }
+  .sprite-context-menu-item:hover { background: var(--selected-bg); color: var(--selected-text); }
   .sprite-context-menu-item.disabled { color: var(--text-tertiary); pointer-events: none; }
   .sprite-context-menu-item.has-submenu::after { content: '\25B6'; float: right; margin-left: 12px; font-size: 8px; }
   .sprite-context-submenu {
@@ -1333,7 +1390,7 @@
     background: var(--bg-secondary);
     border: 1px solid var(--border-primary);
     border-radius: 4px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    box-shadow: 0 4px 12px var(--shadow-color);
     padding: 4px 0;
     min-width: 160px;
     max-height: 240px;
@@ -1350,7 +1407,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .sprite-context-submenu-item:hover { background: #264f78; color: #fff; }
+  .sprite-context-submenu-item:hover { background: var(--selected-bg); color: var(--selected-text); }
   .sprite-context-menu-separator {
     height: 1px;
     background: var(--border-secondary);
@@ -1366,7 +1423,7 @@
     background: var(--bg-primary);
     border: 1px solid var(--border-primary);
     border-radius: 4px;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+    box-shadow: 0 4px 16px var(--shadow-color);
     min-width: 320px;
   }
   .sprite-editor-titlebar {
@@ -1389,7 +1446,7 @@
     cursor: pointer;
     padding: 0 4px;
   }
-  .sprite-editor-close:hover { color: #ff6b6b; }
+  .sprite-editor-close:hover { color: var(--danger-hover); }
   .sprite-editor-body { padding: 8px; }
 
   #spriteEditorCanvas {
@@ -1420,7 +1477,7 @@
     justify-content: center;
   }
   .sprite-tool-btn:hover { background: var(--bg-secondary); }
-  .sprite-tool-btn.active { background: #264f78; color: #fff; border-color: #264f78; }
+  .sprite-tool-btn.active { background: var(--selected-bg); color: var(--selected-text); border-color: var(--selected-bg); }
 
   .sprite-editor-tools {
     display: flex;
@@ -1457,6 +1514,16 @@
   .sprite-color-marker.ink-marker { top: 0; left: 1px; }
   .sprite-color-marker.paper-marker { bottom: 0; right: 1px; }
 </style>
+<script>
+  // FOUC prevention: apply saved theme before first paint
+  (function() {
+    var saved = localStorage.getItem('spectraLabTheme');
+    if (!saved) {
+      saved = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    }
+    if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
+  })();
+</script>
 </head>
 <body>
 <!-- Two-Column Layout -->
@@ -1468,7 +1535,7 @@
       <div class="panel-content">
         <!-- File input -->
         <div class="control-group">
-          <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.bmc4,.ifl,.mlt,.mc,.3,.img,.specscii,.sca,.slp,.slw,.sna,.z80,.btile,.wtile,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
+          <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.bmc4,.ifl,.mlt,.mc,.3,.img,.specscii,.sca,.zxp,.slp,.slw,.sna,.z80,.btile,.wtile,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
         </div>
 
         <!-- New and Save buttons -->
@@ -1769,6 +1836,7 @@
           <div class="control-group" style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-color);">
             <div style="display: flex; align-items: center; gap: 8px;">
               <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" id="appTitle" style="text-decoration: none; color: var(--text-secondary); font-size: 11px;">SpectraLab</a>
+              <button id="themeToggleBtn" style="padding: 2px 6px; font-size: 10px; cursor: pointer;" title="Toggle light/dark theme">&#9790;</button>
               <button id="helpBtn" style="padding: 2px 6px; font-size: 10px;" title="Help">?</button>
             </div>
           </div>
@@ -1816,6 +1884,12 @@
                 </div>
               </div>
             </div>
+            <!-- 53c Pattern Color Section (hidden by default) -->
+            <div id="attr53cColorSection" style="display: none; margin-bottom: 8px;">
+              <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">PATTERN COLORS</div>
+              <div id="attr53cPaletteGrid" class="attr53c-palette-grid"></div>
+              <div style="font-size: 9px; color: var(--text-tertiary); margin-top: 4px;">Left click to select</div>
+            </div>
             <!-- Gigascreen Virtual Color Section (hidden by default) -->
             <div id="gigascreenColorSection" style="display: none; margin-bottom: 8px;">
               <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">GIGASCREEN VIRTUAL COLORS</div>
@@ -1831,8 +1905,8 @@
               <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 8px; margin-bottom: 4px;">CELL COLORS</div>
               <div id="gigascreen4ColorPicker" style="display: flex; gap: 4px; flex-wrap: wrap;"></div>
               <div style="font-size: 9px; color: var(--text-tertiary); margin-top: 4px;">
-                <span style="color: #4a9eff;">L</span>=Left button,
-                <span style="color: #ff6b6b;">R</span>=Right button
+                <span style="color: var(--accent-color);">L</span>=Left button,
+                <span style="color: var(--danger-hover);">R</span>=Right button
               </div>
             </div>
             <div id="editorToolsSection" style="margin-bottom: 8px;">
@@ -2478,7 +2552,7 @@
 </div>
 
 <!-- Floating Memory Viewer Panel -->
-<div id="memViewerPanel" style="display:none; position:fixed; top:80px; left:200px; z-index:9000; background:var(--bg-primary); border:1px solid var(--border-primary); border-radius:4px; box-shadow:0 4px 16px rgba(0,0,0,0.3); min-width:340px;">
+<div id="memViewerPanel" style="display:none; position:fixed; top:80px; left:200px; z-index:9000; background:var(--bg-primary); border:1px solid var(--border-primary); border-radius:4px; box-shadow:0 4px 16px var(--shadow-color); min-width:340px;">
   <div id="memViewerTitle" style="display:flex; justify-content:space-between; align-items:center; padding:4px 8px; background:var(--bg-secondary); border-bottom:1px solid var(--border-secondary); cursor:move; font-size:11px; font-weight:bold; user-select:none;">
     <span>Memory Viewer</span>
     <button id="memViewerClose" style="background:none; border:none; color:var(--text-secondary); font-size:16px; cursor:pointer; padding:0 4px;">&times;</button>
@@ -2687,7 +2761,7 @@
             <span>Trimmed frames:</span>
             <span id="editTrimmedCount">8</span>
           </div>
-          <div class="edit-result-row" id="duplicateFramesRow" style="color: #ff9900;">
+          <div class="edit-result-row" id="duplicateFramesRow" style="color: var(--warning-color);">
             <span>Duplicates:</span>
             <span id="editDuplicateCount">0</span>
           </div>
@@ -3036,7 +3110,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.56.0</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.57.0</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">

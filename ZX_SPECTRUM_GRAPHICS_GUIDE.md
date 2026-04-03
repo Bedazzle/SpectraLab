@@ -563,6 +563,49 @@ A delay byte of 5 = 100 ms (10 fps). A delay byte of 1 = 20 ms (50 fps).
 
 ---
 
+### ZXP (ZX-Paintbrush) -- text-based, variable size
+
+A human-readable text format used by the ZX-Paintbrush editor. Stores bitmap as binary digit strings and attributes as hex values.
+
+- File extension: `.zxp`
+- Text file (not binary)
+- Resolution: **W x H pixels**, where W is a multiple of 8 and H is a multiple of 8. Standard images use 256 x 192
+
+#### File Structure
+
+```
+Line 1:     "ZX-Paintbrush extended image"        (header, must match exactly)
+Line 2:     (empty)
+Lines 3+:   H lines of W ASCII '0'/'1' chars      (bitmap, linear row order)
+            (empty separator)
+            N lines of (W/8) space-separated hex bytes  (attributes)
+            (optional empty separator)
+            (optional) 1 line of 64 space-separated hex bytes (ULA+ palette)
+```
+
+#### Bitmap Encoding
+
+Each of the H bitmap lines contains exactly W characters ('0' or '1'), one per pixel, left to right. This is a **linear** row order (line 0 = top of screen), unlike the interleaved layout of the ZX Spectrum SCR format.
+
+#### Attribute Modes
+
+The number of attribute lines determines the color resolution. For a standard 256 x 192 image (32 columns, 192 rows):
+
+| Attr Lines | Mode | Cell Size | Equivalent Binary Format |
+|------------|------|-----------|--------------------------|
+| 24         | 8x8  | 8 x 8    | SCR (6912 bytes)         |
+| 48         | 8x4  | 8 x 4    | --                       |
+| 96         | 8x2  | 8 x 2    | IFL (9216 bytes)         |
+| 192        | 8x1  | 8 x 1    | MLT (12288 bytes)        |
+
+Each attribute line contains W/8 hex bytes separated by spaces (e.g., `38 07 47 3F ...`). Attribute bytes use the standard format (see section 3).
+
+#### Optional ULA+ Palette
+
+After the attribute block (separated by an empty line), a single line of **64 space-separated hex bytes** may appear. This is a ULA+ palette in GRB332 format (see ULA+ section).
+
+---
+
 ## 6. Fonts
 
 ### ROM Font
@@ -950,13 +993,14 @@ Quick-reference table for identifying formats by file size when no file extensio
 | 13824        | Gigascreen   | Dual-frame 50 Hz                   |
 | 18432        | RGB3         | Tricolor (3 x 6144)               |
 
-**Note**: SCA and SPECSCII files are variable-size or extension-only and cannot be reliably detected by size alone. SCA files are identified by the `"SCA"` signature at offset 0.
+**Note**: SCA, SPECSCII, and ZXP files are variable-size, text-based, or extension-only and cannot be reliably detected by size alone. SCA files are identified by the `"SCA"` signature at offset 0. ZXP files are text-based and identified by the `"ZX-Paintbrush extended image"` header line.
 
 ### Detection Priority
 
-1. Check file extension first (`.53c`, `.atr`, `.bsc`, `.ifl`, `.bmc4`, `.mlt`, `.mc`, `.3`, `.img`, `.specscii`, `.sca`)
-2. For `.img` files, verify size is exactly 13824 bytes
-3. Fall back to file size lookup from the table above
+1. Check file extension first (`.53c`, `.atr`, `.bsc`, `.ifl`, `.bmc4`, `.mlt`, `.mc`, `.3`, `.img`, `.specscii`, `.sca`, `.zxp`)
+2. For `.zxp` files, read as text and parse (see ZXP section)
+3. For `.img` files, verify size is exactly 13824 bytes
+4. Fall back to file size lookup from the table above
 
 ---
 

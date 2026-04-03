@@ -1,5 +1,31 @@
 # SpectraLab Version History
 
+## v1.57.1
+- ZXP (ZX-Paintbrush) file format support (partial — 256×192 only)
+  - Load `.zxp` text-based image files via file picker or drag-and-drop
+  - Auto-detects attribute mode from line count: 8×8 (SCR), 8×4 (IFL), 8×2 (IFL), 8×1 (MLT)
+  - Converts linear bitmap rows to ZX Spectrum interleaved SCR layout
+  - Supports optional ULA+ palette (64-byte) → loads as SCR_ULAPLUS
+  - 8×4 attributes are expanded (row-doubled) to 8×2 IFL format
+
+## v1.57.0
+- 53c/127c editor: pattern color palette
+  - Replaces standard ink/paper picker when editing .53c/.atr files
+  - Grid of unique dither-pattern swatches showing actual ink/paper colors through the selected pattern
+  - Click a swatch to select that color combination for painting
+  - Adapts to current pattern: Checker (~53 colors), DD77 (~127 colors), Stripes (~53 colors)
+  - Rebuilds automatically when switching patterns or palettes
+- New Picture dialog remembers last used format
+
+## v1.56.1
+- Light/Dark theme switching
+  - Toggle button (&#9790;/&#9788;) next to the Help button
+  - Respects OS `prefers-color-scheme` on first visit
+  - Setting persists to localStorage
+  - FOUC prevention via inline `<head>` script
+  - Canvas viewer colors adapt per theme (grid, labels, backgrounds)
+  - Editor canvas previews (brush slots, tile cells, barcode, SPECSCII palette) adapt to current theme
+
 ## v1.56.0
 - Display Filters: new collapsible section in the View tab with CRT/retro post-processing effects
   - **Scanlines** — Gaussian beam profile with brightness-dependent width (modeled after crt-geom/crt-lottes emulator shaders)

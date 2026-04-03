@@ -5134,7 +5134,7 @@ function getAlignFactors() {
  * @param {string} format - Format identifier
  * @returns {{w: number, h: number}}
  */
-function getFormatDimensions(format) {
+function getImportFormatDimensions(format) {
   if (format === 'bsc' || format === 'bmc4') return { w: 384, h: 304 };
   if (format === 'mono_2_3') return { w: 256, h: 128 };
   if (format === 'mono_1_3') return { w: 256, h: 64 };
@@ -5163,7 +5163,7 @@ function updateTileInfo() {
   if (!importImage) return;
 
   const format = importElements.format?.value || 'scr';
-  const dims = getFormatDimensions(format);
+  const dims = getImportFormatDimensions(format);
   const grid = calculateTileGrid(importCrop.w, importCrop.h, dims.w, dims.h);
 
   importElements.tileGrid.textContent = grid.cols + '\u00d7' + grid.rows;
@@ -5415,7 +5415,7 @@ function renderOriginalWithCrop() {
   // Draw tile grid overlay when tiling is enabled
   if (importTileEnabled) {
     const format = importElements.format?.value || 'scr';
-    const dims = getFormatDimensions(format);
+    const dims = getImportFormatDimensions(format);
     const grid = calculateTileGrid(importCrop.w, importCrop.h, dims.w, dims.h);
 
     if (grid.total > 1) {
@@ -6024,7 +6024,7 @@ function initImageImport() {
     let tileSavedCrop, tileSavedFitMode, tileSavedOffset, tileSavedSize;
     if (importTileEnabled && importImage) {
       const fmt = formatSelect?.value || 'scr';
-      const dims = getFormatDimensions(fmt);
+      const dims = getImportFormatDimensions(fmt);
       const grid = calculateTileGrid(importCrop.w, importCrop.h, dims.w, dims.h);
       // Clamp tile col/row to grid bounds
       if (importTileCol >= grid.cols) importTileCol = grid.cols - 1;
@@ -6599,7 +6599,7 @@ function initImageImport() {
   importElements.tilePrev?.addEventListener('click', () => {
     if (!importTileEnabled || !importImage) return;
     const format = importElements.format?.value || 'scr';
-    const dims = getFormatDimensions(format);
+    const dims = getImportFormatDimensions(format);
     const grid = calculateTileGrid(importCrop.w, importCrop.h, dims.w, dims.h);
     // Move to previous tile (col-major: col changes first)
     importTileCol--;
@@ -6615,7 +6615,7 @@ function initImageImport() {
   importElements.tileNext?.addEventListener('click', () => {
     if (!importTileEnabled || !importImage) return;
     const format = importElements.format?.value || 'scr';
-    const dims = getFormatDimensions(format);
+    const dims = getImportFormatDimensions(format);
     const grid = calculateTileGrid(importCrop.w, importCrop.h, dims.w, dims.h);
     // Move to next tile (col-major: col changes first)
     importTileCol++;
@@ -6738,7 +6738,7 @@ function initImageImport() {
     // --- Tile to screens path ---
     if (importTileEnabled && importImage && typeof addPicture === 'function') {
       const tileFormat = formatSelect?.value || 'scr';
-      const dims = getFormatDimensions(tileFormat);
+      const dims = getImportFormatDimensions(tileFormat);
       const grid = calculateTileGrid(importCrop.w, importCrop.h, dims.w, dims.h);
 
       // Check available slots

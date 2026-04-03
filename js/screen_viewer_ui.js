@@ -11,6 +11,71 @@ const themeToggleBtn = document.getElementById('themeToggleBtn');
 const helpBtn = document.getElementById('helpBtn');
 
 // ============================================================================
+// Theme Management
+// ============================================================================
+
+const themeColorSets = {
+  dark: {
+    background: '#222',
+    backgroundInactive: '#111',
+    foreground: '#0f0',
+    foregroundInactive: '#050',
+    grid: '#444',
+    labels: '#060',
+    highlight: 'rgba(255, 0, 255, 0.7)',
+    selectionSingle: '#f0f',
+    selectionRange: '#f00'
+  },
+  light: {
+    background: '#e0e0e0',
+    backgroundInactive: '#d0d0d0',
+    foreground: '#006600',
+    foregroundInactive: '#99cc99',
+    grid: '#bbb',
+    labels: '#339933',
+    highlight: 'rgba(160, 0, 200, 0.7)',
+    selectionSingle: '#a000c8',
+    selectionRange: '#cc0000'
+  }
+};
+
+/** @type {typeof themeColorSets.dark} */
+// @ts-ignore - global used by screen_viewer.js getThemeColors()
+var themeColors = themeColorSets.dark;
+
+/**
+ * Returns the current theme name ('dark' or 'light')
+ * @returns {'dark'|'light'}
+ */
+function getCurrentTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+}
+
+/**
+ * Updates themeColors global from the current data-theme attribute
+ */
+function updateThemeColors() {
+  themeColors = themeColorSets[getCurrentTheme()];
+}
+
+/**
+ * Toggles theme between dark and light, saves to localStorage, updates button icon
+ * @param {Element|null} btn
+ */
+function toggleTheme(btn) {
+  const current = getCurrentTheme();
+  const next = current === 'dark' ? 'light' : 'dark';
+  if (next === 'light') {
+    document.documentElement.setAttribute('data-theme', 'light');
+  } else {
+    document.documentElement.removeAttribute('data-theme');
+  }
+  localStorage.setItem('spectraLabTheme', next);
+  updateThemeColors();
+  if (btn) btn.innerHTML = next === 'light' ? '&#9788;' : '&#9790;';
+}
+
+// ============================================================================
 // Initialization
 // ============================================================================
 
@@ -21,9 +86,10 @@ function initScreenViewerUI() {
   // Cache elements from main script
   cacheElements();
 
-  // Initialize theme colors (if theme_manager.js is loaded)
-  if (typeof updateThemeColors === 'function') {
-    updateThemeColors();
+  // Initialize theme colors and button icon
+  updateThemeColors();
+  if (themeToggleBtn) {
+    themeToggleBtn.innerHTML = getCurrentTheme() === 'light' ? '&#9788;' : '&#9790;';
   }
 
   // ============================================================================
@@ -49,6 +115,8 @@ function initScreenViewerUI() {
       importNirvanaTileFile(file);
     } else if (isZipFile(file.name)) {
       handleZipFile(file);
+    } else if (typeof isZxpFile === 'function' && isZxpFile(file.name)) {
+      loadZxpFile(file);
     } else {
       loadScreenFile(file);
     }
@@ -157,6 +225,7 @@ function initScreenViewerUI() {
     renderScreen();
     if (typeof renderPreview === 'function') renderPreview();
     if (typeof updateAttrPreview === 'function') updateAttrPreview();
+    if (typeof build53cPalette === 'function') build53cPalette();
     saveSettings();
   });
 
@@ -195,9 +264,19 @@ function initScreenViewerUI() {
     if (newPictureDialogLocal) newPictureDialogLocal.style.display = 'none';
   });
 
+  // Restore last used format in New Picture dialog
+  function restoreNewPictureFormat() {
+    const saved = localStorage.getItem('spectraLabNewPictureFormat');
+    if (saved && newPictureFormat) {
+      const option = newPictureFormat.querySelector('option[value="' + saved + '"]');
+      if (option) newPictureFormat.value = saved;
+    }
+  }
+
   // New Picture button (next to Browse)
   const newPictureBtn = document.getElementById('newPictureBtn');
   newPictureBtn?.addEventListener('click', function() {
+    restoreNewPictureFormat();
     if (newPictureDialogLocal) newPictureDialogLocal.style.display = '';
   });
 
@@ -206,6 +285,7 @@ function initScreenViewerUI() {
   newPictureOkBtn?.addEventListener('click', function() {
     if (newPictureDialogLocal) newPictureDialogLocal.style.display = 'none';
     const format = newPictureFormat ? newPictureFormat.value : 'scr';
+    localStorage.setItem('spectraLabNewPictureFormat', format);
     if (typeof createNewPicture === 'function') {
       createNewPicture(format);
     }
@@ -358,6 +438,7 @@ function initScreenViewerUI() {
                         typeof screenData !== 'undefined' && screenData &&
                         (screenData.length > 0 || (typeof currentFormat !== 'undefined' && currentFormat === FORMAT.SPECSCII));
         if (!canEdit && newPictureDialog) {
+          restoreNewPictureFormat();
           newPictureDialog.style.display = '';
           return; // Don't switch tab yet
         }

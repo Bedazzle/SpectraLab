@@ -503,6 +503,10 @@ function setPalette(paletteId) {
     if (typeof editorActive !== 'undefined' && editorActive && typeof updateColorPreview === 'function') {
       updateColorPreview();
     }
+    // Rebuild 53c pattern palette with new palette colors
+    if (typeof editorActive !== 'undefined' && editorActive && currentFormat === FORMAT.ATTR_53C && typeof build53cPalette === 'function') {
+      build53cPalette();
+    }
   }
 }
 
@@ -4254,6 +4258,257 @@ function detectFormat(fileName, fileSize) {
 
   // Default to SCR for unknown
   return FORMAT.SCR;
+}
+
+// ============================================================================
+// ZXP (ZX-Paintbrush) format support
+// ============================================================================
+
+/**
+ * Checks if a file is a ZXP file by extension
+ * @param {string} fileName
+ * @returns {boolean}
+ */
+function isZxpFile(fileName) {
+  return fileName.toLowerCase().endsWith('.zxp');
+}
+
+/**
+ * Converts linear Y coordinate to ZX Spectrum SCR bitmap offset
+ * @param {number} y - pixel row (0-191)
+ * @param {number} x - byte column (0-31)
+ * @returns {number} offset into 6144-byte bitmap
+ */
+function linearToScrOffset(y, x) {
+  const third = y >> 6;                // 0-2 (which third of screen)
+  const pixelRow = y & 7;             // 0-7 (pixel row within cell)
+  const cellRow = (y >> 3) & 7;       // 0-7 (character row within third)
+  return (third * 2048) + (pixelRow * 256) + (cellRow * 32) + x;
+}
+
+/**
+ * Parses ZXP (ZX-Paintbrush) text format into binary screen data
+ * @param {string} text - ZXP file content
+ * @returns {{ data: Uint8Array, format: string } | null} parsed data and format, or null on error
+ */
+function parseZxpFile(text) {
+  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+
+  // Validate header
+  if (!lines[0] || lines[0].trim() !== 'ZX-Paintbrush extended image') {
+    alert('Invalid ZXP file: missing header.');
+    return null;
+  }
+
+  // Parse bitmap: lines 2..193 (0-indexed), 192 lines of 256 binary digits
+  const bitmapStart = 2;
+  const bitmapData = new Uint8Array(SCREEN.BITMAP_SIZE); // 6144
+
+  for (let y = 0; y < 192; y++) {
+    const line = lines[bitmapStart + y];
+    if (!line || line.length < 256) {
+      alert(`Invalid ZXP file: bitmap line ${y + 1} is too short or missing.`);
+      return null;
+    }
+    for (let byteCol = 0; byteCol < 32; byteCol++) {
+      let byteVal = 0;
+      for (let bit = 0; bit < 8; bit++) {
+        if (line[byteCol * 8 + bit] === '1') {
+          byteVal |= (0x80 >> bit);
+        }
+      }
+      bitmapData[linearToScrOffset(y, byteCol)] = byteVal;
+    }
+  }
+
+  // Find attribute lines after bitmap separator
+  // Line 194 (0-indexed) should be empty separator, attributes start at 195
+  let attrStart = bitmapStart + 192;
+  // Skip empty lines to find attribute start
+  while (attrStart < lines.length && lines[attrStart].trim() === '') {
+    attrStart++;
+  }
+
+  // Count attribute lines
+  const attrLines = [];
+  for (let i = attrStart; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed === '') break; // empty separator ends attributes
+    attrLines.push(trimmed);
+  }
+
+  const attrCount = attrLines.length;
+  if (attrCount !== 24 && attrCount !== 48 && attrCount !== 96 && attrCount !== 192) {
+    alert(`Invalid ZXP file: expected 24, 48, 96, or 192 attribute lines, got ${attrCount}.`);
+    return null;
+  }
+
+  // Parse attribute bytes
+  const attrData = new Uint8Array(attrCount * 32);
+  for (let row = 0; row < attrCount; row++) {
+    const parts = attrLines[row].split(/\s+/);
+    if (parts.length < 32) {
+      alert(`Invalid ZXP file: attribute line ${row + 1} has ${parts.length} values (expected 32).`);
+      return null;
+    }
+    for (let col = 0; col < 32; col++) {
+      attrData[row * 32 + col] = parseInt(parts[col], 16);
+    }
+  }
+
+  // Check for optional ULA+ palette after attributes
+  let paletteStart = attrStart + attrCount;
+  while (paletteStart < lines.length && lines[paletteStart].trim() === '') {
+    paletteStart++;
+  }
+  let ulaPlusPaletteData = null;
+  if (paletteStart < lines.length) {
+    const palLine = lines[paletteStart].trim();
+    if (palLine !== '') {
+      const palParts = palLine.split(/\s+/);
+      if (palParts.length === 64) {
+        ulaPlusPaletteData = new Uint8Array(64);
+        for (let i = 0; i < 64; i++) {
+          ulaPlusPaletteData[i] = parseInt(palParts[i], 16);
+        }
+      }
+    }
+  }
+
+  // Build output based on attribute mode
+  let format;
+  let outputData;
+
+  if (attrCount === 24) {
+    // 8×8 mode → SCR (or SCR_ULAPLUS if palette present)
+    if (ulaPlusPaletteData) {
+      format = FORMAT.SCR_ULAPLUS;
+      outputData = new Uint8Array(ULAPLUS.TOTAL_SIZE); // 6976
+      outputData.set(bitmapData, 0);
+      outputData.set(attrData, SCREEN.BITMAP_SIZE);
+      outputData.set(ulaPlusPaletteData, ULAPLUS.PALETTE_OFFSET);
+    } else {
+      format = FORMAT.SCR;
+      outputData = new Uint8Array(SCREEN.TOTAL_SIZE); // 6912
+      outputData.set(bitmapData, 0);
+      outputData.set(attrData, SCREEN.BITMAP_SIZE);
+    }
+  } else if (attrCount === 48) {
+    // 8×4 mode → duplicate each row to get 96 rows, treat as IFL
+    format = FORMAT.IFL;
+    outputData = new Uint8Array(IFL.TOTAL_SIZE); // 9216
+    outputData.set(bitmapData, 0);
+    for (let row = 0; row < 48; row++) {
+      const srcOffset = row * 32;
+      const dstRow1 = row * 2;
+      const dstRow2 = row * 2 + 1;
+      for (let col = 0; col < 32; col++) {
+        outputData[SCREEN.BITMAP_SIZE + dstRow1 * 32 + col] = attrData[srcOffset + col];
+        outputData[SCREEN.BITMAP_SIZE + dstRow2 * 32 + col] = attrData[srcOffset + col];
+      }
+    }
+  } else if (attrCount === 96) {
+    // 8×2 mode → IFL
+    format = FORMAT.IFL;
+    outputData = new Uint8Array(IFL.TOTAL_SIZE); // 9216
+    outputData.set(bitmapData, 0);
+    outputData.set(attrData, SCREEN.BITMAP_SIZE);
+  } else {
+    // 8×1 mode (192 lines) → MLT
+    format = FORMAT.MLT;
+    outputData = new Uint8Array(MLT.TOTAL_SIZE); // 12288
+    outputData.set(bitmapData, 0);
+    outputData.set(attrData, SCREEN.BITMAP_SIZE);
+  }
+
+  return { data: outputData, format: format };
+}
+
+/**
+ * Loads a ZXP (ZX-Paintbrush) file
+ * @param {File} file - The ZXP file to load
+ */
+function loadZxpFile(file) {
+  const reader = new FileReader();
+
+  reader.addEventListener('load', function(event) {
+    const text = event.target?.result;
+    if (typeof text !== 'string') return;
+
+    const result = parseZxpFile(text);
+    if (!result) return;
+
+    // Stop any existing timers
+    stopFlashTimer();
+    resetScaState();
+
+    const { data, format } = result;
+    // Strip .zxp extension and add appropriate extension for the detected format
+    let baseName = file.name.replace(/\.zxp$/i, '');
+    const extMap = {
+      [FORMAT.SCR]: '.scr',
+      [FORMAT.SCR_ULAPLUS]: '.scr',
+      [FORMAT.IFL]: '.ifl',
+      [FORMAT.MLT]: '.mlt'
+    };
+    const fileName = baseName + (extMap[format] || '.scr');
+
+    // Initialize ULA+ mode based on format
+    initUlaPlusMode(data, format);
+
+    // Use multi-picture system if available
+    if (typeof addPicture === 'function') {
+      const pictureResult = addPicture(fileName, format, data);
+      if (pictureResult >= 0) {
+        updateFlashTimer();
+        return;
+      }
+      // Failed to add - fall through to direct load
+      screenData = data;
+      currentFileName = fileName;
+      currentFormat = format;
+    } else {
+      screenData = data;
+      currentFileName = fileName;
+      currentFormat = format;
+    }
+
+    toggleScaControlsVisibility();
+    toggleFormatControlsVisibility();
+    updateScaControls();
+    updateFileInfo();
+    renderScreen();
+
+    if (typeof updateConvertOptions === 'function') {
+      updateConvertOptions();
+    }
+    if (typeof updateExportAsmButton === 'function') {
+      updateExportAsmButton();
+    }
+    if (typeof layers !== 'undefined') {
+      layers = [];
+      activeLayerIndex = 0;
+      layersEnabled = false;
+    }
+    if (typeof toggleLayerSectionVisibility === 'function') {
+      toggleLayerSectionVisibility();
+    }
+    if (typeof updateLayerPanel === 'function') {
+      updateLayerPanel();
+    }
+    if (typeof updateEditorState === 'function') {
+      updateEditorState();
+    }
+    if (typeof editorActive !== 'undefined' && editorActive && typeof renderPreview === 'function') {
+      renderPreview();
+    }
+    updateFlashTimer();
+    if (typeof updatePictureTabBar === 'function') {
+      updatePictureTabBar();
+    }
+  });
+
+  reader.readAsText(file);
 }
 
 /**

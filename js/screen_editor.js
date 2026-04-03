@@ -5,6 +5,21 @@
 "use strict";
 
 // ============================================================================
+// Theme Helpers
+// ============================================================================
+
+/**
+ * Read a CSS custom property from :root, with fallback.
+ * @param {string} name - e.g. '--bg-primary'
+ * @param {string} fallback
+ * @returns {string}
+ */
+function getCSSVar(name, fallback) {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name);
+  return v ? v.trim() : fallback;
+}
+
+// ============================================================================
 // Editor Constants
 // ============================================================================
 
@@ -236,6 +251,234 @@ function generateGigascreenVirtualPalette() {
         name: name
       });
     }
+  }
+}
+
+// ============================================================================
+// 53c Pattern Color Palette
+// ============================================================================
+
+/**
+ * @typedef {Object} Attr53cColor
+ * @property {number} attr - ZX attribute byte (ink | paper<<3 | bright<<6)
+ * @property {number[]} inkRgb - Ink RGB [r,g,b]
+ * @property {number[]} paperRgb - Paper RGB [r,g,b]
+ * @property {number[]} blendRgb - Blended (perceived) RGB [r,g,b]
+ * @property {string} name - Display name
+ */
+
+/** @type {Attr53cColor[]} */
+let attr53cVirtualPalette = [];
+
+/** @type {number} */
+let attr53cSelectedIndex = 0;
+
+/**
+ * Returns the current 53c pattern array from APP_CONFIG based on the select dropdown.
+ * @returns {number[]}
+ */
+function getCurrent53cPatternArray() {
+  const sel = /** @type {HTMLSelectElement|null} */ (document.getElementById('pattern53cSelect'));
+  const pattern = sel ? sel.value : 'checker';
+  if (pattern === 'stripes') return APP_CONFIG.PATTERN_53C_STRIPES;
+  if (pattern === 'dd77') return APP_CONFIG.PATTERN_53C_DD77;
+  return APP_CONFIG.PATTERN_53C_CHECKER;
+}
+
+/**
+ * Converts RGB to HSL. Returns [h (0-360), s (0-1), l (0-1)].
+ * @param {number} r
+ * @param {number} g
+ * @param {number} b
+ * @returns {number[]}
+ */
+function rgb2hsl53c(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (max === min) return [0, 0, l];
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h;
+  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) * 60;
+  else if (max === g) h = ((b - r) / d + 2) * 60;
+  else h = ((r - g) / d + 4) * 60;
+  return [h, s, l];
+}
+
+/**
+ * Generates the virtual palette for 53c editing.
+ * Deduplicates by blended (perceived) color — this gives the canonical counts:
+ * Checker/Stripes (50/50) → 53, DD77 (75/25) → 127.
+ * @param {number[]} patternArray - 8-byte dither pattern
+ */
+function generate53cVirtualPalette(patternArray) {
+  attr53cVirtualPalette = [];
+
+  // Compute ink ratio from pattern
+  let inkBitCount = 0;
+  for (let py = 0; py < 8; py++) {
+    for (let px = 0; px < 8; px++) {
+      if (patternArray[py] & (1 << (7 - px))) inkBitCount++;
+    }
+  }
+  const inkRatio = inkBitCount / 64;
+
+  const seen = new Map(); // blended RGB key → index in palette array
+
+  for (let bright = 0; bright <= 1; bright++) {
+    const palette = bright ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
+    for (let ink = 0; ink < 8; ink++) {
+      for (let paper = 0; paper < 8; paper++) {
+        const inkRgb = palette[ink];
+        const paperRgb = palette[paper];
+
+        // Compute blended (perceived) color
+        const br = Math.round(inkRgb[0] * inkRatio + paperRgb[0] * (1 - inkRatio));
+        const bg = Math.round(inkRgb[1] * inkRatio + paperRgb[1] * (1 - inkRatio));
+        const bb = Math.round(inkRgb[2] * inkRatio + paperRgb[2] * (1 - inkRatio));
+        const key = `${br},${bg},${bb}`;
+
+        if (seen.has(key)) continue;
+
+        const attr = (ink & 0x07) | ((paper & 0x07) << 3) | (bright ? 0x40 : 0);
+        const brightLabel = bright ? ' Bright' : '';
+        const name = ink === paper
+          ? `${COLOR_NAMES[ink]}${brightLabel}`
+          : `${COLOR_NAMES[ink]}/${COLOR_NAMES[paper]}${brightLabel}`;
+
+        seen.set(key, attr53cVirtualPalette.length);
+        attr53cVirtualPalette.push({
+          attr, inkRgb, paperRgb, name,
+          blendRgb: [br, bg, bb]
+        });
+      }
+    }
+  }
+
+  // Sort by hue group, then luminance — similar colors stay together
+  attr53cVirtualPalette.sort((a, b) => {
+    const hslA = rgb2hsl53c(a.blendRgb[0], a.blendRgb[1], a.blendRgb[2]);
+    const hslB = rgb2hsl53c(b.blendRgb[0], b.blendRgb[1], b.blendRgb[2]);
+
+    // Achromatic (saturation < 0.05) comes first, sorted by luminance
+    const aGray = hslA[1] < 0.05;
+    const bGray = hslB[1] < 0.05;
+    if (aGray && !bGray) return -1;
+    if (!aGray && bGray) return 1;
+    if (aGray && bGray) return hslA[2] - hslB[2];
+
+    // Chromatic: group by hue bucket (30°), then by luminance
+    const hueBucketA = Math.floor(hslA[0] / 30);
+    const hueBucketB = Math.floor(hslB[0] / 30);
+    if (hueBucketA !== hueBucketB) return hueBucketA - hueBucketB;
+    return hslA[2] - hslB[2];
+  });
+
+  // Clamp selected index
+  if (attr53cSelectedIndex >= attr53cVirtualPalette.length) {
+    attr53cSelectedIndex = 0;
+  }
+}
+
+/**
+ * Renders an 8x8 pattern swatch onto a canvas at 2x scale (16x16 pixels).
+ * No CSS scaling — canvas size matches display size 1:1.
+ * @param {HTMLCanvasElement} canvas - 16x16 canvas element
+ * @param {number[]} patternArray - 8-byte dither pattern
+ * @param {number[]} inkRgb - [r,g,b]
+ * @param {number[]} paperRgb - [r,g,b]
+ */
+function render53cSwatch(canvas, patternArray, inkRgb, paperRgb) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const scale = 2;
+  const size = 8 * scale;
+  const imgData = ctx.createImageData(size, size);
+  const d = imgData.data;
+  for (let y = 0; y < 8; y++) {
+    const patByte = patternArray[y];
+    for (let x = 0; x < 8; x++) {
+      const isInk = (patByte & (1 << (7 - x))) !== 0;
+      const rgb = isInk ? inkRgb : paperRgb;
+      for (let sy = 0; sy < scale; sy++) {
+        for (let sx = 0; sx < scale; sx++) {
+          const off = ((y * scale + sy) * size + (x * scale + sx)) * 4;
+          d[off] = rgb[0];
+          d[off + 1] = rgb[1];
+          d[off + 2] = rgb[2];
+          d[off + 3] = 255;
+        }
+      }
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+}
+
+/**
+ * Builds the 53c pattern color palette grid in the DOM.
+ */
+function build53cPalette() {
+  const container = document.getElementById('attr53cPaletteGrid');
+  if (!container) return;
+
+  const patternArray = getCurrent53cPatternArray();
+  generate53cVirtualPalette(patternArray);
+
+  container.innerHTML = '';
+
+  attr53cVirtualPalette.forEach((vc, index) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 16;
+    canvas.height = 16;
+    canvas.className = 'attr53c-palette-cell';
+    canvas.title = vc.name;
+    canvas.dataset.index = String(index);
+
+    render53cSwatch(canvas, patternArray, vc.inkRgb, vc.paperRgb);
+
+    canvas.addEventListener('click', (e) => {
+      e.preventDefault();
+      attr53cSelectedIndex = index;
+      update53cPaletteSelection();
+    });
+
+    canvas.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+    });
+
+    container.appendChild(canvas);
+  });
+
+  update53cPaletteSelection();
+}
+
+/**
+ * Updates the selection marker in the 53c palette grid.
+ */
+function update53cPaletteSelection() {
+  const container = document.getElementById('attr53cPaletteGrid');
+  if (!container) return;
+
+  const cells = container.querySelectorAll('.attr53c-palette-cell');
+  cells.forEach((cell, index) => {
+    cell.classList.toggle('selected', index === attr53cSelectedIndex);
+  });
+}
+
+/**
+ * Toggles the 53c pattern color picker visibility.
+ * @param {boolean} show
+ */
+function toggle53cColorPicker(show) {
+  const section = document.getElementById('attr53cColorSection');
+  const standardSection = document.getElementById('editorColorSection');
+  const gigascreenSection = document.getElementById('gigascreenColorSection');
+
+  if (section) section.style.display = show ? '' : 'none';
+  if (show) {
+    if (standardSection) standardSection.style.display = 'none';
+    if (gigascreenSection) gigascreenSection.style.display = 'none';
   }
 }
 
@@ -1823,6 +2066,9 @@ function buildUlaPlusAttribute() {
  * @returns {number} Attribute byte for drawing
  */
 function getCurrentDrawingAttribute() {
+  if (currentFormat === FORMAT.ATTR_53C && attr53cVirtualPalette.length > 0) {
+    return attr53cVirtualPalette[attr53cSelectedIndex].attr;
+  }
   if (isUlaPlusMode) {
     return buildUlaPlusAttribute();
   }
@@ -9186,9 +9432,11 @@ function updateColorSelectors() {
 function toggleGigascreenColorPicker(show) {
   const section = document.getElementById('gigascreenColorSection');
   const standardSection = document.getElementById('editorColorSection');
+  const attr53cSection = document.getElementById('attr53cColorSection');
 
   if (section) section.style.display = show ? '' : 'none';
   if (standardSection) standardSection.style.display = show ? 'none' : '';
+  if (show && attr53cSection) attr53cSection.style.display = 'none';
 }
 
 /**
@@ -9240,9 +9488,9 @@ function update4ColorPicker() {
     if (isPrimary && isSecondary) {
       borderStyle = '2px solid var(--accent-color)';
     } else if (isPrimary) {
-      borderStyle = '2px solid #4a9eff'; // Blue for left/primary
+      borderStyle = '2px solid ' + getCSSVar('--accent-color', '#4a9eff'); // Blue for left/primary
     } else if (isSecondary) {
-      borderStyle = '2px solid #ff6b6b'; // Red for right/secondary
+      borderStyle = '2px solid ' + getCSSVar('--danger-hover', '#ff6b6b'); // Red for right/secondary
     }
 
     // Build label showing L/R assignment
@@ -10978,7 +11226,7 @@ function renderSpecsciiPalette() {
   if (!ctx) return;
 
   // Fill background with gap color
-  ctx.fillStyle = '#333333';
+  ctx.fillStyle = getCSSVar('--bg-tertiary', '#333333');
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   // Render each tile into its own 8×8 ImageData and draw at offset position
@@ -12473,7 +12721,7 @@ function renderBarcodeSlot(slot) {
   if (!ctx) return;
 
   // Clear
-  ctx.fillStyle = '#222';
+  ctx.fillStyle = getCSSVar('--bg-tertiary', '#222');
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   const barcode = barcodes[slot];
@@ -12485,6 +12733,9 @@ function renderBarcodeSlot(slot) {
 
   // Center if narrower than 3 cells
   const offsetX = (3 - widthCells) * cellWidth / 2;
+
+  const cbLight = getCSSVar('--checkerboard-light', '#444');
+  const cbDark = getCSSVar('--checkerboard-dark', '#333');
 
   // Draw each row
   for (let y = 0; y < barcode.height; y++) {
@@ -12499,7 +12750,7 @@ function renderBarcodeSlot(slot) {
         for (let cy = 0; cy < scaleY + 1; cy += checkSize) {
           for (let cx = 0; cx < cellWidth; cx += checkSize) {
             const isLight = ((Math.floor(cx / checkSize) + Math.floor(cy / checkSize)) % 2) === 0;
-            ctx.fillStyle = isLight ? '#444' : '#333';
+            ctx.fillStyle = isLight ? cbLight : cbDark;
             ctx.fillRect(cellX + cx, cellY + cy, checkSize, checkSize);
           }
         }
@@ -12790,9 +13041,13 @@ function updateEditorState() {
   } else if (canEdit && editorActive) {
     // Editor already active but format may have changed - update UI elements
     toggleGigascreenColorPicker(currentFormat === FORMAT.GIGASCREEN);
+    toggle53cColorPicker(currentFormat === FORMAT.ATTR_53C);
     if (currentFormat === FORMAT.GIGASCREEN) {
       generateGigascreenVirtualPalette();
       updateGigascreenColorPickerUI();
+    }
+    if (currentFormat === FORMAT.ATTR_53C) {
+      build53cPalette();
     }
     // SPECSCII: initialize grids if switching from another editable format
     // (fallback — normally done in switchToPicture before first render)
@@ -12946,6 +13201,12 @@ function setEditorEnabled(active) {
       updateGigascreenColorPickerUI();
     }
     toggleGigascreenColorPicker(currentFormat === FORMAT.GIGASCREEN);
+
+    // 53c: initialize pattern color palette and show picker
+    if (currentFormat === FORMAT.ATTR_53C) {
+      build53cPalette();
+    }
+    toggle53cColorPicker(currentFormat === FORMAT.ATTR_53C);
 
     // Update convert dropdown options
     updateConvertOptions();
@@ -14164,9 +14425,9 @@ function renderCustomBrushPreview(slot) {
 
   if (!customBrushes[slot]) {
     // Draw "+" crosshair for empty slot
-    ctx.fillStyle = '#1a1a1a';
+    ctx.fillStyle = getCSSVar('--bg-primary', '#1a1a1a');
     ctx.fillRect(0, 0, cw, ch);
-    ctx.strokeStyle = '#444';
+    ctx.strokeStyle = getCSSVar('--border-primary', '#444');
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(cw / 2, ch / 2 - 8);
@@ -14186,15 +14447,17 @@ function renderCustomBrushPreview(slot) {
     const oy = Math.floor((ch - bh * scale) / 2);
 
     // Draw checkerboard background for transparency
-    ctx.fillStyle = '#1a1a1a';
+    const bgPrimary = getCSSVar('--bg-primary', '#1a1a1a');
+    ctx.fillStyle = bgPrimary;
     ctx.fillRect(0, 0, cw, ch);
     if (hasMask) {
       // Draw checkerboard in brush area to show transparency
+      const cbL = getCSSVar('--bg-tertiary', '#2a2a2a');
       const checkSize = Math.max(2, scale);
       for (let y = oy; y < oy + bh * scale; y += checkSize) {
         for (let x = ox; x < ox + bw * scale; x += checkSize) {
           const isLight = ((Math.floor((x - ox) / checkSize) + Math.floor((y - oy) / checkSize)) % 2) === 0;
-          ctx.fillStyle = isLight ? '#2a2a2a' : '#1a1a1a';
+          ctx.fillStyle = isLight ? cbL : bgPrimary;
           ctx.fillRect(x, y, checkSize, checkSize);
         }
       }
@@ -14209,7 +14472,7 @@ function renderCustomBrushPreview(slot) {
 
         if (isVisible) {
           // Visible pixel: ink (light) or paper (darker)
-          ctx.fillStyle = isSet ? '#e0e0e0' : '#505050';
+          ctx.fillStyle = isSet ? getCSSVar('--text-primary', '#e0e0e0') : getCSSVar('--text-tertiary', '#505050');
           ctx.fillRect(ox + c * scale, oy + r * scale, scale, scale);
         }
         // Transparent pixels show through to checkerboard background
@@ -14642,9 +14905,9 @@ function renderCustomBrushPreviewFrom(slot, brush) {
   ctx.clearRect(0, 0, 64, 64);
 
   if (!brush) {
-    ctx.fillStyle = '#333';
+    ctx.fillStyle = getCSSVar('--bg-tertiary', '#333');
     ctx.fillRect(0, 0, 64, 64);
-    ctx.strokeStyle = '#555';
+    ctx.strokeStyle = getCSSVar('--border-primary', '#555');
     ctx.beginPath();
     ctx.moveTo(0, 0);
     ctx.lineTo(64, 64);
@@ -14661,9 +14924,11 @@ function renderCustomBrushPreviewFrom(slot, brush) {
   const oy = Math.floor((64 - bh * scale) / 2);
 
   // Draw checkerboard background for transparent areas
+  const tCbLight = getCSSVar('--checkerboard-dark', '#282828');
+  const tCbDark = getCSSVar('--checkerboard-light', '#383838');
   for (let y = 0; y < 64; y += 8) {
     for (let x = 0; x < 64; x += 8) {
-      ctx.fillStyle = ((x + y) % 16 === 0) ? '#282828' : '#383838';
+      ctx.fillStyle = ((x + y) % 16 === 0) ? tCbLight : tCbDark;
       ctx.fillRect(x, y, 8, 8);
     }
   }
@@ -14679,7 +14944,7 @@ function renderCustomBrushPreviewFrom(slot, brush) {
       const isVisible = hasMask ? (brush.mask[byteIdx] & (1 << bitIdx)) !== 0 : true;
 
       if (isVisible) {
-        ctx.fillStyle = isSet ? '#e0e0e0' : '#505050';
+        ctx.fillStyle = isSet ? getCSSVar('--text-primary', '#e0e0e0') : getCSSVar('--text-tertiary', '#505050');
         ctx.fillRect(ox + c * scale, oy + r * scale, scale, scale);
       }
     }
@@ -14736,10 +15001,10 @@ function renderTileToCanvas(canvas, tiles, idx) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
-  ctx.fillStyle = '#000';
+  ctx.fillStyle = getCSSVar('--bg-primary', '#000');
   ctx.fillRect(0, 0, 16, 16);
 
-  ctx.fillStyle = '#e0e0e0';
+  ctx.fillStyle = getCSSVar('--text-primary', '#e0e0e0');
 
   for (let row = 0; row < 8; row++) {
     const byte = tiles[idx * 8 + row];
@@ -15429,7 +15694,7 @@ function showPatternPicker(toBsc) {
     const btn = document.createElement('button');
     btn.style.cssText = `
       padding: 6px 2px; font-size: 9px; cursor: pointer;
-      background: var(--bg-secondary, #2d2d2d); border: 1px solid #666;
+      background: var(--bg-secondary, #2d2d2d); border: 1px solid var(--border-primary, #666);
       color: var(--text-primary, #fff); white-space: nowrap;
     `;
     btn.textContent = pattern.name;
@@ -15492,7 +15757,7 @@ function showBorderColorPickerForAttr(patternId) {
   for (let i = 0; i < 8; i++) {
     const btn = document.createElement('button');
     btn.style.cssText = `
-      width: 32px; height: 32px; border: 2px solid #666; cursor: pointer;
+      width: 32px; height: 32px; border: 2px solid var(--border-primary, #666); cursor: pointer;
       background: ${colorValues[i]};
     `;
     btn.title = colorNames[i];
@@ -15638,7 +15903,7 @@ function showBorderColorPicker() {
   for (let i = 0; i < 8; i++) {
     const btn = document.createElement('button');
     btn.style.cssText = `
-      width: 32px; height: 32px; border: 2px solid #666; cursor: pointer;
+      width: 32px; height: 32px; border: 2px solid var(--border-primary, #666); cursor: pointer;
       background: ${colorValues[i]};
     `;
     btn.title = colorNames[i];
