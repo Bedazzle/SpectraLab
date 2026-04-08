@@ -1,5 +1,8 @@
 # SpectraLab Version History
 
+## v1.62
+- Memory Viewer button moved from the Sprites sidebar tab to the View tab (below File Info), so it's visible right after loading a snapshot without having to switch tabs
+
 ## v1.61
 - HLR (Gigascreen Lowres) format support: read, view, edit, save, and create new .hlr files
   - 1628-byte self-contained ZX Spectrum loader with two attribute banks (768 bytes each) and an 8-byte bitmap fill pattern
