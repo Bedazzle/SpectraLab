@@ -47,6 +47,13 @@ Load a standard `.scr` file by clicking the file input or dragging it anywhere o
 3. Optionally set a **subgrid** (e.g., 2px or 4px) for finer divisions
 4. Or press **G** to cycle through grid sizes (None → 8 → 16 → 24px)
 
+### Change Grid Color
+
+If the grid is hard to see against dark or light artwork:
+1. In **View Settings**, find the **Grid color** dropdown
+2. Select a color preset: **White**, **Gray**, **Black**, **Orange**, **Red**, or **Green**
+3. **Default** uses the standard blue grid color
+
 ### Change Palette
 
 Select a different display palette from the **Palette** dropdown in View Settings. Different palettes simulate different monitor characteristics and color profiles.
@@ -60,6 +67,14 @@ Select a different display palette from the **Palette** dropdown in View Setting
 
 - Check/uncheck the **Flash** checkbox, or press **F**
 - Flash causes ink and paper colors to swap on cells with the flash attribute enabled
+
+### Display Filters (CRT Effects)
+
+1. In **View Settings**, expand the **Display Filters** section
+2. Check the **On** checkbox to enable
+3. Choose a preset: **CRT TV**, **Composite**, **VHS**, or **Arcade**
+4. Or adjust individual filters: Scanlines, Noise, Composite, Glow, Vignette, Curvature, Smoothing
+5. Settings persist across sessions
 
 ### View File Info
 
@@ -75,6 +90,8 @@ Expand the **File Info** section to see the file name, size, format, and dimensi
 2. In the New Picture dialog, select a format from the dropdown:
    - **Screen (.scr)** is the most common choice — 256×192 pixels with 8×8 color attributes
    - Choose other formats for specific needs (ULA+ for 64 colors, IFL/MLT for multicolor, etc.)
+   - **chr$ (.ch$)** — variable-size interleaved 8x8 cell format
+   - **ZXP (.zxp)** — variable-size picture (8-2048px) with ULA or ULA+ palette
 3. Click **Create**
 
 The editor automatically switches to the **Edit** tab with a blank canvas ready for drawing.
@@ -116,6 +133,13 @@ While drawing rectangles or circles:
 - Hold **Ctrl** — constrain to perfect square or circle (1:1 ratio)
 - Hold **Alt** — draw from center instead of corner
 - Hold **Ctrl+Alt** — perfect square/circle from center
+
+### Pick Colors from Canvas
+
+Press **K** to select the Color Picker tool, then:
+- **Left-click** on the canvas to pick the ink color from that cell
+- **Right-click** to pick the paper color
+- Or hold **Alt** and click with any tool for a quick eyedropper
 
 ### Understanding Attribute Cells
 
@@ -287,7 +311,9 @@ When you load a `.png`, `.gif`, `.jpg`, `.webp`, or `.bmp` file, the Image Impor
 
 ### Choose Target Format
 
-In the **Output** section, select the target ZX Spectrum format (SCR, ULA+, IFL, MLT, etc.).
+In the **Output** section, select the target ZX Spectrum format (SCR, ULA+, IFL, MLT, ZXP, etc.).
+
+For **ZXP** format, you can specify custom width and height (8-2048 pixels, divisible by 8) and choose between ULA and ULA+ palette types.
 
 ### Select Dithering Algorithm
 
@@ -570,9 +596,12 @@ The SCA editor opens as a fullscreen overlay. Here you can:
 
 ### Save and Export
 
-- **Save As...** — save the edited animation as `.sca`
-- **Export SCR...** — export the current frame as a standard `.scr`
-- **Export 53c...** — export the current frame as `.53c` attributes
+- **Save As...** — dropdown with export options:
+  - **SCA** — save as SCA animation
+  - **SCR zip** — export all frames as SCR files in a ZIP
+  - **53c zip** — export all frames as 53c attribute files in a ZIP
+  - **GIF** — export as animated GIF with per-frame delay
+  - **PNG zip** — export as numbered PNG images in a ZIP
 
 ![SCA animation](screenshots/tutorial_sca.png)
 
@@ -647,3 +676,21 @@ Press **` (backtick)** to toggle a semi-transparent brush preview that follows y
 
 ### Snap Modes
 The Snap dropdown in the Edit tab controls how the cursor aligns. Use **Zero** or **Brush** snap modes for pixel-perfect tile placement when pasting repeating patterns.
+
+### 53c/127c Pattern Palette
+When editing .53c or .atr files, a pattern color palette replaces the standard ink/paper picker. Sort colors by Hue, RGB value, or attribute byte. Use the "Blend colors" checkbox to see averaged solid colors instead of dither patterns.
+
+### chr$ Format
+Open, view, edit, and save `.ch$`/`.chr$`/`.ch-` files — a variable-size interleaved 8x8 cell format with optional Gigascreen support.
+
+### Color Picker Tool
+Press **K** to select the Color Picker tool. Works across all editable formats including 53c, ULA+, Gigascreen, and RGB3.
+
+### Grid Color
+If the grid overlay is hard to see on dark artwork, change the grid color preset in View Settings (White, Gray, Black, Orange, Red, Green).
+
+### Light/Dark Theme
+Click the moon/sun button (☽/☀) next to the Help button to toggle between light and dark themes. The theme is auto-detected from your OS preference on first visit.
+
+### Display Filters
+Apply CRT-style post-processing effects from the Display Filters section in the View tab. Choose from presets (CRT TV, Composite, VHS, Arcade) or customize individual effects. Filters are preserved in workspace files.

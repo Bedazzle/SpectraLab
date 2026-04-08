@@ -117,6 +117,12 @@ function initScreenViewerUI() {
       handleZipFile(file);
     } else if (typeof isZxpFile === 'function' && isZxpFile(file.name)) {
       loadZxpFile(file);
+    } else if (typeof isChrFile === 'function' && isChrFile(file.name)) {
+      loadChrFile(file);
+    } else if (typeof isMghFile === 'function' && isMghFile(file.name)) {
+      loadMghFile(file);
+    } else if (typeof isHlrFile === 'function' && isHlrFile(file.name)) {
+      loadHlrFile(file);
     } else {
       loadScreenFile(file);
     }
@@ -148,7 +154,7 @@ function initScreenViewerUI() {
 
   // Zoom select handler
   zoomSelect?.addEventListener('change', function() {
-    setZoom(parseInt(this.value, 10));
+    setZoom(parseFloat(this.value));
   });
 
   // Border color select handler
@@ -205,6 +211,17 @@ function initScreenViewerUI() {
     saveSettings();
   });
 
+  // Grid color dropdown handler
+  document.getElementById('gridColorSelect')?.addEventListener('change', function() {
+    gridColorPreset = /** @type {HTMLSelectElement} */ (this).value;
+    if (typeof editorRender === 'function' && editorActive) {
+      editorRender();
+    } else {
+      renderScreen();
+    }
+    saveSettings();
+  });
+
   // Attrs checkbox handler
   document.getElementById('showAttrsCheckbox')?.addEventListener('change', function() {
     showAttributes = /** @type {HTMLInputElement} */ (this).checked;
@@ -220,11 +237,45 @@ function initScreenViewerUI() {
     }
   });
 
-  // 53c pattern select handler
+  // 53c / SCA type 1 pattern select handler
   document.getElementById('pattern53cSelect')?.addEventListener('change', function() {
+    // Update currentPicture.pattern so Picture-based renderer picks up the change
+    if (typeof currentPicture !== 'undefined' && currentPicture && currentPicture.pattern &&
+        typeof getSelectedPattern === 'function') {
+      const pat = getSelectedPattern();
+      for (let i = 0; i < 8; i++) currentPicture.pattern[i] = pat[i];
+    }
     renderScreen();
     if (typeof renderPreview === 'function') renderPreview();
     if (typeof updateAttrPreview === 'function') updateAttrPreview();
+    if (typeof build53cPalette === 'function') build53cPalette();
+    if (typeof updateEditPreview === 'function') updateEditPreview();
+    saveSettings();
+  });
+
+  // 53c blend colors checkbox handler
+  document.getElementById('attr53cBlendCheckbox')?.addEventListener('change', function() {
+    attr53cBlend = /** @type {HTMLInputElement} */ (this).checked;
+    if (typeof build53cPalette === 'function') build53cPalette();
+    renderScreen();
+    if (typeof renderPreview === 'function') renderPreview();
+    if (typeof updateAttrPreview === 'function') updateAttrPreview();
+    if (typeof updateEditPreview === 'function') updateEditPreview();
+    saveSettings();
+  });
+
+  // 53c palette sort mode radio buttons
+  document.querySelectorAll('input[name="attr53cSort"]').forEach(radio => {
+    radio.addEventListener('change', function() {
+      attr53cSortMode = /** @type {'hue'|'rgb'|'attr'} */ (/** @type {HTMLInputElement} */ (this).value);
+      if (typeof build53cPalette === 'function') build53cPalette();
+      saveSettings();
+    });
+  });
+
+  // 53c palette sort reverse checkbox
+  document.getElementById('attr53cSortReverse')?.addEventListener('change', function() {
+    attr53cSortReverse = /** @type {HTMLInputElement} */ (this).checked;
     if (typeof build53cPalette === 'function') build53cPalette();
     saveSettings();
   });
@@ -264,6 +315,64 @@ function initScreenViewerUI() {
     if (newPictureDialogLocal) newPictureDialogLocal.style.display = 'none';
   });
 
+  // Show/hide ZXP-specific options based on selected format
+  function updateZxpOptionsVisibility() {
+    const zxpOpts = document.getElementById('newPictureZxpOptions');
+    if (zxpOpts) zxpOpts.style.display = (newPictureFormat && newPictureFormat.value === 'zxp') ? '' : 'none';
+  }
+
+  // Show/hide HLR-specific options based on selected format
+  function updateHlrOptionsVisibility() {
+    const hlrOpts = document.getElementById('newPictureHlrOptions');
+    if (hlrOpts) hlrOpts.style.display = (newPictureFormat && newPictureFormat.value === 'hlr') ? '' : 'none';
+  }
+
+  newPictureFormat?.addEventListener('change', function() {
+    updateZxpOptionsVisibility();
+    updateHlrOptionsVisibility();
+  });
+
+  // HLR fill pattern dropdown + hex input + preview wiring
+  const newPictureHlrPreset = /** @type {HTMLSelectElement|null} */ (document.getElementById('newPictureHlrPreset'));
+  const newPictureHlrHex = /** @type {HTMLInputElement|null} */ (document.getElementById('newPictureHlrHex'));
+  const newPictureHlrPreview = /** @type {HTMLCanvasElement|null} */ (document.getElementById('newPictureHlrPreview'));
+
+  function renderNewPictureHlrPreview(bytes) {
+    if (typeof renderHlrPatternPreview === 'function') {
+      renderHlrPatternPreview(newPictureHlrPreview, bytes);
+    }
+  }
+
+  function updateNewPictureHlrFromPreset() {
+    if (!newPictureHlrPreset) return;
+    const key = newPictureHlrPreset.value;
+    if (key === 'custom') {
+      if (newPictureHlrHex) newPictureHlrHex.disabled = false;
+      // Parse the current hex box and show preview (or fall back to default)
+      const bytes = (typeof hlrPatternFromHex === 'function') ? hlrPatternFromHex(newPictureHlrHex ? newPictureHlrHex.value : '') : null;
+      renderNewPictureHlrPreview(bytes);
+      return;
+    }
+    if (newPictureHlrHex) newPictureHlrHex.disabled = true;
+    if (typeof hlrPatternFromPresetKey === 'function') {
+      const bytes = hlrPatternFromPresetKey(key);
+      if (bytes) {
+        if (newPictureHlrHex && typeof hlrPatternToHex === 'function') {
+          newPictureHlrHex.value = hlrPatternToHex(bytes);
+        }
+        renderNewPictureHlrPreview(bytes);
+      }
+    }
+  }
+
+  newPictureHlrPreset?.addEventListener('change', updateNewPictureHlrFromPreset);
+
+  newPictureHlrHex?.addEventListener('input', function() {
+    if (typeof hlrPatternFromHex !== 'function') return;
+    const bytes = hlrPatternFromHex(newPictureHlrHex.value);
+    if (bytes) renderNewPictureHlrPreview(bytes);
+  });
+
   // Restore last used format in New Picture dialog
   function restoreNewPictureFormat() {
     const saved = localStorage.getItem('spectraLabNewPictureFormat');
@@ -271,6 +380,32 @@ function initScreenViewerUI() {
       const option = newPictureFormat.querySelector('option[value="' + saved + '"]');
       if (option) newPictureFormat.value = saved;
     }
+    // Restore ZXP-specific settings
+    const savedW = localStorage.getItem('spectraLabNewPictureWidth');
+    const savedH = localStorage.getItem('spectraLabNewPictureHeight');
+    const savedPal = localStorage.getItem('spectraLabNewPicturePalette');
+    const wInput = /** @type {HTMLInputElement|null} */ (document.getElementById('newPictureWidth'));
+    const hInput = /** @type {HTMLInputElement|null} */ (document.getElementById('newPictureHeight'));
+    const palSelect = /** @type {HTMLSelectElement|null} */ (document.getElementById('newPicturePalette'));
+    if (savedW && wInput) wInput.value = savedW;
+    if (savedH && hInput) hInput.value = savedH;
+    if (savedPal && palSelect) palSelect.value = savedPal;
+    // Restore HLR fill pattern (preset + custom hex)
+    const savedHlrPreset = localStorage.getItem('spectraLabNewPictureHlrPreset');
+    const savedHlrHex = localStorage.getItem('spectraLabNewPictureHlrHex');
+    if (newPictureHlrPreset) {
+      if (savedHlrPreset && newPictureHlrPreset.querySelector('option[value="' + savedHlrPreset + '"]')) {
+        newPictureHlrPreset.value = savedHlrPreset;
+      } else {
+        newPictureHlrPreset.value = 'top-bottom';
+      }
+    }
+    if (newPictureHlrPreset && newPictureHlrPreset.value === 'custom' && savedHlrHex && newPictureHlrHex) {
+      newPictureHlrHex.value = savedHlrHex;
+    }
+    updateNewPictureHlrFromPreset();
+    updateZxpOptionsVisibility();
+    updateHlrOptionsVisibility();
   }
 
   // New Picture button (next to Browse)
@@ -287,7 +422,35 @@ function initScreenViewerUI() {
     const format = newPictureFormat ? newPictureFormat.value : 'scr';
     localStorage.setItem('spectraLabNewPictureFormat', format);
     if (typeof createNewPicture === 'function') {
-      createNewPicture(format);
+      if (format === 'zxp') {
+        const w = parseInt(/** @type {HTMLInputElement} */ (document.getElementById('newPictureWidth'))?.value) || 256;
+        const h = parseInt(/** @type {HTMLInputElement} */ (document.getElementById('newPictureHeight'))?.value) || 192;
+        const pal = /** @type {HTMLSelectElement} */ (document.getElementById('newPicturePalette'))?.value || 'ula';
+        localStorage.setItem('spectraLabNewPictureWidth', String(w));
+        localStorage.setItem('spectraLabNewPictureHeight', String(h));
+        localStorage.setItem('spectraLabNewPicturePalette', pal);
+        createNewPicture(format, { width: w, height: h, palette: pal });
+      } else if (format === 'hlr') {
+        // Resolve pattern: preset key (if known) or hex input (if custom/invalid)
+        const presetKey = newPictureHlrPreset ? newPictureHlrPreset.value : 'top-bottom';
+        let hlrPattern = null;
+        if (presetKey !== 'custom' && typeof hlrPatternFromPresetKey === 'function') {
+          hlrPattern = hlrPatternFromPresetKey(presetKey);
+        }
+        if (!hlrPattern && typeof hlrPatternFromHex === 'function' && newPictureHlrHex) {
+          hlrPattern = hlrPatternFromHex(newPictureHlrHex.value);
+        }
+        if (!hlrPattern && typeof hlrPatternFromPresetKey === 'function') {
+          hlrPattern = hlrPatternFromPresetKey('top-bottom');
+        }
+        localStorage.setItem('spectraLabNewPictureHlrPreset', presetKey);
+        if (presetKey === 'custom' && newPictureHlrHex) {
+          localStorage.setItem('spectraLabNewPictureHlrHex', newPictureHlrHex.value);
+        }
+        createNewPicture(format, { hlrPattern: hlrPattern });
+      } else {
+        createNewPicture(format);
+      }
     }
     // Switch to Edit tab after creating new picture
     const editTab = document.querySelector('.panel-tab[data-tab="edit"]');
@@ -315,7 +478,7 @@ function initScreenViewerUI() {
     wheelZoomAccum = 0;
 
     // Available zoom levels matching the dropdown
-    const zoomLevels = [1, 2, 3, 4, 5, 6, 8, 10, 20];
+    const zoomLevels = [0.125, 0.25, 0.5, 1, 2, 3, 4, 5, 6, 8, 10, 20];
     const currentIndex = zoomLevels.indexOf(zoom);
     let newIndex;
     if (direction < 0) {
@@ -350,6 +513,18 @@ function initScreenViewerUI() {
       }
     }
   }, { passive: false });
+
+  // Re-render on scroll — canvas is viewport-sized, needs redraw when scroll position changes
+  if (canvasContainer) {
+    let scrollRafId = null;
+    canvasContainer.addEventListener('scroll', function() {
+      if (scrollRafId) return; // throttle to animation frame
+      scrollRafId = requestAnimationFrame(function() {
+        scrollRafId = null;
+        if (typeof renderScreen === 'function') renderScreen();
+      });
+    });
+  }
 
   // Flash checkbox handler
   flashCheckbox?.addEventListener('change', function() {

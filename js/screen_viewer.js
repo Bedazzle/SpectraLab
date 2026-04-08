@@ -117,7 +117,11 @@ const FORMAT = {
   MONO_2_3: 'mono_2_3',   // 4096-byte monochrome (2/3 screen)
   MONO_1_3: 'mono_1_3',   // 2048-byte monochrome (1/3 screen)
   SPECSCII: 'specscii',   // 768-byte text screen (32x24 characters)
-  SCA: 'sca'              // SCA animation (multiple frames with timing)
+  SCA: 'sca',             // SCA animation (multiple frames with timing)
+  ZXP: 'zxp',             // ZXP variable-size (non-standard dimensions)
+  CHR: 'ch$',             // chr$ variable-size (interleaved cell format)
+  MGH: 'mgh',             // Multiartist MGH multicolor gigascreen (.mg1/.mg2/.mg4/.mg8)
+  HLR: 'hlr'              // Gigascreen Lowres (1628-byte self-extracting .hlr)
 };
 
 // SPECSCII format constants
@@ -195,6 +199,30 @@ const GIGASCREEN = {
 const GIGASCREEN_MODE = {
   AVERAGE: 'average',     // Blend colors by averaging RGB values
   FLICKER: 'flicker'      // Alternate frames at 50fps
+};
+
+// MGH format constants (Multiartist multicolor gigascreen)
+// 256-byte header + 2 interleaved bitmaps + 2 multicolor attr blocks
+// Mode determines attr cell height: 1 (mg1), 2 (mg2), 4 (mg4), 8 (mg8)
+const MGH = {
+  HEADER_SIZE: 256,
+  BITMAP_SIZE: 6144,
+  SIGNATURE: 'MGH'
+};
+
+// HLR format constants (Gigascreen Lowres / "Half Low Res")
+// 1628-byte self-extracting Z80 program that displays a two-frame gigascreen
+// with a fixed 4-rows-on / 4-rows-off bitmap pattern and two alternating
+// attribute banks. Each 8x4 half-cell shows a single blended color, giving
+// a 32 x 48 grid of colored cells on a 256 x 192 display.
+const HLR = {
+  TOTAL_SIZE: 1628,        // 84 loader + 8 pattern + 2 * 768 attrs
+  PREFIX_SIZE: 92,         // Loader (84) + bitmap pattern (8)
+  PATTERN_OFFSET: 84,      // 0x54: 8-byte fill pattern (one byte per scanline)
+  PATTERN_SIZE: 8,
+  ATTRS1_OFFSET: 92,       // 0x5C
+  ATTRS2_OFFSET: 860,      // 0x35C (ATTRS1_OFFSET + 768)
+  ATTRS_SIZE: 768          // Standard 32x24 attribute layout
 };
 
 // BMC4 format constants (border + 8x4 multicolor)
@@ -507,6 +535,10 @@ function setPalette(paletteId) {
     if (typeof editorActive !== 'undefined' && editorActive && currentFormat === FORMAT.ATTR_53C && typeof build53cPalette === 'function') {
       build53cPalette();
     }
+    // Rebuild RGB3 palette with new palette colors
+    if (typeof editorActive !== 'undefined' && editorActive && currentFormat === FORMAT.RGB3 && typeof buildRgb3Palette === 'function') {
+      buildRgb3Palette();
+    }
   }
 }
 
@@ -543,6 +575,9 @@ function loadPalettes() {
 /** @type {Uint8Array} */
 let screenData = new Uint8Array(0);
 
+/** @type {Picture|null} - Internal picture format (linear layout), null for non-SCR formats */
+let currentPicture = null;
+
 /** @type {number} */
 let zoom = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.DEFAULT_ZOOM) || 2;
 
@@ -575,6 +610,9 @@ let flashEnabled = true;
 
 /** @type {boolean} - Whether to show attributes (false = monochrome white on black) */
 let showAttributes = true;
+
+/** @type {boolean} - When true, 53c/atr cells render as solid blended colors instead of patterns */
+let attr53cBlend = false;
 
 /** @type {Uint8Array} - Current font data (768 bytes = 96 chars × 8 bytes) */
 // Embedded ZX Spectrum ROM font (0x20-0x7F, 96 chars × 8 bytes = 768 bytes)
@@ -715,6 +753,34 @@ let borderGridSize = 0;
 
 /** @type {number} - Border subgrid cell size in pixels (0=none, 1, 2, 4) */
 let borderSubgridSize = 0;
+
+/** @type {string} - Grid color preset name ('default', 'white', 'gray', etc.) */
+let gridColorPreset = 'default';
+
+/** @type {Object<string, {grid: string, subgrid: string, border: string}>} */
+const GRID_COLOR_PRESETS = {
+  default: { grid: '', subgrid: '', border: '' },
+  white:   { grid: 'rgba(255,255,255,0.8)', subgrid: 'rgba(255,255,255,0.35)', border: 'rgba(255,255,255,0.7)' },
+  gray:    { grid: 'rgba(160,160,160,0.8)', subgrid: 'rgba(160,160,160,0.35)', border: 'rgba(160,160,160,0.7)' },
+  black:   { grid: 'rgba(0,0,0,0.8)',       subgrid: 'rgba(0,0,0,0.35)',       border: 'rgba(0,0,0,0.7)' },
+  orange:  { grid: 'rgba(255,165,0,0.8)',   subgrid: 'rgba(255,165,0,0.35)',   border: 'rgba(255,165,0,0.7)' },
+  red:     { grid: 'rgba(255,0,0,0.8)',     subgrid: 'rgba(255,0,0,0.35)',     border: 'rgba(255,0,0,0.7)' },
+  green:   { grid: 'rgba(0,200,0,0.8)',     subgrid: 'rgba(0,200,0,0.35)',     border: 'rgba(0,200,0,0.7)' }
+};
+
+/**
+ * Returns the current grid color for the given role.
+ * @param {'grid'|'subgrid'|'border'} role
+ * @returns {string}
+ */
+function getGridColor(role) {
+  const preset = GRID_COLOR_PRESETS[gridColorPreset];
+  if (preset && preset[role]) return preset[role];
+  // Fall back to APP_CONFIG defaults
+  if (role === 'grid') return (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.GRID_COLOR) || 'rgba(0, 160, 255, 0.4)';
+  if (role === 'subgrid') return (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.SUBGRID_COLOR) || 'rgba(128, 128, 128, 0.25)';
+  return (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.BORDER_GRID_COLOR) || 'rgba(255, 160, 0, 0.35)';
+}
 
 /** @type {HTMLSelectElement} */
 let borderColorSelect;
@@ -1040,6 +1106,244 @@ function renderScrFast(ctx, borderOffset) {
 }
 
 /**
+ * Renders SCR format from the internal picture format (linear bitmap layout).
+ * Reads from currentPicture.planes[0].bitmap and .attrs with linear offsets.
+ * Produces pixel-identical output to renderScrFast.
+ * @param {CanvasRenderingContext2D} ctx - Canvas context
+ * @param {number} borderOffset - Border offset in canvas pixels
+ */
+function renderScrFromPicture(ctx, borderOffset) {
+  if (!currentPicture) return;
+
+  // Sync from screenData so in-progress drawing is visible immediately
+  if (typeof syncPictureFromScreenData === 'function') {
+    syncPictureFromScreenData(screenData, currentPicture);
+  }
+
+  const bitmap = currentPicture.planes[0].bitmap;
+  const attrs = currentPicture.planes[0].attrs;
+  const cols = currentPicture.cols; // 32
+
+  const imageData = ctx.createImageData(SCREEN.WIDTH, SCREEN.HEIGHT);
+  const data = imageData.data;
+
+  for (let y = 0; y < SCREEN.HEIGHT; y++) {
+    const attrRow = y >> 3; // Math.floor(y / 8)
+    for (let col = 0; col < cols; col++) {
+      const byte = bitmap[y * cols + col];
+      const attr = attrs[attrRow * cols + col];
+
+      let inkRgb, paperRgb;
+      if (showAttributes) {
+        ({ inkRgb, paperRgb } = getColorsRgb(attr));
+      } else {
+        inkRgb = [0, 0, 0];
+        paperRgb = [255, 255, 255];
+      }
+
+      const x = col * 8;
+      for (let bit = 0; bit < 8; bit++) {
+        const px = x + bit;
+        const maskIdx = y * SCREEN.WIDTH + px;
+        const pixelIndex = maskIdx * 4;
+
+        const rgb = isPixelTransparent(maskIdx)
+          ? getCheckerboardColor(px, y)
+          : ((byte & (0x80 >> bit)) ? inkRgb : paperRgb);
+        data[pixelIndex] = rgb[0];
+        data[pixelIndex + 1] = rgb[1];
+        data[pixelIndex + 2] = rgb[2];
+        data[pixelIndex + 3] = 255;
+      }
+    }
+  }
+
+  const temp = getTempRenderCanvas(SCREEN.WIDTH, SCREEN.HEIGHT);
+  if (!temp) return;
+
+  temp.ctx.putImageData(imageData, 0, 0);
+
+  applyRenderSmoothing(ctx);
+  ctx.drawImage(
+    temp.canvas,
+    0, 0, SCREEN.WIDTH, SCREEN.HEIGHT,
+    borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom
+  );
+}
+
+/**
+ * Renders any single-plane Picture from the internal linear layout.
+ * Covers SCR, SCR+/ULA+, IFL, MLT, 53c (pattern), and Mono formats.
+ * Parametric on attrCellHeight: 8=SCR, 2=IFL, 1=MLT, 0=Mono/no-attrs.
+ * @param {CanvasRenderingContext2D} ctx - Canvas context
+ * @param {number} borderOffset - Border offset in canvas pixels
+ * @param {Picture} pic - The currentPicture to render
+ */
+function renderPictureStandard(ctx, borderOffset, pic, scrollInfo) {
+  const cols = pic.cols;
+  const height = pic.height;
+  const width = pic.width;
+
+  // ZXP/chr$: render directly from screenData (already linear layout, skip sync+copy)
+  const isZxpDirect = (pic.sourceFormat === 'zxp' || pic.sourceFormat === 'ch$') && screenData && screenData.length > 0;
+  if (!isZxpDirect) {
+    // Sync from screenData so in-progress drawing is visible immediately
+    if (typeof syncPictureFromScreenData === 'function') {
+      syncPictureFromScreenData(screenData, pic);
+    }
+  }
+
+  const bitmap = isZxpDirect ? screenData : pic.planes[0].bitmap;
+  const bitmapSize = cols * height;
+  const attrs = isZxpDirect ? null : pic.planes[0].attrs;
+  const attrCellH = pic.attrCellHeight;
+
+  // 53c blend mode: precompute ink ratio from pattern
+  const use53cBlend = attr53cBlend && pic.pattern;
+  let blendInkRatio = 0;
+  if (use53cBlend) {
+    let inkBitCount = 0;
+    for (let py = 0; py < 8; py++) {
+      for (let px = 0; px < 8; px++) {
+        if (pic.pattern[py] & (1 << (7 - px))) inkBitCount++;
+      }
+    }
+    blendInkRatio = inkBitCount / 64;
+  }
+
+  // For very large images with viewport-capped canvas, only render the visible region
+  const totalPixels = width * height;
+  const LARGE_IMAGE_THRESHOLD = 512 * 512;
+  let clipX0 = 0, clipY0 = 0, clipX1 = width, clipY1 = height;
+  let useClipping = false;
+
+  if (totalPixels > LARGE_IMAGE_THRESHOLD && scrollInfo) {
+    const { scrollX, scrollY, viewW, viewH } = scrollInfo;
+    // Convert viewport to source pixel coordinates (accounting for border offset)
+    clipX0 = Math.max(0, Math.floor((scrollX - borderOffset) / zoom));
+    clipY0 = Math.max(0, Math.floor((scrollY - borderOffset) / zoom));
+    clipX1 = Math.min(width, Math.ceil((scrollX + viewW - borderOffset) / zoom));
+    clipY1 = Math.min(height, Math.ceil((scrollY + viewH - borderOffset) / zoom));
+    // Align to 8-pixel (char cell) boundaries for correct rendering
+    clipX0 = Math.max(0, (clipX0 >> 3) << 3);
+    clipY0 = Math.max(0, clipY0);
+    clipX1 = Math.min(width, ((clipX1 + 7) >> 3) << 3);
+    clipY1 = Math.min(height, clipY1);
+    useClipping = clipX1 > clipX0 && clipY1 > clipY0;
+  }
+
+  const renderX0 = useClipping ? clipX0 : 0;
+  const renderY0 = useClipping ? clipY0 : 0;
+  const renderX1 = useClipping ? clipX1 : width;
+  const renderY1 = useClipping ? clipY1 : height;
+  const renderW = renderX1 - renderX0;
+  const renderH = renderY1 - renderY0;
+  const colStart = renderX0 >> 3;
+  const colEnd = renderX1 >> 3;
+
+  const imageData = ctx.createImageData(renderW, renderH);
+  const data = imageData.data;
+
+  // Mono mode: determine ink/paper colors
+  let monoInk, monoPaper;
+  if (attrCellH === 0) {
+    if (typeof editorActive !== 'undefined' && editorActive &&
+        typeof editorInkColor !== 'undefined' && typeof editorPaperColor !== 'undefined') {
+      const editorBrightVal = (typeof editorBright !== 'undefined') ? editorBright : false;
+      const palette = editorBrightVal ? ZX_PALETTE.BRIGHT : ZX_PALETTE.REGULAR;
+      const ink = palette[editorInkColor];
+      const paper = palette[editorPaperColor];
+      const inkC = parseColorToRgb(ink);
+      const paperC = parseColorToRgb(paper);
+      monoInk = [inkC.r, inkC.g, inkC.b];
+      monoPaper = [paperC.r, paperC.g, paperC.b];
+    } else {
+      monoInk = [255, 255, 255];
+      monoPaper = [0, 0, 0];
+    }
+  }
+
+  for (let y = renderY0; y < renderY1; y++) {
+    const attrRow = attrCellH > 0 ? Math.floor(y / attrCellH) : -1;
+    const localY = y - renderY0;
+    for (let col = colStart; col < colEnd; col++) {
+      const byte = bitmap[y * cols + col];
+
+      let inkRgb, paperRgb;
+      if (attrCellH === 0) {
+        inkRgb = monoInk;
+        paperRgb = monoPaper;
+      } else if (showAttributes) {
+        const attr = isZxpDirect ? screenData[bitmapSize + attrRow * cols + col] : attrs[attrRow * cols + col];
+        ({ inkRgb, paperRgb } = getColorsRgb(attr));
+      } else {
+        inkRgb = [0, 0, 0];
+        paperRgb = [255, 255, 255];
+      }
+
+      const x = (col - colStart) * 8;
+      if (use53cBlend) {
+        // Blend mode: solid averaged color per cell
+        const br = Math.round(inkRgb[0] * blendInkRatio + paperRgb[0] * (1 - blendInkRatio));
+        const bg = Math.round(inkRgb[1] * blendInkRatio + paperRgb[1] * (1 - blendInkRatio));
+        const bb = Math.round(inkRgb[2] * blendInkRatio + paperRgb[2] * (1 - blendInkRatio));
+        for (let bit = 0; bit < 8; bit++) {
+          const px = x + bit;
+          const srcPx = col * 8 + bit;
+          const maskIdx = y * width + srcPx;
+          const pixelIndex = (localY * renderW + px) * 4;
+          const rgb = isPixelTransparent(maskIdx) ? getCheckerboardColor(srcPx, y) : null;
+          data[pixelIndex] = rgb ? rgb[0] : br;
+          data[pixelIndex + 1] = rgb ? rgb[1] : bg;
+          data[pixelIndex + 2] = rgb ? rgb[2] : bb;
+          data[pixelIndex + 3] = 255;
+        }
+      } else {
+        for (let bit = 0; bit < 8; bit++) {
+          const px = x + bit;
+          const srcPx = col * 8 + bit;
+          const maskIdx = y * width + srcPx;
+          const pixelIndex = (localY * renderW + px) * 4;
+
+          const rgb = isPixelTransparent(maskIdx)
+            ? getCheckerboardColor(srcPx, y)
+            : ((byte & (0x80 >> bit)) ? inkRgb : paperRgb);
+          data[pixelIndex] = rgb[0];
+          data[pixelIndex + 1] = rgb[1];
+          data[pixelIndex + 2] = rgb[2];
+          data[pixelIndex + 3] = 255;
+        }
+      }
+    }
+  }
+
+  if (useClipping) {
+    // Render only the clipped region: putImageData to temp, then drawImage the region
+    const temp = getTempRenderCanvas(renderW, renderH);
+    if (!temp) return;
+    temp.ctx.putImageData(imageData, 0, 0);
+    applyRenderSmoothing(ctx);
+    // Clear canvas first (border fill already done by caller), then draw visible portion
+    ctx.drawImage(
+      temp.canvas,
+      0, 0, renderW, renderH,
+      borderOffset + renderX0 * zoom, borderOffset + renderY0 * zoom,
+      renderW * zoom, renderH * zoom
+    );
+  } else {
+    const temp = getTempRenderCanvas(width, height);
+    if (!temp) return;
+    temp.ctx.putImageData(imageData, 0, 0);
+    applyRenderSmoothing(ctx);
+    ctx.drawImage(
+      temp.canvas,
+      0, 0, width, height,
+      borderOffset, borderOffset, width * zoom, height * zoom
+    );
+  }
+}
+
+/**
  * Toggles attribute display on/off and re-renders
  */
 function toggleAttributes() {
@@ -1055,25 +1359,41 @@ function toggleAttributes() {
  * @param {CanvasRenderingContext2D} ctx - Canvas context
  * @param {number} borderOffset - Border offset in canvas pixels
  */
-function render53cScreen(ctx, borderOffset) {
+/**
+ * Returns the selected fill pattern array (8 bytes) based on the pattern dropdown.
+ * For SCA type 1 "file" option, returns the embedded fill pattern from the SCA header.
+ * @param {Uint8Array|null} [fileFallback] - File-embedded pattern to use for "file" option
+ * @returns {number[]|Uint8Array}
+ */
+function getSelectedPattern(fileFallback) {
   const select = /** @type {HTMLSelectElement} */ (document.getElementById('pattern53cSelect'));
   const patternName = select?.value || 'checker';
+  if (patternName === 'file' && fileFallback) return fileFallback;
+  if (patternName === 'stripes') return APP_CONFIG.PATTERN_53C_STRIPES;
+  if (patternName === 'dd77') return APP_CONFIG.PATTERN_53C_DD77;
+  return APP_CONFIG.PATTERN_53C_CHECKER;
+}
 
-  // Get pattern array from config (8 bytes, one per row, MSB = leftmost pixel)
-  let patternArray;
-  if (patternName === 'stripes') {
-    patternArray = APP_CONFIG.PATTERN_53C_STRIPES;
-  } else if (patternName === 'dd77') {
-    patternArray = APP_CONFIG.PATTERN_53C_DD77;
-  } else {
-    patternArray = APP_CONFIG.PATTERN_53C_CHECKER;
-  }
+function render53cScreen(ctx, borderOffset) {
+  const patternArray = getSelectedPattern();
 
   // Fast path: render to 1:1 ImageData, then scale with drawImage (GPU accelerated)
   const imageData = ctx.createImageData(SCREEN.WIDTH, SCREEN.HEIGHT);
   const data = imageData.data;
   const defaultInkRgb = [0, 0, 0];
   const defaultPaperRgb = [255, 255, 255];
+
+  // Precompute ink ratio for blend mode
+  let inkRatio = 0;
+  if (attr53cBlend) {
+    let inkBitCount = 0;
+    for (let py = 0; py < 8; py++) {
+      for (let px = 0; px < 8; px++) {
+        if (patternArray[py] & (1 << (7 - px))) inkBitCount++;
+      }
+    }
+    inkRatio = inkBitCount / 64;
+  }
 
   for (let row = 0; row < SCREEN.CHAR_ROWS; row++) {
     for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
@@ -1090,18 +1410,36 @@ function render53cScreen(ctx, borderOffset) {
       const cellX = col * 8;
       const cellY = row * 8;
 
-      for (let py = 0; py < 8; py++) {
-        const patternByte = patternArray[py];
-        const y = cellY + py;
-        const rowOffset = y * SCREEN.WIDTH;
-        for (let px = 0; px < 8; px++) {
-          const isInk = (patternByte & (1 << (7 - px))) !== 0;
-          const rgb = isInk ? inkRgb : paperRgb;
-          const pixelIndex = (rowOffset + cellX + px) * 4;
-          data[pixelIndex] = rgb[0];
-          data[pixelIndex + 1] = rgb[1];
-          data[pixelIndex + 2] = rgb[2];
-          data[pixelIndex + 3] = 255;
+      if (attr53cBlend) {
+        // Blend mode: fill entire cell with solid averaged color
+        const br = Math.round(inkRgb[0] * inkRatio + paperRgb[0] * (1 - inkRatio));
+        const bg = Math.round(inkRgb[1] * inkRatio + paperRgb[1] * (1 - inkRatio));
+        const bb = Math.round(inkRgb[2] * inkRatio + paperRgb[2] * (1 - inkRatio));
+        for (let py = 0; py < 8; py++) {
+          const rowOffset = (cellY + py) * SCREEN.WIDTH;
+          for (let px = 0; px < 8; px++) {
+            const pixelIndex = (rowOffset + cellX + px) * 4;
+            data[pixelIndex] = br;
+            data[pixelIndex + 1] = bg;
+            data[pixelIndex + 2] = bb;
+            data[pixelIndex + 3] = 255;
+          }
+        }
+      } else {
+        // Pattern mode: original checkerboard rendering
+        for (let py = 0; py < 8; py++) {
+          const patternByte = patternArray[py];
+          const y = cellY + py;
+          const rowOffset = y * SCREEN.WIDTH;
+          for (let px = 0; px < 8; px++) {
+            const isInk = (patternByte & (1 << (7 - px))) !== 0;
+            const rgb = isInk ? inkRgb : paperRgb;
+            const pixelIndex = (rowOffset + cellX + px) * 4;
+            data[pixelIndex] = rgb[0];
+            data[pixelIndex + 1] = rgb[1];
+            data[pixelIndex + 2] = rgb[2];
+            data[pixelIndex + 3] = 255;
+          }
         }
       }
     }
@@ -1254,6 +1592,24 @@ function renderRgb3Screen(ctx, borderOffset) {
   const imageData = ctx.createImageData(SCREEN.WIDTH, SCREEN.HEIGHT);
   const data = imageData.data;
 
+  // Precompute 8 blended RGB3 colors from current palette.
+  // Each bitplane flickers through black: perceived = average of 3 frames.
+  const black = ZX_PALETTE_RGB.BRIGHT[0];
+  const palBlue = ZX_PALETTE_RGB.BRIGHT[1];
+  const palRed = ZX_PALETTE_RGB.BRIGHT[2];
+  const palGreen = ZX_PALETTE_RGB.BRIGHT[4];
+  const rgb3Lut = new Array(8);
+  for (let i = 0; i < 8; i++) {
+    const fR = (i & 2) ? palRed : black;
+    const fG = (i & 4) ? palGreen : black;
+    const fB = (i & 1) ? palBlue : black;
+    rgb3Lut[i] = [
+      Math.round((fR[0] + fG[0] + fB[0]) / 3),
+      Math.round((fR[1] + fG[1] + fB[1]) / 3),
+      Math.round((fR[2] + fG[2] + fB[2]) / 3)
+    ];
+  }
+
   // Process each pixel line from 0 to 191
   for (let y = 0; y < SCREEN.HEIGHT; y++) {
     // Calculate bitmap address using ZX Spectrum interleaved layout
@@ -1279,10 +1635,14 @@ function renderRgb3Screen(ctx, borderOffset) {
           data[pixelIndex + 1] = checker[1];
           data[pixelIndex + 2] = checker[2];
         } else {
-          // Combine RGB channels - each channel contributes if its bit is set
-          data[pixelIndex] = isBitSet(redByte, bit) ? 255 : 0;
-          data[pixelIndex + 1] = isBitSet(greenByte, bit) ? 255 : 0;
-          data[pixelIndex + 2] = isBitSet(blueByte, bit) ? 255 : 0;
+          // Combine RGB channels using precomputed palette-based LUT
+          const colorIdx = (isBitSet(redByte, bit) ? 2 : 0) |
+                           (isBitSet(greenByte, bit) ? 4 : 0) |
+                           (isBitSet(blueByte, bit) ? 1 : 0);
+          const c = rgb3Lut[colorIdx];
+          data[pixelIndex] = c[0];
+          data[pixelIndex + 1] = c[1];
+          data[pixelIndex + 2] = c[2];
         }
         data[pixelIndex + 3] = 255;
       }
@@ -1312,6 +1672,12 @@ function renderRgb3ScreenFlicker(ctx, borderOffset, phase) {
                          phase === 1 ? RGB3.GREEN_OFFSET :
                          RGB3.BLUE_OFFSET;
 
+  // Palette colors: phase 0=Red(2), 1=Green(4), 2=Blue(1)
+  const onColor = phase === 0 ? ZX_PALETTE_RGB.BRIGHT[2] :
+                  phase === 1 ? ZX_PALETTE_RGB.BRIGHT[4] :
+                  ZX_PALETTE_RGB.BRIGHT[1];
+  const offColor = ZX_PALETTE_RGB.BRIGHT[0];
+
   // Process each pixel line from 0 to 191
   for (let y = 0; y < SCREEN.HEIGHT; y++) {
     // Calculate bitmap address using ZX Spectrum interleaved layout
@@ -1335,24 +1701,12 @@ function renderRgb3ScreenFlicker(ctx, borderOffset, phase) {
           data[pixelIndex + 1] = checker[1];
           data[pixelIndex + 2] = checker[2];
         } else {
-          // Show single color channel based on phase
+          // Show palette color for this bitplane phase, or black
           const bitSet = isBitSet(planeByte, bit);
-          if (phase === 0) {
-            // Red phase
-            data[pixelIndex] = bitSet ? 255 : 0;
-            data[pixelIndex + 1] = 0;
-            data[pixelIndex + 2] = 0;
-          } else if (phase === 1) {
-            // Green phase
-            data[pixelIndex] = 0;
-            data[pixelIndex + 1] = bitSet ? 255 : 0;
-            data[pixelIndex + 2] = 0;
-          } else {
-            // Blue phase
-            data[pixelIndex] = 0;
-            data[pixelIndex + 1] = 0;
-            data[pixelIndex + 2] = bitSet ? 255 : 0;
-          }
+          const color = bitSet ? onColor : offColor;
+          data[pixelIndex] = color[0];
+          data[pixelIndex + 1] = color[1];
+          data[pixelIndex + 2] = color[2];
         }
         data[pixelIndex + 3] = 255;
       }
@@ -1365,6 +1719,127 @@ function renderRgb3ScreenFlicker(ctx, borderOffset, phase) {
   temp.ctx.putImageData(imageData, 0, 0);
   applyRenderSmoothing(ctx);
   ctx.drawImage(temp.canvas, borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom);
+}
+
+/**
+ * Renders an RGB3 Picture from the internal linear layout.
+ * Dispatches between average-blend and flicker modes.
+ * Three planes: [0]=Red, [1]=Green, [2]=Blue, no attributes.
+ * @param {CanvasRenderingContext2D} ctx - Canvas context
+ * @param {number} borderOffset - Border offset in canvas pixels
+ * @param {Picture} pic - The currentPicture (planeCount=3, colorMode='rgb3')
+ */
+function renderPictureRgb3(ctx, borderOffset, pic) {
+  // Sync from screenData so in-progress drawing is visible immediately
+  if (typeof syncPictureFromScreenData === 'function') {
+    syncPictureFromScreenData(screenData, pic);
+  }
+
+  const cols = pic.cols;
+  const width = pic.width;
+  const height = pic.height;
+
+  const imageData = ctx.createImageData(width, height);
+  const data = imageData.data;
+
+  const isFlicker = rgb3FlickerEnabled && rgb3FlickerFrameId !== null;
+
+  if (isFlicker) {
+    // Flicker: show one bitplane based on phase
+    const plane = pic.planes[rgb3FlickerPhase];
+    const planeBitmap = plane.bitmap;
+
+    // Palette colors: phase 0=Red(2), 1=Green(4), 2=Blue(1)
+    const onColor = rgb3FlickerPhase === 0 ? ZX_PALETTE_RGB.BRIGHT[2] :
+                    rgb3FlickerPhase === 1 ? ZX_PALETTE_RGB.BRIGHT[4] :
+                    ZX_PALETTE_RGB.BRIGHT[1];
+    const offColor = ZX_PALETTE_RGB.BRIGHT[0];
+
+    for (let y = 0; y < height; y++) {
+      for (let col = 0; col < cols; col++) {
+        const byte = planeBitmap[y * cols + col];
+        const x = col * 8;
+        for (let bit = 0; bit < 8; bit++) {
+          const px = x + bit;
+          const maskIdx = y * width + px;
+          const pixelIndex = maskIdx * 4;
+
+          if (isPixelTransparent(maskIdx)) {
+            const checker = getCheckerboardColor(px, y);
+            data[pixelIndex] = checker[0];
+            data[pixelIndex + 1] = checker[1];
+            data[pixelIndex + 2] = checker[2];
+          } else {
+            const color = (byte & (0x80 >> bit)) ? onColor : offColor;
+            data[pixelIndex] = color[0];
+            data[pixelIndex + 1] = color[1];
+            data[pixelIndex + 2] = color[2];
+          }
+          data[pixelIndex + 3] = 255;
+        }
+      }
+    }
+  } else {
+    // Average: combine 3 linear bitmaps with precomputed 8-color palette LUT
+    const black = ZX_PALETTE_RGB.BRIGHT[0];
+    const palBlue = ZX_PALETTE_RGB.BRIGHT[1];
+    const palRed = ZX_PALETTE_RGB.BRIGHT[2];
+    const palGreen = ZX_PALETTE_RGB.BRIGHT[4];
+    const rgb3Lut = new Array(8);
+    for (let i = 0; i < 8; i++) {
+      const fR = (i & 2) ? palRed : black;
+      const fG = (i & 4) ? palGreen : black;
+      const fB = (i & 1) ? palBlue : black;
+      rgb3Lut[i] = [
+        Math.round((fR[0] + fG[0] + fB[0]) / 3),
+        Math.round((fR[1] + fG[1] + fB[1]) / 3),
+        Math.round((fR[2] + fG[2] + fB[2]) / 3)
+      ];
+    }
+
+    const redBm = pic.planes[0].bitmap;
+    const greenBm = pic.planes[1].bitmap;
+    const blueBm = pic.planes[2].bitmap;
+
+    for (let y = 0; y < height; y++) {
+      for (let col = 0; col < cols; col++) {
+        const rowOff = y * cols + col;
+        const redByte = redBm[rowOff];
+        const greenByte = greenBm[rowOff];
+        const blueByte = blueBm[rowOff];
+
+        const x = col * 8;
+        for (let bit = 0; bit < 8; bit++) {
+          const px = x + bit;
+          const maskIdx = y * width + px;
+          const pixelIndex = maskIdx * 4;
+          const mask = 0x80 >> bit;
+
+          if (isPixelTransparent(maskIdx)) {
+            const checker = getCheckerboardColor(px, y);
+            data[pixelIndex] = checker[0];
+            data[pixelIndex + 1] = checker[1];
+            data[pixelIndex + 2] = checker[2];
+          } else {
+            const colorIdx = ((redByte & mask) ? 2 : 0) |
+                             ((greenByte & mask) ? 4 : 0) |
+                             ((blueByte & mask) ? 1 : 0);
+            const c = rgb3Lut[colorIdx];
+            data[pixelIndex] = c[0];
+            data[pixelIndex + 1] = c[1];
+            data[pixelIndex + 2] = c[2];
+          }
+          data[pixelIndex + 3] = 255;
+        }
+      }
+    }
+  }
+
+  const temp = getTempRenderCanvas(width, height);
+  if (!temp) return;
+  temp.ctx.putImageData(imageData, 0, 0);
+  applyRenderSmoothing(ctx);
+  ctx.drawImage(temp.canvas, borderOffset, borderOffset, width * zoom, height * zoom);
 }
 
 /**
@@ -1536,6 +2011,92 @@ function renderGigascreenAverage(ctx, borderOffset) {
   ctx.drawImage(temp.canvas, borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom);
 }
 
+/**
+ * Renders a Gigascreen Picture from the internal linear layout.
+ * Dispatches between average-blend and flicker modes.
+ * @param {CanvasRenderingContext2D} ctx - Canvas context
+ * @param {number} borderOffset - Border offset in canvas pixels
+ * @param {Picture} pic - The currentPicture (planeCount=2, colorMode='gigascreen')
+ */
+function renderPictureGigascreen(ctx, borderOffset, pic) {
+  // Sync from screenData so in-progress drawing is visible immediately
+  if (typeof syncPictureFromScreenData === 'function') {
+    syncPictureFromScreenData(screenData, pic);
+  }
+
+  const cols = pic.cols;
+  const width = pic.width;
+  const height = pic.height;
+  const attrCellH = pic.attrCellHeight; // 8
+
+  const imageData = ctx.createImageData(width, height);
+  const data = imageData.data;
+
+  const isFlicker = gigascreenMode === GIGASCREEN_MODE.FLICKER && gigascreenFlickerFrameId !== null;
+
+  if (isFlicker) {
+    // Flicker: show one plane based on phase
+    const plane = pic.planes[gigascreenFlickerPhase];
+    const bitmap = plane.bitmap;
+    const attrs = plane.attrs;
+
+    for (let y = 0; y < height; y++) {
+      const attrRow = attrCellH > 0 ? Math.floor(y / attrCellH) : (y >> 3);
+      for (let col = 0; col < cols; col++) {
+        const byte = bitmap[y * cols + col];
+        const attr = attrs[attrRow * cols + col];
+        const { inkRgb, paperRgb } = getColorsRgb(attr);
+
+        const x = col * 8;
+        for (let bit = 0; bit < 8; bit++) {
+          const px = x + bit;
+          const pixelIndex = (y * width + px) * 4;
+          const rgb = (byte & (0x80 >> bit)) ? inkRgb : paperRgb;
+          data[pixelIndex] = rgb[0];
+          data[pixelIndex + 1] = rgb[1];
+          data[pixelIndex + 2] = rgb[2];
+          data[pixelIndex + 3] = 255;
+        }
+      }
+    }
+  } else {
+    // Average: blend both planes
+    const bm1 = pic.planes[0].bitmap;
+    const at1 = pic.planes[0].attrs;
+    const bm2 = pic.planes[1].bitmap;
+    const at2 = pic.planes[1].attrs;
+
+    for (let y = 0; y < height; y++) {
+      const attrRow = attrCellH > 0 ? Math.floor(y / attrCellH) : (y >> 3);
+      for (let col = 0; col < cols; col++) {
+        const byte1 = bm1[y * cols + col];
+        const byte2 = bm2[y * cols + col];
+        const colors1 = getColorsRgb(at1[attrRow * cols + col]);
+        const colors2 = getColorsRgb(at2[attrRow * cols + col]);
+
+        const x = col * 8;
+        for (let bit = 0; bit < 8; bit++) {
+          const px = x + bit;
+          const pixelIndex = (y * width + px) * 4;
+          const mask = 0x80 >> bit;
+          const rgb1 = (byte1 & mask) ? colors1.inkRgb : colors1.paperRgb;
+          const rgb2 = (byte2 & mask) ? colors2.inkRgb : colors2.paperRgb;
+
+          data[pixelIndex] = Math.round((rgb1[0] + rgb2[0]) / 2);
+          data[pixelIndex + 1] = Math.round((rgb1[1] + rgb2[1]) / 2);
+          data[pixelIndex + 2] = Math.round((rgb1[2] + rgb2[2]) / 2);
+          data[pixelIndex + 3] = 255;
+        }
+      }
+    }
+  }
+
+  const temp = getTempRenderCanvas(width, height);
+  if (!temp) return;
+  temp.ctx.putImageData(imageData, 0, 0);
+  applyRenderSmoothing(ctx);
+  ctx.drawImage(temp.canvas, borderOffset, borderOffset, width * zoom, height * zoom);
+}
 
 /**
  * Gigascreen flicker animation loop using requestAnimationFrame
@@ -1587,9 +2148,12 @@ function setGigascreenMode(mode) {
 
   gigascreenMode = mode;
 
-  if (mode === GIGASCREEN_MODE.FLICKER && currentFormat === FORMAT.GIGASCREEN) {
+  const isGiga = currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.MGH ||
+    currentFormat === FORMAT.HLR ||
+    (currentFormat === FORMAT.CHR && currentPicture && currentPicture.colorMode === 'gigascreen');
+  if (mode === GIGASCREEN_MODE.FLICKER && isGiga) {
     startGigascreenFlicker();
-  } else if (currentFormat === FORMAT.GIGASCREEN) {
+  } else if (isGiga) {
     renderScreen();
   }
 }
@@ -2659,7 +3223,19 @@ function renderScaFrame(ctx, borderOffset, frameIndex) {
     // Payload type 1: attribute-only frames with fill pattern
     // fillPattern is 8 bytes, one per row within each 8x8 cell
     // Frame data is 768 bytes of attributes (32x24 cells)
-    const fillPattern = scaHeader.fillPattern;
+    const fillPattern = getSelectedPattern(scaHeader.fillPattern);
+
+    // Precompute ink ratio for blend mode
+    let inkRatio = 0;
+    if (attr53cBlend) {
+      let inkBitCount = 0;
+      for (let py = 0; py < 8; py++) {
+        for (let px = 0; px < 8; px++) {
+          if (fillPattern[py] & (1 << (7 - px))) inkBitCount++;
+        }
+      }
+      inkRatio = inkBitCount / 64;
+    }
 
     for (let row = 0; row < SCREEN.CHAR_ROWS; row++) {
       for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
@@ -2677,18 +3253,36 @@ function renderScaFrame(ctx, borderOffset, frameIndex) {
         const cellX = col * 8;
         const cellY = row * 8;
 
-        for (let py = 0; py < 8; py++) {
-          const patternByte = fillPattern[py];
-          for (let px = 0; px < 8; px++) {
-            const bit = 7 - px; // MSB first
-            const isInk = (patternByte & (1 << bit)) !== 0;
-            const rgb = isInk ? inkRgb : paperRgb;
+        if (attr53cBlend) {
+          // Blend mode: solid averaged color per cell
+          const br = Math.round(inkRgb[0] * inkRatio + paperRgb[0] * (1 - inkRatio));
+          const bg = Math.round(inkRgb[1] * inkRatio + paperRgb[1] * (1 - inkRatio));
+          const bb = Math.round(inkRgb[2] * inkRatio + paperRgb[2] * (1 - inkRatio));
+          for (let py = 0; py < 8; py++) {
+            const rowOff = (cellY + py) * SCREEN.WIDTH;
+            for (let px = 0; px < 8; px++) {
+              const pixelIndex = (rowOff + cellX + px) * 4;
+              data[pixelIndex] = br;
+              data[pixelIndex + 1] = bg;
+              data[pixelIndex + 2] = bb;
+              data[pixelIndex + 3] = 255;
+            }
+          }
+        } else {
+          // Pattern mode: original per-pixel rendering
+          for (let py = 0; py < 8; py++) {
+            const patternByte = fillPattern[py];
+            for (let px = 0; px < 8; px++) {
+              const bit = 7 - px; // MSB first
+              const isInk = (patternByte & (1 << bit)) !== 0;
+              const rgb = isInk ? inkRgb : paperRgb;
 
-            const pixelIndex = ((cellY + py) * SCREEN.WIDTH + cellX + px) * 4;
-            data[pixelIndex] = rgb[0];
-            data[pixelIndex + 1] = rgb[1];
-            data[pixelIndex + 2] = rgb[2];
-            data[pixelIndex + 3] = 255;
+              const pixelIndex = ((cellY + py) * SCREEN.WIDTH + cellX + px) * 4;
+              data[pixelIndex] = rgb[0];
+              data[pixelIndex + 1] = rgb[1];
+              data[pixelIndex + 2] = rgb[2];
+              data[pixelIndex + 3] = 255;
+            }
           }
         }
       }
@@ -2878,7 +3472,20 @@ function toggleScaControlsVisibility() {
 function toggleFormatControlsVisibility() {
   const pattern53cControls = document.getElementById('pattern53cControls');
   if (pattern53cControls) {
-    pattern53cControls.style.display = (currentFormat === FORMAT.ATTR_53C) ? 'flex' : 'none';
+    const isScaType1 = currentFormat === FORMAT.SCA && scaHeader && scaHeader.payloadType === 1;
+    const showPattern = currentFormat === FORMAT.ATTR_53C || isScaType1;
+    pattern53cControls.style.display = showPattern ? 'flex' : 'none';
+    // Show/hide "File" option (only for SCA type 1 with embedded pattern)
+    const patternSelect = /** @type {HTMLSelectElement} */ (document.getElementById('pattern53cSelect'));
+    if (patternSelect) {
+      const fileOption = patternSelect.querySelector('option[value="file"]');
+      if (fileOption) {
+        /** @type {HTMLElement} */ (fileOption).style.display = isScaType1 ? '' : 'none';
+      }
+      if (isScaType1 && patternSelect.value !== 'file') {
+        patternSelect.value = 'file';
+      }
+    }
   }
   const rgb3Controls = document.getElementById('rgb3Controls');
   if (rgb3Controls) {
@@ -2896,12 +3503,15 @@ function toggleFormatControlsVisibility() {
       startRgb3Flicker();
     }
   }
+  const isGigascreenFormat = currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.MGH ||
+    currentFormat === FORMAT.HLR ||
+    (currentFormat === FORMAT.CHR && currentPicture && currentPicture.colorMode === 'gigascreen');
   const gigascreenControls = document.getElementById('gigascreenControls');
   if (gigascreenControls) {
-    gigascreenControls.style.display = (currentFormat === FORMAT.GIGASCREEN) ? 'flex' : 'none';
+    gigascreenControls.style.display = isGigascreenFormat ? 'flex' : 'none';
   }
   // Handle Gigascreen flicker: stop when switching away, start if mode is flicker when switching to
-  if (currentFormat !== FORMAT.GIGASCREEN) {
+  if (!isGigascreenFormat) {
     if (gigascreenFlickerFrameId !== null) {
       stopGigascreenFlicker();
     }
@@ -2921,7 +3531,7 @@ function toggleFormatControlsVisibility() {
   }
   const scrEditorControls = document.getElementById('scrEditorControls');
   if (scrEditorControls) {
-    scrEditorControls.style.display = (currentFormat === FORMAT.SCR || currentFormat === FORMAT.SCR_ULAPLUS || currentFormat === FORMAT.ATTR_53C || currentFormat === FORMAT.BSC || currentFormat === FORMAT.IFL || currentFormat === FORMAT.MLT || currentFormat === FORMAT.BMC4 || currentFormat === FORMAT.RGB3 || currentFormat === FORMAT.MONO_FULL || currentFormat === FORMAT.MONO_2_3 || currentFormat === FORMAT.MONO_1_3) ? 'flex' : 'none';
+    scrEditorControls.style.display = (currentFormat === FORMAT.SCR || currentFormat === FORMAT.SCR_ULAPLUS || currentFormat === FORMAT.ATTR_53C || currentFormat === FORMAT.BSC || currentFormat === FORMAT.IFL || currentFormat === FORMAT.MLT || currentFormat === FORMAT.BMC4 || currentFormat === FORMAT.RGB3 || currentFormat === FORMAT.MONO_FULL || currentFormat === FORMAT.MONO_2_3 || currentFormat === FORMAT.MONO_1_3 || currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) ? 'flex' : 'none';
   }
   // Update ULA+ palette section visibility
   if (typeof updateUlaPlusSectionVisibility === 'function') {
@@ -3031,7 +3641,7 @@ function getUlaPlusPaletteIndex(attr, isInk) {
 // ============================================================================
 
 /** @type {string[]} - List of supported file extensions */
-const SUPPORTED_EXTENSIONS = ['scr', '53c', 'atr', 'bsc', 'ifl', 'bmc4', 'mlt', 'mc', '3', 'img', 'mem', 'specscii', 'sca', 'sna', 'z80', 'btile', 'wtile'];
+const SUPPORTED_EXTENSIONS = ['scr', '53c', 'atr', 'bsc', 'ifl', 'bmc4', 'mlt', 'mc', '3', 'img', 'mem', 'specscii', 'sca', 'sna', 'z80', 'btile', 'wtile', 'zxp', 'ch$', 'chr$', 'ch-', 'mg1', 'mg2', 'mg4', 'mg8', 'hlr'];
 const IMAGE_EXTENSIONS = ['png', 'gif', 'jpg', 'jpeg', 'webp', 'bmp'];
 
 /** @type {JSZip|null} - Current loaded ZIP archive */
@@ -3192,6 +3802,46 @@ async function loadFileFromZip(fileName) {
       return;
     }
 
+    // Handle ZXP files from ZIP (needs text-based parsing)
+    if (typeof isZxpFile === 'function' && isZxpFile(fileName)) {
+      const blob = new Blob([arrayBuffer]);
+      const file = new File([blob], fileName);
+      if (typeof loadZxpFile === 'function') {
+        loadZxpFile(file);
+      }
+      return;
+    }
+
+    // Handle chr$ files from ZIP (needs header-based parsing)
+    if (typeof isChrFile === 'function' && isChrFile(fileName)) {
+      const blob = new Blob([arrayBuffer]);
+      const file = new File([blob], fileName);
+      if (typeof loadChrFile === 'function') {
+        loadChrFile(file);
+      }
+      return;
+    }
+
+    // Handle MGH files from ZIP (needs header-based parsing)
+    if (typeof isMghFile === 'function' && isMghFile(fileName)) {
+      const blob = new Blob([arrayBuffer]);
+      const file = new File([blob], fileName);
+      if (typeof loadMghFile === 'function') {
+        loadMghFile(file);
+      }
+      return;
+    }
+
+    // Handle HLR files from ZIP (Gigascreen Lowres, fixed bitmap + 2 attr banks)
+    if (typeof isHlrFile === 'function' && isHlrFile(fileName)) {
+      const blob = new Blob([arrayBuffer]);
+      const file = new File([blob], fileName);
+      if (typeof loadHlrFile === 'function') {
+        loadHlrFile(file);
+      }
+      return;
+    }
+
     const format = detectFormat(fileName, data.length);
 
     // Check for invalid format (e.g., .img file with wrong size)
@@ -3206,6 +3856,11 @@ async function loadFileFromZip(fileName) {
     // Stop any existing timers
     stopFlashTimer();
     resetScaState();
+
+    // Save current picture state BEFORE initUlaPlusMode clobbers ULA+ globals
+    if (typeof saveCurrentPictureState === 'function') {
+      saveCurrentPictureState();
+    }
 
     // Initialize ULA+ mode based on format
     initUlaPlusMode(data, format);
@@ -3226,8 +3881,17 @@ async function loadFileFromZip(fileName) {
         currentFormat = FORMAT.UNKNOWN;
       }
     } else if (typeof addPicture === 'function') {
+      // Create internal picture format for SCR/ULA+
+      let newInternalPicture = null;
+      if (typeof importScr === 'function') {
+        if (format === FORMAT.SCR_ULAPLUS) {
+          newInternalPicture = importScrUlaPlus(data, fullName);
+        } else if (format === FORMAT.SCR) {
+          newInternalPicture = importScr(data, fullName);
+        }
+      }
       // Use multi-picture system for editable formats
-      const result = addPicture(fullName, format, data);
+      const result = addPicture(fullName, format, data, newInternalPicture, true);
       if (result >= 0) {
         // addPicture -> switchToPicture handles all rendering and UI updates
         updateFlashTimer();
@@ -3237,6 +3901,7 @@ async function loadFileFromZip(fileName) {
       screenData = data;
       currentFileName = fullName;
       currentFormat = format;
+      currentPicture = newInternalPicture;
     } else {
       screenData = data;
       currentFileName = fullName;
@@ -3324,22 +3989,86 @@ function renderScreen() {
   // Calculate border size in pixels (scaled by zoom)
   const borderPixels = borderSize * zoom;
 
-  // Calculate required canvas dimensions
-  const requiredWidth = SCREEN.WIDTH * zoom + borderPixels * 2;
-  const requiredHeight = SCREEN.HEIGHT * zoom + borderPixels * 2;
+  // Calculate full logical dimensions (image × zoom + borders)
+  // BSC/BMC4 manage their own frame size (384×304) including borders
+  const isBscLike = currentFormat === FORMAT.BSC || currentFormat === FORMAT.BMC4;
+  const picW = currentPicture ? currentPicture.width : SCREEN.WIDTH;
+  const picH = currentPicture ? currentPicture.height : SCREEN.HEIGHT;
+  const logicalWidth = isBscLike ? BSC.FRAME_WIDTH * zoom : picW * zoom + borderPixels * 2;
+  const logicalHeight = isBscLike ? BSC.FRAME_HEIGHT * zoom : picH * zoom + borderPixels * 2;
+
+  // Canvas is capped to viewport size — never allocate huge canvases.
+  // Wrapper div provides the logical size for scrollbars.
+  // BSC/BMC4: always use full size (manageable, and they override canvas size anyway).
+  const container = document.getElementById('canvasContainer');
+  const wrapper = document.getElementById('canvasWrapper');
+
+  // Set wrapper to full logical size FIRST — the container uses fit-content,
+  // so it must reflow to the new wrapper dimensions before we read clientWidth/Height.
+  if (wrapper) {
+    wrapper.style.width = logicalWidth + 'px';
+    wrapper.style.height = logicalHeight + 'px';
+  }
+
+  let canvasW, canvasH;
+  // For images under the huge-canvas threshold, use full logical size
+  // so scrolling is handled natively by the browser (no sticky + transform needed).
+  // Above the threshold, cap to viewport size and use sticky + scroll transform.
+  const HUGE_CANVAS_THRESHOLD = 4096 * 4096;
+  const useFullCanvas = !isBscLike && (logicalWidth * logicalHeight) <= HUGE_CANVAS_THRESHOLD;
+  if (isBscLike || useFullCanvas) {
+    canvasW = Math.ceil(logicalWidth);
+    canvasH = Math.ceil(logicalHeight);
+  } else {
+    const viewW = container ? container.clientWidth : logicalWidth;
+    const viewH = container ? container.clientHeight : logicalHeight;
+    canvasW = Math.ceil(Math.min(logicalWidth, viewW));
+    canvasH = Math.ceil(Math.min(logicalHeight, viewH));
+  }
+
+  // Viewport div: use normal positioning when canvas is full-size,
+  // sticky positioning when canvas is viewport-capped (very large images).
+  const viewport = document.getElementById('canvasViewport');
+  if (viewport) {
+    if (isBscLike || useFullCanvas) {
+      viewport.style.position = 'relative';
+    } else {
+      viewport.style.position = 'sticky';
+      viewport.style.top = '0';
+      viewport.style.left = '0';
+    }
+  }
 
   // Only resize canvas when dimensions actually change (expensive operation)
-  if (screenCanvas.width !== requiredWidth || screenCanvas.height !== requiredHeight) {
-    screenCanvas.width = requiredWidth;
-    screenCanvas.height = requiredHeight;
-    lastCanvasWidth = requiredWidth;
-    lastCanvasHeight = requiredHeight;
+  // BSC/BMC4 renderers override canvas size themselves, so skip resize for them.
+  if (!isBscLike && (screenCanvas.width !== canvasW || screenCanvas.height !== canvasH)) {
+    screenCanvas.width = canvasW;
+    screenCanvas.height = canvasH;
+    lastCanvasWidth = canvasW;
+    lastCanvasHeight = canvasH;
     if (typeof resizeFilterOverlay === 'function') resizeFilterOverlay();
   }
 
-  // Draw border (fill entire canvas with border color)
+  // Scroll offset — canvas renders the visible viewport portion
+  const scrollX = container ? container.scrollLeft : 0;
+  const scrollY = container ? container.scrollTop : 0;
+
+  // Apply scroll offset transform so all drawing uses logical coordinates unchanged.
+  // ctx.drawImage, fillRect, strokeRect, lineTo etc. all respect this transform.
+  // Full-size canvas (BSC/BMC4 or useFullCanvas): no scroll transform needed.
+  if (isBscLike || useFullCanvas) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+  } else {
+    ctx.setTransform(1, 0, 0, 1, -scrollX, -scrollY);
+  }
+
+  // Draw border (fill visible area with border color)
   ctx.fillStyle = ZX_PALETTE.REGULAR[borderColor];
-  ctx.fillRect(0, 0, screenCanvas.width, screenCanvas.height);
+  if (isBscLike || useFullCanvas) {
+    ctx.fillRect(0, 0, canvasW, canvasH);
+  } else {
+    ctx.fillRect(scrollX, scrollY, canvasW, canvasH);
+  }
 
   if (screenData.length === 0 && currentFormat !== FORMAT.SPECSCII) {
     // Draw placeholder text (SPECSCII can have empty stream for blank screen)
@@ -3347,7 +4076,8 @@ function renderScreen() {
     const fontSize = Math.max(10, 14 * zoom / 2);
     ctx.font = fontSize + 'px Consolas, Monaco, monospace';
     ctx.textAlign = 'center';
-    ctx.fillText('Load a .scr or other picture file to display', screenCanvas.width / 2, screenCanvas.height / 2);
+    ctx.fillText('Load a .scr or other', logicalWidth / 2, logicalHeight / 2 - fontSize * 0.6);
+    ctx.fillText('file to display', logicalWidth / 2, logicalHeight / 2 + fontSize * 0.6);
     // Still draw reference image if loaded
     if (typeof drawReferenceOverlay === 'function' &&
         typeof showReference !== 'undefined' && showReference &&
@@ -3357,87 +4087,109 @@ function renderScreen() {
     return;
   }
 
-  // Render based on format
-  if (currentFormat === FORMAT.ATTR_53C) {
-    // 53c format: attribute-only with checkerboard
-    render53cScreen(ctx, borderPixels);
-  } else if (currentFormat === FORMAT.BSC) {
-    // BSC format: standard screen + per-line border colors
-    // BSC handles its own canvas size and border rendering
-    renderBscScreen(ctx);
-    if (typeof applyPostProcessFilters === 'function') applyPostProcessFilters();
-    // Draw paper grid overlay if enabled (BSC has different dimensions)
-    if (gridSize > 0 || subgridSize > 0) {
-      drawCharGrid(ctx, BSC.BORDER_LEFT_PX * zoom, BSC.BORDER_TOP_PX * zoom);
-    }
-    // Draw border grid if enabled
-    if (borderGridSize > 0 || borderSubgridSize > 0) {
-      drawBscBorderGrid(ctx);
-    }
-    // Draw reference image overlay if loaded and visible
-    if (typeof drawReferenceOverlay === 'function' &&
-        typeof showReference !== 'undefined' && showReference &&
-        typeof referenceImage !== 'undefined' && referenceImage) {
-      drawReferenceOverlay();
-    }
-    if (typeof applyOverlayFilters === 'function') applyOverlayFilters();
-    return; // BSC handles everything including grid
-  } else if (currentFormat === FORMAT.BMC4) {
-    // BMC4 format: border + 8x4 multicolor
-    renderBmc4Screen(ctx);
-    if (typeof applyPostProcessFilters === 'function') applyPostProcessFilters();
-    // Draw paper grid overlay if enabled (BMC4 has same dimensions as BSC)
-    if (gridSize > 0 || subgridSize > 0) {
-      drawCharGrid(ctx, BSC.BORDER_LEFT_PX * zoom, BSC.BORDER_TOP_PX * zoom);
-    }
-    // Draw border grid if enabled
-    if (borderGridSize > 0 || borderSubgridSize > 0) {
-      drawBscBorderGrid(ctx);  // Border grid (same layout as BSC)
-    }
-    // Draw reference image overlay if loaded and visible
-    if (typeof drawReferenceOverlay === 'function' &&
-        typeof showReference !== 'undefined' && showReference &&
-        typeof referenceImage !== 'undefined' && referenceImage) {
-      drawReferenceOverlay();
-    }
-    if (typeof applyOverlayFilters === 'function') applyOverlayFilters();
-    return; // BMC4 handles everything including grid
-  } else if (currentFormat === FORMAT.IFL) {
-    // IFL format: 8x2 multicolor
-    renderIflScreen(ctx, borderPixels);
-  } else if (currentFormat === FORMAT.MLT) {
-    // MLT format: 8x1 multicolor
-    renderMltScreen(ctx, borderPixels);
-  } else if (currentFormat === FORMAT.RGB3) {
-    // RGB3 format: tricolor RGB
-    if (rgb3FlickerEnabled && rgb3FlickerFrameId !== null) {
-      renderRgb3ScreenFlicker(ctx, borderPixels, rgb3FlickerPhase);
+  // Render based on format — prefer Picture-based renderers when currentPicture exists
+  let rendered = false;
+  if (currentPicture &&
+      currentFormat !== FORMAT.BSC && currentFormat !== FORMAT.BMC4 &&
+      currentFormat !== FORMAT.SCA && currentPicture.contentMode !== 'text') {
+    // Unified Picture-based dispatch
+    if (currentPicture.colorMode === 'gigascreen') {
+      renderPictureGigascreen(ctx, borderPixels, currentPicture);
+      rendered = true;
+    } else if (currentPicture.colorMode === 'rgb3') {
+      renderPictureRgb3(ctx, borderPixels, currentPicture);
+      rendered = true;
     } else {
-      renderRgb3Screen(ctx, borderPixels);
+      renderPictureStandard(ctx, borderPixels, currentPicture,
+        useFullCanvas ? null : { scrollX, scrollY, viewW: canvasW, viewH: canvasH });
+      rendered = true;
     }
-  } else if (currentFormat === FORMAT.GIGASCREEN) {
-    // Gigascreen format: two alternating SCR frames
-    renderGigascreen(ctx, borderPixels);
-  } else if (currentFormat === FORMAT.MONO_FULL) {
-    // Monochrome full screen (6144 bytes)
-    renderMonoScreen(ctx, borderPixels, 3);
-  } else if (currentFormat === FORMAT.MONO_2_3) {
-    // Monochrome 2/3 screen (4096 bytes)
-    renderMonoScreen(ctx, borderPixels, 2);
-  } else if (currentFormat === FORMAT.MONO_1_3) {
-    // Monochrome 1/3 screen (2048 bytes)
-    renderMonoScreen(ctx, borderPixels, 1);
-  } else if (currentFormat === FORMAT.SPECSCII) {
-    // SPECSCII text screen
-    renderSpecsciiScreen(ctx, borderPixels);
-  } else if (currentFormat === FORMAT.SCA) {
-    // SCA animation format
-    if (scaHeader) {
-      renderScaFrame(ctx, borderPixels, scaCurrentFrame);
+  }
+
+  if (!rendered) {
+    // Legacy format-based dispatch (BSC, BMC4, SPECSCII, SCA, fallbacks)
+    if (currentFormat === FORMAT.BSC) {
+      // BSC format: standard screen + per-line border colors
+      // BSC handles its own canvas size and border rendering
+      renderBscScreen(ctx);
+      if (typeof applyPostProcessFilters === 'function') applyPostProcessFilters();
+      // Draw paper grid overlay if enabled (BSC has different dimensions)
+      if (gridSize > 0 || subgridSize > 0) {
+        drawCharGrid(ctx, BSC.BORDER_LEFT_PX * zoom, BSC.BORDER_TOP_PX * zoom);
+      }
+      // Draw border grid if enabled
+      if (borderGridSize > 0 || borderSubgridSize > 0) {
+        drawBscBorderGrid(ctx);
+      }
+      // Draw reference image overlay if loaded and visible
+      if (typeof drawReferenceOverlay === 'function' &&
+          typeof showReference !== 'undefined' && showReference &&
+          typeof referenceImage !== 'undefined' && referenceImage) {
+        drawReferenceOverlay();
+      }
+      if (typeof applyOverlayFilters === 'function') applyOverlayFilters();
+      return; // BSC handles everything including grid
+    } else if (currentFormat === FORMAT.BMC4) {
+      // BMC4 format: border + 8x4 multicolor
+      renderBmc4Screen(ctx);
+      if (typeof applyPostProcessFilters === 'function') applyPostProcessFilters();
+      // Draw paper grid overlay if enabled (BMC4 has same dimensions as BSC)
+      if (gridSize > 0 || subgridSize > 0) {
+        drawCharGrid(ctx, BSC.BORDER_LEFT_PX * zoom, BSC.BORDER_TOP_PX * zoom);
+      }
+      // Draw border grid if enabled
+      if (borderGridSize > 0 || borderSubgridSize > 0) {
+        drawBscBorderGrid(ctx);  // Border grid (same layout as BSC)
+      }
+      // Draw reference image overlay if loaded and visible
+      if (typeof drawReferenceOverlay === 'function' &&
+          typeof showReference !== 'undefined' && showReference &&
+          typeof referenceImage !== 'undefined' && referenceImage) {
+        drawReferenceOverlay();
+      }
+      if (typeof applyOverlayFilters === 'function') applyOverlayFilters();
+      return; // BMC4 handles everything including grid
+    } else if (currentFormat === FORMAT.SPECSCII) {
+      // SPECSCII text screen
+      renderSpecsciiScreen(ctx, borderPixels);
+    } else if (currentFormat === FORMAT.SCA) {
+      // SCA animation format
+      if (scaHeader) {
+        renderScaFrame(ctx, borderPixels, scaCurrentFrame);
+      }
+    } else if (currentFormat === FORMAT.IFL) {
+      // IFL format: 8x2 multicolor (legacy fallback)
+      renderIflScreen(ctx, borderPixels);
+    } else if (currentFormat === FORMAT.MLT) {
+      // MLT format: 8x1 multicolor (legacy fallback)
+      renderMltScreen(ctx, borderPixels);
+    } else if (currentFormat === FORMAT.RGB3) {
+      // RGB3 format: tricolor RGB (legacy fallback)
+      if (rgb3FlickerEnabled && rgb3FlickerFrameId !== null) {
+        renderRgb3ScreenFlicker(ctx, borderPixels, rgb3FlickerPhase);
+      } else {
+        renderRgb3Screen(ctx, borderPixels);
+      }
+    } else if (currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.MGH ||
+               currentFormat === FORMAT.HLR) {
+      // Gigascreen format: two alternating SCR frames (legacy fallback)
+      renderGigascreen(ctx, borderPixels);
+    } else if (currentFormat === FORMAT.MONO_FULL) {
+      // Monochrome full screen (legacy fallback)
+      renderMonoScreen(ctx, borderPixels, 3);
+    } else if (currentFormat === FORMAT.MONO_2_3) {
+      // Monochrome 2/3 screen (legacy fallback)
+      renderMonoScreen(ctx, borderPixels, 2);
+    } else if (currentFormat === FORMAT.MONO_1_3) {
+      // Monochrome 1/3 screen (legacy fallback)
+      renderMonoScreen(ctx, borderPixels, 1);
+    } else if (currentFormat === FORMAT.ATTR_53C) {
+      // 53c format: attribute-only with checkerboard (legacy fallback)
+      render53cScreen(ctx, borderPixels);
+    } else {
+      // Standard SCR format - use optimized ImageData rendering
+      renderScrFast(ctx, borderPixels);
     }
-  } else {
-    // Standard SCR format - use optimized ImageData rendering
-    renderScrFast(ctx, borderPixels);
   }
 
   // Apply post-process display filters (composite, curvature) before grids
@@ -3446,6 +4198,10 @@ function renderScreen() {
   // Draw paper grid overlay if enabled
   if (gridSize > 0 || subgridSize > 0) {
     drawCharGrid(ctx, borderPixels);
+  }
+  // Draw mg1 inner section boundary markers (columns 8 and 24)
+  if (currentFormat === FORMAT.MGH && currentPicture && currentPicture.attrCellHeight === 1) {
+    drawMg1InnerBoundary(ctx, borderPixels);
   }
   // Draw border grid if border is visible and border grid is enabled
   if (borderSize > 0 && (borderGridSize > 0 || borderSubgridSize > 0)) {
@@ -3470,14 +4226,14 @@ function renderScreen() {
  * @param {number} [offsetY] - Y offset in canvas pixels (defaults to offsetX)
  */
 function drawCharGrid(ctx, offsetX, offsetY = offsetX) {
-  const width = SCREEN.WIDTH;
-  const height = SCREEN.HEIGHT;
+  const width = currentPicture ? currentPicture.width : SCREEN.WIDTH;
+  const height = currentPicture ? currentPicture.height : SCREEN.HEIGHT;
 
   ctx.lineWidth = 1;
 
   // Draw subgrid first (behind main grid)
   if (subgridSize > 0) {
-    ctx.strokeStyle = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.SUBGRID_COLOR) || 'rgba(128, 128, 128, 0.25)';
+    ctx.strokeStyle = getGridColor('subgrid');
 
     // Vertical subgrid lines
     for (let px = 0; px <= width; px += subgridSize) {
@@ -3502,7 +4258,7 @@ function drawCharGrid(ctx, offsetX, offsetY = offsetX) {
 
   // Draw main grid
   if (gridSize > 0) {
-    ctx.strokeStyle = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.GRID_COLOR) || 'rgba(0, 160, 255, 0.4)';
+    ctx.strokeStyle = getGridColor('grid');
 
     // Vertical grid lines
     for (let px = 0; px <= width; px += gridSize) {
@@ -3523,15 +4279,60 @@ function drawCharGrid(ctx, offsetX, offsetY = offsetX) {
 }
 
 /**
+ * Draws vertical boundary lines marking the mg1 inner attribute section (columns 8-23).
+ * Inner columns have 8×1 per-row attrs; outer columns (0-7, 24-31) have 8×8 attrs.
+ * @param {CanvasRenderingContext2D} ctx - Canvas context
+ * @param {number} offset - Border offset in canvas pixels
+ */
+function drawMg1InnerBoundary(ctx, offset) {
+  const height = currentPicture ? currentPicture.height : SCREEN.HEIGHT;
+  const lineX1 = offset + 64 * zoom;   // Column 8 (8 × 8 pixels)
+  const lineX2 = offset + 192 * zoom;  // Column 24 (24 × 8 pixels)
+
+  const dashLen = Math.max(3, Math.round(zoom * 1.5));
+
+  ctx.strokeStyle = 'rgba(255, 80, 0, 0.75)';
+  ctx.lineWidth = Math.max(1, Math.round(zoom / 2));
+  ctx.setLineDash([dashLen, dashLen]);
+
+  // Top border: from top of canvas to top of paper
+  ctx.beginPath();
+  ctx.moveTo(lineX1, 0);
+  ctx.lineTo(lineX1, offset);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(lineX2, 0);
+  ctx.lineTo(lineX2, offset);
+  ctx.stroke();
+
+  // Bottom border: from bottom of paper to bottom of canvas
+  const bottomEdge = offset + height * zoom;
+  ctx.beginPath();
+  ctx.moveTo(lineX1, bottomEdge);
+  ctx.lineTo(lineX1, bottomEdge + offset);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(lineX2, bottomEdge);
+  ctx.lineTo(lineX2, bottomEdge + offset);
+  ctx.stroke();
+
+  ctx.setLineDash([]);
+}
+
+/**
  * Draws grid over the border area for standard SCR/SCA formats.
  * @param {CanvasRenderingContext2D} ctx - Canvas context
  * @param {number} mainOffset - Offset to main screen area in canvas pixels
  */
 function drawStandardBorderGrid(ctx, mainOffset) {
-  const totalWidth = SCREEN.WIDTH * zoom + mainOffset * 2;
-  const totalHeight = SCREEN.HEIGHT * zoom + mainOffset * 2;
-  const mainRight = mainOffset + SCREEN.WIDTH * zoom;
-  const mainBottom = mainOffset + SCREEN.HEIGHT * zoom;
+  const gridW = currentPicture ? currentPicture.width : SCREEN.WIDTH;
+  const gridH = currentPicture ? currentPicture.height : SCREEN.HEIGHT;
+  const totalWidth = gridW * zoom + mainOffset * 2;
+  const totalHeight = gridH * zoom + mainOffset * 2;
+  const mainRight = mainOffset + gridW * zoom;
+  const mainBottom = mainOffset + gridH * zoom;
 
   // Helper to draw border grid lines with given step size
   const drawBorderGridLines = (step) => {
@@ -3596,16 +4397,14 @@ function drawStandardBorderGrid(ctx, mainOffset) {
 
   // Draw subgrid first (if enabled)
   if (borderSubgridSize > 0) {
-    const subColor = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.SUBGRID_COLOR) || 'rgba(128, 128, 128, 0.25)';
-    ctx.strokeStyle = subColor;
+    ctx.strokeStyle = getGridColor('subgrid');
     ctx.lineWidth = 1;
     drawBorderGridLines(borderSubgridSize * zoom);
   }
 
   // Draw main grid (if enabled)
   if (borderGridSize > 0) {
-    const gridColor = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.BORDER_GRID_COLOR) || 'rgba(255, 160, 0, 0.35)';
-    ctx.strokeStyle = gridColor;
+    ctx.strokeStyle = getGridColor('border');
     ctx.lineWidth = 1;
     drawBorderGridLines(borderGridSize * zoom);
   }
@@ -3628,10 +4427,10 @@ function drawBscBorderGrid(ctx) {
   const hiddenLeft = 16;                         // x <= 16 is hidden
   const hiddenRight = fw - 16;                   // x >= 368 is hidden
 
-  const normalColor = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.BORDER_GRID_COLOR) || 'rgba(255, 160, 0, 0.35)';
+  const normalColor = getGridColor('border');
   const hiddenColor = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.BSC_GRID_HIDDEN) || 'rgba(255, 0, 0, 0.35)';
   const hiddenOverlay = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.BSC_HIDDEN_OVERLAY) || 'rgba(255, 0, 0, 0.12)';
-  const subgridColor = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.SUBGRID_COLOR) || 'rgba(128, 128, 128, 0.25)';
+  const subgridColor = getGridColor('subgrid');
 
   // --- Draw semi-transparent overlay on hidden zones ---
   ctx.fillStyle = hiddenOverlay;
@@ -3804,6 +4603,16 @@ function getFormatName(format) {
     case FORMAT.MONO_1_3: return 'SCR (monochrome 1/3)';
     case FORMAT.SPECSCII: return 'SPECSCII (text)';
     case FORMAT.SCA: return 'SCA (animation)';
+    case FORMAT.ZXP: return currentPicture && currentPicture.nirvanaTileInfo
+      ? (currentPicture.nirvanaTileInfo.isBtile ? 'Nirvana btile (8x2 multicolor)' : 'Nirvana wtile (8x2 multicolor)')
+      : 'ZXP (variable-size)';
+    case FORMAT.CHR: return currentPicture && currentPicture.colorMode === 'gigascreen' ? 'chr$ (gigascreen)' : 'chr$ (variable-size)';
+    case FORMAT.MGH: {
+      const ch = currentPicture ? currentPicture.attrCellHeight : 0;
+      const mode = ch === 8 ? 'mg8' : ch === 4 ? 'mg4' : ch === 2 ? 'mg2' : ch === 1 ? 'mg1' : 'MGH';
+      return mode + ' (Multiartist gigascreen)';
+    }
+    case FORMAT.HLR: return 'HLR (Gigascreen lowres)';
     default: return 'Unknown';
   }
 }
@@ -3825,6 +4634,12 @@ function getFormatDimensions(format) {
     case FORMAT.SCA:
       if (scaHeader) {
         return { width: scaHeader.width, height: scaHeader.height };
+      }
+      return { width: SCREEN.WIDTH, height: SCREEN.HEIGHT };
+    case FORMAT.ZXP:
+    case FORMAT.CHR:
+      if (currentPicture) {
+        return { width: currentPicture.width, height: currentPicture.height };
       }
       return { width: SCREEN.WIDTH, height: SCREEN.HEIGHT };
     default:
@@ -3867,7 +4682,20 @@ function updateFileInfo() {
     infoFormat.textContent = currentFileName ? formatDisplay : '-';
   }
   if (infoDimensions) {
-    infoDimensions.textContent = currentFileName ? `${dimensions.width} × ${dimensions.height} px` : '-';
+    if (currentFileName) {
+      // For cell-based formats (HLR, 53c) individual pixels carry no
+      // user-meaningful color, so show the dimensions in 8x8 cells instead.
+      const useCells = (currentFormat === FORMAT.HLR || currentFormat === FORMAT.ATTR_53C);
+      if (useCells) {
+        const cellsW = Math.ceil(dimensions.width / 8);
+        const cellsH = Math.ceil(dimensions.height / 8);
+        infoDimensions.textContent = `${cellsW} × ${cellsH} cells`;
+      } else {
+        infoDimensions.textContent = `${dimensions.width} × ${dimensions.height} px`;
+      }
+    } else {
+      infoDimensions.textContent = '-';
+    }
   }
 
   // Animation section (only for SCA)
@@ -3962,8 +4790,12 @@ function saveSettings() {
     subgridSize: subgridSize,
     borderGridSize: borderGridSize,
     borderSubgridSize: borderSubgridSize,
+    gridColorPreset: gridColorPreset,
     showAttributes: showAttributes,
     pattern53c: pattern53cSelect ? pattern53cSelect.value : 'checker',
+    attr53cBlend: attr53cBlend,
+    attr53cSort: typeof attr53cSortMode !== 'undefined' ? attr53cSortMode : 'hue',
+    attr53cSortReverse: typeof attr53cSortReverse !== 'undefined' ? attr53cSortReverse : false,
     palette: document.getElementById('paletteSelect')?.value || 'default',
     editPreviewTrimmedOnly: typeof editPreviewTrimmedOnly !== 'undefined' ? editPreviewTrimmedOnly : true,
     editZoom: typeof editZoom !== 'undefined' ? editZoom : 2,
@@ -4031,6 +4863,13 @@ function loadSettings() {
       if (borderSubgridSizeSelect) borderSubgridSizeSelect.value = String(borderSubgridSize);
     }
 
+    // Apply grid color preset
+    if (settings.gridColorPreset !== undefined) {
+      gridColorPreset = settings.gridColorPreset;
+      const gridColorSel = document.getElementById('gridColorSelect');
+      if (gridColorSel) /** @type {HTMLSelectElement} */ (gridColorSel).value = gridColorPreset;
+    }
+
     // Apply show attributes
     if (settings.showAttributes !== undefined) {
       showAttributes = settings.showAttributes;
@@ -4041,6 +4880,27 @@ function loadSettings() {
     // Apply 53c pattern
     if (settings.pattern53c !== undefined && pattern53cSelect) {
       pattern53cSelect.value = settings.pattern53c;
+    }
+
+    // Apply 53c blend mode
+    if (settings.attr53cBlend !== undefined) {
+      attr53cBlend = settings.attr53cBlend;
+      const blendCb = document.getElementById('attr53cBlendCheckbox');
+      if (blendCb) /** @type {HTMLInputElement} */ (blendCb).checked = attr53cBlend;
+    }
+
+    // Apply 53c sort mode
+    if (settings.attr53cSort !== undefined) {
+      attr53cSortMode = settings.attr53cSort;
+      const sortRadio = /** @type {HTMLInputElement|null} */ (document.querySelector(`input[name="attr53cSort"][value="${settings.attr53cSort}"]`));
+      if (sortRadio) sortRadio.checked = true;
+    }
+
+    // Apply 53c sort reverse
+    if (settings.attr53cSortReverse !== undefined) {
+      attr53cSortReverse = settings.attr53cSortReverse;
+      const reverseCb = document.getElementById('attr53cSortReverse');
+      if (reverseCb) /** @type {HTMLInputElement} */ (reverseCb).checked = attr53cSortReverse;
     }
 
     // Apply palette
@@ -4198,6 +5058,13 @@ function detectFormat(fileName, fileSize) {
     return FORMAT.UNKNOWN;
   }
 
+  if (ext === 'hlr') {
+    if (fileSize === HLR.TOTAL_SIZE) {
+      return FORMAT.HLR;
+    }
+    return FORMAT.UNKNOWN;
+  }
+
   if (ext === 'specscii') {
     return FORMAT.SPECSCII;
   }
@@ -4233,6 +5100,10 @@ function detectFormat(fileName, fileSize) {
 
   if (fileSize === GIGASCREEN.TOTAL_SIZE) {
     return FORMAT.GIGASCREEN;
+  }
+
+  if (fileSize === HLR.TOTAL_SIZE) {
+    return FORMAT.HLR;
   }
 
   if (fileSize === ULAPLUS.TOTAL_SIZE) {
@@ -4287,9 +5158,11 @@ function linearToScrOffset(y, x) {
 }
 
 /**
- * Parses ZXP (ZX-Paintbrush) text format into binary screen data
+ * Parses ZXP (ZX-Paintbrush) text format into binary screen data.
+ * Supports variable dimensions (8–2048, divisible by 8).
+ * Standard 256×192 maps to SCR/IFL/MLT; non-standard uses FORMAT.ZXP.
  * @param {string} text - ZXP file content
- * @returns {{ data: Uint8Array, format: string } | null} parsed data and format, or null on error
+ * @returns {{ data: Uint8Array, format: string, width?: number, height?: number, attrCellHeight?: number, palette?: Uint8Array|null } | null}
  */
 function parseZxpFile(text) {
   const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
@@ -4300,31 +5173,74 @@ function parseZxpFile(text) {
     return null;
   }
 
-  // Parse bitmap: lines 2..193 (0-indexed), 192 lines of 256 binary digits
+  // Detect bitmap dimensions from first bitmap line (line index 2)
   const bitmapStart = 2;
-  const bitmapData = new Uint8Array(SCREEN.BITMAP_SIZE); // 6144
+  const firstLine = lines[bitmapStart];
+  if (!firstLine) {
+    alert('Invalid ZXP file: no bitmap data.');
+    return null;
+  }
+  // Count binary digit chars (0/1) in first line
+  let pixelWidth = 0;
+  for (let i = 0; i < firstLine.length; i++) {
+    if (firstLine[i] === '0' || firstLine[i] === '1') pixelWidth++;
+    else break;
+  }
+  if (pixelWidth < 8 || pixelWidth > 2048 || (pixelWidth & 7) !== 0) {
+    alert(`Invalid ZXP file: bitmap width ${pixelWidth} must be 8–2048 and divisible by 8.`);
+    return null;
+  }
+  const cols = pixelWidth >> 3;
 
-  for (let y = 0; y < 192; y++) {
+  // Count bitmap lines (until empty separator or EOF)
+  let pixelHeight = 0;
+  for (let i = bitmapStart; i < lines.length; i++) {
+    const ln = lines[i];
+    // A bitmap line must start with '0' or '1' and have at least pixelWidth chars
+    if (ln && ln.length >= pixelWidth && (ln[0] === '0' || ln[0] === '1')) {
+      pixelHeight++;
+    } else {
+      break;
+    }
+  }
+  if (pixelHeight < 8 || pixelHeight > 2048 || (pixelHeight & 7) !== 0) {
+    alert(`Invalid ZXP file: bitmap height ${pixelHeight} must be 8–2048 and divisible by 8.`);
+    return null;
+  }
+
+  const isStandard = (pixelWidth === 256 && pixelHeight === 192);
+
+  // Parse bitmap into linear row-major layout (or interleaved for standard)
+  let bitmapData;
+  if (isStandard) {
+    bitmapData = new Uint8Array(SCREEN.BITMAP_SIZE); // 6144
+  } else {
+    bitmapData = new Uint8Array(cols * pixelHeight);
+  }
+
+  for (let y = 0; y < pixelHeight; y++) {
     const line = lines[bitmapStart + y];
-    if (!line || line.length < 256) {
+    if (!line || line.length < pixelWidth) {
       alert(`Invalid ZXP file: bitmap line ${y + 1} is too short or missing.`);
       return null;
     }
-    for (let byteCol = 0; byteCol < 32; byteCol++) {
+    for (let byteCol = 0; byteCol < cols; byteCol++) {
       let byteVal = 0;
       for (let bit = 0; bit < 8; bit++) {
         if (line[byteCol * 8 + bit] === '1') {
           byteVal |= (0x80 >> bit);
         }
       }
-      bitmapData[linearToScrOffset(y, byteCol)] = byteVal;
+      if (isStandard) {
+        bitmapData[linearToScrOffset(y, byteCol)] = byteVal;
+      } else {
+        bitmapData[y * cols + byteCol] = byteVal;
+      }
     }
   }
 
   // Find attribute lines after bitmap separator
-  // Line 194 (0-indexed) should be empty separator, attributes start at 195
-  let attrStart = bitmapStart + 192;
-  // Skip empty lines to find attribute start
+  let attrStart = bitmapStart + pixelHeight;
   while (attrStart < lines.length && lines[attrStart].trim() === '') {
     attrStart++;
   }
@@ -4333,26 +5249,39 @@ function parseZxpFile(text) {
   const attrLines = [];
   for (let i = attrStart; i < lines.length; i++) {
     const trimmed = lines[i].trim();
-    if (trimmed === '') break; // empty separator ends attributes
+    if (trimmed === '') break;
     attrLines.push(trimmed);
   }
 
   const attrCount = attrLines.length;
-  if (attrCount !== 24 && attrCount !== 48 && attrCount !== 96 && attrCount !== 192) {
-    alert(`Invalid ZXP file: expected 24, 48, 96, or 192 attribute lines, got ${attrCount}.`);
+  if (attrCount === 0) {
+    alert('Invalid ZXP file: no attribute lines found.');
+    return null;
+  }
+
+  // Derive attrCellHeight
+  if (pixelHeight % attrCount !== 0) {
+    alert(`Invalid ZXP file: height ${pixelHeight} not divisible by ${attrCount} attribute lines.`);
+    return null;
+  }
+  const attrCellHeight = pixelHeight / attrCount;
+
+  // Validate standard sizes for 256×192
+  if (isStandard && attrCellHeight !== 8 && attrCellHeight !== 4 && attrCellHeight !== 2 && attrCellHeight !== 1) {
+    alert(`Invalid ZXP file: unsupported attribute cell height ${attrCellHeight} for standard 256×192.`);
     return null;
   }
 
   // Parse attribute bytes
-  const attrData = new Uint8Array(attrCount * 32);
+  const attrData = new Uint8Array(attrCount * cols);
   for (let row = 0; row < attrCount; row++) {
     const parts = attrLines[row].split(/\s+/);
-    if (parts.length < 32) {
-      alert(`Invalid ZXP file: attribute line ${row + 1} has ${parts.length} values (expected 32).`);
+    if (parts.length < cols) {
+      alert(`Invalid ZXP file: attribute line ${row + 1} has ${parts.length} values (expected ${cols}).`);
       return null;
     }
-    for (let col = 0; col < 32; col++) {
-      attrData[row * 32 + col] = parseInt(parts[col], 16);
+    for (let col = 0; col < cols; col++) {
+      attrData[row * cols + col] = parseInt(parts[col], 16);
     }
   }
 
@@ -4375,11 +5304,28 @@ function parseZxpFile(text) {
     }
   }
 
-  // Build output based on attribute mode
+  // Non-standard dimensions → FORMAT.ZXP
+  if (!isStandard) {
+    // screenData = linear bitmap + attrs
+    const totalSize = cols * pixelHeight + attrCount * cols;
+    const outputData = new Uint8Array(totalSize);
+    outputData.set(bitmapData, 0);
+    outputData.set(attrData, cols * pixelHeight);
+    return {
+      data: outputData,
+      format: FORMAT.ZXP,
+      width: pixelWidth,
+      height: pixelHeight,
+      attrCellHeight: attrCellHeight,
+      palette: ulaPlusPaletteData
+    };
+  }
+
+  // Standard 256×192 — map to SCR/IFL/MLT as before
   let format;
   let outputData;
 
-  if (attrCount === 24) {
+  if (attrCellHeight === 8) {
     // 8×8 mode → SCR (or SCR_ULAPLUS if palette present)
     if (ulaPlusPaletteData) {
       format = FORMAT.SCR_ULAPLUS;
@@ -4393,7 +5339,7 @@ function parseZxpFile(text) {
       outputData.set(bitmapData, 0);
       outputData.set(attrData, SCREEN.BITMAP_SIZE);
     }
-  } else if (attrCount === 48) {
+  } else if (attrCellHeight === 4) {
     // 8×4 mode → duplicate each row to get 96 rows, treat as IFL
     format = FORMAT.IFL;
     outputData = new Uint8Array(IFL.TOTAL_SIZE); // 9216
@@ -4407,7 +5353,7 @@ function parseZxpFile(text) {
         outputData[SCREEN.BITMAP_SIZE + dstRow2 * 32 + col] = attrData[srcOffset + col];
       }
     }
-  } else if (attrCount === 96) {
+  } else if (attrCellHeight === 2) {
     // 8×2 mode → IFL
     format = FORMAT.IFL;
     outputData = new Uint8Array(IFL.TOTAL_SIZE); // 9216
@@ -4443,6 +5389,57 @@ function loadZxpFile(file) {
     resetScaState();
 
     const { data, format } = result;
+
+    // Handle non-standard ZXP (variable dimensions)
+    if (format === FORMAT.ZXP) {
+      const baseName = file.name.replace(/\.zxp$/i, '');
+      const fileName = baseName + '.zxp';
+      const cols = result.width >> 3;
+      const bitmapSize = cols * result.height;
+      const bitmap = data.subarray(0, bitmapSize);
+      const attrs = data.subarray(bitmapSize);
+
+      if (typeof saveCurrentPictureState === 'function') {
+        saveCurrentPictureState();
+      }
+
+      // No ULA+ for non-standard ZXP
+      initUlaPlusMode(data, FORMAT.UNKNOWN);
+
+      const newInternalPicture = (typeof importZxp === 'function')
+        ? importZxp(bitmap, attrs, fileName, result.width, result.height, result.attrCellHeight, result.palette || null)
+        : null;
+
+      if (typeof addPicture === 'function') {
+        const pictureResult = addPicture(fileName, format, data, newInternalPicture, true);
+        if (pictureResult >= 0) {
+          updateFlashTimer();
+          return;
+        }
+        screenData = data;
+        currentFileName = fileName;
+        currentFormat = format;
+        currentPicture = newInternalPicture;
+      } else {
+        screenData = data;
+        currentFileName = fileName;
+        currentFormat = format;
+        currentPicture = newInternalPicture;
+      }
+
+      toggleScaControlsVisibility();
+      toggleFormatControlsVisibility();
+      updateScaControls();
+      updateFileInfo();
+      renderScreen();
+      if (typeof updateEditorState === 'function') updateEditorState();
+      if (typeof editorActive !== 'undefined' && editorActive && typeof renderPreview === 'function') renderPreview();
+      updateFlashTimer();
+      if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
+      return;
+    }
+
+    // Standard 256×192 — existing behavior
     // Strip .zxp extension and add appropriate extension for the detected format
     let baseName = file.name.replace(/\.zxp$/i, '');
     const extMap = {
@@ -4453,12 +5450,27 @@ function loadZxpFile(file) {
     };
     const fileName = baseName + (extMap[format] || '.scr');
 
+    // Save current picture state BEFORE initUlaPlusMode clobbers ULA+ globals
+    if (typeof saveCurrentPictureState === 'function') {
+      saveCurrentPictureState();
+    }
+
     // Initialize ULA+ mode based on format
     initUlaPlusMode(data, format);
 
+    // Create internal picture format for SCR/ULA+ (passed to addPicture, not set globally)
+    let newInternalPicture = null;
+    if (typeof importScr === 'function') {
+      if (format === FORMAT.SCR_ULAPLUS) {
+        newInternalPicture = importScrUlaPlus(data, fileName);
+      } else if (format === FORMAT.SCR) {
+        newInternalPicture = importScr(data, fileName);
+      }
+    }
+
     // Use multi-picture system if available
     if (typeof addPicture === 'function') {
-      const pictureResult = addPicture(fileName, format, data);
+      const pictureResult = addPicture(fileName, format, data, newInternalPicture, true);
       if (pictureResult >= 0) {
         updateFlashTimer();
         return;
@@ -4467,10 +5479,12 @@ function loadZxpFile(file) {
       screenData = data;
       currentFileName = fileName;
       currentFormat = format;
+      currentPicture = newInternalPicture;
     } else {
       screenData = data;
       currentFileName = fileName;
       currentFormat = format;
+      currentPicture = newInternalPicture;
     }
 
     toggleScaControlsVisibility();
@@ -4511,6 +5525,569 @@ function loadZxpFile(file) {
   reader.readAsText(file);
 }
 
+// ============================================================================
+// chr$ format support
+// ============================================================================
+
+/**
+ * Loads a Multiartist MGH file (.mg1/.mg2/.mg4/.mg8).
+ * @param {File} file - The file to load
+ */
+function loadMghFile(file) {
+  const reader = new FileReader();
+
+  reader.addEventListener('load', function(event) {
+    const buffer = event.target?.result;
+    if (!(buffer instanceof ArrayBuffer)) return;
+
+    const result = parseMghFile(buffer);
+    if (!result) {
+      alert('Invalid MGH file: bad header or unexpected size.');
+      return;
+    }
+
+    // Stop any existing timers
+    stopFlashTimer();
+    resetScaState();
+
+    if (typeof saveCurrentPictureState === 'function') {
+      saveCurrentPictureState();
+    }
+
+    // Build screenData layout based on mode
+    let data;
+    {
+      // All MGH modes: use interleaved gigascreen layout (same as .img)
+      // so all gigascreen editor code works unchanged
+      const attrSize = result.attrs1.length; // 768 for mg8, 1536 for mg4, 3072 for mg2, 6144 for mg1
+      const frameSize = 6144 + attrSize;
+      data = new Uint8Array(frameSize * 2);
+      const bm1 = interleaveBitmap(result.bitmap1, 256, 192);
+      data.set(bm1, 0);                                          // Frame 1 bitmap: 0-6143
+      data.set(result.attrs1, 6144);                              // Frame 1 attrs: 6144+
+      const bm2 = interleaveBitmap(result.bitmap2, 256, 192);
+      data.set(bm2, frameSize);                                   // Frame 2 bitmap
+      data.set(result.attrs2, frameSize + 6144);                  // Frame 2 attrs
+    }
+
+    initUlaPlusMode(data, FORMAT.UNKNOWN);
+
+    let newInternalPicture = null;
+    if (typeof importMgh === 'function') {
+      newInternalPicture = importMgh(result, file.name);
+    }
+
+    // Apply border color from frame 1
+    borderColor = result.border0;
+    if (borderColorSelect) {
+      borderColorSelect.value = String(borderColor);
+    }
+
+    if (typeof addPicture === 'function') {
+      const pictureResult = addPicture(file.name, FORMAT.MGH, data, newInternalPicture, true);
+      if (pictureResult >= 0) {
+        updateFlashTimer();
+        return;
+      }
+      screenData = data;
+      currentFileName = file.name;
+      currentFormat = FORMAT.MGH;
+      currentPicture = newInternalPicture;
+    } else {
+      screenData = data;
+      currentFileName = file.name;
+      currentFormat = FORMAT.MGH;
+      currentPicture = newInternalPicture;
+    }
+
+    toggleScaControlsVisibility();
+    toggleFormatControlsVisibility();
+    updateScaControls();
+    updateFileInfo();
+    renderScreen();
+    if (typeof updateEditorState === 'function') updateEditorState();
+    if (typeof editorActive !== 'undefined' && editorActive && typeof renderPreview === 'function') renderPreview();
+    updateFlashTimer();
+    if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
+  });
+
+  reader.readAsArrayBuffer(file);
+}
+
+/**
+ * Parses a Multiartist MGH file buffer.
+ * Layout: 256-byte header + bitmap1 (6144) + bitmap2 (6144) + attrs1 + attrs2 [+ outerAttrs1 + outerAttrs2 for mg1]
+ *
+ * mg1 has two attr layers per frame, covering different COLUMNS:
+ *   - inner: 3072 bytes = 192 rows × 16 cols — covers middle columns 8-23 at 1px cell height
+ *   - outer: 384 bytes = 24 rows × 16 cols — covers side columns 0-7 and 24-31 at 8px cell height
+ * The parser merges both into a single 192-row × 32-col attr array (cellHeight=1).
+ *
+ * @param {ArrayBuffer} buffer - File data
+ * @returns {{bitmap1: Uint8Array, attrs1: Uint8Array, bitmap2: Uint8Array, attrs2: Uint8Array, cellHeight: number, border0: number, border1: number}|null}
+ */
+function parseMghFile(buffer) {
+  if (buffer.byteLength < MGH.HEADER_SIZE + MGH.BITMAP_SIZE * 2) return null;
+
+  const bytes = new Uint8Array(buffer);
+
+  // Validate signature "MGH"
+  if (bytes[0] !== 0x4D || bytes[1] !== 0x47 || bytes[2] !== 0x48) return null;
+
+  // Version check
+  const version = bytes[3];
+  if (version !== 1) return null;
+
+  // Mode: 1, 2, 4, or 8
+  const mode = bytes[4];
+  if (mode !== 1 && mode !== 2 && mode !== 4 && mode !== 8) return null;
+
+  const border0 = bytes[5] & 7;
+  const border1 = bytes[6] & 7;
+
+  // Inner attr size: mode 1 has 3072 bytes (192 rows × 16 middle cols),
+  // other modes use (192/mode) rows × 32 cols
+  const innerAttrSize = mode === 1 ? 3072 : Math.floor(192 / mode) * 32;
+  const outerAttrSize = mode === 1 ? 384 : 0;
+
+  // Validate total size
+  const expectedSize = MGH.HEADER_SIZE + MGH.BITMAP_SIZE * 2 + innerAttrSize * 2 + outerAttrSize * 2;
+  if (buffer.byteLength < expectedSize) return null;
+
+  let offset = MGH.HEADER_SIZE;
+
+  // Deinterleave both bitmaps from SCR layout to linear
+  const bitmap1 = deinterleaveBitmap(bytes, offset, 256, 192);
+  offset += MGH.BITMAP_SIZE;
+
+  const bitmap2 = deinterleaveBitmap(bytes, offset, 256, 192);
+  offset += MGH.BITMAP_SIZE;
+
+  let attrs1, attrs2, cellHeight;
+
+  if (mode === 1) {
+    // mg1: inner attrs cover middle 16 cols (8-23) at 1px resolution,
+    // outer attrs cover side 16 cols (0-7, 24-31) at 8px resolution.
+    // Merge into 192 rows × 32 cols = 6144 bytes per frame.
+    cellHeight = 1;
+
+    const innerAttrs1 = bytes.subarray(offset, offset + 3072);
+    offset += 3072;
+    const innerAttrs2 = bytes.subarray(offset, offset + 3072);
+    offset += 3072;
+    const outerAttrs1 = bytes.subarray(offset, offset + 384);
+    offset += 384;
+    const outerAttrs2 = bytes.subarray(offset, offset + 384);
+
+    const mergedSize = 192 * 32;
+    attrs1 = new Uint8Array(mergedSize);
+    attrs2 = new Uint8Array(mergedSize);
+
+    // Inner attrs: 3072 bytes stored as 192 rows × 16 cols (columns 8-23)
+    let innerIdx = 0;
+    for (let y = 0; y < 192; y++) {
+      for (let col = 8; col < 24; col++) {
+        attrs1[y * 32 + col] = innerAttrs1[innerIdx];
+        attrs2[y * 32 + col] = innerAttrs2[innerIdx];
+        innerIdx++;
+      }
+    }
+
+    // Outer attrs: 384 bytes covering columns 0-7 then 24-31, each byte spans 8 pixel rows.
+    // Layout: iterate cols 0-7, then cols 24-31, advancing y by 8 after col 31.
+    let outerIdx = 0;
+    for (let yBlock = 0; yBlock < 192; yBlock += 8) {
+      // Left side: columns 0-7
+      for (let col = 0; col < 8; col++) {
+        const attr1 = outerAttrs1[outerIdx];
+        const attr2 = outerAttrs2[outerIdx];
+        outerIdx++;
+        for (let dy = 0; dy < 8; dy++) {
+          attrs1[(yBlock + dy) * 32 + col] = attr1;
+          attrs2[(yBlock + dy) * 32 + col] = attr2;
+        }
+      }
+      // Right side: columns 24-31
+      for (let col = 24; col < 32; col++) {
+        const attr1 = outerAttrs1[outerIdx];
+        const attr2 = outerAttrs2[outerIdx];
+        outerIdx++;
+        for (let dy = 0; dy < 8; dy++) {
+          attrs1[(yBlock + dy) * 32 + col] = attr1;
+          attrs2[(yBlock + dy) * 32 + col] = attr2;
+        }
+      }
+    }
+  } else {
+    // mg2/mg4/mg8: straightforward single-layer attrs
+    cellHeight = mode;
+    attrs1 = new Uint8Array(innerAttrSize);
+    attrs1.set(bytes.subarray(offset, offset + innerAttrSize));
+    offset += innerAttrSize;
+
+    attrs2 = new Uint8Array(innerAttrSize);
+    attrs2.set(bytes.subarray(offset, offset + innerAttrSize));
+  }
+
+  return { bitmap1, attrs1, bitmap2, attrs2, cellHeight, border0, border1 };
+}
+
+/**
+ * Checks if a file is a Multiartist MGH file by extension
+ * @param {string} fileName
+ * @returns {boolean}
+ */
+function isMghFile(fileName) {
+  const lower = fileName.toLowerCase();
+  return lower.endsWith('.mg1') || lower.endsWith('.mg2') || lower.endsWith('.mg4') || lower.endsWith('.mg8');
+}
+
+/**
+ * Checks if a file is an HLR (Gigascreen Lowres) file by extension.
+ * @param {string} fileName
+ * @returns {boolean}
+ */
+function isHlrFile(fileName) {
+  return fileName.toLowerCase().endsWith('.hlr');
+}
+
+/**
+ * Parses an HLR (Gigascreen Lowres) file buffer.
+ * Layout: 84 bytes loader code + 8 bytes pattern + 768 bytes attrs1 + 768 bytes attrs2.
+ * The 8-byte pattern (one byte per scanline within a char) is read from the file.
+ * @param {ArrayBuffer} buffer - File data
+ * @returns {{pattern: Uint8Array, attrs1: Uint8Array, attrs2: Uint8Array}|null}
+ */
+function parseHlrFile(buffer) {
+  if (buffer.byteLength !== HLR.TOTAL_SIZE) return null;
+
+  const bytes = new Uint8Array(buffer);
+  const pattern = new Uint8Array(HLR.PATTERN_SIZE);
+  pattern.set(bytes.subarray(HLR.PATTERN_OFFSET, HLR.PATTERN_OFFSET + HLR.PATTERN_SIZE));
+  const attrs1 = new Uint8Array(HLR.ATTRS_SIZE);
+  const attrs2 = new Uint8Array(HLR.ATTRS_SIZE);
+  attrs1.set(bytes.subarray(HLR.ATTRS1_OFFSET, HLR.ATTRS1_OFFSET + HLR.ATTRS_SIZE));
+  attrs2.set(bytes.subarray(HLR.ATTRS2_OFFSET, HLR.ATTRS2_OFFSET + HLR.ATTRS_SIZE));
+
+  return { pattern, attrs1, attrs2 };
+}
+
+/**
+ * Loads an HLR (Gigascreen Lowres) file. Builds a gigascreen-layout screenData
+ * by tiling the file's 8-byte fill pattern across both frames and copying the
+ * two attribute banks, then creates a 2-plane gigascreen Picture via importHlr().
+ * @param {File} file
+ */
+function loadHlrFile(file) {
+  const reader = new FileReader();
+
+  reader.addEventListener('load', function(event) {
+    const buffer = event.target?.result;
+    if (!(buffer instanceof ArrayBuffer)) return;
+
+    const result = parseHlrFile(buffer);
+    if (!result) {
+      alert('Invalid HLR file: expected ' + HLR.TOTAL_SIZE + ' bytes.');
+      return;
+    }
+
+    stopFlashTimer();
+    resetScaState();
+
+    if (typeof saveCurrentPictureState === 'function') {
+      saveCurrentPictureState();
+    }
+
+    // Build gigascreen-layout screenData so existing editor/renderer code works.
+    // Both frames share the same bitmap, tiled from the file's 8-byte pattern
+    // (one byte per scanline within an 8x8 char cell).
+    const data = new Uint8Array(GIGASCREEN.TOTAL_SIZE);
+    const pattern = result.pattern;
+    for (let third = 0; third < 3; third++) {
+      const thirdBase = third * 2048;
+      for (let pixelLine = 0; pixelLine < 8; pixelLine++) {
+        const fill = pattern[pixelLine];
+        for (let charRow = 0; charRow < 8; charRow++) {
+          const rowOffset = thirdBase + charRow * 32 + pixelLine * 256;
+          for (let col = 0; col < 32; col++) {
+            data[rowOffset + col] = fill;
+            data[GIGASCREEN.FRAME2_OFFSET + rowOffset + col] = fill;
+          }
+        }
+      }
+    }
+    data.set(result.attrs1, 6144);
+    data.set(result.attrs2, GIGASCREEN.FRAME2_OFFSET + 6144);
+
+    initUlaPlusMode(data, FORMAT.UNKNOWN);
+
+    let newInternalPicture = null;
+    if (typeof importHlr === 'function') {
+      newInternalPicture = importHlr(new Uint8Array(buffer), file.name);
+    }
+
+    if (typeof addPicture === 'function') {
+      const pictureResult = addPicture(file.name, FORMAT.HLR, data, newInternalPicture, true);
+      if (pictureResult >= 0) {
+        updateFlashTimer();
+        return;
+      }
+    }
+
+    screenData = data;
+    currentFileName = file.name;
+    currentFormat = FORMAT.HLR;
+    currentPicture = newInternalPicture;
+
+    toggleScaControlsVisibility();
+    toggleFormatControlsVisibility();
+    updateScaControls();
+    updateFileInfo();
+    renderScreen();
+    if (typeof updateEditorState === 'function') updateEditorState();
+    if (typeof editorActive !== 'undefined' && editorActive && typeof renderPreview === 'function') renderPreview();
+    updateFlashTimer();
+    if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
+  });
+
+  reader.readAsArrayBuffer(file);
+}
+
+/**
+ * Checks if a file is a chr$ file by extension
+ * @param {string} fileName
+ * @returns {boolean}
+ */
+function isChrFile(fileName) {
+  const lower = fileName.toLowerCase();
+  return lower.endsWith('.ch$') || lower.endsWith('.chr$') || lower.endsWith('.ch-');
+}
+
+/**
+ * Parses a chr$ binary file into linear screenData.
+ * chr$ format: 7-byte header + interleaved cell data, row-major.
+ * Header: "chr$" (4 bytes) + width_cells (1 byte) + height_cells (1 byte) + bytes_per_cell (1 byte).
+ * bpc=9:  standard (8 bitmap + 1 attr per cell)  → screenData = bitmap + attrs
+ * bpc=18: gigascreen (2 × (8 bitmap + 1 attr))   → screenData = bm1 + at1 + bm2 + at2
+ * @param {ArrayBuffer} buffer - Raw file content
+ * @returns {{ data: Uint8Array, width: number, height: number, gigascreen: boolean } | null}
+ */
+function parseChrFile(buffer) {
+  const bytes = new Uint8Array(buffer);
+  if (bytes.length < 7) {
+    alert('Invalid chr$ file: too small.');
+    return null;
+  }
+
+  // Validate magic "chr$"
+  if (bytes[0] !== 0x63 || bytes[1] !== 0x68 || bytes[2] !== 0x72 || bytes[3] !== 0x24) {
+    alert('Invalid chr$ file: missing "chr$" magic header.');
+    return null;
+  }
+
+  const widthCells = bytes[4];
+  const heightCells = bytes[5];
+  const bytesPerCell = bytes[6];
+
+  if (widthCells === 0 || heightCells === 0) {
+    alert('Invalid chr$ file: zero dimensions.');
+    return null;
+  }
+
+  if (bytesPerCell !== 9 && bytesPerCell !== 18) {
+    alert('Invalid chr$ file: unsupported bytes-per-cell value ' + bytesPerCell + ' (expected 9 or 18).');
+    return null;
+  }
+
+  const expectedDataSize = widthCells * heightCells * bytesPerCell;
+  if (bytes.length < 7 + expectedDataSize) {
+    alert('Invalid chr$ file: data truncated (expected ' + (7 + expectedDataSize) + ' bytes, got ' + bytes.length + ').');
+    return null;
+  }
+
+  const pixelWidth = widthCells * 8;
+  const pixelHeight = heightCells * 8;
+  const cols = widthCells;
+  const bitmapSize = cols * pixelHeight;
+  const attrSize = widthCells * heightCells;
+  const isGigascreen = bytesPerCell === 18;
+  const frameCount = isGigascreen ? 2 : 1;
+
+  // Layout: frame1_bitmap + frame1_attrs [+ frame2_bitmap + frame2_attrs]
+  const screenData = new Uint8Array((bitmapSize + attrSize) * frameCount);
+
+  let srcOffset = 7; // skip header
+  for (let cellRow = 0; cellRow < heightCells; cellRow++) {
+    for (let cellCol = 0; cellCol < widthCells; cellCol++) {
+      for (let frame = 0; frame < frameCount; frame++) {
+        const frameOffset = frame * (bitmapSize + attrSize);
+        // 8 bitmap bytes (one per pixel row in the cell)
+        for (let line = 0; line < 8; line++) {
+          const y = cellRow * 8 + line;
+          screenData[frameOffset + y * cols + cellCol] = bytes[srcOffset++];
+        }
+        // 1 attribute byte
+        screenData[frameOffset + bitmapSize + cellRow * cols + cellCol] = bytes[srcOffset++];
+      }
+    }
+  }
+
+  return {
+    data: screenData,
+    width: pixelWidth,
+    height: pixelHeight,
+    gigascreen: isGigascreen
+  };
+}
+
+/**
+ * Exports a chr$ Picture back to binary chr$ format.
+ * Re-interleaves linear bitmap + attrs into cell-based layout.
+ * Supports both standard (bpc=9) and gigascreen (bpc=18) Pictures.
+ * @param {Picture} picture - Source picture
+ * @returns {Uint8Array} chr$ binary data
+ */
+function exportChrFile(picture) {
+  const width = picture.width;
+  const height = picture.height;
+  const cols = picture.cols;
+  const widthCells = cols;
+  const heightCells = height >> 3;
+  const isGigascreen = picture.planeCount === 2 && picture.colorMode === 'gigascreen';
+  const bytesPerCell = isGigascreen ? 18 : 9;
+  const frameCount = isGigascreen ? 2 : 1;
+
+  const totalSize = 7 + widthCells * heightCells * bytesPerCell;
+  const output = new Uint8Array(totalSize);
+
+  // Header
+  output[0] = 0x63; // 'c'
+  output[1] = 0x68; // 'h'
+  output[2] = 0x72; // 'r'
+  output[3] = 0x24; // '$'
+  output[4] = widthCells;
+  output[5] = heightCells;
+  output[6] = bytesPerCell;
+
+  // Interleave cell data
+  let dstOffset = 7;
+  for (let cellRow = 0; cellRow < heightCells; cellRow++) {
+    for (let cellCol = 0; cellCol < widthCells; cellCol++) {
+      for (let frame = 0; frame < frameCount; frame++) {
+        const bitmap = picture.planes[frame].bitmap;
+        const attrs = picture.planes[frame].attrs;
+        // 8 bitmap bytes
+        for (let line = 0; line < 8; line++) {
+          const y = cellRow * 8 + line;
+          output[dstOffset++] = bitmap[y * cols + cellCol];
+        }
+        // 1 attribute byte
+        output[dstOffset++] = attrs[cellRow * cols + cellCol];
+      }
+    }
+  }
+
+  return output;
+}
+
+/**
+ * Loads a chr$ file
+ * @param {File} file - The chr$ file to load
+ */
+function loadChrFile(file) {
+  const reader = new FileReader();
+
+  reader.addEventListener('load', function(event) {
+    const buffer = event.target?.result;
+    if (!(buffer instanceof ArrayBuffer)) return;
+
+    const result = parseChrFile(buffer);
+    if (!result) return;
+
+    // Stop any existing timers
+    stopFlashTimer();
+    resetScaState();
+
+    const { data, width, height, gigascreen } = result;
+    const baseName = file.name.replace(/\.(ch\$|chr\$|ch-)$/i, '');
+    const fileName = baseName + '.ch$';
+    const cols = width >> 3;
+    const bitmapSize = cols * height;
+    const attrSize = cols * (height >> 3);
+    const frameSize = bitmapSize + attrSize;
+
+    if (typeof saveCurrentPictureState === 'function') {
+      saveCurrentPictureState();
+    }
+
+    initUlaPlusMode(data, FORMAT.UNKNOWN);
+
+    let newInternalPicture = null;
+    if (gigascreen) {
+      // Gigascreen chr$: two frames, each with linear bitmap + attrs
+      if (typeof makePicture === 'function') {
+        // Create a 2-plane Picture with linear bitmaps
+        newInternalPicture = makePicture({
+          sourceFormat: 'ch$',
+          fileName: fileName,
+          width: width,
+          height: height,
+          attrCellHeight: 8,
+          planeCount: 2,
+          contentMode: 'pixel',
+          colorMode: 'gigascreen'
+        });
+        // Frame 1: data[0..frameSize)
+        newInternalPicture.planes[0].bitmap.set(data.subarray(0, bitmapSize));
+        newInternalPicture.planes[0].attrs.set(data.subarray(bitmapSize, frameSize));
+        // Frame 2: data[frameSize..2*frameSize)
+        newInternalPicture.planes[1].bitmap.set(data.subarray(frameSize, frameSize + bitmapSize));
+        newInternalPicture.planes[1].attrs.set(data.subarray(frameSize + bitmapSize, frameSize * 2));
+      }
+    } else {
+      // Standard chr$: single frame
+      const bitmap = data.subarray(0, bitmapSize);
+      const attrs = data.subarray(bitmapSize);
+      if (typeof importZxp === 'function') {
+        newInternalPicture = importZxp(bitmap, attrs, fileName, width, height, 8, null);
+      }
+      // Override sourceFormat to 'ch$' so sync/export use correct format
+      if (newInternalPicture) {
+        newInternalPicture.sourceFormat = 'ch$';
+      }
+    }
+
+    if (typeof addPicture === 'function') {
+      const pictureResult = addPicture(fileName, FORMAT.CHR, data, newInternalPicture, true);
+      if (pictureResult >= 0) {
+        updateFlashTimer();
+        return;
+      }
+      screenData = data;
+      currentFileName = fileName;
+      currentFormat = FORMAT.CHR;
+      currentPicture = newInternalPicture;
+    } else {
+      screenData = data;
+      currentFileName = fileName;
+      currentFormat = FORMAT.CHR;
+      currentPicture = newInternalPicture;
+    }
+
+    toggleScaControlsVisibility();
+    toggleFormatControlsVisibility();
+    updateScaControls();
+    updateFileInfo();
+    renderScreen();
+    if (typeof updateEditorState === 'function') updateEditorState();
+    if (typeof editorActive !== 'undefined' && editorActive && typeof renderPreview === 'function') renderPreview();
+    updateFlashTimer();
+    if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
+  });
+
+  reader.readAsArrayBuffer(file);
+}
+
 /**
  * Loads screen data from a file
  * @param {File} file - The file to load
@@ -4539,6 +6116,7 @@ function loadScreenFile(file) {
         screenData = data;
         currentFileName = fileName;
         currentFormat = format;
+        currentPicture = null;
         scaHeader = parseScaHeader(screenData);
         if (scaHeader) {
           // Use border color from SCA header
@@ -4567,6 +6145,10 @@ function loadScreenFile(file) {
         if (typeof updateExportAsmButton === 'function') {
           updateExportAsmButton();
         }
+        // Disable editor for SCA (non-editable format)
+        if (typeof updateEditorState === 'function') {
+          updateEditorState();
+        }
         return;
       }
 
@@ -4579,12 +6161,27 @@ function loadScreenFile(file) {
         }
       }
 
+      // Save current picture state BEFORE initUlaPlusMode clobbers ULA+ globals
+      if (typeof saveCurrentPictureState === 'function') {
+        saveCurrentPictureState();
+      }
+
       // Initialize ULA+ mode based on format
       initUlaPlusMode(data, format);
 
+      // Create internal picture format for all supported formats
+      let newInternalPicture = null;
+      if (typeof importPicture === 'function') {
+        // For 53c format, pass the currently selected pattern
+        const importOpts = (format === FORMAT.ATTR_53C && typeof getSelectedPattern === 'function')
+          ? { pattern: getSelectedPattern() }
+          : undefined;
+        newInternalPicture = importPicture(format, data, fileName, importOpts);
+      }
+
       // For editable formats, use multi-picture system if available
       if (typeof addPicture === 'function') {
-        const result = addPicture(fileName, format, data);
+        const result = addPicture(fileName, format, data, newInternalPicture, true);
         if (result >= 0) {
           // addPicture -> switchToPicture handles all rendering and UI updates
           updateFlashTimer();
@@ -4594,11 +6191,13 @@ function loadScreenFile(file) {
         screenData = data;
         currentFileName = fileName;
         currentFormat = format;
+        currentPicture = newInternalPicture;
       } else {
         // Editor not loaded - use direct assignment
         screenData = data;
         currentFileName = fileName;
         currentFormat = format;
+        currentPicture = newInternalPicture;
       }
 
       toggleScaControlsVisibility();

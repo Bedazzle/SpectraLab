@@ -2083,6 +2083,437 @@ function convertToScr(sourceCanvas, dithering, brightness, contrast, saturation 
 }
 
 // ============================================================================
+// ZXP FORMAT CONVERSION (linear bitmap + attributes, parametric dimensions)
+// ============================================================================
+
+/**
+ * Convert source canvas to ZXP format (linear bitmap + attributes)
+ * Same dithering/quantization as SCR but with parametric width/height and linear addressing.
+ * @param {HTMLCanvasElement} sourceCanvas - Source canvas (dimensions define output size)
+ * @param {string} dithering - Dithering method
+ * @param {number} brightness - Brightness adjustment
+ * @param {number} contrast - Contrast adjustment
+ * @param {number} saturation - Saturation adjustment
+ * @param {number} gamma - Gamma value
+ * @param {boolean} grayscale - Grayscale mode
+ * @param {number} sharpness - Sharpness adjustment
+ * @param {number} smoothing - Smoothing adjustment
+ * @param {number} blackPoint - Black point
+ * @param {number} whitePoint - White point
+ * @param {number} balanceR - Red balance
+ * @param {number} balanceG - Green balance
+ * @param {number} balanceB - Blue balance
+ * @param {boolean} monoOutput - Mono output mode
+ * @returns {Uint8Array} ZXP data (bitmap + attributes, linear layout)
+ */
+function convertToZxp(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, monoOutput = false) {
+  updateColorDistanceMode();
+
+  const w = sourceCanvas.width;
+  const h = sourceCanvas.height;
+  const cols = w >> 3;
+  const attrCellH = 8;
+  const attrRows = Math.ceil(h / attrCellH);
+  const bitmapSize = cols * h;
+  const attrSize = cols * attrRows;
+
+  const ctx = sourceCanvas.getContext('2d');
+  if (!ctx) throw new Error('Cannot get canvas context');
+
+  const imageData = ctx.getImageData(0, 0, w, h);
+  const pixels = imageData.data;
+
+  applyImageAdjustments(pixels, w, h, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
+
+  if (monoOutput && !grayscale) {
+    applyGrayscale(pixels);
+  }
+
+  const floatPixels = rgbaToFloat(pixels, w * h);
+
+  const palette = getCombinedPalette();
+  const fullPalette = [...palette.regular, ...palette.bright];
+
+  const zxp = new Uint8Array(bitmapSize + attrSize);
+
+  const isCellAware = dithering.startsWith('cell-');
+
+  if (isCellAware) {
+    const cellDitherMethod = dithering.replace('cell-', '');
+
+    const monoColors = monoOutput ? {
+      ink: 0, paper: 7, bright: true,
+      inkRgb: palette.bright[0], paperRgb: palette.bright[7]
+    } : null;
+
+    const errorDiffusionMethods = ['floyd', 'atkinson', 'sierra2', 'serpentine', 'riemersma'];
+    const useGlobalDitherForMono = monoOutput && errorDiffusionMethods.includes(cellDitherMethod);
+
+    if (useGlobalDitherForMono) {
+      const monoPalette = [palette.bright[0], palette.bright[7]];
+      switch (cellDitherMethod) {
+        case 'floyd': floydSteinbergDither(floatPixels, w, h, monoPalette); break;
+        case 'atkinson': atkinsonDither(floatPixels, w, h, monoPalette); break;
+        case 'sierra2': sierra2Dither(floatPixels, w, h, monoPalette); break;
+        case 'serpentine': serpentineDither(floatPixels, w, h, monoPalette); break;
+        case 'riemersma': riemersmaDither(floatPixels, w, h, monoPalette); break;
+      }
+
+      for (let cellY = 0; cellY < attrRows; cellY++) {
+        for (let cellX = 0; cellX < cols; cellX++) {
+          const cell = analyzeCellMono(floatPixels, cellX, cellY, w, monoColors.inkRgb, monoColors.paperRgb);
+
+          for (let line = 0; line < 8; line++) {
+            const y = cellY * 8 + line;
+            if (y >= h) break;
+            const offset = y * cols + cellX;
+            zxp[offset] = cell.bitmap[line];
+          }
+
+          const attrOffset = bitmapSize + cellY * cols + cellX;
+          zxp[attrOffset] = (7 << 3) | 0 | 0x40;
+        }
+      }
+    } else {
+      for (let cellY = 0; cellY < attrRows; cellY++) {
+        for (let cellX = 0; cellX < cols; cellX++) {
+          const colors = monoColors || findCellColors(floatPixels, cellX, cellY, w, palette);
+
+          let bitmap;
+          switch (cellDitherMethod) {
+            case 'floyd':
+              bitmap = ditherCellFloydSteinberg(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'atkinson':
+              bitmap = ditherCellAtkinson(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'ordered':
+              bitmap = ditherCellOrdered(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'sierra2':
+              bitmap = ditherCellSierra2(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'serpentine':
+              bitmap = ditherCellSerpentine(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'riemersma':
+              bitmap = ditherCellRiemersma(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'blue-noise':
+              bitmap = ditherCellBlueNoise(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'pattern':
+              bitmap = ditherCellPattern(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb);
+              break;
+            default:
+              bitmap = ditherCellNone(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb);
+              break;
+          }
+
+          const ruled = applyPaperRule(colors, bitmap);
+
+          for (let line = 0; line < 8; line++) {
+            const y = cellY * 8 + line;
+            if (y >= h) break;
+            const offset = y * cols + cellX;
+            zxp[offset] = ruled.bitmap[line];
+          }
+
+          const attrOffset = bitmapSize + cellY * cols + cellX;
+          let attr = (ruled.colors.paper << 3) | ruled.colors.ink;
+          if (ruled.colors.bright) attr |= 0x40;
+          zxp[attrOffset] = attr;
+        }
+      }
+    }
+  } else {
+    // Global dithering
+    const ditherPalette = monoOutput ? [palette.bright[0], palette.bright[7]] : fullPalette;
+
+    switch (dithering) {
+      case 'floyd-steinberg': floydSteinbergDither(floatPixels, w, h, ditherPalette); break;
+      case 'jarvis': jarvisDither(floatPixels, w, h, ditherPalette); break;
+      case 'stucki': stuckiDither(floatPixels, w, h, ditherPalette); break;
+      case 'burkes': burkesDither(floatPixels, w, h, ditherPalette); break;
+      case 'sierra': sierraDither(floatPixels, w, h, ditherPalette); break;
+      case 'sierra-lite': sierraLiteDither(floatPixels, w, h, ditherPalette); break;
+      case 'sierra2': sierra2Dither(floatPixels, w, h, ditherPalette); break;
+      case 'serpentine': serpentineDither(floatPixels, w, h, ditherPalette); break;
+      case 'riemersma': riemersmaDither(floatPixels, w, h, ditherPalette); break;
+      case 'blue-noise': blueNoiseDither(floatPixels, w, h, ditherPalette); break;
+      case 'pattern': patternDither(floatPixels, w, h, ditherPalette); break;
+      case 'atkinson': atkinsonDither(floatPixels, w, h, ditherPalette); break;
+      case 'ordered': orderedDither(floatPixels, w, h, ditherPalette); break;
+      case 'ordered8': ordered8Dither(floatPixels, w, h, ditherPalette); break;
+      case 'noise': noiseDither(floatPixels, w, h, ditherPalette); break;
+    }
+
+    for (let cellY = 0; cellY < attrRows; cellY++) {
+      for (let cellX = 0; cellX < cols; cellX++) {
+        const cell = monoOutput
+          ? analyzeCellMono(floatPixels, cellX, cellY, w, palette.bright[0], palette.bright[7])
+          : analyzeCell(floatPixels, cellX, cellY, w);
+
+        const ruled = monoOutput ? { colors: cell, bitmap: cell.bitmap } : applyPaperRule(cell, cell.bitmap);
+
+        for (let line = 0; line < 8; line++) {
+          const y = cellY * 8 + line;
+          if (y >= h) break;
+          const offset = y * cols + cellX;
+          zxp[offset] = ruled.bitmap[line];
+        }
+
+        const attrOffset = bitmapSize + cellY * cols + cellX;
+        let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0));
+        zxp[attrOffset] = attr;
+      }
+    }
+  }
+
+  return zxp;
+}
+
+/**
+ * Generate optimal ULA+ palette from image pixels (parametric dimensions).
+ * @param {Float32Array} pixels - Float array of RGB values (w*h*3)
+ * @param {number} w - Image width
+ * @param {number} h - Image height
+ * @returns {Uint8Array} 64-byte palette in GRB332 format
+ */
+function generateOptimalUlaPlusPaletteParam(pixels, w, h) {
+  const colorFreq = new Map();
+  const totalPixels = w * h;
+  for (let i = 0; i < totalPixels; i++) {
+    const r = Math.round(pixels[i * 3]);
+    const g = Math.round(pixels[i * 3 + 1]);
+    const b = Math.round(pixels[i * 3 + 2]);
+    const grb = rgbToGrb332(r, g, b);
+    colorFreq.set(grb, (colorFreq.get(grb) || 0) + 1);
+  }
+  const sortedColors = Array.from(colorFreq.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(entry => entry[0]);
+
+  const cols = w >> 3;
+  const attrRows = Math.ceil(h / 8);
+  const cellColorPairs = [];
+  for (let cellY = 0; cellY < attrRows; cellY++) {
+    for (let cellX = 0; cellX < cols; cellX++) {
+      const cellColors = new Map();
+      for (let dy = 0; dy < 8; dy++) {
+        const py = cellY * 8 + dy;
+        if (py >= h) break;
+        for (let dx = 0; dx < 8; dx++) {
+          const px = cellX * 8 + dx;
+          const idx = (py * w + px) * 3;
+          const r = Math.round(pixels[idx]);
+          const g = Math.round(pixels[idx + 1]);
+          const b = Math.round(pixels[idx + 2]);
+          const grb = rgbToGrb332(r, g, b);
+          cellColors.set(grb, (cellColors.get(grb) || 0) + 1);
+        }
+      }
+      const topColors = Array.from(cellColors.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 2)
+        .map(e => e[0]);
+      if (topColors.length >= 2) {
+        cellColorPairs.push(topColors);
+      }
+    }
+  }
+
+  const clutColors = [new Set(), new Set(), new Set(), new Set()];
+  for (const pair of cellColorPairs) {
+    let bestClut = 0;
+    let bestScore = -Infinity;
+    for (let c = 0; c < 4; c++) {
+      const has0 = clutColors[c].has(pair[0]);
+      const has1 = clutColors[c].has(pair[1]);
+      const size = clutColors[c].size;
+      let score = 0;
+      if (has0) score += 10;
+      if (has1) score += 10;
+      if (size < 16) score += (16 - size);
+      if (!has0 && !has1 && size >= 14) score = -100;
+      if (score > bestScore) { bestScore = score; bestClut = c; }
+    }
+    if (clutColors[bestClut].size < 16) clutColors[bestClut].add(pair[0]);
+    if (clutColors[bestClut].size < 16) clutColors[bestClut].add(pair[1]);
+  }
+
+  const palette = new Uint8Array(64);
+  for (let c = 0; c < 4; c++) {
+    const colors = Array.from(clutColors[c]);
+    for (let i = 0; i < 16; i++) {
+      if (i < colors.length) {
+        palette[c * 16 + i] = colors[i];
+      } else if (i < sortedColors.length) {
+        palette[c * 16 + i] = sortedColors[i % sortedColors.length];
+      }
+    }
+  }
+  return palette;
+}
+
+/**
+ * Find best CLUT and ink/paper for a cell (parametric width).
+ * @param {Float32Array} pixels - Float array of RGB values
+ * @param {number} cellX - Cell X position
+ * @param {number} cellY - Cell Y position
+ * @param {number} w - Image width
+ * @param {number} h - Image height
+ * @param {Uint8Array} palette - ULA+ 64-byte palette
+ * @returns {{clut: number, ink: number, paper: number, inkRgb: number[], paperRgb: number[]}}
+ */
+function findUlaPlusCellColorsParam(pixels, cellX, cellY, w, h, palette) {
+  const cellColors = [];
+  for (let dy = 0; dy < 8; dy++) {
+    const py = cellY * 8 + dy;
+    if (py >= h) break;
+    for (let dx = 0; dx < 8; dx++) {
+      const px = cellX * 8 + dx;
+      const idx = (py * w + px) * 3;
+      cellColors.push([pixels[idx], pixels[idx + 1], pixels[idx + 2]]);
+    }
+  }
+
+  let bestError = Infinity;
+  let bestClut = 0, bestInk = 0, bestPaper = 0;
+  for (let clut = 0; clut < 4; clut++) {
+    const baseIdx = clut * 16;
+    for (let ink = 0; ink < 8; ink++) {
+      const inkRgb = grb332ToRgb(palette[baseIdx + ink]);
+      for (let paper = 0; paper < 8; paper++) {
+        const paperRgb = grb332ToRgb(palette[baseIdx + 8 + paper]);
+        let totalError = 0;
+        for (const color of cellColors) {
+          totalError += Math.min(colorDistance(color, inkRgb), colorDistance(color, paperRgb));
+        }
+        if (totalError < bestError) {
+          bestError = totalError;
+          bestClut = clut; bestInk = ink; bestPaper = paper;
+        }
+      }
+    }
+  }
+
+  const baseIdx = bestClut * 16;
+  return {
+    clut: bestClut, ink: bestInk, paper: bestPaper,
+    inkRgb: grb332ToRgb(palette[baseIdx + bestInk]),
+    paperRgb: grb332ToRgb(palette[baseIdx + 8 + bestPaper])
+  };
+}
+
+/**
+ * Convert source canvas to ZXP format with ULA+ palette (64-color, linear layout).
+ * Output: bitmap (linear) + attributes (linear) + 64-byte palette.
+ * @param {HTMLCanvasElement} sourceCanvas
+ * @param {string} dithering
+ * @param {number} brightness
+ * @param {number} contrast
+ * @param {number} saturation
+ * @param {number} gamma
+ * @param {boolean} grayscale
+ * @param {number} sharpness
+ * @param {number} smoothing
+ * @param {number} blackPoint
+ * @param {number} whitePoint
+ * @param {number} balanceR
+ * @param {number} balanceG
+ * @param {number} balanceB
+ * @param {Uint8Array|null} externalPalette
+ * @returns {{data: Uint8Array, palette: Uint8Array}} ZXP data + palette
+ */
+function convertToZxpUlaPlus(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, externalPalette = null) {
+  updateColorDistanceMode();
+
+  const w = sourceCanvas.width;
+  const h = sourceCanvas.height;
+  const cols = w >> 3;
+  const attrCellH = 8;
+  const attrRows = Math.ceil(h / attrCellH);
+  const bitmapSize = cols * h;
+  const attrSize = cols * attrRows;
+
+  const ctx = sourceCanvas.getContext('2d');
+  if (!ctx) throw new Error('Cannot get canvas context');
+
+  const imageData = ctx.getImageData(0, 0, w, h);
+  const pixels = imageData.data;
+
+  applyImageAdjustments(pixels, w, h, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
+
+  const floatPixels = rgbaToFloat(pixels, w * h);
+
+  const palette = externalPalette
+    ? new Uint8Array(externalPalette)
+    : generateOptimalUlaPlusPaletteParam(floatPixels, w, h);
+
+  // Output: bitmap + attrs + 64-byte palette
+  const output = new Uint8Array(bitmapSize + attrSize + 64);
+
+  const isCellAware = dithering.startsWith('cell-');
+  const cellDitherMethod = isCellAware ? dithering.replace('cell-', '') : dithering;
+
+  for (let cellY = 0; cellY < attrRows; cellY++) {
+    for (let cellX = 0; cellX < cols; cellX++) {
+      const colors = findUlaPlusCellColorsParam(floatPixels, cellX, cellY, w, h, palette);
+
+      let bitmap;
+      if (isCellAware) {
+        switch (cellDitherMethod) {
+          case 'floyd': bitmap = ditherCellFloydSteinberg(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb); break;
+          case 'atkinson': bitmap = ditherCellAtkinson(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb); break;
+          case 'ordered': bitmap = ditherCellOrdered(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb); break;
+          case 'sierra2': bitmap = ditherCellSierra2(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb); break;
+          case 'serpentine': bitmap = ditherCellSerpentine(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb); break;
+          case 'riemersma': bitmap = ditherCellRiemersma(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb); break;
+          case 'blue-noise': bitmap = ditherCellBlueNoise(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb); break;
+          case 'pattern': bitmap = ditherCellPattern(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb); break;
+          default: bitmap = ditherCellNone(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb); break;
+        }
+      } else {
+        bitmap = new Uint8Array(8);
+        for (let dy = 0; dy < 8; dy++) {
+          const py = cellY * 8 + dy;
+          if (py >= h) break;
+          for (let dx = 0; dx < 8; dx++) {
+            const px = cellX * 8 + dx;
+            const idx = (py * w + px) * 3;
+            const color = [floatPixels[idx], floatPixels[idx + 1], floatPixels[idx + 2]];
+            const inkDist = colorDistance(color, colors.inkRgb);
+            const paperDist = colorDistance(color, colors.paperRgb);
+            if (inkDist < paperDist) {
+              bitmap[dy] |= (0x80 >> dx);
+            }
+          }
+        }
+      }
+
+      // Write bitmap (linear addressing)
+      for (let line = 0; line < 8; line++) {
+        const y = cellY * 8 + line;
+        if (y >= h) break;
+        output[y * cols + cellX] = bitmap[line];
+      }
+
+      // Write attribute: CLUT from FLASH+BRIGHT bits
+      const flash = (colors.clut >> 1) & 1;
+      const bright = colors.clut & 1;
+      const attrOffset = bitmapSize + cellY * cols + cellX;
+      output[attrOffset] = (flash << 7) | (bright << 6) | (colors.paper << 3) | colors.ink;
+    }
+  }
+
+  // Write palette at end
+  output.set(palette, bitmapSize + attrSize);
+
+  return { data: output, palette: palette };
+}
+
+// ============================================================================
 // ULA+ FORMAT CONVERSION (64-color palette)
 // ============================================================================
 
@@ -3839,6 +4270,1031 @@ function renderRgb3ToCanvas(rgb3Data, canvas, zoom = 2) {
   }
 }
 
+// ============================================================================
+// GIGASCREEN / MGH FORMAT CONVERSION
+// ============================================================================
+// Gigascreen blends two SCR-style frames at ~50Hz to produce extra perceived
+// colors. Each cell (8 × cellHeight) has two attribute bytes (one per frame),
+// giving up to 4 distinct blended colors per cell.
+//   cellHeight = 8 → standard gigascreen / mg8
+//   cellHeight = 4 → mg4
+//   cellHeight = 2 → mg2
+//   cellHeight = 1 → mg1 (per-pixel-row attributes)
+
+/**
+ * Compute index in 136-blend palette for unordered pair of palette indices.
+ * @param {number} a - palette index 0..15
+ * @param {number} b - palette index 0..15
+ * @returns {number} index 0..135
+ */
+function gigaBlendIndex(a, b) {
+  const lo = a < b ? a : b;
+  const hi = a < b ? b : a;
+  return lo * 16 + hi - ((lo * (lo + 1)) >> 1);
+}
+
+/**
+ * Precompute lookup tables for Gigascreen attribute search.
+ * For every (attr1, attr2) pair the 4 blend colors are deterministic. We dedupe
+ * by canonicalising attr1 ≤ attr2 (swapping just exchanges the two frames) and
+ * by canonicalising ink/paper inside each attr (swapping inverts the bitmap
+ * bits — visually equivalent), yielding ~2628 unique quad shapes.
+ *
+ * Each attr byte: bit 6 = bright, bits 5-3 = paper, bits 2-0 = ink.
+ *
+ * @param {number[][]} allColors - 16 RGB colors (regular + bright)
+ * @returns {{quads: Array<{attr1:number, attr2:number, idx:number[], colors:number[][]}>, blendedPalette:number[][]}}
+ */
+function precomputeGigaQuads(allColors) {
+  // Build 136-color blend palette
+  const blendedPalette = new Array(136);
+  for (let c1 = 0; c1 < 16; c1++) {
+    for (let c2 = c1; c2 < 16; c2++) {
+      const bi = c1 * 16 + c2 - ((c1 * (c1 + 1)) >> 1);
+      blendedPalette[bi] = [
+        Math.round((allColors[c1][0] + allColors[c2][0]) / 2),
+        Math.round((allColors[c1][1] + allColors[c2][1]) / 2),
+        Math.round((allColors[c1][2] + allColors[c2][2]) / 2)
+      ];
+    }
+  }
+
+  // Generate canonical attrs (ink ≤ paper, both within same brightness).
+  // Within an attr, swapping ink/paper just inverts the bitmap bit meaning, so
+  // we can pick a single canonical encoding (ink is the smaller palette index).
+  // Canonical attr byte: (bright<<6) | (paperRaw<<3) | inkRaw with inkRaw ≤ paperRaw.
+  const canonAttrs = [];
+  const seenColorPairs = new Set();
+  for (let bright = 0; bright <= 1; bright++) {
+    for (let inkRaw = 0; inkRaw < 8; inkRaw++) {
+      for (let paperRaw = inkRaw; paperRaw < 8; paperRaw++) {
+        const inkIdx = bright * 8 + inkRaw;
+        const paperIdx = bright * 8 + paperRaw;
+        const key = inkIdx * 16 + paperIdx;
+        if (seenColorPairs.has(key)) continue;
+        seenColorPairs.add(key);
+        const attr = (bright << 6) | (paperRaw << 3) | inkRaw;
+        canonAttrs.push({ attr, ink: inkIdx, paper: paperIdx });
+      }
+    }
+  }
+
+  // Build unique quads from canonical attr pairs (canon1 ≤ canon2)
+  const quads = [];
+  const seenQuads = new Set();
+  for (let i = 0; i < canonAttrs.length; i++) {
+    const c1 = canonAttrs[i];
+    for (let j = i; j < canonAttrs.length; j++) {
+      const c2 = canonAttrs[j];
+      // Compute the 4 blend indices for this quad
+      // c00 = paper1+paper2 (b1=0,b2=0)
+      // c01 = paper1+ink2  (b1=0,b2=1)
+      // c10 = ink1+paper2  (b1=1,b2=0)
+      // c11 = ink1+ink2    (b1=1,b2=1)
+      const idx00 = gigaBlendIndex(c1.paper, c2.paper);
+      const idx01 = gigaBlendIndex(c1.paper, c2.ink);
+      const idx10 = gigaBlendIndex(c1.ink, c2.paper);
+      const idx11 = gigaBlendIndex(c1.ink, c2.ink);
+      // Quad key: sorted blend indices to dedupe shape duplicates
+      const sorted = [idx00, idx01, idx10, idx11].slice().sort((a, b) => a - b);
+      const key = sorted.join(',');
+      if (seenQuads.has(key)) continue;
+      seenQuads.add(key);
+      quads.push({
+        attr1: c1.attr,
+        attr2: c2.attr,
+        ink1: c1.ink, paper1: c1.paper,
+        ink2: c2.ink, paper2: c2.paper,
+        idx: [idx00, idx01, idx10, idx11],
+        colors: [
+          blendedPalette[idx00],
+          blendedPalette[idx01],
+          blendedPalette[idx10],
+          blendedPalette[idx11]
+        ]
+      });
+    }
+  }
+
+  return { quads, blendedPalette };
+}
+
+/**
+ * Find the best (attr1, attr2) pair for a single Gigascreen cell.
+ * Brute-force over precomputed unique quads. Pixel-to-blend distances are
+ * precomputed once per cell so per-quad cost is just 4 lookups + min per pixel.
+ *
+ * @param {Float32Array} floatPixels - Whole-image pixel buffer (R,G,B,...)
+ * @param {number} cellCol - Cell column 0..31
+ * @param {number} cellY - Top y of cell (in pixels)
+ * @param {number} cellHeight - Cell height (1, 2, 4, or 8)
+ * @param {number} width - Image width
+ * @param {{quads:Array, blendedPalette:number[][]}} attrQuads - Precomputed quads
+ * @param {number} [imgHeight=192] - Image height (defaults to 192 for ZX screen)
+ * @returns {{attr1:number, attr2:number, quadColors:number[][], frame1Ink:number, frame1Paper:number, frame2Ink:number, frame2Paper:number}}
+ */
+function findGigaCellColors(floatPixels, cellCol, cellY, cellHeight, width, attrQuads, imgHeight = 192) {
+  const quads = attrQuads.quads;
+  const blendedPalette = attrQuads.blendedPalette;
+  const cellH = Math.min(cellHeight, imgHeight - cellY);
+  const numPx = cellH * 8;
+
+  // Collect cell pixels
+  const pxR = new Float32Array(numPx);
+  const pxG = new Float32Array(numPx);
+  const pxB = new Float32Array(numPx);
+  for (let dy = 0; dy < cellH; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const srcIdx = ((cellY + dy) * width + (cellCol * 8 + dx)) * 3;
+      const li = dy * 8 + dx;
+      pxR[li] = floatPixels[srcIdx];
+      pxG[li] = floatPixels[srcIdx + 1];
+      pxB[li] = floatPixels[srcIdx + 2];
+    }
+  }
+
+  // Precompute distance from every cell pixel to every blended palette entry
+  const dists = new Float32Array(numPx * 136);
+  for (let p = 0; p < numPx; p++) {
+    const pr = pxR[p], pg = pxG[p], pb = pxB[p];
+    const base = p * 136;
+    for (let b = 0; b < 136; b++) {
+      const c = blendedPalette[b];
+      const dr = pr - c[0];
+      const dg = pg - c[1];
+      const db = pb - c[2];
+      dists[base + b] = dr * dr + dg * dg + db * db;
+    }
+  }
+
+  // Iterate quads, find minimum total error
+  let bestErr = Infinity;
+  let bestQuad = quads[0];
+  for (let qi = 0; qi < quads.length; qi++) {
+    const q = quads[qi];
+    const i00 = q.idx[0], i01 = q.idx[1], i10 = q.idx[2], i11 = q.idx[3];
+    let totalErr = 0;
+    for (let p = 0; p < numPx; p++) {
+      const base = p * 136;
+      const d0 = dists[base + i00];
+      const d1 = dists[base + i01];
+      const d2 = dists[base + i10];
+      const d3 = dists[base + i11];
+      let m = d0;
+      if (d1 < m) m = d1;
+      if (d2 < m) m = d2;
+      if (d3 < m) m = d3;
+      totalErr += m;
+      if (totalErr >= bestErr) break;
+    }
+    if (totalErr < bestErr) {
+      bestErr = totalErr;
+      bestQuad = q;
+    }
+  }
+
+  return {
+    attr1: bestQuad.attr1,
+    attr2: bestQuad.attr2,
+    quadColors: bestQuad.colors,
+    frame1Ink: bestQuad.ink1,
+    frame1Paper: bestQuad.paper1,
+    frame2Ink: bestQuad.ink2,
+    frame2Paper: bestQuad.paper2
+  };
+}
+
+// Mapping from quad color index → frame bits.
+// Quad order: 0=(p1,p2), 1=(p1,i2), 2=(i1,p2), 3=(i1,i2)
+const GIGA_QUAD_B1 = [0, 0, 1, 1];
+const GIGA_QUAD_B2 = [0, 1, 0, 1];
+
+/**
+ * Apply cell-local dithering to a Gigascreen cell using its 4 quad colors.
+ * Returns per-row bitmap bytes for both frames.
+ *
+ * @param {Float32Array} floatPixels - Whole-image pixel buffer
+ * @param {number} cellCol - Cell column 0..31
+ * @param {number} cellY - Top y of cell
+ * @param {number} cellHeight - Cell height (1, 2, 4, or 8)
+ * @param {number} width - Image width
+ * @param {number[][]} quadColors - 4 RGB blend colors for the chosen quad
+ * @param {string} method - 'floyd', 'atkinson', 'ordered', 'none'
+ * @returns {{bitmap1:Uint8Array, bitmap2:Uint8Array}}
+ */
+function ditherGigaCell(floatPixels, cellCol, cellY, cellHeight, width, quadColors, method, imgHeight = 192) {
+  const cellH = Math.min(cellHeight, imgHeight - cellY);
+  const numPx = cellH * 8;
+  const localR = new Float32Array(numPx);
+  const localG = new Float32Array(numPx);
+  const localB = new Float32Array(numPx);
+  for (let dy = 0; dy < cellH; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const srcIdx = ((cellY + dy) * width + (cellCol * 8 + dx)) * 3;
+      const li = dy * 8 + dx;
+      localR[li] = floatPixels[srcIdx];
+      localG[li] = floatPixels[srcIdx + 1];
+      localB[li] = floatPixels[srcIdx + 2];
+    }
+  }
+
+  const bitmap1 = new Uint8Array(cellH);
+  const bitmap2 = new Uint8Array(cellH);
+
+  // 4x4 Bayer matrix for ordered dither
+  const bayer4 = [
+    [0, 8, 2, 10],
+    [12, 4, 14, 6],
+    [3, 11, 1, 9],
+    [15, 7, 13, 5]
+  ];
+  const bayerScale = 1.0 / 16.0;
+
+  for (let dy = 0; dy < cellH; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const i = dy * 8 + dx;
+      let pr = localR[i], pg = localG[i], pb = localB[i];
+
+      // Apply ordered bias before quantization (no error diffusion for ordered)
+      if (method === 'ordered') {
+        const t = (bayer4[dy & 3][dx & 3] - 7.5) * bayerScale * 64;
+        pr += t; pg += t; pb += t;
+      }
+
+      // Find nearest of 4 quad colors
+      let bestIdx = 0;
+      let bestD = Infinity;
+      for (let q = 0; q < 4; q++) {
+        const c = quadColors[q];
+        const dr = pr - c[0], dg = pg - c[1], db = pb - c[2];
+        const d = dr * dr + dg * dg + db * db;
+        if (d < bestD) { bestD = d; bestIdx = q; }
+      }
+
+      // Set frame bits
+      if (GIGA_QUAD_B1[bestIdx]) bitmap1[dy] |= (0x80 >> dx);
+      if (GIGA_QUAD_B2[bestIdx]) bitmap2[dy] |= (0x80 >> dx);
+
+      // Error diffusion (Floyd-Steinberg / Atkinson)
+      if (method === 'floyd' || method === 'atkinson') {
+        const c = quadColors[bestIdx];
+        const errR = localR[i] - c[0];
+        const errG = localG[i] - c[1];
+        const errB = localB[i] - c[2];
+
+        if (method === 'floyd') {
+          if (dx + 1 < 8) {
+            const ni = dy * 8 + (dx + 1);
+            localR[ni] += errR * 7 / 16;
+            localG[ni] += errG * 7 / 16;
+            localB[ni] += errB * 7 / 16;
+          }
+          if (dy + 1 < cellH) {
+            if (dx > 0) {
+              const ni = (dy + 1) * 8 + (dx - 1);
+              localR[ni] += errR * 3 / 16;
+              localG[ni] += errG * 3 / 16;
+              localB[ni] += errB * 3 / 16;
+            }
+            const ni2 = (dy + 1) * 8 + dx;
+            localR[ni2] += errR * 5 / 16;
+            localG[ni2] += errG * 5 / 16;
+            localB[ni2] += errB * 5 / 16;
+            if (dx + 1 < 8) {
+              const ni3 = (dy + 1) * 8 + (dx + 1);
+              localR[ni3] += errR * 1 / 16;
+              localG[ni3] += errG * 1 / 16;
+              localB[ni3] += errB * 1 / 16;
+            }
+          }
+        } else {
+          // Atkinson — distribute 1/8 to 6 neighbors
+          const f = 1 / 8;
+          const er = errR * f, eg = errG * f, eb = errB * f;
+          if (dx + 1 < 8) {
+            const ni = dy * 8 + (dx + 1);
+            localR[ni] += er; localG[ni] += eg; localB[ni] += eb;
+          }
+          if (dx + 2 < 8) {
+            const ni = dy * 8 + (dx + 2);
+            localR[ni] += er; localG[ni] += eg; localB[ni] += eb;
+          }
+          if (dy + 1 < cellH) {
+            if (dx > 0) {
+              const ni = (dy + 1) * 8 + (dx - 1);
+              localR[ni] += er; localG[ni] += eg; localB[ni] += eb;
+            }
+            const ni0 = (dy + 1) * 8 + dx;
+            localR[ni0] += er; localG[ni0] += eg; localB[ni0] += eb;
+            if (dx + 1 < 8) {
+              const ni = (dy + 1) * 8 + (dx + 1);
+              localR[ni] += er; localG[ni] += eg; localB[ni] += eb;
+            }
+          }
+          if (dy + 2 < cellH) {
+            const ni = (dy + 2) * 8 + dx;
+            localR[ni] += er; localG[ni] += eg; localB[ni] += eb;
+          }
+        }
+      }
+    }
+  }
+
+  return { bitmap1, bitmap2 };
+}
+
+/**
+ * Find which of the 4 quad colors a pixel is nearest to, returning the
+ * corresponding frame1/frame2 ink bits.
+ * @param {number} pr
+ * @param {number} pg
+ * @param {number} pb
+ * @param {number[][]} quadColors
+ * @returns {{f1ink:number, f2ink:number}}
+ */
+function nearestGigaQuadBits(pr, pg, pb, quadColors) {
+  let bestIdx = 0;
+  let bestD = Infinity;
+  for (let q = 0; q < 4; q++) {
+    const c = quadColors[q];
+    const dr = pr - c[0], dg = pg - c[1], db = pb - c[2];
+    const d = dr * dr + dg * dg + db * db;
+    if (d < bestD) { bestD = d; bestIdx = q; }
+  }
+  return { f1ink: GIGA_QUAD_B1[bestIdx], f2ink: GIGA_QUAD_B2[bestIdx] };
+}
+
+/**
+ * Convert image to Gigascreen / MGH format.
+ * Output buffer layout: frame1_bitmap (6144) + frame1_attrs (attrSize)
+ *                     + frame2_bitmap (6144) + frame2_attrs (attrSize)
+ * For cellHeight = 8 this matches the standard 13824-byte .img layout.
+ *
+ * @param {HTMLCanvasElement} sourceCanvas
+ * @param {string} dithering
+ * @param {number} brightness
+ * @param {number} contrast
+ * @param {number} saturation
+ * @param {number} gamma
+ * @param {boolean} grayscale
+ * @param {number} sharpness
+ * @param {number} smoothing
+ * @param {number} blackPoint
+ * @param {number} whitePoint
+ * @param {number} balanceR
+ * @param {number} balanceG
+ * @param {number} balanceB
+ * @param {number} cellHeight - 8 (gigascreen/mg8), 4 (mg4), 2 (mg2), 1 (mg1)
+ * @returns {Uint8Array}
+ */
+function convertToGigascreen(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, cellHeight) {
+  updateColorDistanceMode();
+
+  const ctx = sourceCanvas.getContext('2d');
+  if (!ctx) throw new Error('Cannot get canvas context');
+  const imageData = ctx.getImageData(0, 0, 256, 192);
+  const pixels = imageData.data;
+  applyImageAdjustments(pixels, 256, 192, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
+  const floatPixels = rgbaToFloat(pixels, 256 * 192);
+
+  const palette = getCombinedPalette();
+  const allColors = [...palette.regular, ...palette.bright]; // 16 colors
+
+  const attrQuads = precomputeGigaQuads(allColors);
+  const blendedPalette = attrQuads.blendedPalette;
+
+  const attrRows = Math.ceil(192 / cellHeight);
+  const attrSize = attrRows * 32;
+  const frameSize = 6144 + attrSize;
+  const result = new Uint8Array(frameSize * 2);
+
+  const isCellAware = dithering.startsWith('cell-');
+
+  if (!isCellAware) {
+    // Global dithering against the 136-color blended palette
+    const gigaDithering = mapCellDithering(dithering);
+    switch (gigaDithering) {
+      case 'floyd-steinberg': floydSteinbergDither(floatPixels, 256, 192, blendedPalette); break;
+      case 'jarvis': jarvisDither(floatPixels, 256, 192, blendedPalette); break;
+      case 'stucki': stuckiDither(floatPixels, 256, 192, blendedPalette); break;
+      case 'burkes': burkesDither(floatPixels, 256, 192, blendedPalette); break;
+      case 'sierra': sierraDither(floatPixels, 256, 192, blendedPalette); break;
+      case 'sierra-lite': sierraLiteDither(floatPixels, 256, 192, blendedPalette); break;
+      case 'sierra2': sierra2Dither(floatPixels, 256, 192, blendedPalette); break;
+      case 'serpentine': serpentineDither(floatPixels, 256, 192, blendedPalette); break;
+      case 'riemersma': riemersmaDither(floatPixels, 256, 192, blendedPalette); break;
+      case 'blue-noise': blueNoiseDither(floatPixels, 256, 192, blendedPalette); break;
+      case 'pattern': patternDither(floatPixels, 256, 192, blendedPalette); break;
+      case 'atkinson': atkinsonDither(floatPixels, 256, 192, blendedPalette); break;
+      case 'ordered': orderedDither(floatPixels, 256, 192, blendedPalette); break;
+      case 'ordered8': ordered8Dither(floatPixels, 256, 192, blendedPalette); break;
+      case 'noise': noiseDither(floatPixels, 256, 192, blendedPalette); break;
+      // 'none' — no dithering
+    }
+  }
+
+  const cellDitherMethod = isCellAware ? dithering.replace('cell-', '') : null;
+
+  // Process each cell
+  for (let cellRow = 0; cellRow < attrRows; cellRow++) {
+    const cellY = cellRow * cellHeight;
+    if (cellY >= 192) break;
+    const cellH = Math.min(cellHeight, 192 - cellY);
+
+    for (let cellCol = 0; cellCol < 32; cellCol++) {
+      const best = findGigaCellColors(floatPixels, cellCol, cellY, cellHeight, 256, attrQuads);
+
+      if (isCellAware) {
+        // Apply cell-local dithering using the 4 chosen quad colors
+        const cellBitmaps = ditherGigaCell(floatPixels, cellCol, cellY, cellHeight, 256, best.quadColors, cellDitherMethod);
+        for (let dy = 0; dy < cellH; dy++) {
+          const y = cellY + dy;
+          const bitmapAddr = getBitmapOffset(y) + cellCol;
+          result[bitmapAddr] = cellBitmaps.bitmap1[dy];
+          result[frameSize + bitmapAddr] = cellBitmaps.bitmap2[dy];
+        }
+      } else {
+        // Re-map already-dithered pixels to nearest of the 4 quad colors
+        for (let dy = 0; dy < cellH; dy++) {
+          const y = cellY + dy;
+          let byte1 = 0, byte2 = 0;
+          for (let dx = 0; dx < 8; dx++) {
+            const x = cellCol * 8 + dx;
+            const idx = (y * 256 + x) * 3;
+            const bits = nearestGigaQuadBits(floatPixels[idx], floatPixels[idx + 1], floatPixels[idx + 2], best.quadColors);
+            if (bits.f1ink) byte1 |= (0x80 >> dx);
+            if (bits.f2ink) byte2 |= (0x80 >> dx);
+          }
+          const bitmapAddr = getBitmapOffset(y) + cellCol;
+          result[bitmapAddr] = byte1;
+          result[frameSize + bitmapAddr] = byte2;
+        }
+      }
+
+      // Write attribute bytes (one per frame)
+      const attrOffset = 6144 + cellRow * 32 + cellCol;
+      result[attrOffset] = best.attr1;
+      result[frameSize + attrOffset] = best.attr2;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Convert source canvas to a chr$-style Gigascreen buffer at variable
+ * dimensions. Output uses linear bitmap+attrs layout (matching ZXP / chr$
+ * in-memory layout) rather than the ZX-interleaved layout used by
+ * convertToGigascreen(). Two frames are concatenated:
+ *   [bitmap1][attrs1][bitmap2][attrs2]
+ * where bitmap is (w/8)*h bytes and attrs is (w/8)*ceil(h/8) bytes.
+ * Cell height is always 8 (chr$ stores cell-aligned attrs).
+ */
+function convertToZxpGigascreen(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB) {
+  updateColorDistanceMode();
+
+  const w = sourceCanvas.width;
+  const h = sourceCanvas.height;
+  const ctx = sourceCanvas.getContext('2d');
+  if (!ctx) throw new Error('Cannot get canvas context');
+  const imageData = ctx.getImageData(0, 0, w, h);
+  const pixels = imageData.data;
+  applyImageAdjustments(pixels, w, h, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
+  const floatPixels = rgbaToFloat(pixels, w * h);
+
+  const palette = getCombinedPalette();
+  const allColors = [...palette.regular, ...palette.bright]; // 16 colors
+
+  const attrQuads = precomputeGigaQuads(allColors);
+  const blendedPalette = attrQuads.blendedPalette;
+
+  const cellHeight = 8;
+  const cellCols = w >> 3;
+  const attrRows = Math.ceil(h / cellHeight);
+  const bitmapSize = cellCols * h;
+  const attrSize = cellCols * attrRows;
+  const frameSize = bitmapSize + attrSize;
+  const result = new Uint8Array(frameSize * 2);
+
+  const isCellAware = dithering.startsWith('cell-');
+
+  if (!isCellAware) {
+    // Global dithering against the blended gigascreen palette
+    const gigaDithering = mapCellDithering(dithering);
+    switch (gigaDithering) {
+      case 'floyd-steinberg': floydSteinbergDither(floatPixels, w, h, blendedPalette); break;
+      case 'jarvis': jarvisDither(floatPixels, w, h, blendedPalette); break;
+      case 'stucki': stuckiDither(floatPixels, w, h, blendedPalette); break;
+      case 'burkes': burkesDither(floatPixels, w, h, blendedPalette); break;
+      case 'sierra': sierraDither(floatPixels, w, h, blendedPalette); break;
+      case 'sierra-lite': sierraLiteDither(floatPixels, w, h, blendedPalette); break;
+      case 'sierra2': sierra2Dither(floatPixels, w, h, blendedPalette); break;
+      case 'serpentine': serpentineDither(floatPixels, w, h, blendedPalette); break;
+      case 'riemersma': riemersmaDither(floatPixels, w, h, blendedPalette); break;
+      case 'blue-noise': blueNoiseDither(floatPixels, w, h, blendedPalette); break;
+      case 'pattern': patternDither(floatPixels, w, h, blendedPalette); break;
+      case 'atkinson': atkinsonDither(floatPixels, w, h, blendedPalette); break;
+      case 'ordered': orderedDither(floatPixels, w, h, blendedPalette); break;
+      case 'ordered8': ordered8Dither(floatPixels, w, h, blendedPalette); break;
+      case 'noise': noiseDither(floatPixels, w, h, blendedPalette); break;
+      // 'none' — no dithering
+    }
+  }
+
+  const cellDitherMethod = isCellAware ? dithering.replace('cell-', '') : null;
+
+  // Process each cell
+  for (let cellRow = 0; cellRow < attrRows; cellRow++) {
+    const cellY = cellRow * cellHeight;
+    if (cellY >= h) break;
+    const cellHActual = Math.min(cellHeight, h - cellY);
+
+    for (let cellCol = 0; cellCol < cellCols; cellCol++) {
+      const best = findGigaCellColors(floatPixels, cellCol, cellY, cellHeight, w, attrQuads, h);
+
+      if (isCellAware) {
+        const cellBitmaps = ditherGigaCell(floatPixels, cellCol, cellY, cellHeight, w, best.quadColors, cellDitherMethod, h);
+        for (let dy = 0; dy < cellHActual; dy++) {
+          const y = cellY + dy;
+          const bitmapAddr = y * cellCols + cellCol; // linear (chr$/ZXP) layout
+          result[bitmapAddr] = cellBitmaps.bitmap1[dy];
+          result[frameSize + bitmapAddr] = cellBitmaps.bitmap2[dy];
+        }
+      } else {
+        for (let dy = 0; dy < cellHActual; dy++) {
+          const y = cellY + dy;
+          let byte1 = 0, byte2 = 0;
+          for (let dx = 0; dx < 8; dx++) {
+            const x = cellCol * 8 + dx;
+            const idx = (y * w + x) * 3;
+            const bits = nearestGigaQuadBits(floatPixels[idx], floatPixels[idx + 1], floatPixels[idx + 2], best.quadColors);
+            if (bits.f1ink) byte1 |= (0x80 >> dx);
+            if (bits.f2ink) byte2 |= (0x80 >> dx);
+          }
+          const bitmapAddr = y * cellCols + cellCol;
+          result[bitmapAddr] = byte1;
+          result[frameSize + bitmapAddr] = byte2;
+        }
+      }
+
+      // Linear attribute layout (chr$/ZXP): attrs follow bitmap, no 6144 offset
+      const attrOffset = bitmapSize + cellRow * cellCols + cellCol;
+      result[attrOffset] = best.attr1;
+      result[frameSize + attrOffset] = best.attr2;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Render a Gigascreen / MGH buffer to a canvas as a blended preview.
+ * Output buffer layout matches convertToGigascreen().
+ *
+ * @param {Uint8Array} gigaData
+ * @param {HTMLCanvasElement} canvas
+ * @param {number} zoom
+ * @param {number} cellHeight
+ */
+function renderGigascreenToCanvas(gigaData, canvas, zoom, cellHeight) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  canvas.width = 256 * zoom;
+  canvas.height = 192 * zoom;
+
+  const palette = getCombinedPalette();
+  const allColors = [...palette.regular, ...palette.bright];
+
+  const attrRows = Math.ceil(192 / cellHeight);
+  const attrSize = attrRows * 32;
+  const frameSize = 6144 + attrSize;
+
+  const imageData = ctx.createImageData(256, 192);
+  const data = imageData.data;
+
+  for (let y = 0; y < 192; y++) {
+    const cellRow = Math.floor(y / cellHeight);
+    const bitmapOffset = getBitmapOffset(y);
+    for (let col = 0; col < 32; col++) {
+      const bm1 = gigaData[bitmapOffset + col];
+      const bm2 = gigaData[frameSize + bitmapOffset + col];
+      const attr1 = gigaData[6144 + cellRow * 32 + col];
+      const attr2 = gigaData[frameSize + 6144 + cellRow * 32 + col];
+
+      const ink1 = ((attr1 >> 6) & 1) * 8 + (attr1 & 7);
+      const paper1 = ((attr1 >> 6) & 1) * 8 + ((attr1 >> 3) & 7);
+      const ink2 = ((attr2 >> 6) & 1) * 8 + (attr2 & 7);
+      const paper2 = ((attr2 >> 6) & 1) * 8 + ((attr2 >> 3) & 7);
+
+      const c1Ink = allColors[ink1];
+      const c1Paper = allColors[paper1];
+      const c2Ink = allColors[ink2];
+      const c2Paper = allColors[paper2];
+
+      for (let bit = 0; bit < 8; bit++) {
+        const x = col * 8 + bit;
+        const mask = 0x80 >> bit;
+        const useInk1 = (bm1 & mask) !== 0;
+        const useInk2 = (bm2 & mask) !== 0;
+        const f1 = useInk1 ? c1Ink : c1Paper;
+        const f2 = useInk2 ? c2Ink : c2Paper;
+        const r = (f1[0] + f2[0]) >> 1;
+        const g = (f1[1] + f2[1]) >> 1;
+        const b = (f1[2] + f2[2]) >> 1;
+        const pixelIndex = (y * 256 + x) * 4;
+        data[pixelIndex] = r;
+        data[pixelIndex + 1] = g;
+        data[pixelIndex + 2] = b;
+        data[pixelIndex + 3] = 255;
+      }
+    }
+  }
+
+  const temp = getImportTempCanvas(256, 192);
+  if (temp) {
+    temp.ctx.putImageData(imageData, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(temp.canvas, 0, 0, 256 * zoom, 192 * zoom);
+  }
+}
+
+/**
+ * Render a chr$-style Gigascreen buffer (linear bitmap+attrs, two frames)
+ * at variable dimensions as a blended preview. Buffer layout matches
+ * convertToZxpGigascreen():
+ *   [bitmap1][attrs1][bitmap2][attrs2]
+ *
+ * @param {Uint8Array} gigaData
+ * @param {HTMLCanvasElement} canvas
+ * @param {number} zoom
+ * @param {number} w
+ * @param {number} h
+ */
+function renderZxpGigascreenToCanvas(gigaData, canvas, zoom, w, h) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  canvas.width = w * zoom;
+  canvas.height = h * zoom;
+
+  const palette = getCombinedPalette();
+  const allColors = [...palette.regular, ...palette.bright];
+
+  const cellHeight = 8;
+  const cellCols = w >> 3;
+  const attrRows = Math.ceil(h / cellHeight);
+  const bitmapSize = cellCols * h;
+  const attrSize = cellCols * attrRows;
+  const frameSize = bitmapSize + attrSize;
+
+  const imageData = ctx.createImageData(w, h);
+  const data = imageData.data;
+
+  for (let y = 0; y < h; y++) {
+    const cellRow = Math.floor(y / cellHeight);
+    const bitmapOffset = y * cellCols; // linear (chr$/ZXP) layout
+    for (let col = 0; col < cellCols; col++) {
+      const bm1 = gigaData[bitmapOffset + col];
+      const bm2 = gigaData[frameSize + bitmapOffset + col];
+      const attr1 = gigaData[bitmapSize + cellRow * cellCols + col];
+      const attr2 = gigaData[frameSize + bitmapSize + cellRow * cellCols + col];
+
+      const ink1 = ((attr1 >> 6) & 1) * 8 + (attr1 & 7);
+      const paper1 = ((attr1 >> 6) & 1) * 8 + ((attr1 >> 3) & 7);
+      const ink2 = ((attr2 >> 6) & 1) * 8 + (attr2 & 7);
+      const paper2 = ((attr2 >> 6) & 1) * 8 + ((attr2 >> 3) & 7);
+
+      const c1Ink = allColors[ink1];
+      const c1Paper = allColors[paper1];
+      const c2Ink = allColors[ink2];
+      const c2Paper = allColors[paper2];
+
+      for (let bit = 0; bit < 8; bit++) {
+        const x = col * 8 + bit;
+        const mask = 0x80 >> bit;
+        const useInk1 = (bm1 & mask) !== 0;
+        const useInk2 = (bm2 & mask) !== 0;
+        const f1 = useInk1 ? c1Ink : c1Paper;
+        const f2 = useInk2 ? c2Ink : c2Paper;
+        const r = (f1[0] + f2[0]) >> 1;
+        const g = (f1[1] + f2[1]) >> 1;
+        const b = (f1[2] + f2[2]) >> 1;
+        const pixelIndex = (y * w + x) * 4;
+        data[pixelIndex] = r;
+        data[pixelIndex + 1] = g;
+        data[pixelIndex + 2] = b;
+        data[pixelIndex + 3] = 255;
+      }
+    }
+  }
+
+  const temp = getImportTempCanvas(w, h);
+  if (temp) {
+    temp.ctx.putImageData(imageData, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(temp.canvas, 0, 0, w * zoom, h * zoom);
+  }
+}
+
+/**
+ * Analyzes pre-adjusted RGB pixels and picks the HLR fill pattern preset
+ * whose ink/paper partition minimizes within-group variance across all 8x8
+ * cells. Called internally by convertToHlr() when no explicit pattern is
+ * passed.
+ *
+ * @param {Float32Array} floatPixels  256x192 RGB float pixel data
+ * @returns {Uint8Array} 8-byte pattern (a clone of the best preset)
+ */
+function findBestHlrPatternFromFloat(floatPixels) {
+  const presets = (typeof HLR_PATTERN_PRESETS === 'object' && HLR_PATTERN_PRESETS) ? HLR_PATTERN_PRESETS : null;
+  const fallback = new Uint8Array([0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00]);
+  if (!presets) return fallback;
+
+  let bestPattern = fallback;
+  let bestErr = Infinity;
+
+  const keys = Object.keys(presets);
+  for (let k = 0; k < keys.length; k++) {
+    const pattern = presets[keys[k]];
+    if (!pattern || pattern.length !== 8) continue;
+
+    let totalVar = 0;
+
+    for (let cellRow = 0; cellRow < 24; cellRow++) {
+      const cellY = cellRow * 8;
+      for (let cellCol = 0; cellCol < 32; cellCol++) {
+        let nInk = 0, nPaper = 0;
+        let sInkR = 0, sInkG = 0, sInkB = 0;
+        let sInk2R = 0, sInk2G = 0, sInk2B = 0;
+        let sPaperR = 0, sPaperG = 0, sPaperB = 0;
+        let sPaper2R = 0, sPaper2G = 0, sPaper2B = 0;
+
+        for (let dy = 0; dy < 8; dy++) {
+          const row = pattern[dy] & 0xFF;
+          const y = cellY + dy;
+          for (let dx = 0; dx < 8; dx++) {
+            const isInk = (row >> (7 - dx)) & 1;
+            const x = cellCol * 8 + dx;
+            const pi = (y * 256 + x) * 3;
+            const r = floatPixels[pi];
+            const g = floatPixels[pi + 1];
+            const b = floatPixels[pi + 2];
+            if (isInk) {
+              sInkR += r; sInkG += g; sInkB += b;
+              sInk2R += r * r; sInk2G += g * g; sInk2B += b * b;
+              nInk++;
+            } else {
+              sPaperR += r; sPaperG += g; sPaperB += b;
+              sPaper2R += r * r; sPaper2G += g * g; sPaper2B += b * b;
+              nPaper++;
+            }
+          }
+        }
+
+        // variance = sum(x^2) - (sum(x))^2 / n
+        if (nInk > 0) {
+          totalVar += (sInk2R - (sInkR * sInkR) / nInk) +
+                      (sInk2G - (sInkG * sInkG) / nInk) +
+                      (sInk2B - (sInkB * sInkB) / nInk);
+        }
+        if (nPaper > 0) {
+          totalVar += (sPaper2R - (sPaperR * sPaperR) / nPaper) +
+                      (sPaper2G - (sPaperG * sPaperG) / nPaper) +
+                      (sPaper2B - (sPaperB * sPaperB) / nPaper);
+        }
+      }
+      if (totalVar >= bestErr) break; // early-out across rows
+    }
+
+    if (totalVar < bestErr) {
+      bestErr = totalVar;
+      bestPattern = pattern;
+    }
+  }
+
+  return new Uint8Array(bestPattern);
+}
+
+/**
+ * Resolves the HLR fill pattern currently selected in the import dialog's
+ * pattern dropdown. Returns null when the user picked "Auto (best fit)", which
+ * tells convertToHlr() to pick a pattern per image via findBestHlrPatternFromFloat.
+ * @returns {Uint8Array|null}
+ */
+function getSelectedImportHlrPattern() {
+  const key = importElements && importElements.hlrPattern ? importElements.hlrPattern.value : 'auto';
+  if (!key || key === 'auto') return null;
+  if (typeof hlrPatternFromPresetKey === 'function') {
+    return hlrPatternFromPresetKey(key);
+  }
+  return null;
+}
+
+/**
+ * Convert an image to an HLR (Gigascreen Lowres) buffer.
+ *
+ * HLR has a fixed 8-byte fill pattern replicated throughout the bitmap; only
+ * attributes vary per cell. Each 8x8 cell uses two attribute bytes (one per
+ * gigascreen frame). Cell pixels whose pattern bit is 1 see the blend of the
+ * two ink colors; pixels whose pattern bit is 0 see the blend of the two
+ * paper colors.
+ *
+ * The returned buffer is gigascreen-shaped (13824 bytes, two frames of 6912)
+ * so it can be passed directly to renderGigascreenToCanvas() for preview.
+ * The resolved 8-byte pattern is attached to the returned array as a
+ * `hlrPattern` property so the caller can pack it into the .hlr file format.
+ *
+ * The `dithering` parameter is accepted for call-site uniformity with the
+ * other converters but is unused: the HLR bitmap is fully determined by the
+ * fill pattern so there is nothing to dither within a cell.
+ *
+ * @param {HTMLCanvasElement} sourceCanvas
+ * @param {string} dithering  (unused)
+ * @param {number} brightness
+ * @param {number} contrast
+ * @param {number} saturation
+ * @param {number} gamma
+ * @param {boolean} grayscale
+ * @param {number} sharpness
+ * @param {number} smoothing
+ * @param {number} blackPoint
+ * @param {number} whitePoint
+ * @param {number} balanceR
+ * @param {number} balanceG
+ * @param {number} balanceB
+ * @param {Uint8Array|number[]|null} [patternBytes]  8-byte pattern, or null/undefined to auto-detect
+ * @returns {Uint8Array} 13824-byte gigascreen-shaped buffer with `.hlrPattern` attached
+ */
+function convertToHlr(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, patternBytes) {
+  updateColorDistanceMode();
+
+  const ctx = sourceCanvas.getContext('2d');
+  if (!ctx) throw new Error('Cannot get canvas context');
+  const imageData = ctx.getImageData(0, 0, 256, 192);
+  const pixels = imageData.data;
+  applyImageAdjustments(pixels, 256, 192, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
+  const floatPixels = rgbaToFloat(pixels, 256 * 192);
+
+  const palette = getCombinedPalette();
+  const allColors = [...palette.regular, ...palette.bright]; // 16 colors
+
+  // Resolve fill pattern: explicit bytes or auto-detect from the adjusted image.
+  let pattern;
+  if (patternBytes && patternBytes.length === 8) {
+    pattern = new Uint8Array(patternBytes);
+  } else {
+    pattern = findBestHlrPatternFromFloat(floatPixels);
+  }
+
+  // Gigascreen-shaped output: 2 frames of (6144 bitmap + 768 attrs).
+  const frameSize = 6144 + 768;
+  const result = new Uint8Array(frameSize * 2);
+
+  // Fill both frames' bitmaps with the pattern (interleaved SCR bitmap layout).
+  for (let y = 0; y < 192; y++) {
+    const patByte = pattern[y & 7] & 0xFF;
+    const bitmapAddr = getBitmapOffset(y);
+    for (let col = 0; col < 32; col++) {
+      result[bitmapAddr + col] = patByte;
+      result[frameSize + bitmapAddr + col] = patByte;
+    }
+  }
+
+  // Per-cell attribute search. For each 8x8 cell:
+  //   1. Partition its 64 pixels into ink-position and paper-position groups
+  //      based on the fill pattern.
+  //   2. Compute the mean RGB of each group.
+  //   3. Find the (bright1, bright2) combo plus (ink1, ink2) and (paper1, paper2)
+  //      pairs whose blended colors are closest to the group means.
+  // Ink and paper choices are independent given the two bright bits, so the
+  // brute force is 4 * 2 * 64 = 512 candidates per cell.
+  for (let cellRow = 0; cellRow < 24; cellRow++) {
+    const cellY = cellRow * 8;
+    for (let cellCol = 0; cellCol < 32; cellCol++) {
+      let nInk = 0, nPaper = 0;
+      let sumInkR = 0, sumInkG = 0, sumInkB = 0;
+      let sumPaperR = 0, sumPaperG = 0, sumPaperB = 0;
+
+      for (let dy = 0; dy < 8; dy++) {
+        const row = pattern[dy] & 0xFF;
+        const y = cellY + dy;
+        for (let dx = 0; dx < 8; dx++) {
+          const isInk = (row >> (7 - dx)) & 1;
+          const x = cellCol * 8 + dx;
+          const pi = (y * 256 + x) * 3;
+          const r = floatPixels[pi];
+          const g = floatPixels[pi + 1];
+          const b = floatPixels[pi + 2];
+          if (isInk) {
+            sumInkR += r; sumInkG += g; sumInkB += b; nInk++;
+          } else {
+            sumPaperR += r; sumPaperG += g; sumPaperB += b; nPaper++;
+          }
+        }
+      }
+
+      const mInkR = nInk ? sumInkR / nInk : 0;
+      const mInkG = nInk ? sumInkG / nInk : 0;
+      const mInkB = nInk ? sumInkB / nInk : 0;
+      const mPaperR = nPaper ? sumPaperR / nPaper : 0;
+      const mPaperG = nPaper ? sumPaperG / nPaper : 0;
+      const mPaperB = nPaper ? sumPaperB / nPaper : 0;
+
+      let bestErr = Infinity, bestAttr1 = 0, bestAttr2 = 0;
+
+      for (let b1 = 0; b1 < 2; b1++) {
+        for (let b2 = 0; b2 < 2; b2++) {
+          // Best (ink1, ink2) for this bright combo.
+          let bestInkDist = Infinity, bi1 = 0, bi2 = 0;
+          for (let i1 = 0; i1 < 8; i1++) {
+            const c1 = allColors[b1 * 8 + i1];
+            for (let i2 = 0; i2 < 8; i2++) {
+              const c2 = allColors[b2 * 8 + i2];
+              const br = (c1[0] + c2[0]) * 0.5;
+              const bg = (c1[1] + c2[1]) * 0.5;
+              const bb = (c1[2] + c2[2]) * 0.5;
+              const dr = br - mInkR;
+              const dg = bg - mInkG;
+              const db = bb - mInkB;
+              const d = dr * dr + dg * dg + db * db;
+              if (d < bestInkDist) { bestInkDist = d; bi1 = i1; bi2 = i2; }
+            }
+          }
+
+          // Best (paper1, paper2) for this bright combo.
+          let bestPaperDist = Infinity, bp1 = 0, bp2 = 0;
+          for (let p1 = 0; p1 < 8; p1++) {
+            const c1 = allColors[b1 * 8 + p1];
+            for (let p2 = 0; p2 < 8; p2++) {
+              const c2 = allColors[b2 * 8 + p2];
+              const br = (c1[0] + c2[0]) * 0.5;
+              const bg = (c1[1] + c2[1]) * 0.5;
+              const bb = (c1[2] + c2[2]) * 0.5;
+              const dr = br - mPaperR;
+              const dg = bg - mPaperG;
+              const db = bb - mPaperB;
+              const d = dr * dr + dg * dg + db * db;
+              if (d < bestPaperDist) { bestPaperDist = d; bp1 = p1; bp2 = p2; }
+            }
+          }
+
+          const combinedErr = nInk * bestInkDist + nPaper * bestPaperDist;
+          if (combinedErr < bestErr) {
+            bestErr = combinedErr;
+            // ZX attr byte: bit 6 bright | bits 5-3 paper | bits 2-0 ink
+            bestAttr1 = (b1 << 6) | (bp1 << 3) | bi1;
+            bestAttr2 = (b2 << 6) | (bp2 << 3) | bi2;
+          }
+        }
+      }
+
+      const attrOffset = 6144 + cellRow * 32 + cellCol;
+      result[attrOffset] = bestAttr1;
+      result[frameSize + attrOffset] = bestAttr2;
+    }
+  }
+
+  // Attach the resolved pattern so callers (doImport, tile import, etc.) can
+  // pack the 1628-byte .hlr file and seed the internal Picture's .pattern.
+  /** @type {any} */ (result).hlrPattern = pattern;
+  return result;
+}
+
+/**
+ * Packs a gigascreen-shaped HLR conversion buffer plus an 8-byte pattern into
+ * the 1628-byte .hlr file format (84-byte Z80 loader + 8-byte pattern +
+ * 768-byte attrs1 + 768-byte attrs2). Uses exportHlr() from picture_format.js
+ * when available; otherwise constructs the file bytes locally.
+ *
+ * @param {Uint8Array} gigaData 13824-byte gigascreen-shaped buffer
+ * @param {Uint8Array} pattern  8-byte fill pattern
+ * @returns {Uint8Array} 1628-byte HLR file data
+ */
+function packHlrFileFromGiga(gigaData, pattern) {
+  const HLR_SIZE = 1628;
+  const HLR_PATTERN_OFFSET = 84;
+  const HLR_ATTRS1_OFFSET = 92;
+  const HLR_ATTRS2_OFFSET = 860;
+  const ATTRS_SIZE = 768;
+  const FRAME_SIZE = 6144 + 768;
+
+  const out = new Uint8Array(HLR_SIZE);
+
+  // Loader: try to copy from picture_format.js; fall back to zeros if missing.
+  if (typeof HLR_LOADER !== 'undefined' && HLR_LOADER && HLR_LOADER.length === 84) {
+    for (let i = 0; i < 84; i++) out[i] = HLR_LOADER[i];
+  }
+
+  for (let i = 0; i < 8; i++) out[HLR_PATTERN_OFFSET + i] = pattern[i] & 0xFF;
+  for (let i = 0; i < ATTRS_SIZE; i++) {
+    out[HLR_ATTRS1_OFFSET + i] = gigaData[6144 + i];
+    out[HLR_ATTRS2_OFFSET + i] = gigaData[FRAME_SIZE + 6144 + i];
+  }
+
+  return out;
+}
+
 // BSC format constants
 const BSC_CONST = {
   TOTAL_SIZE: 11136,
@@ -4516,6 +5972,128 @@ function renderScrToCanvas(scrData, canvas, zoom = 2) {
 }
 
 /**
+ * Render ZXP data to a canvas (linear bitmap + attributes, parametric dimensions)
+ * @param {Uint8Array} zxpData - ZXP data (bitmap + attributes)
+ * @param {HTMLCanvasElement} canvas - Target canvas
+ * @param {number} zoom - Zoom factor
+ * @param {number} w - Pixel width
+ * @param {number} h - Pixel height
+ */
+function renderZxpToCanvas(zxpData, canvas, zoom, w, h) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  // Cap zoom so canvas dimensions don't exceed 2048px
+  const maxDim = 2048;
+  const effectiveZoom = Math.max(1, Math.min(zoom, Math.floor(maxDim / Math.max(w, h))) || 1);
+
+  canvas.width = w * effectiveZoom;
+  canvas.height = h * effectiveZoom;
+
+  const cols = w >> 3;
+  const attrCellH = 8;
+  const bitmapSize = cols * h;
+
+  const imageData = ctx.createImageData(w, h);
+  const pixels = imageData.data;
+  const palette = getCombinedPalette();
+
+  for (let y = 0; y < h; y++) {
+    const attrRow = Math.floor(y / attrCellH);
+    for (let x = 0; x < w; x++) {
+      const col = x >> 3;
+      const bitPos = x & 7;
+      const byte = zxpData[y * cols + col];
+      const attr = zxpData[bitmapSize + attrRow * cols + col];
+
+      const ink = attr & 0x07;
+      const paper = (attr >> 3) & 0x07;
+      const bright = (attr & 0x40) !== 0;
+
+      const pal = bright ? palette.bright : palette.regular;
+      const isInk = (byte & (0x80 >> bitPos)) !== 0;
+      const color = isInk ? pal[ink] : pal[paper];
+
+      const idx = (y * w + x) * 4;
+      pixels[idx] = color[0];
+      pixels[idx + 1] = color[1];
+      pixels[idx + 2] = color[2];
+      pixels[idx + 3] = 255;
+    }
+  }
+
+  const temp = getImportTempCanvas(w, h);
+  if (temp) {
+    temp.ctx.putImageData(imageData, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(temp.canvas, 0, 0, w * effectiveZoom, h * effectiveZoom);
+  }
+}
+
+/**
+ * Render ZXP ULA+ data to a canvas (linear bitmap + attrs + 64-byte palette).
+ * @param {Uint8Array} zxpData - ZXP ULA+ data (bitmap + attrs + 64 palette)
+ * @param {HTMLCanvasElement} canvas - Target canvas
+ * @param {number} zoom - Zoom factor
+ * @param {number} w - Pixel width
+ * @param {number} h - Pixel height
+ */
+function renderZxpUlaPlusToCanvas(zxpData, canvas, zoom, w, h) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const maxDim = 2048;
+  const effectiveZoom = Math.max(1, Math.min(zoom, Math.floor(maxDim / Math.max(w, h))) || 1);
+
+  canvas.width = w * effectiveZoom;
+  canvas.height = h * effectiveZoom;
+
+  const cols = w >> 3;
+  const attrCellH = 8;
+  const attrRows = Math.ceil(h / attrCellH);
+  const bitmapSize = cols * h;
+  const attrSize = cols * attrRows;
+  const palette = zxpData.subarray(bitmapSize + attrSize, bitmapSize + attrSize + 64);
+
+  const imageData = ctx.createImageData(w, h);
+  const pixels = imageData.data;
+
+  for (let y = 0; y < h; y++) {
+    const attrRow = Math.floor(y / attrCellH);
+    for (let x = 0; x < w; x++) {
+      const col = x >> 3;
+      const bitPos = x & 7;
+      const byte = zxpData[y * cols + col];
+      const attr = zxpData[bitmapSize + attrRow * cols + col];
+
+      const ink = attr & 0x07;
+      const paper = (attr >> 3) & 0x07;
+      const bright = (attr >> 6) & 1;
+      const flash = (attr >> 7) & 1;
+      const clut = (flash << 1) | bright;
+
+      const isInk = (byte & (0x80 >> bitPos)) !== 0;
+      const colorIdx = clut * 16 + (isInk ? ink : (8 + paper));
+      const grb = palette[colorIdx];
+      const color = grb332ToRgb(grb);
+
+      const idx = (y * w + x) * 4;
+      pixels[idx] = color[0];
+      pixels[idx + 1] = color[1];
+      pixels[idx + 2] = color[2];
+      pixels[idx + 3] = 255;
+    }
+  }
+
+  const temp = getImportTempCanvas(w, h);
+  if (temp) {
+    temp.ctx.putImageData(imageData, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(temp.canvas, 0, 0, w * effectiveZoom, h * effectiveZoom);
+  }
+}
+
+/**
  * Render ULA+ data to a canvas (64-color palette)
  * @param {Uint8Array} ulaPlusData - ULA+ data (6912 SCR + 64 palette)
  * @param {HTMLCanvasElement} canvas - Target canvas
@@ -4985,6 +6563,9 @@ let importSourceCanvas = null;
 let importSourceCanvasBsc = null;
 
 /** @type {HTMLCanvasElement|null} */
+let importSourceCanvasZxp = null;
+
+/** @type {HTMLCanvasElement|null} */
 let importPreviewCanvas = null;
 
 /** @type {HTMLCanvasElement|null} */
@@ -5099,6 +6680,12 @@ const importElements = {
   /** @type {HTMLElement|null} */ colorBalanceValue: null,
   // Dialog
   /** @type {HTMLElement|null} */ dialog: null,
+  // ZXP palette type (ULA / ULA+)
+  /** @type {HTMLElement|null} */ zxpPaletteTypeRow: null,
+  /** @type {HTMLSelectElement|null} */ zxpPaletteType: null,
+  // HLR (Gigascreen Lowres) fill pattern selector
+  /** @type {HTMLElement|null} */ hlrPatternRow: null,
+  /** @type {HTMLSelectElement|null} */ hlrPattern: null,
   // ULA+ palette import
   /** @type {HTMLSelectElement|null} */ ulaPlusPaletteSource: null,
   /** @type {HTMLElement|null} */ ulaPlusPaletteRow: null,
@@ -5136,6 +6723,7 @@ function getAlignFactors() {
  */
 function getImportFormatDimensions(format) {
   if (format === 'bsc' || format === 'bmc4') return { w: 384, h: 304 };
+  if (format === 'zxp' || format === 'ch$') return { w: importSize.w, h: importSize.h };
   if (format === 'mono_2_3') return { w: 256, h: 128 };
   if (format === 'mono_1_3') return { w: 256, h: 64 };
   return { w: 256, h: 192 };
@@ -5350,6 +6938,77 @@ function applyCropAndFit() {
       }
 
       ctxBsc.drawImage(importImage, srcX, srcY, srcW, srcH, destXBsc, destYBsc, destWBsc, destHBsc);
+    }
+  }
+
+  // Also fill ZXP canvas (user-specified dimensions)
+  if (importSourceCanvasZxp) {
+    const zxpW = importSize.w;
+    const zxpH = importSize.h;
+    if (importSourceCanvasZxp.width !== zxpW) importSourceCanvasZxp.width = zxpW;
+    if (importSourceCanvasZxp.height !== zxpH) importSourceCanvasZxp.height = zxpH;
+    const ctxZxp = importSourceCanvasZxp.getContext('2d');
+    if (ctxZxp) {
+      ctxZxp.imageSmoothingEnabled = false;
+      ctxZxp.fillStyle = '#000';
+      ctxZxp.fillRect(0, 0, zxpW, zxpH);
+
+      // Scale offset for ZXP dimensions; available area is the full ZXP canvas
+      const zxpOffsetX = Math.round(importOffset.x * zxpW / 256);
+      const zxpOffsetY = Math.round(importOffset.y * zxpH / 192);
+      const zxpAvailW = Math.min(zxpW, zxpW - zxpOffsetX);
+      const zxpAvailH = Math.min(zxpH, zxpH - zxpOffsetY);
+
+      let destXZxp = zxpOffsetX, destYZxp = zxpOffsetY, destWZxp = zxpAvailW, destHZxp = zxpAvailH;
+      const zxpAspect = zxpAvailW / zxpAvailH;
+
+      if (importFitMode === 'stretch') {
+        destXZxp = zxpOffsetX; destYZxp = zxpOffsetY; destWZxp = zxpAvailW; destHZxp = zxpAvailH;
+      } else if (importFitMode === 'fit') {
+        if (srcAspect > zxpAspect) {
+          destWZxp = zxpAvailW;
+          destHZxp = zxpAvailW / srcAspect;
+          destXZxp = zxpOffsetX;
+          destYZxp = zxpOffsetY + (zxpAvailH - destHZxp) * alignV;
+        } else {
+          destHZxp = zxpAvailH;
+          destWZxp = zxpAvailH * srcAspect;
+          destXZxp = zxpOffsetX + (zxpAvailW - destWZxp) * alignH;
+          destYZxp = zxpOffsetY;
+        }
+      } else if (importFitMode === 'fill') {
+        if (srcAspect > zxpAspect) {
+          destHZxp = zxpAvailH;
+          destWZxp = zxpAvailH * srcAspect;
+          destXZxp = zxpOffsetX + (zxpAvailW - destWZxp) * alignH;
+          destYZxp = zxpOffsetY;
+        } else {
+          destWZxp = zxpAvailW;
+          destHZxp = zxpAvailW / srcAspect;
+          destXZxp = zxpOffsetX;
+          destYZxp = zxpOffsetY + (zxpAvailH - destHZxp) * alignV;
+        }
+      } else if (importFitMode === 'fit-width') {
+        destWZxp = zxpAvailW;
+        destHZxp = zxpAvailW / srcAspect;
+        if (destHZxp > zxpAvailH) {
+          destHZxp = zxpAvailH;
+          destWZxp = zxpAvailH * srcAspect;
+        }
+        destXZxp = zxpOffsetX + (zxpAvailW - destWZxp) * alignH;
+        destYZxp = zxpOffsetY + (zxpAvailH - destHZxp) * alignV;
+      } else if (importFitMode === 'fit-height') {
+        destHZxp = zxpAvailH;
+        destWZxp = zxpAvailH * srcAspect;
+        if (destWZxp > zxpAvailW) {
+          destWZxp = zxpAvailW;
+          destHZxp = zxpAvailW / srcAspect;
+        }
+        destXZxp = zxpOffsetX + (zxpAvailW - destWZxp) * alignH;
+        destYZxp = zxpOffsetY + (zxpAvailH - destHZxp) * alignV;
+      }
+
+      ctxZxp.drawImage(importImage, srcX, srcY, srcW, srcH, destXZxp, destYZxp, destWZxp, destHZxp);
     }
   }
 }
@@ -5883,6 +7542,11 @@ function initImageImport() {
   importSourceCanvasBsc.width = BSC_CONST.FRAME_WIDTH;
   importSourceCanvasBsc.height = BSC_CONST.FRAME_HEIGHT;
 
+  // ZXP format canvas (user-specified dimensions, default 256x192)
+  importSourceCanvasZxp = document.createElement('canvas');
+  importSourceCanvasZxp.width = 256;
+  importSourceCanvasZxp.height = 192;
+
   // Cache all DOM elements once
   importElements.cropX = /** @type {HTMLInputElement} */ (document.getElementById('importCropX'));
   importElements.cropY = /** @type {HTMLInputElement} */ (document.getElementById('importCropY'));
@@ -5924,6 +7588,15 @@ function initImageImport() {
   importElements.levelsValue = document.getElementById('importLevelsValue');
   importElements.colorBalanceValue = document.getElementById('importColorBalanceValue');
 
+  // ZXP palette type selector
+  importElements.zxpPaletteTypeRow = document.getElementById('importZxpPaletteTypeRow');
+  importElements.zxpPaletteType = /** @type {HTMLSelectElement} */ (document.getElementById('importZxpPaletteType'));
+  // HLR fill pattern selector
+  importElements.hlrPatternRow = document.getElementById('importHlrPatternRow');
+  importElements.hlrPattern = /** @type {HTMLSelectElement} */ (document.getElementById('importHlrPattern'));
+  // chr$ mode selector (standard / gigascreen)
+  importElements.chrGigaRow = document.getElementById('importChrGigaRow');
+  importElements.chrMode = /** @type {HTMLSelectElement} */ (document.getElementById('importChrMode'));
   // ULA+ palette import elements
   importElements.paletteRow = document.getElementById('importPaletteRow');
   importElements.ulaPlusPaletteSource = /** @type {HTMLSelectElement} */ (document.getElementById('importUlaPlusPaletteSource'));
@@ -6086,6 +7759,14 @@ function initImageImport() {
     } else if (format === 'rgb3') {
       const rgb3Data = convertToRgb3(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
       renderRgb3ToCanvas(rgb3Data, importPreviewCanvas, currentZoom);
+    } else if (format === 'gigascreen' || format === 'mg8' || format === 'mg4' || format === 'mg2' || format === 'mg1') {
+      const cellH = format === 'mg4' ? 4 : format === 'mg2' ? 2 : format === 'mg1' ? 1 : 8;
+      const gigaData = convertToGigascreen(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, cellH);
+      renderGigascreenToCanvas(gigaData, importPreviewCanvas, currentZoom, cellH);
+    } else if (format === 'hlr') {
+      const hlrPattern = getSelectedImportHlrPattern();
+      const hlrData = convertToHlr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, hlrPattern);
+      renderGigascreenToCanvas(hlrData, importPreviewCanvas, currentZoom, 8);
     } else if (format === 'mono_full') {
       const monoData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 3);
       renderMonoToCanvas(monoData, importPreviewCanvas, currentZoom, 3);
@@ -6099,6 +7780,27 @@ function initImageImport() {
       const result = convertToUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette);
       renderUlaPlusToCanvas(result.data, importPreviewCanvas, currentZoom);
       if (!importUlaPlusPalette) lastImportUlaPlusAutoPalette = result.palette;
+    } else if (format === 'zxp' && importSourceCanvasZxp) {
+      if (importElements.zxpPaletteType?.value === 'ulaplus') {
+        const result = convertToZxpUlaPlus(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette);
+        renderZxpUlaPlusToCanvas(result.data, importPreviewCanvas, currentZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
+        if (!importUlaPlusPalette) lastImportUlaPlusAutoPalette = result.palette;
+      } else {
+        const zxpData = convertToZxp(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+        renderZxpToCanvas(zxpData, importPreviewCanvas, currentZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
+      }
+    } else if (format === 'ch$' && importSourceCanvasZxp) {
+      // chr$ uses the same linear bitmap+attrs layout as ZXP. The cell-interleaved
+      // re-packing happens at save time in exportChrFile(). Standard mode reuses
+      // convertToZxp; gigascreen mode produces two flickering frames.
+      const chrGiga = importElements.chrMode?.value === 'gigascreen';
+      if (chrGiga) {
+        const chrData = convertToZxpGigascreen(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+        renderZxpGigascreenToCanvas(chrData, importPreviewCanvas, currentZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
+      } else {
+        const chrData = convertToZxp(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+        renderZxpToCanvas(chrData, importPreviewCanvas, currentZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
+      }
     } else {
       const scrData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderScrToCanvas(scrData, importPreviewCanvas, currentZoom);
@@ -6300,6 +8002,8 @@ function initImageImport() {
     let defaultW = 256, defaultH = 192;
     if (format === 'bsc' || format === 'bmc4') {
       defaultW = 384; defaultH = 304;
+    } else if (format === 'zxp' || format === 'ch$') {
+      defaultW = 256; defaultH = 192;
     } else if (format === 'mono_2_3') {
       defaultH = 128;
     } else if (format === 'mono_1_3') {
@@ -6309,11 +8013,17 @@ function initImageImport() {
     importSize.h = defaultH;
     if (importElements.sizeW) {
       importElements.sizeW.value = String(defaultW);
-      importElements.sizeW.max = String((format === 'bsc' || format === 'bmc4') ? 384 : 256);
+      importElements.sizeW.max = String(
+        (format === 'bsc' || format === 'bmc4') ? 384 :
+        (format === 'zxp' || format === 'ch$') ? 2048 : 256
+      );
     }
     if (importElements.sizeH) {
       importElements.sizeH.value = String(defaultH);
-      importElements.sizeH.max = String((format === 'bsc' || format === 'bmc4') ? 304 : 192);
+      importElements.sizeH.max = String(
+        (format === 'bsc' || format === 'bmc4') ? 304 :
+        (format === 'zxp' || format === 'ch$') ? 2048 : 192
+      );
     }
     // Also reset offset for format change
     importOffset.x = 0;
@@ -6325,13 +8035,23 @@ function initImageImport() {
     if (patternRow) {
       patternRow.style.display = format === '53c' ? 'flex' : 'none';
     }
+    // Show/hide HLR pattern selector
+    if (importElements.hlrPatternRow) {
+      importElements.hlrPatternRow.style.display = format === 'hlr' ? 'flex' : 'none';
+    }
+    // Show/hide chr$ mode selector
+    if (importElements.chrGigaRow) {
+      importElements.chrGigaRow.style.display = format === 'ch$' ? 'flex' : 'none';
+    }
     const ditheringRow = document.getElementById('importDitheringRow');
     if (ditheringRow) {
-      ditheringRow.style.display = format === '53c' ? 'none' : 'flex';
+      // HLR has a fixed bitmap, so dithering does nothing — hide the row.
+      ditheringRow.style.display = (format === '53c' || format === 'hlr') ? 'none' : 'flex';
     }
     // Hide cell-aware dithering for formats without attribute cells (RGB3, Mono)
+    // and for HLR (bitmap is fixed so cell-aware methods don't apply either).
     const cellGroup = document.getElementById('importDitherCellGroup');
-    const noCellFormats = format === 'rgb3' || format === 'mono' || format === 'mono_2_3' || format === 'mono_1_3';
+    const noCellFormats = format === 'rgb3' || format === 'mono' || format === 'mono_2_3' || format === 'mono_1_3' || format === 'hlr';
     if (cellGroup) {
       cellGroup.style.display = noCellFormats ? 'none' : '';
     }
@@ -6343,20 +8063,31 @@ function initImageImport() {
       const hasOption = Array.from(ditherSelect.options).some(o => o.value === mapped);
       ditherSelect.value = hasOption ? mapped : 'floyd-steinberg';
     }
+    // Show/hide ZXP palette type selector
+    const zxpUlaPlus = format === 'zxp' && importElements.zxpPaletteType?.value === 'ulaplus';
+    if (importElements.zxpPaletteTypeRow) {
+      importElements.zxpPaletteTypeRow.style.display = format === 'zxp' ? 'flex' : 'none';
+    }
     // Show/hide ULA+ palette row and standard palette row
+    const showUlaPlusRow = format === 'ulaplus' || zxpUlaPlus;
     if (importElements.ulaPlusPaletteRow) {
-      importElements.ulaPlusPaletteRow.style.display = format === 'ulaplus' ? 'flex' : 'none';
+      importElements.ulaPlusPaletteRow.style.display = showUlaPlusRow ? 'flex' : 'none';
     }
     // Crosshair cursor on preview for ULA+ eyedropper
     if (importPreviewCanvas) {
-      importPreviewCanvas.style.cursor = format === 'ulaplus' ? 'crosshair' : '';
+      importPreviewCanvas.style.cursor = showUlaPlusRow ? 'crosshair' : '';
     }
     // Hide standard Palette: row for ULA+ (it has its own palette system)
     if (importElements.paletteRow) {
-      importElements.paletteRow.style.display = format === 'ulaplus' ? 'none' : 'flex';
+      importElements.paletteRow.style.display = showUlaPlusRow ? 'none' : 'flex';
+    }
+    // Auto-set zoom to x1 for ZXP/chr$ (dimensions can be very large)
+    if ((format === 'zxp' || format === 'ch$') && importElements.zoom) {
+      importElements.zoom.value = '1';
+      importZoom = 1;
     }
     // Reset ULA+ palette state when switching away; re-apply standard palette for safety
-    if (format !== 'ulaplus') {
+    if (format !== 'ulaplus' && !zxpUlaPlus) {
       applyImportPalette(importElements.palette?.value || importPaletteId || 'default');
       importUlaPlusPalette = null;
       lastImportUlaPlusAutoPalette = null;
@@ -6367,7 +8098,33 @@ function initImageImport() {
     updateTileInfo();
     updatePreview();
   });
+  // ZXP palette type change: toggle ULA+ palette row and refresh preview
+  importElements.zxpPaletteType?.addEventListener('change', () => {
+    const format = formatSelect?.value || 'scr';
+    const zxpUlaPlus = format === 'zxp' && importElements.zxpPaletteType?.value === 'ulaplus';
+    const showUlaPlusRow = format === 'ulaplus' || zxpUlaPlus;
+    if (importElements.ulaPlusPaletteRow) {
+      importElements.ulaPlusPaletteRow.style.display = showUlaPlusRow ? 'flex' : 'none';
+    }
+    if (importPreviewCanvas) {
+      importPreviewCanvas.style.cursor = showUlaPlusRow ? 'crosshair' : '';
+    }
+    if (importElements.paletteRow) {
+      importElements.paletteRow.style.display = showUlaPlusRow ? 'none' : 'flex';
+    }
+    if (!showUlaPlusRow) {
+      applyImportPalette(importElements.palette?.value || importPaletteId || 'default');
+      importUlaPlusPalette = null;
+      lastImportUlaPlusAutoPalette = null;
+      if (importElements.ulaPlusPaletteSource) importElements.ulaPlusPaletteSource.value = 'auto';
+      hideImportPaletteGrid();
+      if (importElements.ulaPlusPaletteReset) importElements.ulaPlusPaletteReset.style.display = 'none';
+    }
+    updatePreview();
+  });
   importElements.pattern53c?.addEventListener('change', updatePreview);
+  importElements.hlrPattern?.addEventListener('change', updatePreview);
+  importElements.chrMode?.addEventListener('change', updatePreview);
   contrastSlider?.addEventListener('input', updatePreview);
   brightnessSlider?.addEventListener('input', updatePreview);
   saturationSlider?.addEventListener('input', function() {
@@ -6531,8 +8288,8 @@ function initImageImport() {
   // Size controls with aspect ratio lock
   const getSourceAspect = () => importCrop.w / importCrop.h;
   const format = () => formatSelect?.value || 'scr';
-  const maxW = () => (format() === 'bsc' || format() === 'bmc4') ? 384 : 256;
-  const maxH = () => (format() === 'bsc' || format() === 'bmc4') ? 304 : 192;
+  const maxW = () => (format() === 'bsc' || format() === 'bmc4') ? 384 : (format() === 'zxp' || format() === 'ch$') ? 2048 : 256;
+  const maxH = () => (format() === 'bsc' || format() === 'bmc4') ? 304 : (format() === 'zxp' || format() === 'ch$') ? 2048 : 192;
 
   const onSizeWChange = () => {
     const newW = Math.max(8, Math.min(maxW(), parseInt(importElements.sizeW?.value || String(maxW()), 10) || maxW()));
@@ -6758,6 +8515,11 @@ function initImageImport() {
       else if (tileFormat === 'mlt') tileExt = '.mlt';
       else if (tileFormat === 'bmc4') tileExt = '.bmc4';
       else if (tileFormat === 'rgb3') tileExt = '.3';
+      else if (tileFormat === 'gigascreen') tileExt = '.img';
+      else if (tileFormat === 'mg8' || tileFormat === 'mg4' || tileFormat === 'mg2' || tileFormat === 'mg1') tileExt = '.' + tileFormat;
+      else if (tileFormat === 'hlr') tileExt = '.hlr';
+      else if (tileFormat === 'zxp') tileExt = '.zxp';
+      else if (tileFormat === 'ch$') tileExt = '.ch$';
       else tileExt = '.scr';
 
       const baseName = importFile ? importFile.name.replace(/\.[^.]+$/, '') : 'imported';
@@ -6808,6 +8570,9 @@ function initImageImport() {
       importFitMode = 'stretch';
       importOffset = { x: 0, y: 0 };
 
+      // chr$ gigascreen mode: applies to all tiles uniformly
+      const tileChrIsGigascreen = tileFormat === 'ch$' && importElements.chrMode?.value === 'gigascreen';
+
       let stopped = false;
       for (let row = 0; row < grid.rows && !stopped; row++) {
         for (let col = 0; col < grid.cols && !stopped; col++) {
@@ -6848,6 +8613,14 @@ function initImageImport() {
           } else if (tileFormat === 'rgb3') {
             tileData = convertToRgb3(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB);
             tileOutputFormat = FORMAT.RGB3;
+          } else if (tileFormat === 'gigascreen' || tileFormat === 'mg8' || tileFormat === 'mg4' || tileFormat === 'mg2' || tileFormat === 'mg1') {
+            const cellH = tileFormat === 'mg4' ? 4 : tileFormat === 'mg2' ? 2 : tileFormat === 'mg1' ? 1 : 8;
+            tileData = convertToGigascreen(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, cellH);
+            tileOutputFormat = (tileFormat === 'gigascreen') ? FORMAT.GIGASCREEN : FORMAT.MGH;
+          } else if (tileFormat === 'hlr') {
+            const hlrPattern = getSelectedImportHlrPattern();
+            tileData = convertToHlr(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, hlrPattern);
+            tileOutputFormat = FORMAT.HLR;
           } else if (tileFormat === 'mono_full') {
             tileData = convertToMono(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, 3);
             tileOutputFormat = FORMAT.MONO_FULL;
@@ -6866,13 +8639,138 @@ function initImageImport() {
               ulaPlusPalette = result.palette;
               isUlaPlusMode = true;
             }
+          } else if (tileFormat === 'zxp' && importSourceCanvasZxp) {
+            if (importElements.zxpPaletteType?.value === 'ulaplus') {
+              const result = convertToZxpUlaPlus(importSourceCanvasZxp, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, null);
+              tileData = result.data;
+              if (row === 0 && col === 0) {
+                ulaPlusPalette = result.palette.slice();
+                isUlaPlusMode = true;
+              }
+            } else {
+              tileData = convertToZxp(importSourceCanvasZxp, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileMonoOutput);
+            }
+            tileOutputFormat = FORMAT.ZXP;
+          } else if (tileFormat === 'ch$' && importSourceCanvasZxp) {
+            // chr$ shares the linear ZXP layout; cell-interleaving is done at save time.
+            // Gigascreen mode produces two flickering frames concatenated.
+            if (tileChrIsGigascreen) {
+              tileData = convertToZxpGigascreen(importSourceCanvasZxp, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB);
+            } else {
+              tileData = convertToZxp(importSourceCanvasZxp, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileMonoOutput);
+            }
+            tileOutputFormat = FORMAT.CHR;
           } else {
             tileData = convertToScr(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileMonoOutput);
             tileOutputFormat = FORMAT.SCR;
           }
 
           const tileFileName = baseName + '_' + col + '_' + row + tileExt;
-          const addResult = addPicture(tileFileName, tileOutputFormat, tileData);
+          let tilePicture = null;
+          if (tileOutputFormat === FORMAT.CHR && tileChrIsGigascreen && typeof makePicture === 'function' && importSourceCanvasZxp) {
+            // chr$ gigascreen tile: 2-plane Picture with linear bitmap+attrs per frame.
+            const tcgW = importSourceCanvasZxp.width;
+            const tcgH = importSourceCanvasZxp.height;
+            const tcgCols = tcgW >> 3;
+            const tcgBitmapSize = tcgCols * tcgH;
+            const tcgAttrRows = Math.ceil(tcgH / 8);
+            const tcgAttrSize = tcgCols * tcgAttrRows;
+            const tcgFrameSize = tcgBitmapSize + tcgAttrSize;
+            tilePicture = makePicture({
+              sourceFormat: 'ch$',
+              fileName: tileFileName,
+              width: tcgW,
+              height: tcgH,
+              attrCellHeight: 8,
+              planeCount: 2,
+              contentMode: 'pixel',
+              colorMode: 'gigascreen'
+            });
+            tilePicture.planes[0].bitmap.set(tileData.subarray(0, tcgBitmapSize));
+            tilePicture.planes[0].attrs.set(tileData.subarray(tcgBitmapSize, tcgFrameSize));
+            tilePicture.planes[1].bitmap.set(tileData.subarray(tcgFrameSize, tcgFrameSize + tcgBitmapSize));
+            tilePicture.planes[1].attrs.set(tileData.subarray(tcgFrameSize + tcgBitmapSize, tcgFrameSize * 2));
+            if (typeof generateGigascreenVirtualPalette === 'function' && row === 0 && col === 0) {
+              generateGigascreenVirtualPalette();
+            }
+          } else if ((tileOutputFormat === FORMAT.ZXP || tileOutputFormat === FORMAT.CHR) && typeof importZxp === 'function' && importSourceCanvasZxp) {
+            const tW = importSourceCanvasZxp.width;
+            const tH = importSourceCanvasZxp.height;
+            const tCols = tW >> 3;
+            const tBitmapSize = tCols * tH;
+            const tAttrRows = Math.ceil(tH / 8);
+            const tAttrSize = tCols * tAttrRows;
+            const tBitmap = tileData.subarray(0, tBitmapSize);
+            const tAttrs = tileData.subarray(tBitmapSize, tBitmapSize + tAttrSize);
+            const tPalette = (tileOutputFormat === FORMAT.ZXP && importElements.zxpPaletteType?.value === 'ulaplus')
+              ? tileData.subarray(tBitmapSize + tAttrSize, tBitmapSize + tAttrSize + 64)
+              : null;
+            tilePicture = importZxp(tBitmap, tAttrs, tileFileName, tW, tH, 8, tPalette);
+            // chr$ shares the linear layout but needs the source format tagged.
+            if (tilePicture && tileOutputFormat === FORMAT.CHR) {
+              tilePicture.sourceFormat = 'ch$';
+            }
+          } else if (typeof importScr === 'function') {
+            if (tileOutputFormat === FORMAT.SCR_ULAPLUS) {
+              tilePicture = importScrUlaPlus(tileData, tileFileName);
+            } else if (tileOutputFormat === FORMAT.SCR) {
+              tilePicture = importScr(tileData, tileFileName);
+            }
+          }
+          if ((tileOutputFormat === FORMAT.GIGASCREEN || tileOutputFormat === FORMAT.MGH) && typeof makePicture === 'function' && typeof deinterleaveBitmap === 'function') {
+            const cellH = tileFormat === 'mg4' ? 4 : tileFormat === 'mg2' ? 2 : tileFormat === 'mg1' ? 1 : 8;
+            const tAttrSize = Math.ceil(192 / cellH) * 32;
+            const tFSize = 6144 + tAttrSize;
+            const isMgh = tileOutputFormat === FORMAT.MGH;
+            tilePicture = makePicture({
+              sourceFormat: isMgh ? 'mgh' : 'img',
+              fileName: tileFileName,
+              width: 256,
+              height: 192,
+              attrCellHeight: cellH,
+              planeCount: 2,
+              contentMode: 'pixel',
+              colorMode: 'gigascreen'
+            });
+            tilePicture.planes[0].bitmap = deinterleaveBitmap(tileData, 0, 256, 192);
+            for (let i = 0; i < tAttrSize; i++) {
+              tilePicture.planes[0].attrs[i] = tileData[6144 + i];
+            }
+            tilePicture.planes[1].bitmap = deinterleaveBitmap(tileData, tFSize, 256, 192);
+            for (let i = 0; i < tAttrSize; i++) {
+              tilePicture.planes[1].attrs[i] = tileData[tFSize + 6144 + i];
+            }
+            if (typeof generateGigascreenVirtualPalette === 'function' && row === 0 && col === 0) {
+              generateGigascreenVirtualPalette();
+            }
+          }
+          if (tileOutputFormat === FORMAT.HLR && typeof makePicture === 'function' && typeof deinterleaveBitmap === 'function') {
+            tilePicture = makePicture({
+              sourceFormat: 'hlr',
+              fileName: tileFileName,
+              width: 256,
+              height: 192,
+              attrCellHeight: 8,
+              planeCount: 2,
+              contentMode: 'pixel',
+              colorMode: 'gigascreen'
+            });
+            if (tileData.hlrPattern && tileData.hlrPattern.length === 8) {
+              tilePicture.pattern = new Uint8Array(tileData.hlrPattern);
+            }
+            tilePicture.planes[0].bitmap = deinterleaveBitmap(tileData, 0, 256, 192);
+            for (let i = 0; i < 768; i++) {
+              tilePicture.planes[0].attrs[i] = tileData[6144 + i];
+            }
+            tilePicture.planes[1].bitmap = deinterleaveBitmap(tileData, 6912, 256, 192);
+            for (let i = 0; i < 768; i++) {
+              tilePicture.planes[1].attrs[i] = tileData[6912 + 6144 + i];
+            }
+            if (typeof generateGigascreenVirtualPalette === 'function' && row === 0 && col === 0) {
+              generateGigascreenVirtualPalette();
+            }
+          }
+          const addResult = addPicture(tileFileName, tileOutputFormat, tileData, tilePicture);
           if (addResult < 0) {
             stopped = true;
           }
@@ -6922,6 +8820,7 @@ function initImageImport() {
     let outputData;
     let outputFormat;
     let fileExt;
+    let chrIsGigascreen = false;
 
     if (format === '53c') {
       const pattern = importElements.pattern53c?.value || 'checker';
@@ -6948,6 +8847,16 @@ function initImageImport() {
       outputData = convertToRgb3(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
       outputFormat = FORMAT.RGB3;
       fileExt = '.3';
+    } else if (format === 'gigascreen' || format === 'mg8' || format === 'mg4' || format === 'mg2' || format === 'mg1') {
+      const cellH = format === 'mg4' ? 4 : format === 'mg2' ? 2 : format === 'mg1' ? 1 : 8;
+      outputData = convertToGigascreen(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, cellH);
+      outputFormat = (format === 'gigascreen') ? FORMAT.GIGASCREEN : FORMAT.MGH;
+      fileExt = format === 'gigascreen' ? '.img' : '.' + format;
+    } else if (format === 'hlr') {
+      const hlrPattern = getSelectedImportHlrPattern();
+      outputData = convertToHlr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, hlrPattern);
+      outputFormat = FORMAT.HLR;
+      fileExt = '.hlr';
     } else if (format === 'mono_full') {
       outputData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 3);
       outputFormat = FORMAT.MONO_FULL;
@@ -6969,6 +8878,30 @@ function initImageImport() {
       // Enable ULA+ mode with generated palette
       ulaPlusPalette = result.palette;
       isUlaPlusMode = true;
+    } else if (format === 'zxp' && importSourceCanvasZxp) {
+      if (importElements.zxpPaletteType?.value === 'ulaplus') {
+        const result = convertToZxpUlaPlus(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette);
+        outputData = result.data;
+        // Store palette for editor use
+        ulaPlusPalette = result.palette.slice();
+        isUlaPlusMode = true;
+      } else {
+        outputData = convertToZxp(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      }
+      outputFormat = FORMAT.ZXP;
+      fileExt = '.zxp';
+    } else if (format === 'ch$' && importSourceCanvasZxp) {
+      // chr$ uses the same linear bitmap+attrs layout as ZXP. Cell-interleaved
+      // re-packing is done at save time by exportChrFile(). Gigascreen mode
+      // produces two flickering frames concatenated.
+      chrIsGigascreen = importElements.chrMode?.value === 'gigascreen';
+      if (chrIsGigascreen) {
+        outputData = convertToZxpGigascreen(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      } else {
+        outputData = convertToZxp(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      }
+      outputFormat = FORMAT.CHR;
+      fileExt = '.ch$';
     } else {
       outputData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.SCR;
@@ -6984,20 +8917,136 @@ function initImageImport() {
       newFileName = 'imported' + fileExt;
     }
 
+    // Create internal picture format for SCR/ULA+/ZXP/chr$ (passed to addPicture, not set globally)
+    let newInternalPicture = null;
+    if (outputFormat === FORMAT.CHR && chrIsGigascreen && typeof makePicture === 'function' && importSourceCanvasZxp) {
+      // chr$ gigascreen: 2-plane Picture with linear bitmap+attrs per frame.
+      // Output buffer layout: [bitmap1][attrs1][bitmap2][attrs2]
+      const cgW = importSourceCanvasZxp.width;
+      const cgH = importSourceCanvasZxp.height;
+      const cgCols = cgW >> 3;
+      const cgBitmapSize = cgCols * cgH;
+      const cgAttrRows = Math.ceil(cgH / 8);
+      const cgAttrSize = cgCols * cgAttrRows;
+      const cgFrameSize = cgBitmapSize + cgAttrSize;
+      newInternalPicture = makePicture({
+        sourceFormat: 'ch$',
+        fileName: newFileName,
+        width: cgW,
+        height: cgH,
+        attrCellHeight: 8,
+        planeCount: 2,
+        contentMode: 'pixel',
+        colorMode: 'gigascreen'
+      });
+      newInternalPicture.planes[0].bitmap.set(outputData.subarray(0, cgBitmapSize));
+      newInternalPicture.planes[0].attrs.set(outputData.subarray(cgBitmapSize, cgFrameSize));
+      newInternalPicture.planes[1].bitmap.set(outputData.subarray(cgFrameSize, cgFrameSize + cgBitmapSize));
+      newInternalPicture.planes[1].attrs.set(outputData.subarray(cgFrameSize + cgBitmapSize, cgFrameSize * 2));
+      if (typeof generateGigascreenVirtualPalette === 'function') {
+        generateGigascreenVirtualPalette();
+      }
+    } else if ((outputFormat === FORMAT.ZXP || outputFormat === FORMAT.CHR) && typeof importZxp === 'function' && importSourceCanvasZxp) {
+      const zxpW = importSourceCanvasZxp.width;
+      const zxpH = importSourceCanvasZxp.height;
+      const zxpCols = zxpW >> 3;
+      const zxpBitmapSize = zxpCols * zxpH;
+      const zxpAttrRows = Math.ceil(zxpH / 8);
+      const zxpAttrSize = zxpCols * zxpAttrRows;
+      const bitmap = outputData.subarray(0, zxpBitmapSize);
+      const attrs = outputData.subarray(zxpBitmapSize, zxpBitmapSize + zxpAttrSize);
+      // If ULA+ mode (ZXP only), extract palette from end of output data
+      const zxpPalette = (outputFormat === FORMAT.ZXP && importElements.zxpPaletteType?.value === 'ulaplus')
+        ? outputData.subarray(zxpBitmapSize + zxpAttrSize, zxpBitmapSize + zxpAttrSize + 64)
+        : null;
+      newInternalPicture = importZxp(bitmap, attrs, newFileName, zxpW, zxpH, 8, zxpPalette);
+      // chr$ shares the linear ZXP layout internally; tag the source format so
+      // sync/save uses exportChrFile() instead of ZXP serialization.
+      if (newInternalPicture && outputFormat === FORMAT.CHR) {
+        newInternalPicture.sourceFormat = 'ch$';
+      }
+    } else if (typeof importScr === 'function') {
+      if (outputFormat === FORMAT.SCR_ULAPLUS) {
+        newInternalPicture = importScrUlaPlus(outputData, newFileName);
+      } else if (outputFormat === FORMAT.SCR) {
+        newInternalPicture = importScr(outputData, newFileName);
+      }
+    }
+
+    // Create internal picture for Gigascreen / MGH (2-plane gigascreen mode)
+    if ((outputFormat === FORMAT.GIGASCREEN || outputFormat === FORMAT.MGH) && typeof makePicture === 'function' && typeof deinterleaveBitmap === 'function') {
+      const cellH = format === 'mg4' ? 4 : format === 'mg2' ? 2 : format === 'mg1' ? 1 : 8;
+      const attrSize = Math.ceil(192 / cellH) * 32;
+      const fSize = 6144 + attrSize;
+      const isMgh = outputFormat === FORMAT.MGH;
+      newInternalPicture = makePicture({
+        sourceFormat: isMgh ? 'mgh' : 'img',
+        fileName: newFileName,
+        width: 256,
+        height: 192,
+        attrCellHeight: cellH,
+        planeCount: 2,
+        contentMode: 'pixel',
+        colorMode: 'gigascreen'
+      });
+      newInternalPicture.planes[0].bitmap = deinterleaveBitmap(outputData, 0, 256, 192);
+      for (let i = 0; i < attrSize; i++) {
+        newInternalPicture.planes[0].attrs[i] = outputData[6144 + i];
+      }
+      newInternalPicture.planes[1].bitmap = deinterleaveBitmap(outputData, fSize, 256, 192);
+      for (let i = 0; i < attrSize; i++) {
+        newInternalPicture.planes[1].attrs[i] = outputData[fSize + 6144 + i];
+      }
+      if (typeof generateGigascreenVirtualPalette === 'function') {
+        generateGigascreenVirtualPalette();
+      }
+    }
+
+    // Create internal picture for HLR (2-plane gigascreen, 8x8 attrs, with fill pattern)
+    if (outputFormat === FORMAT.HLR && typeof makePicture === 'function' && typeof deinterleaveBitmap === 'function') {
+      newInternalPicture = makePicture({
+        sourceFormat: 'hlr',
+        fileName: newFileName,
+        width: 256,
+        height: 192,
+        attrCellHeight: 8,
+        planeCount: 2,
+        contentMode: 'pixel',
+        colorMode: 'gigascreen'
+      });
+      // Attach fill pattern (set by convertToHlr on the returned buffer)
+      if (outputData.hlrPattern && outputData.hlrPattern.length === 8) {
+        newInternalPicture.pattern = new Uint8Array(outputData.hlrPattern);
+      }
+      newInternalPicture.planes[0].bitmap = deinterleaveBitmap(outputData, 0, 256, 192);
+      for (let i = 0; i < 768; i++) {
+        newInternalPicture.planes[0].attrs[i] = outputData[6144 + i];
+      }
+      newInternalPicture.planes[1].bitmap = deinterleaveBitmap(outputData, 6912, 256, 192);
+      for (let i = 0; i < 768; i++) {
+        newInternalPicture.planes[1].attrs[i] = outputData[6912 + 6144 + i];
+      }
+      if (typeof generateGigascreenVirtualPalette === 'function') {
+        generateGigascreenVirtualPalette();
+      }
+    }
+
     // Use multi-picture system if available
     if (typeof addPicture === 'function') {
-      const result = addPicture(newFileName, outputFormat, outputData);
+      const result = addPicture(newFileName, outputFormat, outputData, newInternalPicture);
       if (result < 0) {
         // Max pictures reached - still update globals for direct use
         screenData = outputData;
         currentFormat = outputFormat;
         currentFileName = newFileName;
+        currentPicture = newInternalPicture;
       }
     } else {
       // Editor not loaded - use direct assignment
       screenData = outputData;
       currentFormat = outputFormat;
       currentFileName = newFileName;
+      currentPicture = newInternalPicture;
     }
 
     // Close dialog and render
@@ -7176,6 +9225,8 @@ function openImportDialog(file) {
     let defaultW = 256, defaultH = 192;
     if (format === 'bsc' || format === 'bmc4') {
       defaultW = 384; defaultH = 304;
+    } else if (format === 'zxp' || format === 'ch$') {
+      defaultW = 256; defaultH = 192;
     } else if (format === 'mono_2_3') {
       defaultH = 128;
     } else if (format === 'mono_1_3') {
@@ -7184,11 +9235,17 @@ function openImportDialog(file) {
     importSize = { w: defaultW, h: defaultH };
     if (importElements.sizeW) {
       importElements.sizeW.value = String(defaultW);
-      importElements.sizeW.max = String((format === 'bsc' || format === 'bmc4') ? 384 : 256);
+      importElements.sizeW.max = String(
+        (format === 'bsc' || format === 'bmc4') ? 384 :
+        (format === 'zxp' || format === 'ch$') ? 2048 : 256
+      );
     }
     if (importElements.sizeH) {
       importElements.sizeH.value = String(defaultH);
-      importElements.sizeH.max = String((format === 'bsc' || format === 'bmc4') ? 304 : 192);
+      importElements.sizeH.max = String(
+        (format === 'bsc' || format === 'bmc4') ? 304 :
+        (format === 'zxp' || format === 'ch$') ? 2048 : 192
+      );
     }
 
     // Apply crop and render source
@@ -7246,6 +9303,30 @@ function openImportDialog(file) {
     } else if (format === 'mono_1_3') {
       const monoData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 1);
       renderMonoToCanvas(monoData, importPreviewCanvas, importZoom, 1);
+    } else if (format === 'hlr') {
+      const hlrPattern = getSelectedImportHlrPattern();
+      const hlrData = convertToHlr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, hlrPattern);
+      renderGigascreenToCanvas(hlrData, importPreviewCanvas, importZoom, 8);
+    } else if (format === 'zxp' && importSourceCanvasZxp) {
+      if (importElements.zxpPaletteType?.value === 'ulaplus') {
+        const result = convertToZxpUlaPlus(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette);
+        renderZxpUlaPlusToCanvas(result.data, importPreviewCanvas, importZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
+        if (!importUlaPlusPalette) lastImportUlaPlusAutoPalette = result.palette;
+      } else {
+        const zxpData = convertToZxp(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+        renderZxpToCanvas(zxpData, importPreviewCanvas, importZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
+      }
+    } else if (format === 'ch$' && importSourceCanvasZxp) {
+      // chr$ uses the same linear bitmap+attrs layout as ZXP. Cell-interleaved
+      // re-packing happens at save time in exportChrFile().
+      const chrGiga = importElements.chrMode?.value === 'gigascreen';
+      if (chrGiga) {
+        const chrData = convertToZxpGigascreen(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+        renderZxpGigascreenToCanvas(chrData, importPreviewCanvas, importZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
+      } else {
+        const chrData = convertToZxp(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+        renderZxpToCanvas(chrData, importPreviewCanvas, importZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
+      }
     } else {
       const scrData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderScrToCanvas(scrData, importPreviewCanvas, importZoom);

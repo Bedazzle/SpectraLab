@@ -4,7 +4,7 @@
 
 **SpectraLab** is a web-based ZX Spectrum graphics editor and viewer. It supports multiple ZX Spectrum graphics formats for viewing, editing, converting, and importing external images with advanced dithering algorithms.
 
-- **Version:** 1.53.1
+- **Version:** 1.59.3
 - **License:** MIT
 - **Browser:** Any modern browser (Chrome, Firefox, Edge, Safari)
 - **No installation required** — runs entirely in the browser
@@ -42,7 +42,7 @@ When multiple pictures are open, a tab bar appears above the canvas. Each tab sh
 Click the file input at the top of the left sidebar or **drag and drop** a file onto the canvas.
 
 **Supported input formats:**
-`.scr`, `.53c`, `.atr`, `.bsc`, `.bmc4`, `.ifl`, `.mlt`, `.mc`, `.3`, `.img`, `.specscii`, `.sca`, `.btile`, `.wtile`, `.slp`, `.slw`, `.sna`, `.z80`, `.zip`, `.png`, `.gif`, `.jpg`, `.jpeg`, `.webp`, `.bmp`
+`.scr`, `.53c`, `.atr`, `.bsc`, `.bmc4`, `.ifl`, `.mlt`, `.mc`, `.3`, `.img`, `.specscii`, `.sca`, `.btile`, `.wtile`, `.ch$`, `.chr$`, `.ch-`, `.zxp`, `.slp`, `.slw`, `.sna`, `.z80`, `.zip`, `.png`, `.gif`, `.jpg`, `.jpeg`, `.webp`, `.bmp`
 
 ### New Picture
 
@@ -63,6 +63,8 @@ Click the **New** button to open the New Picture dialog. Select a format from th
 | Monochrome 1/3 | .scr | 256×64, bitmap only |
 | Attributes | .atr | 32×24 color cells |
 | SPECSCII | .specscii | 32×24 text mode |
+| chr$ | .ch$ | Variable-size, interleaved 8×8 cells |
+| ZXP | .zxp | Variable-size (8-2048px), ULA or ULA+ palette |
 
 ### Save
 
@@ -88,7 +90,7 @@ The View tab controls how the image is displayed.
 
 ### Zoom
 
-Select zoom level from the dropdown: **x1, x2, x3, x4, x5, x6, x8, x10, x20**. You can also use **Ctrl+Mouse Wheel** to zoom in/out (works anywhere in the canvas panel area), or press number keys **1-5** for quick zoom. Ctrl+Mouse Wheel over the left sidebar performs normal browser zoom.
+Select zoom level from the dropdown: **x1/8, x1/4, x1/2, x1, x2, x3, x4, x5, x6, x8, x10, x20** (fractional levels x1/8, x1/4, x1/2 are available for large images). You can also use **Ctrl+Mouse Wheel** to zoom in/out (works anywhere in the canvas panel area), or press number keys **1-5** for quick zoom. Ctrl+Mouse Wheel over the left sidebar performs normal browser zoom.
 
 ### View Settings (collapsible)
 
@@ -114,10 +116,15 @@ Select display palette from the dropdown. Available palettes depend on the loade
 - **Border grid size:** None, 8px, 16px, 24px, 32px
 - **Border subgrid size:** None, 1px, 2px, 4px, 8px, 16px
 
+#### Grid Color
+Select a grid color preset from the dropdown: **Default**, **White**, **Gray**, **Black**, **Orange**, **Red**, **Green**. Useful for improving grid visibility on dark or light artwork.
+
 ### Format-Specific Controls
 
 #### 53c Pattern Selector
 For `.53c` / `.atr` attribute-only formats, select the fill pattern: **Checker**, **Stripes**, or **Pattern** (DD/77).
+
+- **Blend colors** checkbox — when checked, each cell renders as a solid averaged color instead of a dither pattern
 
 #### RGB3 Controls
 For `.3` tricolor format: toggle **Emulate flicker** to simulate real hardware display.
@@ -142,6 +149,24 @@ Load an external image as a drawing reference behind the canvas.
 - **W / H** — custom dimensions (empty = fit to format)
 
 Reference images are saved in workspace files.
+
+### Display Filters (collapsible)
+
+Click the "Display Filters" header to expand. Check the **On** checkbox to enable post-processing effects.
+
+| Filter | Description |
+|--------|-------------|
+| Scanlines | Gaussian beam profile simulating CRT scanlines |
+| Noise | Static film grain with optional animation |
+| Composite | Chroma blur simulating composite video color bleed |
+| Phosphor Glow | Blurred overlay simulating phosphor persistence |
+| Vignette | Radial darkening at screen edges |
+| CRT Curvature | Barrel distortion simulating curved CRT glass |
+| Pixel Smoothing | Bilinear interpolation for softer pixel scaling |
+
+**Presets:** None, CRT TV, Composite, VHS, Arcade
+
+Settings persist to localStorage and workspace (.slw) files.
 
 ### File Info (collapsible)
 
@@ -181,6 +206,7 @@ When no picture is loaded, the Edit tab shows: "Load a picture or click this tab
 | Eraser | E | Erase pixels (makes transparent on non-BG layers) |
 | Text | T | Place text on the canvas |
 | Recolor | A | Change attributes only, keep bitmap (via keyboard shortcut) |
+| Color Picker | K | Pick colors from canvas (left=ink, right=paper) |
 | Select | S | Select rectangular area (in Xform tab) |
 
 ### Drawing Modifiers
@@ -240,6 +266,20 @@ Shown for Gigascreen format. A 16-column grid displays all virtual colors create
 - **Cell Colors** section shows the 4 available colors per cell
   - **L** = Left mouse button color
   - **R** = Right mouse button color
+
+### 53c/127c Pattern Palette
+
+Shown when editing 53c/atr attribute-only format. Displays a grid of unique dither-pattern color swatches representing all available ink/paper combinations through the selected pattern.
+
+- Click a swatch to select the color combination for drawing
+- **Sort mode:** Hue (default), RGB, or Color (attribute byte) — controls palette ordering
+- **Reverse** checkbox — reverses the sort order
+- Adapts to current pattern: Checker (~53 colors), DD77 (~127 colors)
+- Selected color is preserved when changing sort mode or pattern
+
+### RGB3 Palette
+
+Shown for RGB3 (.3) tricolor format. 8-color palette with left/right click selection (no separate ink/paper). Palette shows realistic perceived colors (1/3 brightness per channel due to flicker through black).
 
 ![Palette controls](screenshots/palette_controls.png)
 
@@ -697,9 +737,8 @@ The SCA editor opens as a full-screen overlay when editing `.sca` animation file
 ### Top Bar
 
 - **← Back** — return to the main view
-- **Save As...** — save the animation
-- **Export SCR...** — export current frame as `.scr`
-- **Export 53c...** — export current frame as `.53c`
+- **Save As...** — dropdown with export options: SCA, SCR zip, 53c zip, GIF (animated), PNG zip
+- **Save** — save in the selected format
 
 ### Filmstrip
 
@@ -852,6 +891,7 @@ The floating palette includes all drawing tools, selection/clipboard tools, colo
 | A | Recolor (attribute only) |
 | E | Eraser tool |
 | T | Text tool |
+| K | Color Picker tool |
 | S | Select tool |
 
 ### Editor — Drawing
@@ -930,6 +970,10 @@ The floating palette includes all drawing tools, selection/clipboard tools, colo
 | .img | 13824 bytes | Gigascreen (2×SCR) |
 | .sca | variable | Animation (full/attr-only frames) |
 | .specscii | variable | Text mode (32×24 chars + OVER layers) |
+| .ch$ / .chr$ / .ch- | variable | Character array (interleaved 8×8 cells) |
+| .zxp | variable | ZX-Paintbrush (variable-size, ULA or ULA+ palette) |
+| .btile | variable | Nirvana btile (variable-size, 8×2 multicolor) |
+| .wtile | variable | Nirvana wtile (variable-size, 8×2 multicolor) |
 
 ### View-Only Formats
 
@@ -941,12 +985,9 @@ The floating palette includes all drawing tools, selection/clipboard tools, colo
 
 `.png`, `.gif`, `.jpg`, `.jpeg`, `.webp`, `.bmp` — via the Image Import dialog with dithering and adjustments.
 
-### Nirvana Tile Formats (import to IFL + spriteset)
+### Nirvana Tile Formats
 
-| Extension | Description |
-|-----------|-------------|
-| .btile | Nirvana btile (2×2 cells, 16×16px, 48 bytes/tile) |
-| .wtile | Nirvana wtile (3×2 cells, 24×16px, 72 bytes/tile) |
+`.btile` and `.wtile` are now fully editable (see Editable Formats above). They can also be imported to IFL + spriteset.
 
 ### Snapshot Formats (for Memory Viewer)
 

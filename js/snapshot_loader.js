@@ -294,8 +294,13 @@ function loadSnapshotFile(file) {
         ? baseName + (screenInfo.name === 'shadow' ? ' (shadow)' : '')
         : baseName;
 
+      // Create internal picture format for SCR (passed to addPicture, not set globally)
+      let snapshotPicture = null;
+      if (typeof importScr === 'function') {
+        snapshotPicture = importScr(screenInfo.data, picName);
+      }
       if (typeof addPicture === 'function') {
-        addPicture(picName, FORMAT.SCR, screenInfo.data);
+        addPicture(picName, FORMAT.SCR, screenInfo.data, snapshotPicture);
       }
     }
 

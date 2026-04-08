@@ -1,4 +1,4 @@
-// SCA Editor v1.38.0 - Animation trimming, optimization, frame deletion, payload type 1 support
+// SCA Editor v1.39.0 - Animation trimming, optimization, frame deletion, payload type 1, GIF/PNG export
 // @ts-check
 "use strict";
 
@@ -130,9 +130,7 @@ function initScaEditor() {
   // Event listeners
   document.getElementById('scaEditBtn')?.addEventListener('click', enterEditMode);
   document.getElementById('editBackBtn')?.addEventListener('click', exitEditMode);
-  document.getElementById('editSaveBtn')?.addEventListener('click', saveTrimmedSca);
-  document.getElementById('exportScrBtn')?.addEventListener('click', exportToScrSeries);
-  document.getElementById('export53cBtn')?.addEventListener('click', exportTo53cSeries);
+  document.getElementById('editSaveBtn')?.addEventListener('click', handleScaSave);
 
   document.getElementById('trimStartDec')?.addEventListener('click', () => adjustTrim('start', -1));
   document.getElementById('trimStartInc')?.addEventListener('click', () => adjustTrim('start', 1));
@@ -391,7 +389,9 @@ function renderScaFrameToCanvas(canvas, frameIndex) {
 
   if (scaHeader.payloadType === 1 && scaHeader.fillPattern) {
     // Payload type 1: attribute-only frames with fill pattern
-    const fillPattern = scaHeader.fillPattern;
+    const fillPattern = (typeof getSelectedPattern === 'function')
+      ? getSelectedPattern(scaHeader.fillPattern)
+      : scaHeader.fillPattern;
 
     for (let row = 0; row < SCREEN.CHAR_ROWS; row++) {
       for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
@@ -1382,7 +1382,7 @@ function saveTrimmedSca() {
 /**
  * Exports remaining frames as a series of SCR files in a ZIP
  */
-async function exportToScrSeries() {
+function exportToScrSeries() {
   if (!scaHeader || !screenData) return;
 
   const trimmedCount = getTrimmedFrameCount();
@@ -1391,13 +1391,6 @@ async function exportToScrSeries() {
     return;
   }
 
-  // Check if JSZip is available
-  if (typeof JSZip === 'undefined') {
-    alert('JSZip library not available for export.');
-    return;
-  }
-
-  const zip = new JSZip();
   const baseName = currentFileName.replace(/\.sca$/i, '');
   const isType1 = scaHeader.payloadType === 1;
   const frameSize = scaHeader.frameSize;
@@ -1405,7 +1398,8 @@ async function exportToScrSeries() {
   // Determine padding width (3 digits for ≤1000 frames, 4 for more)
   const padWidth = trimmedCount > 1000 ? 4 : 3;
 
-  // Export each non-deleted frame
+  // Collect files for ZIP
+  const files = [];
   let exportIndex = 0;
   for (let i = editTrimStart; i < scaHeader.frameCount - editTrimEnd; i++) {
     if (!optimizedOutFrames.has(i) && !manuallyDeletedFrames.has(i)) {
@@ -1446,26 +1440,19 @@ async function exportToScrSeries() {
 
       // Generate filename with zero-padded index
       const indexStr = String(exportIndex).padStart(padWidth, '0');
-      const fileName = `${baseName}_${indexStr}.scr`;
-
-      zip.file(fileName, scrData);
+      files.push({ name: `${baseName}_${indexStr}.scr`, data: scrData });
       exportIndex++;
     }
   }
 
-  // Generate and download ZIP
-  try {
-    const content = await zip.generateAsync({ type: 'blob' });
-    downloadFile(content, `${baseName}_frames.zip`);
-  } catch (error) {
-    alert('Error creating ZIP file: ' + error.message);
-  }
+  const zipData = scaCreateZip(files);
+  downloadFile(new Blob([zipData], { type: 'application/zip' }), `${baseName}_frames.zip`);
 }
 
 /**
  * Exports remaining frames as a series of 53c files in a ZIP
  */
-async function exportTo53cSeries() {
+function exportTo53cSeries() {
   if (!scaHeader || !screenData) return;
 
   const trimmedCount = getTrimmedFrameCount();
@@ -1474,13 +1461,6 @@ async function exportTo53cSeries() {
     return;
   }
 
-  // Check if JSZip is available
-  if (typeof JSZip === 'undefined') {
-    alert('JSZip library not available for export.');
-    return;
-  }
-
-  const zip = new JSZip();
   const baseName = currentFileName.replace(/\.sca$/i, '');
   const isType1 = scaHeader.payloadType === 1;
   const frameSize = scaHeader.frameSize;
@@ -1488,7 +1468,8 @@ async function exportTo53cSeries() {
   // Determine padding width (3 digits for ≤1000 frames, 4 for more)
   const padWidth = trimmedCount > 1000 ? 4 : 3;
 
-  // Export each non-deleted frame
+  // Collect files for ZIP
+  const files = [];
   let exportIndex = 0;
   for (let i = editTrimStart; i < scaHeader.frameCount - editTrimEnd; i++) {
     if (!optimizedOutFrames.has(i) && !manuallyDeletedFrames.has(i)) {
@@ -1511,19 +1492,458 @@ async function exportTo53cSeries() {
 
       // Generate filename with zero-padded index
       const indexStr = String(exportIndex).padStart(padWidth, '0');
-      const fileName = `${baseName}_${indexStr}.53c`;
-
-      zip.file(fileName, attrData);
+      files.push({ name: `${baseName}_${indexStr}.53c`, data: attrData });
       exportIndex++;
     }
   }
 
-  // Generate and download ZIP
-  try {
-    const content = await zip.generateAsync({ type: 'blob' });
-    downloadFile(content, `${baseName}_attrs.zip`);
-  } catch (error) {
-    alert('Error creating ZIP file: ' + error.message);
+  const zipData = scaCreateZip(files);
+  downloadFile(new Blob([zipData], { type: 'application/zip' }), `${baseName}_attrs.zip`);
+}
+
+// ============================================================================
+// Save dispatcher
+// ============================================================================
+
+function handleScaSave() {
+  const sel = document.getElementById('editSaveFormat');
+  const fmt = sel ? /** @type {HTMLSelectElement} */ (sel).value : 'sca';
+  switch (fmt) {
+    case 'sca': saveTrimmedSca(); break;
+    case 'scr': exportToScrSeries(); break;
+    case '53c': exportTo53cSeries(); break;
+    case 'gif': exportToGif(); break;
+    case 'png': exportToPngSeries(); break;
+  }
+}
+
+// ============================================================================
+// CRC32 and ZIP utilities
+// ============================================================================
+
+/** @type {Uint32Array|null} */
+let scaCrc32Table = null;
+
+/**
+ * Compute CRC32 checksum
+ * @param {Uint8Array} data
+ * @returns {number}
+ */
+function scaCrc32(data) {
+  if (!scaCrc32Table) {
+    scaCrc32Table = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+      let c = i;
+      for (let j = 0; j < 8; j++) {
+        c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      }
+      scaCrc32Table[i] = c;
+    }
+  }
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < data.length; i++) {
+    crc = scaCrc32Table[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+/**
+ * Create a ZIP file (store method, no compression)
+ * @param {Array<{name: string, data: Uint8Array}>} files
+ * @returns {Uint8Array}
+ */
+function scaCreateZip(files) {
+  const localHeaders = [];
+  const centralHeaders = [];
+  let offset = 0;
+
+  for (const file of files) {
+    const nameBytes = new TextEncoder().encode(file.name);
+    const data = file.data;
+    const crc = scaCrc32(data);
+
+    // Local file header
+    const localHeader = new Uint8Array(30 + nameBytes.length);
+    const lv = new DataView(localHeader.buffer);
+    lv.setUint32(0, 0x04034b50, true);
+    lv.setUint16(4, 20, true);
+    lv.setUint16(6, 0, true);
+    lv.setUint16(8, 0, true);
+    lv.setUint16(10, 0, true);
+    lv.setUint16(12, 0, true);
+    lv.setUint32(14, crc, true);
+    lv.setUint32(18, data.length, true);
+    lv.setUint32(22, data.length, true);
+    lv.setUint16(26, nameBytes.length, true);
+    lv.setUint16(28, 0, true);
+    localHeader.set(nameBytes, 30);
+
+    // Central directory header
+    const centralHeader = new Uint8Array(46 + nameBytes.length);
+    const cv = new DataView(centralHeader.buffer);
+    cv.setUint32(0, 0x02014b50, true);
+    cv.setUint16(4, 20, true);
+    cv.setUint16(6, 20, true);
+    cv.setUint16(8, 0, true);
+    cv.setUint16(10, 0, true);
+    cv.setUint16(12, 0, true);
+    cv.setUint16(14, 0, true);
+    cv.setUint32(16, crc, true);
+    cv.setUint32(20, data.length, true);
+    cv.setUint32(24, data.length, true);
+    cv.setUint16(28, nameBytes.length, true);
+    cv.setUint16(30, 0, true);
+    cv.setUint16(32, 0, true);
+    cv.setUint16(34, 0, true);
+    cv.setUint16(36, 0, true);
+    cv.setUint32(38, 0, true);
+    cv.setUint32(42, offset, true);
+    centralHeader.set(nameBytes, 46);
+
+    localHeaders.push({ header: localHeader, data: data });
+    centralHeaders.push(centralHeader);
+    offset += localHeader.length + data.length;
+  }
+
+  const centralDirOffset = offset;
+  let centralDirSize = 0;
+  for (const ch of centralHeaders) {
+    centralDirSize += ch.length;
+  }
+
+  const endRecord = new Uint8Array(22);
+  const ev = new DataView(endRecord.buffer);
+  ev.setUint32(0, 0x06054b50, true);
+  ev.setUint16(4, 0, true);
+  ev.setUint16(6, 0, true);
+  ev.setUint16(8, files.length, true);
+  ev.setUint16(10, files.length, true);
+  ev.setUint32(12, centralDirSize, true);
+  ev.setUint32(16, centralDirOffset, true);
+  ev.setUint16(20, 0, true);
+
+  const totalSize = offset + centralDirSize + 22;
+  const result = new Uint8Array(totalSize);
+  let pos = 0;
+
+  for (const lh of localHeaders) {
+    result.set(lh.header, pos);
+    pos += lh.header.length;
+    result.set(lh.data, pos);
+    pos += lh.data.length;
+  }
+  for (const ch of centralHeaders) {
+    result.set(ch, pos);
+    pos += ch.length;
+  }
+  result.set(endRecord, pos);
+
+  return result;
+}
+
+// ============================================================================
+// GIF Encoder (256-color, LZW compression)
+// ============================================================================
+
+class GifEncoder {
+  /**
+   * @param {number} width
+   * @param {number} height
+   */
+  constructor(width, height) {
+    this.width = width;
+    this.height = height;
+    /** @type {Array<{palette: Uint8Array, indexed: Uint8Array, delay: number}>} */
+    this.frames = [];
+  }
+
+  /**
+   * @param {Uint8ClampedArray} rgba - RGBA pixel data
+   * @param {number} delay - Delay in centiseconds
+   */
+  addFrame(rgba, delay) {
+    const { palette, indexed } = this._quantize(rgba);
+    this.frames.push({ palette, indexed, delay });
+  }
+
+  /**
+   * Popularity-based quantization to 256 colors
+   * @param {Uint8ClampedArray} rgba
+   * @returns {{palette: Uint8Array, indexed: Uint8Array}}
+   */
+  _quantize(rgba) {
+    const colorCounts = new Map();
+    const pixels = [];
+
+    for (let i = 0; i < rgba.length; i += 4) {
+      const r = rgba[i] & 0xF8;
+      const g = rgba[i + 1] & 0xFC;
+      const b = rgba[i + 2] & 0xF8;
+      const key = (r << 16) | (g << 8) | b;
+      pixels.push(key);
+      colorCounts.set(key, (colorCounts.get(key) || 0) + 1);
+    }
+
+    const sorted = [...colorCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 256);
+
+    const palette = new Uint8Array(256 * 3);
+    const colorToIndex = new Map();
+
+    for (let i = 0; i < sorted.length; i++) {
+      const [color] = sorted[i];
+      palette[i * 3] = (color >> 16) & 0xFF;
+      palette[i * 3 + 1] = (color >> 8) & 0xFF;
+      palette[i * 3 + 2] = color & 0xFF;
+      colorToIndex.set(color, i);
+    }
+
+    const indexed = new Uint8Array(pixels.length);
+    for (let i = 0; i < pixels.length; i++) {
+      indexed[i] = colorToIndex.get(pixels[i]) || 0;
+    }
+
+    return { palette, indexed };
+  }
+
+  /**
+   * Encode all frames into GIF89a binary
+   * @returns {Uint8Array}
+   */
+  finish() {
+    const out = [];
+
+    // GIF89a header
+    out.push(0x47, 0x49, 0x46, 0x38, 0x39, 0x61);
+
+    // Logical Screen Descriptor
+    out.push(this.width & 0xFF, (this.width >> 8) & 0xFF);
+    out.push(this.height & 0xFF, (this.height >> 8) & 0xFF);
+    out.push(0xF7); // Global color table flag, 256 colors
+    out.push(0);    // Background color index
+    out.push(0);    // Pixel aspect ratio
+
+    // Global Color Table (placeholder — each frame uses local color table)
+    for (let i = 0; i < 256 * 3; i++) {
+      out.push(0);
+    }
+
+    // Netscape Extension for looping
+    out.push(0x21, 0xFF, 0x0B);
+    out.push(0x4E, 0x45, 0x54, 0x53, 0x43, 0x41, 0x50, 0x45, 0x32, 0x2E, 0x30); // NETSCAPE2.0
+    out.push(0x03, 0x01, 0x00, 0x00, 0x00); // Loop forever
+
+    for (const frame of this.frames) {
+      // Graphics Control Extension
+      out.push(0x21, 0xF9, 0x04);
+      out.push(0x00); // Disposal method
+      out.push(frame.delay & 0xFF, (frame.delay >> 8) & 0xFF);
+      out.push(0x00); // Transparent color index
+      out.push(0x00); // Block terminator
+
+      // Image Descriptor
+      out.push(0x2C);
+      out.push(0, 0, 0, 0); // Left, Top
+      out.push(this.width & 0xFF, (this.width >> 8) & 0xFF);
+      out.push(this.height & 0xFF, (this.height >> 8) & 0xFF);
+      out.push(0x87); // Local color table, 256 colors
+
+      // Local Color Table
+      for (let i = 0; i < 256 * 3; i++) {
+        out.push(frame.palette[i] || 0);
+      }
+
+      // LZW Compressed Image Data
+      const lzw = this._lzwEncode(frame.indexed, 8);
+      out.push(8); // LZW minimum code size
+
+      let pos = 0;
+      while (pos < lzw.length) {
+        const blockSize = Math.min(255, lzw.length - pos);
+        out.push(blockSize);
+        for (let i = 0; i < blockSize; i++) {
+          out.push(lzw[pos++]);
+        }
+      }
+      out.push(0x00); // Block terminator
+    }
+
+    // GIF Trailer
+    out.push(0x3B);
+
+    return new Uint8Array(out);
+  }
+
+  /**
+   * Standard LZW encoder
+   * @param {Uint8Array} data
+   * @param {number} minCodeSize
+   * @returns {number[]}
+   */
+  _lzwEncode(data, minCodeSize) {
+    const clearCode = 1 << minCodeSize;
+    const eoiCode = clearCode + 1;
+    let codeSize = minCodeSize + 1;
+    let nextCode = eoiCode + 1;
+    const maxCode = 4096;
+
+    const table = new Map();
+    for (let i = 0; i < clearCode; i++) {
+      table.set(String.fromCharCode(i), i);
+    }
+
+    const output = [];
+    let bitBuffer = 0;
+    let bitCount = 0;
+
+    const writeBits = (code, size) => {
+      bitBuffer |= code << bitCount;
+      bitCount += size;
+      while (bitCount >= 8) {
+        output.push(bitBuffer & 0xFF);
+        bitBuffer >>= 8;
+        bitCount -= 8;
+      }
+    };
+
+    writeBits(clearCode, codeSize);
+
+    let current = '';
+    for (let i = 0; i < data.length; i++) {
+      const char = String.fromCharCode(data[i]);
+      const next = current + char;
+
+      if (table.has(next)) {
+        current = next;
+      } else {
+        writeBits(table.get(current), codeSize);
+
+        if (nextCode < maxCode) {
+          table.set(next, nextCode++);
+          if (nextCode > (1 << codeSize) && codeSize < 12) {
+            codeSize++;
+          }
+        } else {
+          writeBits(clearCode, codeSize);
+          table.clear();
+          for (let j = 0; j < clearCode; j++) {
+            table.set(String.fromCharCode(j), j);
+          }
+          codeSize = minCodeSize + 1;
+          nextCode = eoiCode + 1;
+        }
+
+        current = char;
+      }
+    }
+
+    if (current.length > 0) {
+      writeBits(table.get(current), codeSize);
+    }
+
+    writeBits(eoiCode, codeSize);
+
+    if (bitCount > 0) {
+      output.push(bitBuffer & 0xFF);
+    }
+
+    return output;
+  }
+}
+
+// ============================================================================
+// GIF export
+// ============================================================================
+
+async function exportToGif() {
+  if (!scaHeader || !screenData) return;
+
+  const trimmedCount = getTrimmedFrameCount();
+  if (trimmedCount === 0) {
+    alert('Cannot export: no frames remaining.');
+    return;
+  }
+
+  const baseName = currentFileName.replace(/\.sca$/i, '');
+  const savedText = editFileName ? editFileName.textContent : '';
+
+  const tempCanvas = document.createElement('canvas');
+  tempCanvas.width = 256;
+  tempCanvas.height = 192;
+  const gif = new GifEncoder(256, 192);
+
+  let exported = 0;
+  for (let i = editTrimStart; i < scaHeader.frameCount - editTrimEnd; i++) {
+    if (!optimizedOutFrames.has(i) && !manuallyDeletedFrames.has(i)) {
+      renderScaFrameToCanvas(tempCanvas, i);
+      const ctx = tempCanvas.getContext('2d');
+      if (!ctx) continue;
+      const imageData = ctx.getImageData(0, 0, 256, 192);
+      // SCA delay unit = 20ms, GIF delay unit = 10ms (centiseconds), minimum 2cs
+      const gifDelay = Math.max(2, getFrameDelay(i) * 2);
+      gif.addFrame(imageData.data, gifDelay);
+      exported++;
+      if (exported % 10 === 0 && editFileName) {
+        editFileName.textContent = `Exporting GIF... ${exported}/${trimmedCount}`;
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+  }
+
+  const gifData = gif.finish();
+  downloadFile(new Blob([gifData], { type: 'image/gif' }), `${baseName}.gif`);
+
+  if (editFileName) {
+    editFileName.textContent = savedText || '';
+  }
+}
+
+// ============================================================================
+// PNG zip export
+// ============================================================================
+
+async function exportToPngSeries() {
+  if (!scaHeader || !screenData) return;
+
+  const trimmedCount = getTrimmedFrameCount();
+  if (trimmedCount === 0) {
+    alert('Cannot export: no frames remaining.');
+    return;
+  }
+
+  const baseName = currentFileName.replace(/\.sca$/i, '');
+  const padWidth = trimmedCount > 1000 ? 4 : 3;
+  const savedText = editFileName ? editFileName.textContent : '';
+
+  const tempCanvas = document.createElement('canvas');
+  tempCanvas.width = 256;
+  tempCanvas.height = 192;
+
+  const files = [];
+  let exportIndex = 0;
+  for (let i = editTrimStart; i < scaHeader.frameCount - editTrimEnd; i++) {
+    if (!optimizedOutFrames.has(i) && !manuallyDeletedFrames.has(i)) {
+      renderScaFrameToCanvas(tempCanvas, i);
+      // Convert canvas to PNG bytes
+      const blob = await new Promise(resolve => tempCanvas.toBlob(resolve, 'image/png'));
+      if (!blob) continue;
+      const arrayBuf = await blob.arrayBuffer();
+      const indexStr = String(exportIndex).padStart(padWidth, '0');
+      files.push({ name: `${baseName}_${indexStr}.png`, data: new Uint8Array(arrayBuf) });
+      exportIndex++;
+      if (exportIndex % 10 === 0 && editFileName) {
+        editFileName.textContent = `Exporting PNG... ${exportIndex}/${trimmedCount}`;
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+  }
+
+  const zipData = scaCreateZip(files);
+  downloadFile(new Blob([zipData], { type: 'application/zip' }), `${baseName}_png.zip`);
+
+  if (editFileName) {
+    editFileName.textContent = savedText || '';
   }
 }
 

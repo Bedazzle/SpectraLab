@@ -1,6 +1,6 @@
 # ZX Spectrum Graphics Format Reference
 
-A comprehensive reference for all ZX Spectrum graphics formats supported by SpectraLab.
+A comprehensive reference for ZX Spectrum graphics formats.
 
 ---
 
@@ -440,6 +440,216 @@ With two frames, the theoretical maximum is 15 x 15 = 225 color combinations per
 
 ---
 
+### MGH / Multiartist (Multicolor Gigascreen) -- variable size
+
+Two-frame gigascreen format with multicolor attributes, created by the Multiartist editor. Each file contains a 256-byte header, two SCR-interleaved bitmaps, and attribute data whose size depends on the attribute cell height (mode). Four modes are defined: mg8 (8x8), mg4 (8x4), mg2 (8x2), and mg1 (8x1 with split inner/outer regions).
+
+- File extensions: `.mg8`, `.mg4`, `.mg2`, `.mg1`
+- Like standard Gigascreen, the two frames alternate at 50 Hz to produce additional colors through temporal dithering
+
+#### Header (256 bytes)
+
+| Offset | Size | Field        | Description                              |
+|--------|------|--------------|------------------------------------------|
+| 0      | 3    | Signature    | ASCII `"MGH"` (bytes `4D 47 48`)         |
+| 3      | 1    | Version      | Format version (1)                       |
+| 4      | 1    | Mode         | Attribute cell height: 1, 2, 4, or 8    |
+| 5      | 1    | Border 1     | Border color for frame 1 (0-7)          |
+| 6      | 1    | Border 2     | Border color for frame 2 (0-7)          |
+| 7-255  | 249  | Reserved     | Unused (zero-filled)                     |
+
+#### Data Layout (mg2, mg4, mg8)
+
+```
+Offset  Size          Content
+0       256           Header
+256     6144          Bitmap 1 (SCR-interleaved)
+6400    6144          Bitmap 2 (SCR-interleaved)
+12544   attrSize      Attributes frame 1
+12544+A attrSize      Attributes frame 2
+```
+
+Attribute sizes and file sizes per mode:
+
+| Mode | Cell Height | Attr Rows | Attr Size | File Size    |
+|------|-------------|-----------|-----------|--------------|
+| mg8  | 8 x 8       | 24        | 768       | 14080 bytes  |
+| mg4  | 8 x 4       | 48        | 1536      | 15616 bytes  |
+| mg2  | 8 x 2       | 96        | 3072      | 18688 bytes  |
+
+Attributes are stored row-major (left-to-right, top-to-bottom), 32 bytes per row, using the standard ZX Spectrum attribute byte format.
+
+#### Data Layout (mg1)
+
+Mode 1 has a **split attribute structure** with two distinct regions per frame:
+
+- **Inner attributes**: cover the middle 16 columns (8-23) at 8 x 1 resolution. 192 rows x 16 columns = 3072 bytes per frame.
+- **Outer attributes**: cover the side columns (0-7 and 24-31) at 8 x 8 resolution. 24 rows x 16 columns = 384 bytes per frame.
+
+```
+Offset  Size   Content
+0       256    Header (mode = 1)
+256     6144   Bitmap 1 (SCR-interleaved)
+6400    6144   Bitmap 2 (SCR-interleaved)
+12544   3072   Inner attributes frame 1 (cols 8-23, 192 rows x 16 cols)
+15616   3072   Inner attributes frame 2
+18688   384    Outer attributes frame 1 (cols 0-7 then 24-31, 24 blocks x 16 cols)
+19072   384    Outer attributes frame 2
+```
+
+Total file size: **19456 bytes**.
+
+Inner attributes are stored as 192 rows of 16 bytes each (one byte per column, columns 8 through 23).
+
+Outer attributes are stored in 8-pixel-row blocks. Each block contains 16 bytes: 8 bytes for columns 0-7 (left side), then 8 bytes for columns 24-31 (right side). There are 24 blocks (192 / 8), so 24 x 16 = 384 bytes. Each byte covers an 8 x 8 pixel area.
+
+---
+
+### HLR (Gigascreen Lowres) -- 1628 bytes
+
+A low-resolution gigascreen variant that trades bitmap detail for two blended colors per 8 x 8 char cell. The file is a self-extracting Z80 program that loads the two attribute banks and fills the bitmap area by tiling an 8-byte pattern stored inside the file. **The pattern varies from picture to picture** — different HLR files use different patterns (top/bottom split, left/right split, checkerboard, stripes, diagonals, ...) and the chosen pattern decides how each char cell is divided into an "ink region" and a "paper region".
+
+- File extension: `.hlr` (exact size 1628 bytes, also loadable as a `.tap`/`.sna` payload)
+- Effective resolution: depends on the fill pattern; with the most common top/bottom split it is 32 x 48 colored half-cells (each half-cell = 8 x 4 pixels). With a left/right split it is 64 x 24 half-cells (each half-cell = 4 x 8 pixels), and so on.
+
+#### File layout (1628 bytes)
+
+```
+Offset  Size   Content
+0x000   84     Z80 loader code
+0x054   8      Bitmap fill pattern (8 bytes — varies per picture)
+0x05C   768    Attribute bank 1 (standard 32 x 24)
+0x35C   768    Attribute bank 2 (standard 32 x 24)
+```
+
+The 8-byte pattern at offset `0x054` is replicated by the loader to fill the full 6144-byte bitmap: every 8 x 8 cell on screen ends up with the same bit pattern. Wherever the pattern bit is 1 the cell shows its **ink** color, wherever it is 0 it shows its **paper** color. The loader then copies bank 1 to `0x5800` on one frame and bank 2 on the next, producing gigascreen flicker at 50 Hz.
+
+The pattern is **not fixed** by the format — it is an arbitrary 8-byte bitmap chosen per picture and stored inline in the file. Different pictures use different patterns to suit their content.
+
+#### Common fill patterns
+
+SpectraLab's editor and importer offer ten named presets, but any 8-byte value is legal:
+
+| Preset key   | Bytes (hex)                  | Visual                                  |
+|--------------|------------------------------|-----------------------------------------|
+| `top-bottom` | `FF FF FF FF 00 00 00 00`   | Ink in top 4 rows, paper in bottom 4    |
+| `left-right` | `F0 F0 F0 F0 F0 F0 F0 F0`   | Ink in left 4 columns, paper in right 4 |
+| `checker1`   | `AA 55 AA 55 AA 55 AA 55`   | 1-pixel checkerboard                    |
+| `checker2`   | `CC CC 33 33 CC CC 33 33`   | 2-pixel checkerboard                    |
+| `hstripe1`   | `FF 00 FF 00 FF 00 FF 00`   | 1-pixel horizontal stripes              |
+| `hstripe2`   | `FF FF 00 00 FF FF 00 00`   | 2-pixel horizontal stripes              |
+| `vstripe1`   | `AA AA AA AA AA AA AA AA`   | 1-pixel vertical stripes                |
+| `vstripe2`   | `CC CC CC CC CC CC CC CC`   | 2-pixel vertical stripes                |
+| `diag-dr`    | `80 C0 E0 F0 F8 FC FE FF`   | Diagonal split, lower-right is ink      |
+| `diag-ur`    | `FF 7F 3F 1F 0F 07 03 01`   | Diagonal split, upper-right is paper    |
+
+The choice of pattern affects the spatial subdivision of each char cell but never its color count: each cell still shows exactly two colors per frame (ink + paper) and at most two blended colors after gigascreen mixing. `top-bottom` and `left-right` are the most common because they give two equal-area regions; the stripe and checker patterns interleave the two colors at finer scales for additive mixing.
+
+#### Z80 loader disassembly
+
+HLR files are self-extracting — they load at `$8000` (32768) and run as a code block. Standard BASIC loader stub: `CLEAR 32767: LOAD "" CODE: RANDOMIZE USR 32768`.
+
+```
+$8000  76        HALT                 ; sync to interrupt
+$8001  AF        XOR  A               ; A = 0
+$8002  D3 FE     OUT  ($FE),A         ; border = black
+$8004  21 00 58  LD   HL,$5800        ; attribute area
+$8007  11 01 58  LD   DE,$5801
+$800A  01 FF 02  LD   BC,$02FF        ; 767
+$800D  75        LD   (HL),L          ; L=0, seed first attr byte
+$800E  ED B0     LDIR                 ; clear all 768 attrs to 0
+
+$8010  21 00 40  LD   HL,$4000        ; bitmap third 1
+$8013  CD 43 80  CALL $8043           ;   fill with pattern
+$8016  21 00 48  LD   HL,$4800        ; bitmap third 2
+$8019  CD 43 80  CALL $8043
+$801C  21 00 50  LD   HL,$5000        ; bitmap third 3
+$801F  CD 43 80  CALL $8043
+
+frame_loop:
+$8022  76        HALT                 ; wait for frame sync
+$8023  21 5C 80  LD   HL,$805C        ; attribute bank 1 source
+$8026  11 00 58  LD   DE,$5800
+$8029  01 00 03  LD   BC,$0300        ; 768
+$802C  ED B0     LDIR                 ; copy bank 1 → attrs
+
+$802E  76        HALT                 ; wait for next frame
+$802F  21 5C 83  LD   HL,$835C        ; attribute bank 2 source
+$8032  11 00 58  LD   DE,$5800
+$8035  01 00 03  LD   BC,$0300
+$8038  ED B0     LDIR                 ; copy bank 2 → attrs
+
+$803A  AF        XOR  A
+$803B  DB FE     IN   A,($FE)         ; read keyboard row
+$803D  F6 E0     OR   $E0             ; mask to 5 keyboard bits
+$803F  3C        INC  A               ; $FF+1 = 0 iff no key pressed
+$8040  28 E0     JR   Z,$8022         ; no key → keep flickering
+$8042  C9        RET                  ; any key → back to BASIC
+
+fill_third (HL = third base):
+$8043  11 54 80  LD   DE,$8054        ; 8-byte pattern source
+$8046  06 08     LD   B,8
+$8048  4C        LD   C,H             ; save base high byte
+inner:
+$8049  1A        LD   A,(DE)          ; pattern byte
+$804A  77        LD   (HL),A          ; write to screen
+$804B  13        INC  DE
+$804C  24        INC  H               ; +$100 = next scanline of char
+$804D  10 FA     DJNZ inner           ; 8 scanlines of one column
+$804F  61        LD   H,C             ; restore high byte
+$8050  2C        INC  L               ; next column / char row
+$8051  20 F0     JR   NZ,$8043        ; 256 L values → full third
+$8053  C9        RET
+
+$8054  FF FF FF FF 00 00 00 00        ; 8-byte bitmap pattern (example: top/bottom split)
+```
+
+The eight bytes at `$8054` are the **per-picture fill pattern**: this example shows a top/bottom split (`top-bottom` preset), but any 8-byte value is valid and different pictures use different patterns. See the [Common fill patterns](#common-fill-patterns) table above.
+
+How it works:
+
+1. **Clear attributes** (`$8004-$800E`): wipe the entire 768-byte attribute area at `$5800` to zero so the first visible frame doesn't flash junk.
+2. **Fill bitmap** (`$8010-$8021`): call `fill_third` three times with `HL = $4000, $4800, $5000` — one call per screen third. `fill_third` exploits the ZX bitmap interleave: incrementing `H` (the high byte) advances by `$100`, which is exactly the distance between consecutive scanlines of the same char row. The inner `DJNZ` loop writes all 8 scanlines of one char column from the 8-byte pattern at `$8054`, then the outer `INC L` loop walks through the 256 `(char_row, column)` combinations inside the third. After all three thirds, every char cell on screen contains an exact copy of the 8-byte pattern from the file (whatever that picture chose — `FF FF FF FF 00 00 00 00`, `F0 F0 ...`, etc).
+3. **Flicker loop** (`$8022-$8040`): `HALT` waits for the 50 Hz frame interrupt, then `LDIR` copies bank 1 over the attribute area. Another `HALT` waits one more frame, then bank 2 is copied. A quick keyboard poll on port `$FE` (`OR $E0` masks off the non-keyboard bits, `INC A` sets Z exactly when all 5 keyboard bits are high = no key pressed) loops back to keep the two banks alternating.
+4. **Exit** (`$8042`): any keypress breaks out of the flicker loop and returns to BASIC, leaving the last displayed frame on screen.
+
+Note that the loader addresses the two attribute banks as `$805C` and `$835C` — these are absolute addresses that assume the file was loaded at `$8000`. If the host code loads the file elsewhere, the two `LD HL` instructions at `$8023` and `$802F` would need to be patched.
+
+#### How the two colors per cell are produced
+
+Because the bitmap is fixed by the per-picture fill pattern, each char cell displays only two kinds of pixels:
+
+- **Ink region** (pattern bits = 1): always shows the cell's **ink** color from the current frame's attribute byte.
+- **Paper region** (pattern bits = 0): always shows the cell's **paper** color from the current frame's attribute byte.
+
+The shape and area of these two regions depend on the pattern. With `top-bottom` they are top/bottom 8 x 4 halves; with `left-right` they are left/right 4 x 8 halves; with the checker and stripe patterns they are interleaved at 1- or 2-pixel granularity.
+
+When the two frames alternate, each region shows a blend of the two frames' corresponding colors:
+
+- ink region = blend(bank1.ink, bank2.ink)
+- paper region = blend(bank1.paper, bank2.paper)
+
+This gives two independently chosen blended colors per 8 x 8 cell. The effective color grid depends on the pattern: `top-bottom` yields a 32 x 48 grid of horizontal half-cells, `left-right` yields a 64 x 24 grid of vertical half-cells, and the finer interleaved patterns give two colors mixed within the same 8 x 8 area at sub-cell granularity.
+
+#### Bright bit constraint
+
+Each attribute byte has a single bright bit shared by its ink and paper nibbles. This means **within one frame**, ink and paper brightness are linked. For an HLR cell, that imposes a constraint on which (ink-blend, paper-blend) pairs are reachable: if bank1 is regular-bright and bank2 is bright-bright, the paper blend must share those same bright flags. In practice the picker auto-selects a legal paper attribute once the user picks an ink blend, so the constraint is mostly invisible while editing.
+
+#### Color count
+
+The ZX Spectrum attribute byte allows 16 (ink, bright) combinations, but bright-black and regular-black render as the same on-screen color (`#000000`), so the palette has only **15 visually distinct colors**. Each HLR region (ink or paper) is a gigascreen blend of two of those 15 colors with repetition allowed and order irrelevant (frame 1 vs frame 2 swap is invisible to the eye), which gives 15 x 16 / 2 = **120 visually distinct blended colors** per region.
+
+#### SpectraLab editor behavior
+
+- Drawing tools never touch the bitmap in HLR mode; they only modify the two attribute banks. The per-picture 8-byte fill pattern is preserved at all times.
+- Clicking on a pixel that the pattern marks as **ink** (bit = 1) updates the cell's ink blend; clicking on a **paper** pixel (bit = 0) updates the paper blend. With the default `top-bottom` pattern this means click top-half for ink, bottom-half for paper; with `left-right` it means click left-half for ink, right-half for paper; and so on for other patterns. Fill-cell and recolor-cell tools apply the current selection to both regions at once.
+- The fill pattern itself is editable through the **Edit HLR fill pattern** dialog, which offers all named presets plus a custom hex editor and a live preview of the resulting cell shape.
+- The Gigascreen 4-color picker is filtered in HLR mode: only the two physically displayable entries (Ink+Ink and Paper+Paper) are shown. The other two gigascreen quadrants (Ink+Paper / Paper+Ink) can't be drawn because the bitmap is fixed.
+- The **New Picture** dialog's HLR option lets the user pick the initial fill pattern, and seeds bank 1 and bank 2 from the currently selected gigascreen virtual ink/paper colors so a fresh HLR picture inherits the palette choices instead of a default blue/white.
+- Internally, HLR is stored as a 2-plane gigascreen `Picture` (`sourceFormat: 'hlr'`, `planeCount: 2`, `colorMode: 'gigascreen'`, `attrCellHeight: 8`) with the 8-byte fill pattern attached as `picture.pattern`; only `picture.pattern` and the attribute arrays of the two planes are written on export.
+
+---
+
 ### Monochrome Formats
 
 Bitmap-only formats with no attribute data. Rendered as black-on-white (or user-selected ink/paper).
@@ -603,6 +813,54 @@ Each attribute line contains W/8 hex bytes separated by spaces (e.g., `38 07 47 
 #### Optional ULA+ Palette
 
 After the attribute block (separated by an empty line), a single line of **64 space-separated hex bytes** may appear. This is a ULA+ palette in GRB332 format (see ULA+ section).
+
+---
+
+### chr$ (Character Array) — binary, variable size
+
+A compact binary format that stores character cell graphics in cell-interleaved order. Supports both standard (8×8 attribute cells) and Gigascreen (two interleaved frames) modes.
+
+- File extensions: `.ch$`, `.chr$`, `.ch-`
+- Binary file
+- Resolution: **W×8 × H×8 pixels** (W and H are cell counts, 1–255)
+
+#### File Structure
+
+| Offset | Size | Content |
+|--------|------|---------|
+| 0 | 4 | Magic: `chr$` (bytes `63 68 72 24`) |
+| 4 | 1 | Width in cells (W) |
+| 5 | 1 | Height in cells (H) |
+| 6 | 1 | Bytes per cell: 9 (standard) or 18 (Gigascreen) |
+| 7 | W×H×bpc | Cell data (interleaved) |
+
+#### Cell Data Layout (bpc = 9, standard)
+
+Cells are stored **row-major** (left-to-right, top-to-bottom). Each cell contains:
+
+| Bytes | Content |
+|-------|---------|
+| 0–7 | 8 bitmap bytes (one per pixel row, MSB = leftmost pixel) |
+| 8 | 1 attribute byte (standard ZX Spectrum format) |
+
+Total file size: `7 + W × H × 9` bytes.
+
+#### Gigascreen Mode (bpc = 18)
+
+Each cell contains two interleaved frames (for Gigascreen/flicker display):
+
+| Bytes | Content |
+|-------|---------|
+| 0–7 | Frame 1: 8 bitmap bytes |
+| 8 | Frame 1: 1 attribute byte |
+| 9–16 | Frame 2: 8 bitmap bytes |
+| 17 | Frame 2: 1 attribute byte |
+
+Total file size: `7 + W × H × 18` bytes.
+
+#### Notes
+
+The cell-interleaved layout is compact and efficient for character-oriented graphics (UDGs, tiles, fonts), but requires deinterleaving to linear row-major format for rendering or editing as a bitmap image.
 
 ---
 
@@ -981,6 +1239,7 @@ Quick-reference table for identifying formats by file size when no file extensio
 | Size (bytes) | Format       | Description                        |
 |--------------|--------------|------------------------------------|
 | 768          | 53c / ATR    | Attribute-only                     |
+| 1628         | HLR          | Gigascreen lowres (Z80 loader)    |
 | 2048         | Mono 1/3     | Monochrome, 1 third               |
 | 4096         | Mono 2/3     | Monochrome, 2 thirds              |
 | 6144         | Mono Full    | Monochrome, full screen            |
@@ -991,16 +1250,23 @@ Quick-reference table for identifying formats by file size when no file extensio
 | 11904        | BMC4         | 8 x 4 multicolor + border         |
 | 12288        | MLT          | 8 x 1 multicolor                  |
 | 13824        | Gigascreen   | Dual-frame 50 Hz                   |
+| 14080        | MGH (mg8)    | Multiartist gigascreen 8 x 8       |
+| 15616        | MGH (mg4)    | Multiartist gigascreen 8 x 4       |
 | 18432        | RGB3         | Tricolor (3 x 6144)               |
+| 18688        | MGH (mg2)    | Multiartist gigascreen 8 x 2       |
+| 19456        | MGH (mg1)    | Multiartist gigascreen 8 x 1       |
 
-**Note**: SCA, SPECSCII, and ZXP files are variable-size, text-based, or extension-only and cannot be reliably detected by size alone. SCA files are identified by the `"SCA"` signature at offset 0. ZXP files are text-based and identified by the `"ZX-Paintbrush extended image"` header line.
+**Note**: SCA, SPECSCII, ZXP, and chr$ files are variable-size, text-based, or extension-only and cannot be reliably detected by size alone. SCA files are identified by the `"SCA"` signature at offset 0. chr$ files are identified by the `chr$` signature (bytes `63 68 72 24`) at offset 0. ZXP files are text-based and identified by the `"ZX-Paintbrush extended image"` header line. MGH files are identified by the `"MGH"` signature at offset 0.
 
 ### Detection Priority
 
-1. Check file extension first (`.53c`, `.atr`, `.bsc`, `.ifl`, `.bmc4`, `.mlt`, `.mc`, `.3`, `.img`, `.specscii`, `.sca`, `.zxp`)
+1. Check file extension first (`.53c`, `.atr`, `.bsc`, `.ifl`, `.bmc4`, `.mlt`, `.mc`, `.3`, `.img`, `.mg1`, `.mg2`, `.mg4`, `.mg8`, `.hlr`, `.ch$`, `.chr$`, `.ch-`, `.specscii`, `.sca`, `.zxp`)
 2. For `.zxp` files, read as text and parse (see ZXP section)
 3. For `.img` files, verify size is exactly 13824 bytes
-4. Fall back to file size lookup from the table above
+4. For `.mg1`/`.mg2`/`.mg4`/`.mg8` files, verify `"MGH"` signature at offset 0
+5. For `.hlr` files, verify size is exactly 1628 bytes
+6. For `.ch$`/`.chr$`/`.ch-` files, verify `chr$` signature at offset 0
+7. Fall back to file size lookup from the table above
 
 ---
 
@@ -1015,3 +1281,4 @@ Quick-reference table for identifying formats by file size when no file extensio
 - [ZX Spectrum ROM Character Set](https://sinclair.wiki.zxnet.co.uk/wiki/Character_set) -- Font and block graphics reference
 - [FZX Format](https://sinclair.wiki.zxnet.co.uk/wiki/FZX_format) -- Proportional font format specification
 - [ZX Spectrum Bitmap Fonts](https://github.com/ZXSpectrumVault/zx-fonts) -- Collection of fonts extracted from games
+- [Multiartist](https://multiartist.untergrund.net/) -- Multicolor gigascreen editor for ZX Spectrum

@@ -1,5 +1,235 @@
 # SpectraLab Version History
 
+## v1.61
+- HLR (Gigascreen Lowres) format support: read, view, edit, save, and create new .hlr files
+  - 1628-byte self-contained ZX Spectrum loader with two attribute banks (768 bytes each) and an 8-byte bitmap fill pattern
+  - Loader disassembly documented in ZX_SPECTRUM_GRAPHICS_GUIDE.md
+  - Renders via the existing two-frame gigascreen renderer; default pattern FF FF FF FF 00 00 00 00 produces a 32×48 grid of 8×4 top/bottom half-cells
+  - File detection by extension and by exact 1628-byte size; new HLR option in the New Picture dialog
+  - Pattern-aware load/edit/save: the 8-byte pattern is read from file offset 0x54, stored on the picture, and written back on save
+  - Custom fill patterns (non-default) are preserved across load/edit/save, enabling arbitrary 8×8 ink/paper masks per cell
+  - Editor drawing tools read the pattern bit at (x%8, y%8) to decide whether a click targets the cell's ink or paper component
+  - Fill and recolor tools set both ink and paper of the cell to a single color (solid mode)
+  - Save writes the 84-byte Z80 loader, the picture's 8-byte pattern, and both attribute banks
+- HLR fill pattern UI: full pattern picker for new and existing HLR pictures
+  - New Picture dialog: when HLR is selected, a "Fill pattern" row offers presets (top/bottom halves, left/right halves, checkerboard 1×1 / 2×2, horizontal/vertical stripes 1px / 2px, diagonals) plus a custom 8-byte hex input and a live 8×8 preview
+  - Last-used preset and custom hex are remembered via localStorage
+  - Editor: "Edit HLR fill pattern..." button inside the Gigascreen color section opens a dialog with the same presets / hex input / preview, pre-filled from the current picture
+  - Applying a new pattern rewrites the bitmap in all frames and plane buffers while leaving both attribute banks untouched, so only the ink/paper mask changes
+  - Pattern changes go through the undo/redo stack (undo state now carries the 8-byte HLR pattern)
+
+## v1.60
+- Image import: added Gigascreen (.img) and MGH (.mg8/.mg4/.mg2/.mg1) output formats
+  - PNG/JPG/GIF/WebP/BMP can now be converted directly to two-frame gigascreen with up to 4 perceived colors per cell
+  - Per-cell brute-force search over ~2628 unique attribute-pair quads finds the best (attr1, attr2) blend for each cell
+  - Supports both global dithering (Floyd-Steinberg, Atkinson, ordered, etc. against the 136-color blended palette) and cell-aware dithering (Floyd/Atkinson/Ordered/None inside each cell using its 4 chosen blend colors)
+  - Tile import works for all gigascreen variants
+  - Imported pictures open directly in the gigascreen editor as 2-plane pictures with the correct attrCellHeight (8/4/2/1)
+- Editing support for all Multiartist MGH modes: mg1, mg2, mg4, mg8 now fully editable
+  - mg2 uses 8×2 attribute cells (3072 attrs per frame)
+  - mg1 uses 8×1 attribute cells: inner columns 8-23 have per-pixel-row attrs, outer columns 0-7/24-31 use 8×8 cells
+  - mg1 export correctly splits attrs into inner (3072 bytes) + outer (384 bytes) sections per frame
+  - Editor enforces 8×8 attr constraint on mg1 outer columns (draw/fill/recolor replicate attrs across 8-row blocks)
+  - All MGH modes use interleaved bitmap layout, all editor tools work correctly
+  - Save produces valid .mg1/.mg2/.mg4/.mg8 files with 256-byte MGH header
+- New Picture dialog: added mg8, mg4, mg2, mg1 format options for creating blank Multiartist gigascreen pictures
+- mg1 viewer: dashed orange boundary lines in border area mark inner section (columns 8-23) vs outer (0-7, 24-31)
+- Editing support for Multiartist mg4 format: .mg4 files now open in the editor with full gigascreen 4-color editing
+  - mg4 uses 8×4 attribute cells (1536 attrs per frame) with standard gigascreen interleaved bitmap layout
+  - All editor tools (draw, fill, recolor, color picker, layers, undo/redo) work with 8×4 cell height
+  - Save produces valid .mg4 file with 256-byte MGH header
+- Format info now shows specific MGH mode (mg1/mg2/mg4/mg8) instead of generic "MGH"
+- Editing support for Multiartist mg8 format: .mg8 files now open in the editor with full gigascreen 4-color editing
+  - mg8 screenData uses standard gigascreen interleaved layout, reusing all existing editor code
+  - Save produces valid .mg8 file with 256-byte MGH header
+  - ASM export (Pentagon dual-screen) available for mg8
+- Multiartist MGH format support: read-only loading of .mg1/.mg2/.mg4/.mg8 multicolor gigascreen files
+  - 256-byte header with "MGH" signature, mode byte selects attr cell height (1/2/4/8 lines)
+  - Two-frame gigascreen with multicolor attributes, rendered via flicker or average blending
+  - Gigascreen renderer now respects per-picture attrCellHeight instead of hardcoded 8×8
+- Fix: ZXP and chr$ files (.ch$, .chr$, .ch-) now load correctly from ZIP archives
+
+## v1.59.3
+- 53c/127c palette: added sort mode controls (Hue, RGB, Color) and Reverse toggle
+  - Hue: groups by hue bucket then luminance (previous default behavior)
+  - RGB: sorts by blended R/G/B value
+  - Color: sorts by attribute byte (ink, paper, bright)
+  - Reverse checkbox flips the sort order
+  - Selected color is preserved when changing sort mode or pattern
+  - Sort preference persists via localStorage
+- Grid color presets: added "Grid color" dropdown in View Settings (Default, White, Gray, Black, Orange, Red, Green)
+  - Applies to paper grid, subgrid, and border grid on the main canvas
+  - Useful for visibility on dark or light artwork
+  - Setting persists via localStorage
+- Fix: 53c editor preview thumbnail not updating while drawing (updated only on next stroke)
+- 53c/127c/SCA type 1: added "Blend colors" checkbox next to pattern selector
+  - When checked, each cell renders as a solid averaged color instead of a dither pattern
+  - Palette swatches also display solid blended colors in blend mode
+  - Works across all 53c rendering paths: standalone viewer, Picture-based renderer, and SCA type 1 animation frames
+  - Setting persists via localStorage
+
+## v1.59.2
+- SCA editor: replaced Save/Export buttons with dropdown (SCA, SCR zip, 53c zip, GIF, PNG zip) + Save button
+  - Added animated GIF export with per-frame delay from SCA timing
+  - Added PNG series export (numbered PNGs in a ZIP archive)
+  - Replaced JSZip dependency with built-in ZIP creator for SCR/53c/PNG exports
+- Fix: editor mouse coordinate offset at zoom ×4+ when canvas exceeds viewport (affected .atr and other formats)
+  - `canvasToScreenCoords` no longer double-counts scroll offset when canvas is full logical size
+- Fix: .53c export now normalizes attributes so ink ≥ paper (ChunkyPaint compatibility)
+  - Swaps ink/paper when paper > ink; checkerboard pattern is symmetric so visual result is identical
+
+## v1.59.1
+- Nirvana .btile/.wtile: open as single variable-size image instead of splitting into multiple 256×192 IFL screens
+  - No tile-per-row cap — supports any count (was limited to 16/10)
+  - Uses ZXP Picture internally with `attrCellHeight=2` (8×2 multicolor), full editor support
+  - Save exports back to .btile/.wtile format (column-major attrs for btile, row-major for wtile)
+  - Format info displays "Nirvana btile/wtile (8x2 multicolor)"
+- Documentation: added chr$ (Character Array) format to ZX_SPECTRUM_GRAPHICS_GUIDE.md
+
+## v1.59
+- chr$ format support: open, view, edit, and save `.ch$`/`.chr$`/`.ch-` files (variable-size, interleaved 8×8 cell format)
+  - 7-byte header: "chr$" magic + width/height in cells + bytes-per-cell (9 or 18)
+  - Gigascreen chr$ support (bpc=18): two frames per cell, blended rendering
+  - Full editor support: drawing, attributes, layers, copy/paste, clear, save
+- Image import: added ZXP format with custom width/height (8–2048, ×8), ULA/ULA+ palette type selector
+  - Import dialog preview constrained with max-height and scroll for large ZXP dimensions
+- New Picture dialog: added ZXP (.zxp) format option with configurable width (8–2048, ×8), height (8–2048, ×8), and palette type (ULA / ULA+)
+  - ZXP settings (width, height, palette) persist across dialog opens via localStorage
+- Fix: canvas container sizing for non-standard image dimensions
+  - Added `width/height: fit-content` to `.editor-canvas-container` — eliminates black gaps around images
+  - Reordered `renderScreen()` to set wrapper dimensions before reading container client size
+
+## v1.58.5
+- Variable-size ZXP support: ZX-Paintbrush files with non-standard dimensions (8–2048 pixels, divisible by 8)
+  - `parseZxpFile()` auto-detects width/height from bitmap line length and count
+  - Standard 256×192 ZXP still maps to SCR/IFL/MLT as before
+  - Non-standard sizes use new `FORMAT.ZXP` with linear screenData layout (bitmap + attrs)
+- New `importZxp()` / `exportZxp()` in picture_format.js for ZXP Picture import/export
+- Sync bridge: `syncPictureFromScreenData` / `syncScreenDataFromPicture` handle 'zxp' format (direct linear copy)
+- Dynamic dimensions in viewer: `renderScreen()`, `drawCharGrid()`, `drawStandardBorderGrid()` use `currentPicture` dimensions
+- Dynamic dimensions in editor: `getFormatWidth()` / `getFormatHeight()` read from `currentPicture`
+  - Propagates to bounds checking, preview rendering, fullscreen zoom, clipboard operations
+- ZXP save/export outputs text format via `exportZxp()`
+- Fix: ZXP drawing placed pixels at wrong positions (drew in two places simultaneously)
+  - `getBitmapAddress()` / `getAttributeAddress()` now return linear offsets for FORMAT.ZXP
+  - All pixel operations (setPixel, getPixel, setPixelDirect, etc.) use correct addressing
+  - Layer attribute updates, fillCell, recolorCell, clearScreen handle ZXP dimensions
+  - Copy/paste uses `getAttributeAddress()` and dynamic bounds instead of hardcoded SCREEN constants
+- Fix: ZXP editor preview showed black background
+  - Added ZXP-specific rendering path in `renderPreview()` with linear bitmap/attr reads
+- Fix: pixel info display rejected small ZXP files due to SCREEN.TOTAL_SIZE guard
+- Fractional zoom levels (x1/8, x1/4, x1/2) for large images
+  - Zoom dropdown, scroll-wheel zoom, and fullscreen zoom all support fractional values
+- Performance: viewport-clipped rendering for large images (>512×512)
+  - `renderPictureStandard()` only renders the visible viewport region, not the full image
+  - ZXP renders directly from screenData, skipping redundant sync to Picture planes
+  - Layer bitmap/attribute sizes computed dynamically for ZXP format
+- Deferred stroke for big pictures (>512px): smooth curve drawing
+  - Mouse path collected during drawing with live smooth Catmull-Rom preview overlay
+  - On mouse release, spline interpolation generates a smooth curve through all points
+  - Eliminates visible straight-line segments at fractional zoom levels
+  - Affects pixel, eraser, and airbrush tools; standard 256×192 pictures use immediate drawing
+- Fix: airbrush on normal pictures draws with gaps during fast mouse movement
+  - Spray points distributed along movement path between consecutive mouse positions
+- Viewport-sized canvas: canvas is capped to the visible viewport area instead of full image × zoom
+  - Eliminates huge canvas allocations (e.g., 2048px image at x20 zoom no longer creates a 40960px canvas)
+  - Wrapper div provides full logical size for scrollbars; sticky viewport div keeps canvas in view
+  - Scroll events trigger re-render via requestAnimationFrame throttling
+  - BSC/BMC4 formats bypass viewport capping (always manageable size)
+
+## v1.58.4
+- Unified Picture-based renderers: `renderPictureStandard()`, `renderPictureGigascreen()`, `renderPictureRgb3()`
+  - Read from `currentPicture` linear layout instead of format-specific `screenData` offsets
+  - `renderPictureStandard()` covers SCR, SCR+/ULA+, IFL, MLT, 53c, and Mono formats via parametric `attrCellHeight`
+  - `renderPictureGigascreen()` covers Gigascreen with average-blend and flicker modes from 2-plane Picture
+  - `renderPictureRgb3()` covers RGB3 with palette LUT average and per-bitplane flicker from 3-plane Picture
+- `renderScreen()` dispatcher prefers Picture-based renderers when `currentPicture` exists
+  - BSC, BMC4, SPECSCII, and SCA fall through to legacy renderers
+  - Legacy format-based renderers retained as fallback for when `currentPicture` is null
+- Fix: ULA+ palette lost when loading a second file then closing it
+  - `initUlaPlusMode()` was clobbering ULA+ globals before `addPicture()` saved old tab state
+  - Now saves current picture state before `initUlaPlusMode` runs; `addPicture` skips redundant save
+- Fix: changing 53c pattern dropdown did not refresh the picture
+  - Pattern change handler now updates `currentPicture.pattern` before rendering
+
+## v1.58.3
+- Internal Picture format: all formats now populate `currentPicture` on load
+  - Import converters: IFL, MLT, Mono (full/2-3/1-3), BSC, BMC4, Gigascreen, RGB3, 53c, SPECSCII
+  - Export converters: matching export for all formats
+  - Unified `importPicture()` / `exportPicture()` dispatchers
+- Extended Picture typedef with `contentMode`, `colorMode`, `border`, `pattern`, text mode fields
+- Generalized sync bridge (`syncPictureFromScreenData` / `syncScreenDataFromPicture`) handles all formats
+- Loading pipeline uses `importPicture()` for all formats instead of only SCR/ULA+
+- Save/export uses `exportPicture()` when `currentPicture` exists
+- Undo/redo re-imports `currentPicture` using unified importer on format changes
+
+## v1.58.2
+- Color Picker tool: dedicated toolbar button (⊙) and keyboard shortcut (K)
+  - Works across all editable formats: SCR, BSC, IFL, MLT, BMC4, ULA+, Gigascreen, 53c, RGB3, SPECSCII
+  - Left-click picks ink/primary color; right-click picks paper/secondary color
+  - BSC/BMC4: also picks colors from border area
+  - RGB3: picks the actual 3-bit pixel color from R/G/B bitmaps
+  - 53c: finds and selects the matching virtual palette entry
+  - SPECSCII: picks ink/paper/bright/flash from character cell attributes
+- RGB3: dedicated 8-color palette with L/R (left/right button) selection instead of ink/paper
+  - Palette shows realistic perceived colors (1/3 brightness per channel due to flicker through black)
+  - Tooltips show bitplane composition (e.g. "Cyan (R=0 G=1 B=1)")
+- RGB3: canvas rendering now uses palette-aware blended colors instead of pure RGB
+  - Non-flicker mode shows averaged color from 3 bitplane frames using current palette
+  - Flicker mode uses current palette colors per frame (was hardcoded to default RGB)
+  - Both palette and canvas update when switching palettes (Ocean, EmuzWin, etc.)
+- Alt+Click color picker now works on all editable formats (was limited to SCR, ULA+, Gigascreen)
+- 53c editor: restored drawing tools (line, rectangle, circle, flood fill, eraser, recolor)
+  - Tools were incorrectly hidden — airbrush, gradient, text, fill_cell remain unavailable for attribute-only format
+  - Shape tools (line, rect, circle) now apply attribute recoloring per cell instead of acting as freehand
+  - Flood fill is layer-aware: reads from active layer so filling on empty layers works correctly
+  - Keyboard shortcuts (P, L, R, O, A, I, E, K) now work in 53c mode
+- 53c editor: layers fully supported — add/remove layers, per-cell mask compositing, flatten
+  - Layer bitmap stores attribute bytes; mask tracks which cells are painted per layer
+  - Upper layers override lower layers on cells where mask is set
+  - Drawing tools write to active layer when layers are enabled
+- Fix: 53c palette cell selection no longer causes layout shift (outline instead of border-width change)
+
+## v1.58.1
+- Fix: switching tabs showed blank canvas — `addPicture()` saved the NEW picture's `currentPicture` to the OLD tab
+  - Root cause: callers set `currentPicture` globally before `addPicture()`, but `saveCurrentPictureState()` inside `addPicture()` captured it for the wrong tab
+  - `addPicture()` now accepts an `internalPicture` parameter; `currentPicture` is set AFTER the old tab state is saved
+  - All callers updated: `loadScreenFile`, `loadZxpFile`, `createNewPicture`, image import, snapshot loader, project load
+- Fix: multiple new SCR screens shared the same internal picture by reference — editing one modified all
+  - `saveCurrentPictureState`, `loadPictureState`, and `addPicture` now deep-clone `currentPicture` via `clonePicture()`
+- Fix: creating a new blank SCR/ULA+ screen inherited stale `currentPicture` from previously loaded screen
+  - `createNewPicture()` now creates a fresh `currentPicture` for SCR and SCR_ULAPLUS formats, and sets null for all others
+- Fix: pixel and airbrush tools only showed changes when mouse button was released
+  - `renderScrFromPicture` now syncs from `screenData` before rendering, so mid-stroke changes appear immediately
+- Fix: flatten layers — undo did not work
+  - `layersEnabled` was not saved in undo state; after flatten set it to false, undo restored layers but `layersEnabled` stayed false
+- Fix: clear ULA+ screen — undo incorrect (palette not restored)
+  - `ulaPlusPalette` was not saved in undo state; clear resets palette to default, but undo only restored `screenData`
+- Fix: format conversion (e.g. .atr → .scr) — undo did not work
+  - `currentFormat` and `currentFileName` were not saved in undo state; undo stack was cleared on conversion
+  - All 7 conversion functions now call `saveUndoState()` before converting and no longer clear undo/redo stacks
+  - Undo/redo restore format, filename, ULA+ mode, `currentPicture`, and update all format-dependent UI
+- Fix: converting .atr → .scr did not switch color picker from pattern palette to standard palette
+  - `toggle53cColorPicker(false)` was asymmetric — hid .53c palette but didn't restore standard color section
+  - All conversion functions now call `updateEditorColorPickers()` to switch color pickers correctly
+- Fix: after opening .sca via file picker, then loading a picture format file — editor tools not shown
+  - SCA file picker path did not call `updateEditorState()`, leaving `editorActive = true`; subsequent picture load skipped `setEditorEnabled(true)`
+- SCA type 1: pattern selector now shown — can switch between File (embedded), Checker, Stripes, and Pattern views
+  - Reuses the 53c pattern dropdown; "File" option appears only for SCA type 1 and shows the embedded fill pattern
+  - Pattern change updates both the main viewer and SCA editor preview
+
+## v1.58.0
+- Internal picture format (Step 1 — SCR proof of concept)
+  - New `js/picture_format.js` module: linear row-major bitmap + attribute storage for ZX Spectrum screens
+  - SCR deinterleave/interleave: converts between ZX Spectrum's interleaved memory layout and linear row-major order
+  - Import/export for standard SCR (6912 bytes) and SCR+ULA+ (6976 bytes with 64-byte GRB332 palette)
+  - New `renderScrFromPicture` renderer reads from linear bitmap — pixel-identical output to the original `renderScrFast`
+  - Dual-representation with sync: editor still writes to `screenData`, `syncCurrentPicture()` copies changes to internal format after each action (draw, undo, redo, fill, paste, clear, flatten, format conversion)
+  - `currentPicture` stored per tab in the multi-picture system — switching tabs preserves the internal format
+  - Save/export path uses `exportScr`/`exportScrUlaPlus` when internal format is available
+  - All entry points covered: file open, drag-drop, ZXP import, image import, snapshot extraction, project/workspace load
+  - Non-SCR formats (IFL, MLT, BSC, BMC4, RGB3, Gigascreen, Mono, SPECSCII, SCA) unaffected — `currentPicture` is null, old renderers used
+
 ## v1.57.1
 - ZXP (ZX-Paintbrush) file format support (partial — 256×192 only)
   - Load `.zxp` text-based image files via file picker or drag-and-drop

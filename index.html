@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.57.0 -->
+<!-- SpectraLab v1.61 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -852,7 +852,7 @@
 
   .attr53c-palette-cell.selected {
     border-color: #fff;
-    border-width: 2px;
+    outline: 1px solid #fff;
     z-index: 2;
   }
 
@@ -906,6 +906,8 @@
   .editor-canvas-container {
     position: relative;
     overflow: auto;
+    width: fit-content;
+    height: fit-content;
     max-width: calc(100vw - 300px);
     max-height: calc(100vh - 80px);
     background: #000;
@@ -1006,6 +1008,7 @@
   .editor-preview-container {
     width: fit-content;
     height: fit-content;
+    max-width: 100%;
     overflow: hidden;
     background: #000;
     border: 1px solid var(--border-secondary);
@@ -1535,7 +1538,7 @@
       <div class="panel-content">
         <!-- File input -->
         <div class="control-group">
-          <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.bmc4,.ifl,.mlt,.mc,.3,.img,.specscii,.sca,.zxp,.slp,.slw,.sna,.z80,.btile,.wtile,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
+          <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.bmc4,.ifl,.mlt,.mc,.3,.img,.mg1,.mg2,.mg4,.mg8,.hlr,.specscii,.sca,.zxp,.ch$,.chr$,.ch-,.slp,.slw,.sna,.z80,.btile,.wtile,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
         </div>
 
         <!-- New and Save buttons -->
@@ -1558,6 +1561,9 @@
             <label>
               Zoom:
               <select id="zoomSelect" style="width: 80px; min-width: 80px; flex: none;">
+                <option value="0.125">x1/8</option>
+                <option value="0.25">x1/4</option>
+                <option value="0.5">x1/2</option>
                 <option value="1">x1</option>
                 <option value="2" selected>x2</option>
                 <option value="3">x3</option>
@@ -1662,6 +1668,18 @@
                   </select>
                 </label>
               </div>
+              <div style="display: flex; align-items: center; gap: 6px; margin-top: 4px;">
+                <span style="font-size: 11px; min-width: 60px;">Grid color:</span>
+                <select id="gridColorSelect" style="font-size: 11px; padding: 1px 2px;" title="Grid line color">
+                  <option value="default" selected>Default</option>
+                  <option value="white">White</option>
+                  <option value="gray">Gray</option>
+                  <option value="black">Black</option>
+                  <option value="orange">Orange</option>
+                  <option value="red">Red</option>
+                  <option value="green">Green</option>
+                </select>
+              </div>
             </div>
           </div>
           <div class="control-group" id="displayFiltersSection">
@@ -1727,10 +1745,15 @@
             <label>
               Pattern:
               <select id="pattern53cSelect">
+                <option value="file" style="display:none">File</option>
                 <option value="checker" selected>Checker</option>
                 <option value="stripes">Stripes</option>
                 <option value="dd77">Pattern</option>
               </select>
+            </label>
+            <label>
+              <input type="checkbox" id="attr53cBlendCheckbox">
+              Blend colors
             </label>
           </div>
           <div class="control-group" id="rgb3Controls" style="display: none;">
@@ -1887,6 +1910,13 @@
             <!-- 53c Pattern Color Section (hidden by default) -->
             <div id="attr53cColorSection" style="display: none; margin-bottom: 8px;">
               <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">PATTERN COLORS</div>
+              <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 4px;">
+                <span style="font-size: 9px; color: var(--text-tertiary);">Sort:</span>
+                <label style="font-size: 10px;" title="Sort by hue, then luminance"><input type="radio" name="attr53cSort" value="hue" checked> Hue</label>
+                <label style="font-size: 10px;" title="Sort by RGB value (red, then green, then blue)"><input type="radio" name="attr53cSort" value="rgb"> RGB</label>
+                <label style="font-size: 10px;" title="Sort by attribute byte (ink, paper, bright)"><input type="radio" name="attr53cSort" value="attr"> Color</label>
+                <label style="font-size: 10px; margin-left: 4px;" title="Reverse sort order"><input type="checkbox" id="attr53cSortReverse"> Reverse</label>
+              </div>
               <div id="attr53cPaletteGrid" class="attr53c-palette-grid"></div>
               <div style="font-size: 9px; color: var(--text-tertiary); margin-top: 4px;">Left click to select</div>
             </div>
@@ -1908,6 +1938,21 @@
                 <span style="color: var(--accent-color);">L</span>=Left button,
                 <span style="color: var(--danger-hover);">R</span>=Right button
               </div>
+              <div id="hlrPatternButtonRow" style="display: none; margin-top: 8px;">
+                <button id="hlrPatternEditBtn" style="width: 100%; padding: 4px 8px; font-size: 11px;"
+                        title="Change the 8-byte fill pattern used by this HLR picture">
+                  Edit HLR fill pattern...
+                </button>
+              </div>
+            </div>
+            <!-- RGB3 Color Section (hidden by default) -->
+            <div id="rgb3ColorSection" style="display: none; margin-bottom: 8px;">
+              <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">RGB3 COLORS</div>
+              <div id="rgb3PaletteGrid" style="display: flex; gap: 2px; flex-wrap: wrap;"></div>
+              <div style="font-size: 9px; color: var(--text-tertiary); margin-top: 4px;">
+                <span style="color: var(--accent-color);">L</span>=Left button,
+                <span style="color: var(--danger-hover);">R</span>=Right button
+              </div>
             </div>
             <div id="editorToolsSection" style="margin-bottom: 8px;">
               <button class="editor-tool-btn selected" data-tool="pixel" title="Pixel (P)">✎</button>
@@ -1920,6 +1965,7 @@
               <button class="editor-tool-btn" data-tool="fillcell" title="Fill Cell (C)">▦</button>
               <button class="editor-tool-btn" data-tool="eraser" title="Eraser (E) - makes transparent on non-BG layers">⌫</button>
               <button class="editor-tool-btn" data-tool="text" title="Text (T)">T</button>
+              <button class="editor-tool-btn" data-tool="colorpicker" title="Color Picker (K)">⊙</button>
             </div>
             <div id="editorAirbrushSection" style="margin-bottom: 8px; display: none;">
               <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">AIRBRUSH</div>
@@ -2421,8 +2467,10 @@
       </div>
       <div id="canvasContainer" class="editor-canvas-container">
         <div id="canvasWrapper" style="position: relative; display: inline-block;">
-          <canvas id="screenCanvas" width="512" height="384" tabindex="0"></canvas>
-          <canvas id="filterOverlayCanvas" width="512" height="384"></canvas>
+          <div id="canvasViewport" style="position:sticky;top:0;left:0;z-index:1">
+            <canvas id="screenCanvas" width="512" height="384" tabindex="0"></canvas>
+            <canvas id="filterOverlayCanvas" width="512" height="384"></canvas>
+          </div>
         </div>
       </div>
     </div>
@@ -2462,6 +2510,7 @@
       <button class="editor-tool-btn floating-tool" data-tool="cell" title="Cell (C)">▦</button>
       <button class="editor-tool-btn floating-tool" data-tool="eraser" title="Eraser (E)">⌫</button>
       <button class="editor-tool-btn floating-tool" data-tool="text" title="Text (T)">T</button>
+      <button class="editor-tool-btn floating-tool" data-tool="colorpicker" title="Color Picker (K)">⊙</button>
     </div>
     <div class="floating-palette-tools" style="margin-top: 2px;">
       <button class="editor-tool-btn floating-tool" data-tool="select" title="Select (S)">⬚</button>
@@ -2673,9 +2722,14 @@
   <div class="edit-header">
     <button id="editBackBtn" style="padding: 5px 12px; font-size: 11px;">← Back</button>
     <span class="edit-header-title" id="editFileName">animation.sca</span>
-    <button id="editSaveBtn" style="padding: 5px 12px; font-size: 11px;">Save As...</button>
-    <button id="exportScrBtn" style="padding: 5px 12px; font-size: 11px;">Export SCR...</button>
-    <button id="export53cBtn" style="padding: 5px 12px; font-size: 11px;">Export 53c...</button>
+    <select id="editSaveFormat" style="width: auto; padding: 4px 6px; font-size: 11px;">
+      <option value="sca">SCA</option>
+      <option value="scr">SCR (zip)</option>
+      <option value="53c">53c (zip)</option>
+      <option value="gif">GIF</option>
+      <option value="png">PNG (zip)</option>
+    </select>
+    <button id="editSaveBtn" style="padding: 5px 12px; font-size: 11px;">Save</button>
   </div>
 
   <div class="filmstrip-container">
@@ -2832,17 +2886,124 @@
           <option value="bmc4">BMC4 (.bmc4) — 384×304, 8×4 multicolor + border</option>
           <option value="rgb3">RGB3 (.3) — 256×192, tricolor RGB (8 colors)</option>
           <option value="gigascreen">Gigascreen (.img) — 256×192, two-frame blend</option>
+          <option value="mg8">Multiartist mg8 (.mg8) — 256×192, gigascreen 8×8 attrs</option>
+          <option value="mg4">Multiartist mg4 (.mg4) — 256×192, gigascreen 8×4 attrs</option>
+          <option value="mg2">Multiartist mg2 (.mg2) — 256×192, gigascreen 8×2 attrs</option>
+          <option value="mg1">Multiartist mg1 (.mg1) — 256×192, gigascreen 8×1 attrs</option>
+          <option value="hlr">HLR (.hlr) — 256×192, Gigascreen lowres (32×48 blended cells)</option>
           <option value="mono_full">Monochrome (.scr) — 256×192, bitmap only</option>
           <option value="mono_2_3">Monochrome 2/3 (.scr) — 256×128, bitmap only</option>
           <option value="mono_1_3">Monochrome 1/3 (.scr) — 256×64, bitmap only</option>
           <option value="atr">Attributes (.atr) — 32×24 color cells</option>
           <option value="specscii">SPECSCII (.specscii) — 32×24 text mode</option>
+          <option value="zxp">ZXP (.zxp) — variable size, bitmap + attributes</option>
         </select>
       </label>
+    </div>
+    <div id="newPictureZxpOptions" style="display:none; margin-bottom: 12px;">
+      <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+        <label style="font-size: 12px; flex: 1;">
+          Width:
+          <input id="newPictureWidth" type="number" min="8" max="2048" step="8" value="256"
+                 style="width: 100%; margin-top: 4px; padding: 4px; font-size: 12px;">
+        </label>
+        <label style="font-size: 12px; flex: 1;">
+          Height:
+          <input id="newPictureHeight" type="number" min="8" max="2048" step="8" value="192"
+                 style="width: 100%; margin-top: 4px; padding: 4px; font-size: 12px;">
+        </label>
+      </div>
+      <label style="font-size: 12px;">
+        Palette:
+        <select id="newPicturePalette" style="width: 100%; margin-top: 4px; padding: 4px; font-size: 12px;">
+          <option value="ula" selected>ULA (standard 15 colors)</option>
+          <option value="ulaplus">ULA+ (64-color palette)</option>
+        </select>
+      </label>
+    </div>
+    <div id="newPictureHlrOptions" style="display:none; margin-bottom: 12px;">
+      <label style="font-size: 12px;">
+        Fill pattern:
+        <select id="newPictureHlrPreset" style="width: 100%; margin-top: 4px; padding: 4px; font-size: 12px;">
+          <option value="top-bottom" selected>Top / bottom halves (default)</option>
+          <option value="left-right">Left / right halves</option>
+          <option value="checker1">Checkerboard 1x1</option>
+          <option value="checker2">Checkerboard 2x2</option>
+          <option value="hstripe1">Horizontal stripes 1px</option>
+          <option value="vstripe1">Vertical stripes 1px</option>
+          <option value="hstripe2">Horizontal stripes 2px</option>
+          <option value="vstripe2">Vertical stripes 2px</option>
+          <option value="diag-dr">Diagonal down-right</option>
+          <option value="diag-ur">Diagonal up-right</option>
+          <option value="custom">Custom...</option>
+        </select>
+      </label>
+      <div style="display: flex; gap: 8px; margin-top: 8px; align-items: flex-end;">
+        <label style="font-size: 12px; flex: 1;">
+          Hex bytes (8):
+          <input id="newPictureHlrHex" type="text" maxlength="23" value="FF FF FF FF 00 00 00 00"
+                 placeholder="FF FF FF FF 00 00 00 00"
+                 style="width: 100%; margin-top: 4px; padding: 4px; font-size: 11px; font-family: monospace;" disabled>
+        </label>
+        <div style="display: flex; flex-direction: column; align-items: center;">
+          <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">Preview</div>
+          <canvas id="newPictureHlrPreview" width="64" height="64"
+                  style="image-rendering: pixelated; border: 1px solid var(--border-color); background: #000; width: 64px; height: 64px;"></canvas>
+        </div>
+      </div>
+      <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 4px;">
+        White pixels show the cell's ink color, black pixels show paper. 8 bytes, one per scanline.
+      </div>
     </div>
     <div style="display: flex; gap: 8px; justify-content: flex-end;">
       <button id="newPictureCancelBtn" style="padding: 5px 16px; font-size: 12px;">Cancel</button>
       <button id="newPictureOkBtn" style="padding: 5px 16px; font-size: 12px;">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- HLR Fill Pattern Dialog -->
+<div id="hlrPatternDialog" class="modal-overlay" style="display:none;">
+  <div class="modal-dialog" style="width: 360px;">
+    <div class="modal-title">Change HLR Fill Pattern</div>
+    <div style="font-size: 11px; color: var(--text-tertiary); margin-bottom: 10px;">
+      Changes which pixels in each 8×8 cell show ink vs paper. Attribute colors are preserved.
+    </div>
+    <label style="font-size: 12px;">
+      Fill pattern:
+      <select id="hlrPatternPreset" style="width: 100%; margin-top: 4px; padding: 4px; font-size: 12px;">
+        <option value="top-bottom">Top / bottom halves (default)</option>
+        <option value="left-right">Left / right halves</option>
+        <option value="checker1">Checkerboard 1x1</option>
+        <option value="checker2">Checkerboard 2x2</option>
+        <option value="hstripe1">Horizontal stripes 1px</option>
+        <option value="vstripe1">Vertical stripes 1px</option>
+        <option value="hstripe2">Horizontal stripes 2px</option>
+        <option value="vstripe2">Vertical stripes 2px</option>
+        <option value="diag-dr">Diagonal down-right</option>
+        <option value="diag-ur">Diagonal up-right</option>
+        <option value="custom">Custom...</option>
+      </select>
+    </label>
+    <div style="display: flex; gap: 8px; margin-top: 8px; align-items: flex-end;">
+      <label style="font-size: 12px; flex: 1;">
+        Hex bytes (8):
+        <input id="hlrPatternHex" type="text" maxlength="23" value="FF FF FF FF 00 00 00 00"
+               placeholder="FF FF FF FF 00 00 00 00"
+               style="width: 100%; margin-top: 4px; padding: 4px; font-size: 11px; font-family: monospace;" disabled>
+      </label>
+      <div style="display: flex; flex-direction: column; align-items: center;">
+        <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">Preview</div>
+        <canvas id="hlrPatternPreview" width="64" height="64"
+                style="image-rendering: pixelated; border: 1px solid var(--border-color); background: #000; width: 64px; height: 64px;"></canvas>
+      </div>
+    </div>
+    <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 4px;">
+      White pixels show the cell's ink color, black pixels show paper. 8 bytes, one per scanline.
+    </div>
+    <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px;">
+      <button id="hlrPatternCancelBtn" style="padding: 5px 16px; font-size: 12px;">Cancel</button>
+      <button id="hlrPatternOkBtn" style="padding: 5px 16px; font-size: 12px;">Apply</button>
     </div>
   </div>
 </div>
@@ -2920,6 +3081,7 @@
           <tr><td style="color: var(--text-secondary);">Arrows</td><td>Pan canvas when zoomed</td></tr>
           <tr><td style="color: var(--text-secondary);">F</td><td>Toggle flash animation</td></tr>
           <tr><td style="color: var(--text-secondary);">G</td><td>Cycle grid size (None/8/16/24px)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Grid color</td><td>Dropdown to change grid line color</td></tr>
           <tr><td style="color: var(--text-secondary);">~</td><td>Toggle preview panel</td></tr>
           <tr><td style="color: var(--text-secondary);">Space</td><td>Play/Pause (SCA animation)</td></tr>
           <tr><td style="color: var(--text-secondary);">Left/Right</td><td>Prev/Next frame (SCA)</td></tr>
@@ -2945,6 +3107,7 @@
           <tr><td style="color: var(--text-secondary);">A</td><td>Recolor (attribute only)</td></tr>
           <tr><td style="color: var(--text-secondary);">E</td><td>Eraser tool</td></tr>
           <tr><td style="color: var(--text-secondary);">T</td><td>Text tool</td></tr>
+          <tr><td style="color: var(--text-secondary);">K</td><td>Color picker tool</td></tr>
           <tr><td style="color: var(--text-secondary);">S</td><td>Select tool</td></tr>
         </table>
         <div style="font-weight: bold; margin: 12px 0 6px;">Drawing</div>
@@ -3096,6 +3259,9 @@
           <tr><td style="color: var(--text-secondary);">.img</td><td>13824b</td><td>Gigascreen (2×SCR)</td></tr>
           <tr><td style="color: var(--text-secondary);">.sca</td><td>var</td><td>Animation (full/attr-only)</td></tr>
           <tr><td style="color: var(--text-secondary);">.specscii</td><td>var</td><td>Text mode (32×24 chars + OVER layers)</td></tr>
+          <tr><td style="color: var(--text-secondary);">.ch$ / .chr$ / .ch-</td><td>var</td><td>chr$ character array</td></tr>
+          <tr><td style="color: var(--text-secondary);">.zxp</td><td>var</td><td>ZX-Paintbrush (variable-size)</td></tr>
+          <tr><td style="color: var(--text-secondary);">.btile / .wtile</td><td>var</td><td>Nirvana tiles (editable)</td></tr>
         </table>
         <div style="font-weight: bold; margin: 12px 0 6px;">View-Only Formats</div>
         <table style="width: 100%; font-size: 11px;">
@@ -3110,7 +3276,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.57.0</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.61</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">
@@ -3136,8 +3302,8 @@
 
 <!-- PNG/GIF Import Dialog -->
 <div id="imageImportDialog" class="modal-overlay" style="display:none;">
-  <div class="modal-dialog" style="max-width: 90vw; min-width: 580px;">
-    <div id="importCanvasContainer" style="display: flex; gap: 12px; margin-bottom: 12px; justify-content: center;">
+  <div class="modal-dialog" style="max-width: 90vw; min-width: 580px; max-height: 90vh; overflow-y: auto;">
+    <div id="importCanvasContainer" style="display: flex; gap: 12px; margin-bottom: 12px; justify-content: center; overflow: auto; max-height: 60vh;">
       <div style="text-align: center;">
         <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">ORIGINAL <span id="importOriginalSize">256x192</span></div>
         <canvas id="importOriginalCanvas" width="512" height="384" style="border: 1px solid var(--border-secondary); background: #000; image-rendering: pixelated;"></canvas>
@@ -3268,9 +3434,24 @@
               <option value="mlt">MLT (8×1)</option>
               <option value="bsc">BSC</option>
               <option value="rgb3">RGB3</option>
+              <option value="gigascreen">Gigascreen</option>
+              <option value="mg8">MG8</option>
+              <option value="mg4">MG4</option>
+              <option value="mg2">MG2</option>
+              <option value="mg1">MG1</option>
+              <option value="hlr">HLR</option>
               <option value="mono_full">Mono</option>
               <option value="mono_2_3">Mono 2/3</option>
               <option value="mono_1_3">Mono 1/3</option>
+              <option value="zxp">ZXP</option>
+              <option value="ch$">chr$</option>
+            </select>
+          </label>
+          <label id="importZxpPaletteTypeRow" style="font-size: 11px; display: none; align-items: center; gap: 4px;">
+            <span style="width: 44px;">Type:</span>
+            <select id="importZxpPaletteType" style="width: 90px; padding: 2px; font-size: 11px;">
+              <option value="ula" selected>ULA</option>
+              <option value="ulaplus">ULA+</option>
             </select>
           </label>
           <label id="importPaletteRow" style="font-size: 11px; display: flex; align-items: center; gap: 4px;">
@@ -3283,6 +3464,29 @@
               <option value="checker" selected>Checker</option>
               <option value="stripes">Stripes</option>
               <option value="dd77">DD/77</option>
+            </select>
+          </label>
+          <label id="importHlrPatternRow" style="font-size: 11px; display: none; align-items: center; gap: 4px;">
+            <span style="width: 44px;">Pattern:</span>
+            <select id="importHlrPattern" style="width: 120px; padding: 2px; font-size: 11px;">
+              <option value="auto" selected>Auto (best fit)</option>
+              <option value="top-bottom">Top / bottom halves</option>
+              <option value="left-right">Left / right halves</option>
+              <option value="checker1">Checkerboard 1x1</option>
+              <option value="checker2">Checkerboard 2x2</option>
+              <option value="hstripe1">H-stripes 1px</option>
+              <option value="vstripe1">V-stripes 1px</option>
+              <option value="hstripe2">H-stripes 2px</option>
+              <option value="vstripe2">V-stripes 2px</option>
+              <option value="diag-dr">Diagonal down-right</option>
+              <option value="diag-ur">Diagonal up-right</option>
+            </select>
+          </label>
+          <label id="importChrGigaRow" style="font-size: 11px; display: none; align-items: center; gap: 4px;" title="Gigascreen chr$: two flickering frames simulate ~120 colors">
+            <span style="width: 44px;">Mode:</span>
+            <select id="importChrMode" style="width: 120px; padding: 2px; font-size: 11px;">
+              <option value="standard" selected>Standard</option>
+              <option value="gigascreen">Gigascreen</option>
             </select>
           </label>
           <div id="importUlaPlusPaletteRow" style="display: none; flex-direction: column; gap: 4px;">
@@ -3467,6 +3671,7 @@
 
 <!-- Screen Viewer scripts -->
 <script src="js/app_config.js"></script>
+<script src="js/picture_format.js"></script>
 <script src="js/screen_viewer.js"></script>
 <script src="js/display_filters.js"></script>
 <script src="js/image_import.js"></script>
