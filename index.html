@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.62 -->
+<!-- SpectraLab v1.63 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -1884,7 +1884,7 @@
                 <span style="font-size: 10px; color: var(--text-tertiary);">ULA+ PALETTE</span>
                 <button id="ulaPlusSavePalBtn" title="Save palette (.pal)" style="padding: 1px 4px; font-size: 10px;">💾</button>
                 <button id="ulaPlusLoadPalBtn" title="Load palette (.pal)" style="padding: 1px 4px; font-size: 10px;">📂</button>
-                <input type="file" id="ulaPlusPalFileInput" accept=".pal" style="display: none;">
+                <input type="file" id="ulaPlusPalFileInput" accept=".pal,.tap" style="display: none;">
                 <label style="font-size: 10px; min-width: auto;"><input type="checkbox" id="ulaPlusModeToggle"> <span id="ulaPlusModeLabel">Grid</span></label>
                 <div id="ulaPlusTransparentRow" style="display: flex; gap: 2px; margin-left: auto;"></div>
               </div>
@@ -2896,6 +2896,8 @@
           <option value="atr">Attributes (.atr) — 32×24 color cells</option>
           <option value="specscii">SPECSCII (.specscii) — 32×24 text mode</option>
           <option value="zxp">ZXP (.zxp) — variable size, bitmap + attributes</option>
+          <option value="ch$">chr$ (.ch$) — variable size (max 2040×2040), 8×8 attributes</option>
+          <option value="ch$giga">chr$ gigascreen (.ch$) — variable size, two-frame blend</option>
         </select>
       </label>
     </div>
@@ -2912,13 +2914,15 @@
                  style="width: 100%; margin-top: 4px; padding: 4px; font-size: 12px;">
         </label>
       </div>
-      <label style="font-size: 12px;">
-        Palette:
-        <select id="newPicturePalette" style="width: 100%; margin-top: 4px; padding: 4px; font-size: 12px;">
-          <option value="ula" selected>ULA (standard 15 colors)</option>
-          <option value="ulaplus">ULA+ (64-color palette)</option>
-        </select>
-      </label>
+      <div id="newPicturePaletteRow">
+        <label style="font-size: 12px;">
+          Palette:
+          <select id="newPicturePalette" style="width: 100%; margin-top: 4px; padding: 4px; font-size: 12px;">
+            <option value="ula" selected>ULA (standard 15 colors)</option>
+            <option value="ulaplus">ULA+ (64-color palette)</option>
+          </select>
+        </label>
+      </div>
     </div>
     <div id="newPictureHlrOptions" style="display:none; margin-bottom: 12px;">
       <label style="font-size: 12px;">
@@ -3275,7 +3279,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.62</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.63</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">
@@ -3498,7 +3502,7 @@
               </select>
               <button id="importUlaPlusPaletteReset" style="padding: 1px 6px; font-size: 10px; display: none;">Reset</button>
             </label>
-            <input type="file" id="importUlaPlusPalFile" accept=".pal" style="display: none;">
+            <input type="file" id="importUlaPlusPalFile" accept=".pal,.tap" style="display: none;">
             <input type="file" id="importUlaPlusScrFile" accept=".scr" style="display: none;">
             <div id="importUlaPlusPalettePreview" style="display: none;">
               <div id="importUlaPlusPaletteGrid" class="ulaplus-grid" style="max-width: 160px;"></div>

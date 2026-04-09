@@ -10256,6 +10256,67 @@ function createNewPicture(format, params) {
       break;
     }
 
+    case 'ch$':
+    case 'ch$giga': {
+      // chr$: variable-size (8..2040 px per axis, max 255 cells) with 8×8
+      // attribute cells. Mono (bpc=9) uses a single plane; gigascreen (bpc=18)
+      // uses two planes. No ULA+ support.
+      let w = (params && params.width) || 256;
+      let h = (params && params.height) || 192;
+      w = Math.max(8, Math.min(2040, Math.round(w / 8) * 8));
+      h = Math.max(8, Math.min(2040, Math.round(h / 8) * 8));
+      const chrCols = w >> 3;
+      const chrRows = h >> 3;
+      const chrBitmapSize = chrCols * h;
+      const chrAttrSize = chrCols * chrRows;
+      const chrFrameSize = chrBitmapSize + chrAttrSize;
+      const chrIsGigascreen = format === 'ch$giga';
+      const chrFrameCount = chrIsGigascreen ? 2 : 1;
+
+      newData = new Uint8Array(chrFrameSize * chrFrameCount);
+      for (let f = 0; f < chrFrameCount; f++) {
+        const attrOff = f * chrFrameSize + chrBitmapSize;
+        for (let i = 0; i < chrAttrSize; i++) {
+          newData[attrOff + i] = newAttr;
+        }
+      }
+
+      newFormat = FORMAT.CHR;
+      newFileName = 'new_screen.ch$';
+
+      if (chrIsGigascreen) {
+        if (typeof makePicture === 'function') {
+          newInternalPicture = makePicture({
+            sourceFormat: 'ch$',
+            fileName: newFileName,
+            width: w,
+            height: h,
+            attrCellHeight: 8,
+            planeCount: 2,
+            contentMode: 'pixel',
+            colorMode: 'gigascreen'
+          });
+          newInternalPicture.planes[0].bitmap.set(newData.subarray(0, chrBitmapSize));
+          newInternalPicture.planes[0].attrs.set(newData.subarray(chrBitmapSize, chrFrameSize));
+          newInternalPicture.planes[1].bitmap.set(newData.subarray(chrFrameSize, chrFrameSize + chrBitmapSize));
+          newInternalPicture.planes[1].attrs.set(newData.subarray(chrFrameSize + chrBitmapSize, chrFrameSize * 2));
+        }
+        if (typeof generateGigascreenVirtualPalette === 'function') {
+          generateGigascreenVirtualPalette();
+        }
+      } else {
+        const chrBitmap = newData.subarray(0, chrBitmapSize);
+        const chrAttrs = newData.subarray(chrBitmapSize);
+        if (typeof importZxp === 'function') {
+          newInternalPicture = importZxp(chrBitmap, chrAttrs, newFileName, w, h, 8, null);
+        }
+        if (newInternalPicture) {
+          newInternalPicture.sourceFormat = 'ch$';
+        }
+      }
+      break;
+    }
+
     case 'atr':
       newData = new Uint8Array(SCREEN.ATTR_SIZE);
       for (let i = 0; i < SCREEN.ATTR_SIZE; i++) {
@@ -12074,9 +12135,16 @@ function loadUlaPlusPalette(file) {
   reader.onload = (e) => {
     const data = new Uint8Array(/** @type {ArrayBuffer} */ (e.target?.result));
 
-    // Validate size
-    if (data.length !== 64) {
-      alert('Invalid palette file: expected 64 bytes, got ' + data.length);
+    // Extract 64-byte GRB332 palette from .pal (64 bytes) or .tap (176 bytes)
+    let palette;
+    if (data.length === 64) {
+      palette = data;
+    } else if (data.length === 176) {
+      // .tap ULA+ palette loader (BASIC + MC): 64-byte palette at offset 110,
+      // followed by BASIC line terminator (0x0D) and TAP checksum byte
+      palette = data.subarray(110, 174);
+    } else {
+      alert('Invalid palette file: expected 64-byte .pal or 176-byte .tap ULA+ palette loader, got ' + data.length + ' bytes');
       return;
     }
 
@@ -12086,10 +12154,10 @@ function loadUlaPlusPalette(file) {
     // Apply palette to screenData and ulaPlusPalette
     if (screenData.length >= ULAPLUS.TOTAL_SIZE) {
       for (let i = 0; i < 64; i++) {
-        screenData[ULAPLUS.PALETTE_OFFSET + i] = data[i];
+        screenData[ULAPLUS.PALETTE_OFFSET + i] = palette[i];
       }
     }
-    ulaPlusPalette = new Uint8Array(data);
+    ulaPlusPalette = new Uint8Array(palette);
 
     // Rebuild palette UI
     if (typeof buildUlaPlusGrid === 'function') buildUlaPlusGrid();

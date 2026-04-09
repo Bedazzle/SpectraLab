@@ -1,7 +1,12 @@
 # SpectraLab Version History
 
+## v1.63
+- ULA+ palette import: added support for 176-byte `.tap` palette loaders (BASIC + MC programs, e.g. from sourcesolutions.itch.io/ulaplus10); 64-byte GRB332 palette is extracted from offset 110, validated by 0D 0A trailer
+  - Works in both the editor palette Load button and the Image Import palette source file picker
+
 ## v1.62
 - Memory Viewer button moved from the Sprites sidebar tab to the View tab (below File Info), so it's visible right after loading a snapshot without having to switch tabs
+- New Picture dialog: added `chr$` (mono) and `chr$ gigascreen` formats with configurable width/height (8–2040 px per axis, 8×8 attribute cells); palette selector is hidden for chr$ since ULA+ is not supported
 
 ## v1.61
 - HLR (Gigascreen Lowres) format support: read, view, edit, save, and create new .hlr files

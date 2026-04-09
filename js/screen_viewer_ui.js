@@ -315,10 +315,15 @@ function initScreenViewerUI() {
     if (newPictureDialogLocal) newPictureDialogLocal.style.display = 'none';
   });
 
-  // Show/hide ZXP-specific options based on selected format
+  // Show/hide variable-size options (width/height) for ZXP and chr$ formats.
+  // Palette row is hidden for chr$ (only standard ULA attributes are supported).
   function updateZxpOptionsVisibility() {
     const zxpOpts = document.getElementById('newPictureZxpOptions');
-    if (zxpOpts) zxpOpts.style.display = (newPictureFormat && newPictureFormat.value === 'zxp') ? '' : 'none';
+    const fmt = newPictureFormat ? newPictureFormat.value : '';
+    const isVariableSize = fmt === 'zxp' || fmt === 'ch$' || fmt === 'ch$giga';
+    if (zxpOpts) zxpOpts.style.display = isVariableSize ? '' : 'none';
+    const palRow = document.getElementById('newPicturePaletteRow');
+    if (palRow) palRow.style.display = (fmt === 'zxp') ? '' : 'none';
   }
 
   // Show/hide HLR-specific options based on selected format
@@ -430,6 +435,12 @@ function initScreenViewerUI() {
         localStorage.setItem('spectraLabNewPictureHeight', String(h));
         localStorage.setItem('spectraLabNewPicturePalette', pal);
         createNewPicture(format, { width: w, height: h, palette: pal });
+      } else if (format === 'ch$' || format === 'ch$giga') {
+        const w = parseInt(/** @type {HTMLInputElement} */ (document.getElementById('newPictureWidth'))?.value) || 256;
+        const h = parseInt(/** @type {HTMLInputElement} */ (document.getElementById('newPictureHeight'))?.value) || 192;
+        localStorage.setItem('spectraLabNewPictureWidth', String(w));
+        localStorage.setItem('spectraLabNewPictureHeight', String(h));
+        createNewPicture(format, { width: w, height: h });
       } else if (format === 'hlr') {
         // Resolve pattern: preset key (if known) or hex input (if custom/invalid)
         const presetKey = newPictureHlrPreset ? newPictureHlrPreset.value : 'top-bottom';

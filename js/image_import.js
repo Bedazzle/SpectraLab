@@ -8416,12 +8416,19 @@ function initImageImport() {
     const reader = new FileReader();
     reader.onload = (e) => {
       const data = new Uint8Array(/** @type {ArrayBuffer} */ (e.target?.result));
-      if (data.length !== 64) {
-        alert('Invalid .pal file: expected 64 bytes, got ' + data.length);
+      let palette;
+      if (data.length === 64) {
+        palette = data;
+      } else if (data.length === 176) {
+        // .tap ULA+ palette loader (BASIC + MC): 64-byte palette at offset 110,
+        // followed by BASIC line terminator (0x0D) and TAP checksum byte
+        palette = data.subarray(110, 174);
+      } else {
+        alert('Invalid palette file: expected 64-byte .pal or 176-byte .tap ULA+ palette loader, got ' + data.length + ' bytes');
         importElements.ulaPlusPaletteSource.value = 'auto';
         return;
       }
-      importUlaPlusPalette = data;
+      importUlaPlusPalette = palette;
       buildImportUlaPlusPaletteGrid();
       showImportPaletteGrid();
       if (importElements.ulaPlusPaletteReset) importElements.ulaPlusPaletteReset.style.display = '';
