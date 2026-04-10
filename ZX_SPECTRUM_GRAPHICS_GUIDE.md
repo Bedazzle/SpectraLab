@@ -387,6 +387,50 @@ Both banks use standard 32 x 24 layout (768 bytes each). The border data uses th
 
 ---
 
+### BSP (Border Screen with Header) -- variable size
+
+Extended border screen format with a 70-byte header containing metadata and optional RLE-compressed border data. Supports 4 variants via config flags.
+
+```
+Header (70 bytes):
+Offset  Size   Content
+0       3      Magic: "bsp" (0x62, 0x73, 0x70)
+3       1      Config: bit7=hasGigaData, bit6=hasBorderData
+4       1      Reserved (0)
+5       1      Border color (0-7)
+6       32     Title (null-terminated ASCII)
+38      32     Author (null-terminated ASCII)
+```
+
+Data layout after header (offset 70):
+
+| Config | Variant              | Data                                                              |
+|--------|----------------------|-------------------------------------------------------------------|
+| 0x00   | Screen only          | `[screen1: 6912]`                                                |
+| 0x40   | Screen + border      | `[screen1: 6912][border1_RLE]`                                    |
+| 0x80   | Gigascreen           | `[screen1: 6912][screen2: 6912]`                                  |
+| 0xC0   | Gigascreen + border  | `[border2Offset: 2LE][screen1: 6912][screen2: 6912][b1_RLE][b2_RLE]` |
+
+For gigascreen + border (0xC0), the 2-byte little-endian `border2Offset` at offset 70 is the absolute file position where the second border RLE stream begins. Screens start at offset 72.
+
+#### RLE Border Encoding
+
+Each RLE byte: `color = byte & 7`, `tactsCode = (byte >> 3) & 0x1F`.
+
+The RLE operates on individual pixels in a 384×304 border coordinate space (256+64+64 wide, 192+64+48 tall). On side rows (y = 64..255), the cursor skips from x=64 to x=320, covering only the left and right 64-pixel border strips.
+
+Decoding rules (pixel count = `line * 2`):
+- `tactsCode = 0`: fill to end of current segment (end of line, or center skip on side rows)
+- `tactsCode = 1`: next byte = `line`, pixels = `line × 2`
+- `tactsCode = 2`: pixels = `12 × 2 = 24`
+- `tactsCode >= 3`: pixels = `(tactsCode + 13) × 2`
+
+Decoded border data is stored internally as 4224 bytes in the same raw format as BSC.
+
+- File extension: `.bsp`
+
+---
+
 ### RGB3 (Tricolor) -- 18432 bytes
 
 Three separate monochrome bitmaps representing Red, Green, and Blue channels, combined additively.
@@ -647,6 +691,67 @@ The ZX Spectrum attribute byte allows 16 (ink, bright) combinations, but bright-
 - The Gigascreen 4-color picker is filtered in HLR mode: only the two physically displayable entries (Ink+Ink and Paper+Paper) are shown. The other two gigascreen quadrants (Ink+Paper / Paper+Ink) can't be drawn because the bitmap is fixed.
 - The **New Picture** dialog's HLR option lets the user pick the initial fill pattern, and seeds bank 1 and bank 2 from the currently selected gigascreen virtual ink/paper colors so a fresh HLR picture inherits the palette choices instead of a default blue/white.
 - Internally, HLR is stored as a 2-plane gigascreen `Picture` (`sourceFormat: 'hlr'`, `planeCount: 2`, `colorMode: 'gigascreen'`, `attrCellHeight: 8`) with the 8-byte fill pattern attached as `picture.pattern`; only `picture.pattern` and the attribute arrays of the two planes are written on export.
+
+---
+
+### STL (Stellar) -- 3072 bytes
+
+A compact gigascreen multicolor format with **64 x 48 fat pixels** (each fat pixel is 4 x 4 real pixels). Two attribute frames of 1536 bytes each are interleaved in the file; the bitmap is a **fixed** pattern `0x0F` for every byte, giving each 8 x 4 multicolor cell two halves: left 4 pixels show the cell's paper color, right 4 pixels show the cell's ink color.
+
+- File extension: `.stl` (exact size 3072 bytes)
+- Effective resolution: 64 x 48 colored half-cells (each half-cell = 4 x 4 pixels)
+- Attribute cell height: 4 pixels (same as mg4 / BMC4)
+
+#### File layout (3072 bytes)
+
+The file stores two 1536-byte attribute frames interleaved in 4-byte groups:
+
+```
+For each pair index j = 0, 2, 4, ..., 1534:
+  byte[j*2 + 0] = frame1[j]
+  byte[j*2 + 1] = frame1[j + 1]
+  byte[j*2 + 2] = frame2[j]
+  byte[j*2 + 3] = frame2[j + 1]
+```
+
+Each attribute frame is a flat 32 x 48 grid (32 columns x 48 rows) of standard ZX attribute bytes. Row 0 is the top of the screen; column 0 is the left edge. The attribute byte format is the standard `FBPPPIII` (flash, bright, paper 3 bits, ink 3 bits).
+
+#### How the two colors per cell are produced
+
+The bitmap is **always** `0x0F` — the same value for every byte in every cell. In binary this is `00001111`, so within each 8-pixel horizontal span:
+
+- Bits 7-4 (leftmost 4 pixels): **0** → paper color
+- Bits 3-0 (rightmost 4 pixels): **1** → ink color
+
+Combined with the 4-pixel attribute cell height, every 8 x 4 cell shows two independent 4 x 4 colored blocks side by side: paper on the left, ink on the right.
+
+When the two gigascreen frames alternate at 50 Hz:
+
+- Left half = blend(frame1.paper, frame2.paper)
+- Right half = blend(frame1.ink, frame2.ink)
+
+This gives two independently chosen blended colors per 8 x 4 cell, for a total grid of 64 x 48 fat pixels across the 256 x 192 display.
+
+#### Comparison with HLR
+
+| Property         | STL                         | HLR                                     |
+|------------------|-----------------------------|------------------------------------------|
+| File size        | 3072 bytes                  | 1628 bytes                               |
+| Bitmap pattern   | Fixed `0x0F` (always)       | Per-picture 8-byte pattern (varies)      |
+| Attr cell height | 4 px (multicolor)           | 8 px (standard)                          |
+| Attr grid        | 32 x 48 (1536 bytes/frame)  | 32 x 24 (768 bytes/frame)               |
+| Fat pixel grid   | 64 x 48                     | Depends on pattern (typically 32 x 48)   |
+| File prefix      | None (attrs only)           | 84-byte Z80 loader + 8-byte pattern     |
+
+STL trades the variable-pattern flexibility of HLR for a higher vertical resolution: 48 multicolor rows instead of 24, achieved by using 4-pixel-tall attribute cells. The fixed bitmap eliminates the need for a loader or pattern storage — the file contains only the two interleaved attribute frames.
+
+#### Bright bit constraint
+
+Same as standard gigascreen: each attribute byte's single bright bit applies to both ink and paper within the same frame. The blended color pair is constrained by the (bright1, bright2) combination across the two frames. In practice this limits which (ink-blend, paper-blend) pairs are simultaneously achievable in one cell.
+
+#### Color count
+
+Same as HLR: each fat pixel is a blend of two of the 15 visually distinct ZX colors (with repetition, order-independent), giving up to **120 blended colors** per half-cell position.
 
 ---
 
@@ -1241,6 +1346,7 @@ Quick-reference table for identifying formats by file size when no file extensio
 | 768          | 53c / ATR    | Attribute-only                     |
 | 1628         | HLR          | Gigascreen lowres (Z80 loader)    |
 | 2048         | Mono 1/3     | Monochrome, 1 third               |
+| 3072         | STL          | Stellar 64 x 48 gigascreen        |
 | 4096         | Mono 2/3     | Monochrome, 2 thirds              |
 | 6144         | Mono Full    | Monochrome, full screen            |
 | 6912         | SCR          | Standard screen                    |
@@ -1260,13 +1366,14 @@ Quick-reference table for identifying formats by file size when no file extensio
 
 ### Detection Priority
 
-1. Check file extension first (`.53c`, `.atr`, `.bsc`, `.ifl`, `.bmc4`, `.mlt`, `.mc`, `.3`, `.img`, `.mg1`, `.mg2`, `.mg4`, `.mg8`, `.hlr`, `.ch$`, `.chr$`, `.ch-`, `.specscii`, `.sca`, `.zxp`)
+1. Check file extension first (`.53c`, `.atr`, `.bsc`, `.ifl`, `.bmc4`, `.mlt`, `.mc`, `.3`, `.img`, `.mg1`, `.mg2`, `.mg4`, `.mg8`, `.hlr`, `.stl`, `.ch$`, `.chr$`, `.ch-`, `.specscii`, `.sca`, `.zxp`)
 2. For `.zxp` files, read as text and parse (see ZXP section)
 3. For `.img` files, verify size is exactly 13824 bytes
 4. For `.mg1`/`.mg2`/`.mg4`/`.mg8` files, verify `"MGH"` signature at offset 0
 5. For `.hlr` files, verify size is exactly 1628 bytes
-6. For `.ch$`/`.chr$`/`.ch-` files, verify `chr$` signature at offset 0
-7. Fall back to file size lookup from the table above
+6. For `.stl` files, verify size is exactly 3072 bytes
+7. For `.ch$`/`.chr$`/`.ch-` files, verify `chr$` signature at offset 0
+8. Fall back to file size lookup from the table above
 
 ---
 

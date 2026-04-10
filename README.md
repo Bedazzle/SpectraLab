@@ -97,7 +97,7 @@ Full support for the ULA+ 64-color extension:
 
 - **Format detection**: files of 6976 bytes (6912 SCR + 64-byte GRB332 palette) auto-detected as ULA+
 - **Two palette views**: 8×8 grid of all 64 colors, or classic 16-color row with CLUT selector (0–3)
-- **Editing**: Ctrl+click any palette color to edit R (0–7) / G (0–7) / B (0–3) with live preview and undo
+- **Editing**: Ctrl+click any palette color to edit R (0–7) / G (0–7) / B (0–3) with live preview and undo; Shift+click to copy/swap colors between palette slots
 - **Import**: convert PNG/JPG/etc. to ULA+ with optimal palette generation or from a loaded .pal / ULA+ .scr
 - **Eyedropper**: picks color and auto-selects the correct CLUT
 - **Palette files**: save/load 64-byte .pal GRB332 files (12 bundled palettes in `palettes/`)

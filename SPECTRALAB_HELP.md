@@ -42,7 +42,7 @@ When multiple pictures are open, a tab bar appears above the canvas. Each tab sh
 Click the file input at the top of the left sidebar or **drag and drop** a file onto the canvas.
 
 **Supported input formats:**
-`.scr`, `.53c`, `.atr`, `.bsc`, `.bmc4`, `.ifl`, `.mlt`, `.mc`, `.3`, `.img`, `.specscii`, `.sca`, `.btile`, `.wtile`, `.ch$`, `.chr$`, `.ch-`, `.zxp`, `.slp`, `.slw`, `.sna`, `.z80`, `.zip`, `.png`, `.gif`, `.jpg`, `.jpeg`, `.webp`, `.bmp`
+`.scr`, `.53c`, `.atr`, `.bsc`, `.bsp`, `.bmc4`, `.ifl`, `.mlt`, `.mc`, `.3`, `.img`, `.hlr`, `.stl`, `.specscii`, `.sca`, `.btile`, `.wtile`, `.ch$`, `.chr$`, `.ch-`, `.zxp`, `.slp`, `.slw`, `.sna`, `.z80`, `.zip`, `.png`, `.gif`, `.jpg`, `.jpeg`, `.webp`, `.bmp`
 
 ### New Picture
 
@@ -55,6 +55,7 @@ Click the **New** button to open the New Picture dialog. Select a format from th
 | IFL | .ifl | 256×192, 8×2 multicolor attributes |
 | MLT | .mlt | 256×192, 8×1 multicolor attributes |
 | Border Screen | .bsc | 384×304, bitmap + attributes + border |
+| Border Screen+ | .bsp | 384×304, bitmap + attributes + border (with header) |
 | BMC4 | .bmc4 | 384×304, 8×4 multicolor + border |
 | RGB3 | .3 | 256×192, tricolor RGB (8 colors) |
 | Gigascreen | .img | 256×192, two-frame blend |
@@ -64,6 +65,8 @@ Click the **New** button to open the New Picture dialog. Select a format from th
 | Attributes | .atr | 32×24 color cells |
 | SPECSCII | .specscii | 32×24 text mode |
 | chr$ | .ch$ | Variable-size, interleaved 8×8 cells |
+| HLR | .hlr | 256×192, High Lores (32×24 gigascreen) |
+| STL | .stl | 256×192, Stellar (64×48 multicolor gigascreen) |
 | ZXP | .zxp | Variable-size (8-2048px), ULA or ULA+ palette |
 
 ### Save
@@ -130,7 +133,7 @@ For `.53c` / `.atr` attribute-only formats, select the fill pattern: **Checker**
 For `.3` tricolor format: toggle **Emulate flicker** to simulate real hardware display.
 
 #### Gigascreen Controls
-For `.img` gigascreen format, select display mode:
+For `.img` gigascreen, `.hlr` (High Lores), and `.stl` (Stellar) formats, select display mode:
 - **Average** — blended view of both frames
 - **Flicker** — alternating frame display
 
@@ -254,12 +257,16 @@ Shown when editing ULA+ format pictures. Features 64 colors organized in 4 CLUTs
 - **Save palette** — export 64-byte `.pal` file (GRB332 encoding)
 - **Load palette** — import `.pal` file
 - **Ctrl+click** on a color — open the color editor dialog (R/G/B sliders, GRB332 format: 3-bit green, 3-bit red, 2-bit blue)
+- **Shift+click** on a color — mark as copy source (animated border), then:
+  - **Click** another color — copy source GRB value to target
+  - **Shift+click** another color — swap both GRB values
+  - **Click same cell** or **Escape** — cancel
 
 Ink and paper must be from the same CLUT.
 
 ### Gigascreen Palette
 
-Shown for Gigascreen format. A 16-column grid displays all virtual colors created by two-frame alternation.
+Shown for Gigascreen, HLR, and STL formats. A 16-column grid displays all virtual colors created by two-frame alternation.
 
 - Left click = select ink
 - Right click = select paper
@@ -330,7 +337,7 @@ Use **Save** and **Load** buttons to save/load brush sets (`.slb` format) or til
 
 ### Barcodes (Border Patterns)
 
-Available for BSC/BMC4 formats. 8 barcode slots for border stripe patterns.
+Available for BSC/BSP/BMC4 formats. 8 barcode slots for border stripe patterns.
 
 | Action | Effect |
 |--------|--------|
@@ -692,7 +699,7 @@ Crop the source image:
 
 #### Output
 
-- **Format:** SCR, ULA+, 53c (attr), IFL (8×2), BMC4 (8×4), MLT (8×1), BSC, RGB3, Mono, Mono 2/3, Mono 1/3
+- **Format:** SCR, ULA+, 53c (attr), IFL (8×2), BMC4 (8×4), MLT (8×1), BSC, BSP, RGB3, Gigascreen, HLR, STL, Mono, Mono 2/3, Mono 1/3
 - **Palette** selector
 - **53c Pattern** (for 53c format): Checker, Stripes, DD/77
 - **ULA+ Palette:** Auto, Load .pal, From picture
@@ -963,11 +970,14 @@ The floating palette includes all drawing tools, selection/clipboard tools, colo
 | .scr | 2048 bytes | Monochrome 1/3 |
 | .53c / .atr | 768 bytes | Attributes only |
 | .bsc | 11136 bytes | Border screen |
+| .bsp | variable | Border screen with header (70-byte header, screen/gigascreen ± border) |
 | .ifl | 9216 bytes | 8×2 multicolor |
 | .mlt / .mc | 12288 bytes | 8×1 multicolor |
 | .bmc4 | 11904 bytes | 8×4 multicolor + border |
 | .3 | 18432 bytes | Tricolor RGB |
 | .img | 13824 bytes | Gigascreen (2×SCR) |
+| .hlr | 1536 bytes | High Lores (32×24 fat pixels, gigascreen) |
+| .stl | 3072 bytes | Stellar (64×48 fat pixels, multicolor gigascreen) |
 | .sca | variable | Animation (full/attr-only frames) |
 | .specscii | variable | Text mode (32×24 chars + OVER layers) |
 | .ch$ / .chr$ / .ch- | variable | Character array (interleaved 8×8 cells) |

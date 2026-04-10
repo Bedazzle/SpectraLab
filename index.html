@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.63 -->
+<!-- SpectraLab v1.65 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -704,6 +704,27 @@
     border-style: dashed;
     border-width: 2px;
     z-index: 2;
+  }
+
+  .ulaplus-grid-cell.copy-source,
+  .ulaplus-classic-cell.copy-source {
+    border-color: #ff00ff;
+    border-style: dashed;
+    border-width: 2px;
+    z-index: 3;
+    animation: copySourcePulse 0.8s ease-in-out infinite alternate;
+  }
+
+  @keyframes copySourcePulse {
+    from { border-color: #ff00ff; }
+    to   { border-color: #00ffff; }
+  }
+
+  #ulaPlusCopyStatus {
+    font-size: 10px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+    min-height: 14px;
   }
 
   .ulaplus-classic {
@@ -1538,7 +1559,7 @@
       <div class="panel-content">
         <!-- File input -->
         <div class="control-group">
-          <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.bmc4,.ifl,.mlt,.mc,.3,.img,.mg1,.mg2,.mg4,.mg8,.hlr,.specscii,.sca,.zxp,.ch$,.chr$,.ch-,.slp,.slw,.sna,.z80,.btile,.wtile,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
+          <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.bsp,.bmc4,.ifl,.mlt,.mc,.3,.img,.mg1,.mg2,.mg4,.mg8,.hlr,.stl,.specscii,.sca,.zxp,.ch$,.chr$,.ch-,.slp,.slw,.sna,.z80,.btile,.wtile,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
         </div>
 
         <!-- New and Save buttons -->
@@ -1900,6 +1921,7 @@
                 </div>
                 <div id="ulaPlusClassicPalette" class="ulaplus-classic"></div>
               </div>
+              <div id="ulaPlusCopyStatus"></div>
             </div>
               <div class="editor-color-row" style="margin-bottom: 8px;">
                 <label style="min-width: auto;"><input type="checkbox" id="editorBrightCheckbox"> Bright (B)</label>
@@ -2882,6 +2904,8 @@
           <option value="ifl">IFL (.ifl) — 256×192, 8×2 multicolor attributes</option>
           <option value="mlt">MLT (.mlt) — 256×192, 8×1 multicolor attributes</option>
           <option value="bsc">Border Screen (.bsc) — 384×304, bitmap + attributes + border</option>
+          <option value="bsp">BSP (.bsp) — 384×304, header + screen + border</option>
+          <option value="bsp_giga">BSP Gigascreen (.bsp) — 384×304, header + gigascreen + border</option>
           <option value="bmc4">BMC4 (.bmc4) — 384×304, 8×4 multicolor + border</option>
           <option value="rgb3">RGB3 (.3) — 256×192, tricolor RGB (8 colors)</option>
           <option value="gigascreen">Gigascreen (.img) — 256×192, two-frame blend</option>
@@ -2890,6 +2914,7 @@
           <option value="mg2">Multiartist mg2 (.mg2) — 256×192, gigascreen 8×2 attrs</option>
           <option value="mg1">Multiartist mg1 (.mg1) — 256×192, gigascreen 8×1 attrs</option>
           <option value="hlr">HLR (.hlr) — 256×192, Gigascreen lowres (32×48 blended cells)</option>
+          <option value="stl">STL (.stl) — 256×192, Stellar (64×48 multicolor gigascreen)</option>
           <option value="mono_full">Monochrome (.scr) — 256×192, bitmap only</option>
           <option value="mono_2_3">Monochrome 2/3 (.scr) — 256×128, bitmap only</option>
           <option value="mono_1_3">Monochrome 1/3 (.scr) — 256×64, bitmap only</option>
@@ -3221,6 +3246,7 @@
           <tr><td style="color: var(--text-secondary);">Load palette</td><td>Import .pal file to current picture</td></tr>
           <tr><td style="color: var(--text-secondary);">I/P markers</td><td>Show selected ink/paper colors</td></tr>
           <tr><td style="color: var(--text-secondary);">Ctrl+click</td><td>Edit color (R/G/B sliders, GRB332)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Shift+click</td><td>Copy/swap: mark source, then click=copy or Shift+click=swap</td></tr>
           <tr><td style="color: var(--text-secondary);">Alt+click</td><td>Pick ink+paper from cell (eyedropper)</td></tr>
         </table>
         <p style="font-size: 11px; margin: 4px 0 0;">Ink and paper must be from same CLUT. Convert SCR↔ULA+ via Transform tab.</p>
@@ -3255,6 +3281,7 @@
           <tr><td style="color: var(--text-secondary);">.scr</td><td>2048b</td><td>Monochrome 1/3</td></tr>
           <tr><td style="color: var(--text-secondary);">.53c/.atr</td><td>768b</td><td>Attributes only</td></tr>
           <tr><td style="color: var(--text-secondary);">.bsc</td><td>11136b</td><td>Border screen</td></tr>
+          <tr><td style="color: var(--text-secondary);">.bsp</td><td>var</td><td>Border screen + header</td></tr>
           <tr><td style="color: var(--text-secondary);">.ifl</td><td>9216b</td><td>8×2 multicolor</td></tr>
           <tr><td style="color: var(--text-secondary);">.mlt/.mc</td><td>12288b</td><td>8×1 multicolor</td></tr>
           <tr><td style="color: var(--text-secondary);">.bmc4</td><td>11904b</td><td>8×4 + border</td></tr>
@@ -3279,7 +3306,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.63</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.65</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">
@@ -3432,10 +3459,12 @@
               <option value="scr" selected>SCR</option>
               <option value="ulaplus">ULA+</option>
               <option value="53c">53c (attr)</option>
+              <option value="specscii">SPECSCII</option>
               <option value="ifl">IFL (8×2)</option>
               <option value="bmc4">BMC4 (8×4)</option>
               <option value="mlt">MLT (8×1)</option>
               <option value="bsc">BSC</option>
+              <option value="bsp">BSP</option>
               <option value="rgb3">RGB3</option>
               <option value="gigascreen">Gigascreen</option>
               <option value="mg8">MG8</option>
@@ -3443,6 +3472,7 @@
               <option value="mg2">MG2</option>
               <option value="mg1">MG1</option>
               <option value="hlr">HLR</option>
+              <option value="stl">STL</option>
               <option value="mono_full">Mono</option>
               <option value="mono_2_3">Mono 2/3</option>
               <option value="mono_1_3">Mono 1/3</option>

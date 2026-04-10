@@ -38,6 +38,14 @@ function isGigascreenEditable() {
   if (currentFormat === FORMAT.HLR && currentPicture) {
     return true;
   }
+  // STL (Stellar): gigascreen layout with attrCellHeight=4 and fixed 0x0F bitmap
+  if (currentFormat === FORMAT.STL && currentPicture) {
+    return true;
+  }
+  // BSP gigascreen
+  if (currentFormat === FORMAT.BSP && currentPicture && currentPicture.colorMode === 'gigascreen') {
+    return true;
+  }
   return false;
 }
 
@@ -802,6 +810,13 @@ function setGigascreenPixel(data, x, y, isInk) {
     return;
   }
 
+  // STL (Stellar): bitmap is fixed 0x0F; drawing only updates attributes
+  // with multicolor cell height (4 rows).
+  if (currentFormat === FORMAT.STL) {
+    setStlCellColor(data, x, y, isInk);
+    return;
+  }
+
   const bitmapAddr = getBitmapAddress(x, y);
   const bit = getBitPosition(x);
   const width = SCREEN.WIDTH;
@@ -1193,6 +1208,110 @@ function setHlrHalfCellColor(data, x, y, isInk, solid) {
       return cb | paper | brightBit | flash;
     }
     const ink = existing & 0x07; // bits 0-2 (ink)
+    return ink | (cb << 3) | brightBit | flash;
+  };
+
+  const gigaFS = getGigaFrameSize();
+  const attrAddr1 = 6144 + attrOffset;
+  const attrAddr2 = gigaFS + 6144 + attrOffset;
+
+  // Layer mode (non-background): write to layer attributes only
+  if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
+    const layer = layers[activeLayerIndex];
+    if (layer) {
+      const maskIdx = y * 256 + x;
+      if (layer.mask) layer.mask[maskIdx] = 1;
+      if (layer.attributes) {
+        layer.attributes[attrOffset] = composeAttr(layer.attributes[attrOffset] || 0, f1);
+      }
+      if (layer.attributesFrame2) {
+        layer.attributesFrame2[attrOffset] = composeAttr(layer.attributesFrame2[attrOffset] || 0, f2);
+      }
+    }
+    return;
+  }
+
+  // Background layer or no layers: modify screenData directly
+  data[attrAddr1] = composeAttr(data[attrAddr1], f1);
+  data[attrAddr2] = composeAttr(data[attrAddr2], f2);
+
+  // Mirror to background layer if layers enabled
+  if (layersEnabled && layers.length > 0 && activeLayerIndex === 0) {
+    const layer = layers[0];
+    if (layer) {
+      if (layer.attributes) {
+        layer.attributes[attrOffset] = data[attrAddr1];
+      }
+      if (layer.attributesFrame2) {
+        layer.attributesFrame2[attrOffset] = data[attrAddr2];
+      }
+    }
+  }
+}
+
+// ============================================================================
+// STL (Stellar) Helpers
+// ============================================================================
+
+/**
+ * Returns true if the pixel at (x, y) shows the cell's INK color in STL format.
+ * STL uses fixed bitmap 0x0F: left 4 pixels = paper, right 4 pixels = ink.
+ * @param {number} x
+ * @param {number} y
+ * @returns {boolean}
+ */
+function isStlPixelInk(x, y) {
+  return (x & 7) >= 4;
+}
+
+/**
+ * STL (Stellar): updates one or both components (ink/paper) of both attribute
+ * frames at the given pixel coordinate. Uses multicolor cell height (4 rows)
+ * via getGigaAttrRow() and the fixed 0x0F pattern: left 4 pixels = paper,
+ * right 4 pixels = ink.
+ *
+ * @param {Uint8Array} data - Screen data (interleaved gigascreen layout)
+ * @param {number} x - X coordinate (0-255)
+ * @param {number} y - Y coordinate (0-191)
+ * @param {boolean} isInk - true = use virtual ink color, false = use virtual paper color
+ * @param {boolean} [solid=false] - If true, set BOTH ink and paper of the cell to the chosen color
+ */
+function setStlCellColor(data, x, y, isInk, solid) {
+  if (x < 0 || x >= 256 || y < 0 || y >= 192) return;
+
+  const charCol = Math.floor(x / 8);
+  const charRow = getGigaAttrRow(y);
+  const attrOffset = charRow * 32 + charCol;
+  const isInkComponent = solid ? null : isStlPixelInk(x, y);
+
+  if (gigascreenVirtualPalette.length === 0) {
+    generateGigascreenVirtualPalette();
+  }
+  const cellColorIdx = isInk ? gigascreenPrimaryColor : gigascreenSecondaryColor;
+  const usePaperEntry = cellColorIdx >= 2;
+  const entry = usePaperEntry
+    ? gigascreenVirtualPalette[gigascreenVirtualPaper]
+    : gigascreenVirtualPalette[gigascreenVirtualInk];
+  if (!entry) return;
+
+  const f1Full = entry.frame1Color;
+  const f2Full = entry.frame2Color;
+  const f1 = f1Full & 7;
+  const f2 = f2Full & 7;
+  const bright = (f1Full >= 8) || (f2Full >= 8);
+  const brightBit = bright ? 0x40 : 0;
+
+  const composeAttr = (existing, colorBits) => {
+    const flash = existing & 0x80;
+    const cb = colorBits & 7;
+    if (isInkComponent === null) {
+      return cb | (cb << 3) | brightBit | flash;
+    }
+    if (isInkComponent) {
+      const paper = existing & 0x38;
+      return cb | paper | brightBit | flash;
+    }
+    const ink = existing & 0x07;
     return ink | (cb << 3) | brightBit | flash;
   };
 
@@ -2487,6 +2606,9 @@ function setPixelBitmapOnly(data, x, y, isInk) {
   // and never edited directly -- only attributes change.
   if (currentFormat === FORMAT.HLR) return;
 
+  // STL: bitmap is fixed 0x0F -- only attributes change.
+  if (currentFormat === FORMAT.STL) return;
+
   if (currentFormat === FORMAT.MONO_2_3 && y >= 128) return;
   if (currentFormat === FORMAT.MONO_1_3 && y >= 64) return;
 
@@ -2574,6 +2696,12 @@ function setPixelAttributeOnly(data, x, y) {
   // HLR: drawing equals recoloring the half-cell (no separate bitmap)
   if (currentFormat === FORMAT.HLR) {
     setHlrHalfCellColor(data, x, y, true);
+    return;
+  }
+
+  // STL: drawing equals recoloring the cell (no separate bitmap)
+  if (currentFormat === FORMAT.STL) {
+    setStlCellColor(data, x, y, true);
     return;
   }
 
@@ -2771,8 +2899,8 @@ function parseAttribute(attr) {
  * @returns {number}
  */
 function getLayerBitmapSize() {
-  // BSC uses same 6144-byte bitmap as SCR (BSC object doesn't define BITMAP_SIZE)
-  if (currentFormat === FORMAT.BSC) return SCREEN.BITMAP_SIZE;
+  // BSC/BSP use same 6144-byte bitmap as SCR
+  if (currentFormat === FORMAT.BSC || currentFormat === FORMAT.BSP) return SCREEN.BITMAP_SIZE;
   if (currentFormat === FORMAT.BMC4) return BMC4.BITMAP_SIZE;
   if (currentFormat === FORMAT.IFL) return IFL.BITMAP_SIZE;
   if (currentFormat === FORMAT.MLT) return MLT.BITMAP_SIZE;
@@ -2790,7 +2918,8 @@ function getLayerBitmapSize() {
  * @returns {boolean}
  */
 function formatHasBorder() {
-  return currentFormat === FORMAT.BSC || currentFormat === FORMAT.BMC4;
+  return currentFormat === FORMAT.BSC || currentFormat === FORMAT.BMC4 ||
+    (currentFormat === FORMAT.BSP && currentPicture && currentPicture.border);
 }
 
 /**
@@ -2798,7 +2927,8 @@ function formatHasBorder() {
  * @returns {number} Border size in bytes (4224 for BSC/BMC4, 0 for others)
  */
 function getLayerBorderSize() {
-  if (currentFormat === FORMAT.BSC || currentFormat === FORMAT.BMC4) {
+  if (currentFormat === FORMAT.BSC || currentFormat === FORMAT.BMC4 ||
+      (currentFormat === FORMAT.BSP && currentPicture && currentPicture.border)) {
     return BSC.BORDER_SIZE; // 4224 bytes
   }
   return 0;
@@ -2809,7 +2939,7 @@ function getLayerBorderSize() {
  * @returns {number} Attribute size in bytes (0 for formats without attributes)
  */
 function getLayerAttributeSize() {
-  if (currentFormat === FORMAT.SCR || currentFormat === FORMAT.SCR_ULAPLUS || currentFormat === FORMAT.BSC) {
+  if (currentFormat === FORMAT.SCR || currentFormat === FORMAT.SCR_ULAPLUS || currentFormat === FORMAT.BSC || currentFormat === FORMAT.BSP) {
     return SCREEN.ATTR_SIZE; // 768 bytes (8×8 cells)
   }
   if (currentFormat === FORMAT.BMC4) {
@@ -5674,6 +5804,11 @@ function fillCell(x, y, isInk) {
     // both ink and paper of both attribute frames to the chosen virtual color.
     if (!screenData || screenData.length < getGigaFrameSize() * 2) return;
     setHlrHalfCellColor(screenData, x, y, isInk, true);
+  } else if (currentFormat === FORMAT.STL) {
+    // STL: bitmap is fixed 0x0F; fill the 8x4 cell with one solid blended
+    // color by setting both ink and paper of both attribute frames.
+    if (!screenData || screenData.length < getGigaFrameSize() * 2) return;
+    setStlCellColor(screenData, x, y, isInk, true);
   } else if (isGigascreenEditable()) {
     // Gigascreen: fill both frames with virtual colors
     if (!screenData || screenData.length < getGigaFrameSize() * 2) return;
@@ -6234,6 +6369,11 @@ function recolorCell(x, y) {
     // setting both ink and paper of both attribute frames (solid mode).
     if (!screenData || screenData.length < getGigaFrameSize() * 2) return;
     setHlrHalfCellColor(screenData, x, y, true, true);
+  } else if (currentFormat === FORMAT.STL) {
+    // STL: recolor entire 8x4 cell with the chosen virtual ink color by
+    // setting both ink and paper of both attribute frames (solid mode).
+    if (!screenData || screenData.length < getGigaFrameSize() * 2) return;
+    setStlCellColor(screenData, x, y, true, true);
   } else if (isGigascreenEditable()) {
     // Gigascreen: set attributes in both frames
     if (!screenData || screenData.length < getGigaFrameSize() * 2) return;
@@ -8634,7 +8774,8 @@ function clearScreen() {
   }
 
   // BSC: clear border data to selected border color
-  if (currentFormat === FORMAT.BSC) {
+  if (currentFormat === FORMAT.BSC ||
+      (currentFormat === FORMAT.BSP && currentPicture && currentPicture.border && !isGigascreenEditable())) {
     // Border bytes have two 3-bit colors: bits 0-2 and bits 3-5
     // Use borderColor from screen_viewer.js (0-7), default to 0 if not defined
     const bc = (typeof borderColor !== 'undefined') ? (borderColor & 0x07) : 0;
@@ -8679,9 +8820,15 @@ function renderPreview() {
   const ctx = previewCanvas.getContext('2d');
   if (!ctx) return;
 
-  // BSC: render full frame including borders
-  if (currentFormat === FORMAT.BSC && screenData.length >= BSC.TOTAL_SIZE) {
+  // BSC / BSP non-giga with border: render full frame including borders (border in screenData)
+  if ((currentFormat === FORMAT.BSC || (currentFormat === FORMAT.BSP && currentPicture && currentPicture.border && currentPicture.colorMode !== 'gigascreen')) && screenData.length >= BSC.TOTAL_SIZE) {
     renderBscPreview(ctx);
+    return;
+  }
+
+  // BSP giga+border: render border from picture.border + gigascreen main screen
+  if (currentFormat === FORMAT.BSP && currentPicture && currentPicture.border && currentPicture.colorMode === 'gigascreen') {
+    renderBspGigaBorderPreview(ctx);
     return;
   }
 
@@ -9374,6 +9521,109 @@ function renderBscPreview(ctx) {
 }
 
 /**
+ * Renders BSP gigascreen+border preview: border from picture.border, main screen as gigascreen blend.
+ * @param {CanvasRenderingContext2D} ctx
+ */
+function renderBspGigaBorderPreview(ctx) {
+  if (!currentPicture || !currentPicture.border) return;
+  const fw = BSC.FRAME_WIDTH;   // 384
+  const fh = BSC.FRAME_HEIGHT;  // 304
+
+  previewCanvas.width = fw * previewZoom;
+  previewCanvas.height = fh * previewZoom;
+
+  const imageData = ctx.createImageData(fw, fh);
+  const pixels = imageData.data;
+
+  const mainLeft = BSC.BORDER_LEFT_PX;        // 64
+  const mainTop = BSC.BORDER_TOP_PX;          // 64
+  const mainRight = mainLeft + SCREEN.WIDTH;   // 320
+  const border = currentPicture.border;
+  const pxPerColor = BSC.PIXELS_PER_COLOR;     // 8
+
+  // Helper: render border line from buffer
+  function renderBorderLine(frameY, buf, bufOffset, byteCount, startX) {
+    let x = startX;
+    for (let byteIdx = 0; byteIdx < byteCount; byteIdx++) {
+      const byte = buf[bufOffset + byteIdx];
+      const c1 = byte & 0x07;
+      const c2 = (byte >> 3) & 0x07;
+      const rgb1 = ZX_PALETTE_RGB.REGULAR[c1];
+      const rgb2 = ZX_PALETTE_RGB.REGULAR[c2];
+      for (let p = 0; p < pxPerColor && x < fw; p++, x++) {
+        const idx = (frameY * fw + x) * 4;
+        pixels[idx] = rgb1[0]; pixels[idx + 1] = rgb1[1]; pixels[idx + 2] = rgb1[2]; pixels[idx + 3] = 255;
+      }
+      for (let p = 0; p < pxPerColor && x < fw; p++, x++) {
+        const idx = (frameY * fw + x) * 4;
+        pixels[idx] = rgb2[0]; pixels[idx + 1] = rgb2[1]; pixels[idx + 2] = rgb2[2]; pixels[idx + 3] = 255;
+      }
+    }
+  }
+
+  // Top border: 64 lines × 24 bytes
+  for (let line = 0; line < 64; line++) {
+    renderBorderLine(line, border.top, line * 24, 24, 0);
+  }
+  // Side borders: 192 lines × 8 bytes (4 left + 4 right)
+  for (let line = 0; line < 192; line++) {
+    renderBorderLine(64 + line, border.sides, line * 8, 4, 0);
+    renderBorderLine(64 + line, border.sides, line * 8 + 4, 4, mainRight);
+  }
+  // Bottom border: 48 lines × 24 bytes
+  for (let line = 0; line < 48; line++) {
+    renderBorderLine(256 + line, border.bottom, line * 24, 24, 0);
+  }
+
+  // Main screen: gigascreen blend from screenData (interleaved layout)
+  const gigaFS = getGigaFrameSize();
+  const sections = [
+    { bitmapAddr: 0, yOffset: 0 },
+    { bitmapAddr: 2048, yOffset: 64 },
+    { bitmapAddr: 4096, yOffset: 128 }
+  ];
+  for (const section of sections) {
+    for (let line = 0; line < 8; line++) {
+      for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 32; col++) {
+          const bitmapOffset = section.bitmapAddr + col + row * 32 + line * 256;
+          const sy = section.yOffset + row * 8 + line;
+          const attrOffset = 6144 + Math.floor(sy / 8) * 32 + col;
+
+          const byte1 = screenData[bitmapOffset];
+          const attr1 = screenData[attrOffset];
+          const byte2 = screenData[gigaFS + bitmapOffset];
+          const attr2 = screenData[gigaFS + attrOffset];
+
+          const pal1 = (attr1 & 0x40) ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
+          const pal2 = (attr2 & 0x40) ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
+          const ink1 = pal1[attr1 & 7], paper1 = pal1[(attr1 >> 3) & 7];
+          const ink2 = pal2[attr2 & 7], paper2 = pal2[(attr2 >> 3) & 7];
+
+          const frameY = mainTop + sy;
+          const frameXBase = mainLeft + col * 8;
+          for (let bit = 0; bit < 8; bit++) {
+            const rgb1 = (byte1 & (0x80 >> bit)) ? ink1 : paper1;
+            const rgb2 = (byte2 & (0x80 >> bit)) ? ink2 : paper2;
+            const idx = (frameY * fw + frameXBase + bit) * 4;
+            pixels[idx] = Math.round((rgb1[0] + rgb2[0]) / 2);
+            pixels[idx + 1] = Math.round((rgb1[1] + rgb2[1]) / 2);
+            pixels[idx + 2] = Math.round((rgb1[2] + rgb2[2]) / 2);
+            pixels[idx + 3] = 255;
+          }
+        }
+      }
+    }
+  }
+
+  const temp = getTempPreviewCanvas(fw, fh);
+  if (!temp) return;
+  temp.ctx.putImageData(imageData, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(temp.canvas, 0, 0, fw * previewZoom, fh * previewZoom);
+}
+
+/**
  * Sets preview zoom level
  * @param {number} newZoom
  */
@@ -9941,7 +10191,7 @@ function saveScrFile(filename) {
   const formatExtMap = {
     [FORMAT.ATTR_53C]: '.53c', [FORMAT.BSC]: '.bsc', [FORMAT.IFL]: '.ifl',
     [FORMAT.MLT]: '.mlt', [FORMAT.BMC4]: '.bmc4', [FORMAT.RGB3]: '.3',
-    [FORMAT.GIGASCREEN]: '.img', [FORMAT.MGH]: '.mg8', [FORMAT.HLR]: '.hlr', [FORMAT.SPECSCII]: '.specscii',
+    [FORMAT.GIGASCREEN]: '.img', [FORMAT.MGH]: '.mg8', [FORMAT.HLR]: '.hlr', [FORMAT.STL]: '.stl', [FORMAT.BSP]: '.bsp', [FORMAT.SPECSCII]: '.specscii',
     [FORMAT.MONO_FULL]: '.scr', [FORMAT.MONO_2_3]: '.scr', [FORMAT.MONO_1_3]: '.scr',
     [FORMAT.SCR_ULAPLUS]: '.scr', [FORMAT.SCR]: '.scr',
     [FORMAT.ZXP]: '.zxp',
@@ -10098,6 +10348,52 @@ function saveScrFile(filename) {
     return;
   }
 
+  if (currentFormat === FORMAT.STL && currentPicture && typeof exportStl === 'function') {
+    // STL: sync screenData back to picture, then export interleaved attrs
+    if (typeof syncPictureFromScreenData === 'function') {
+      syncPictureFromScreenData(screenData, currentPicture);
+    }
+    const stlData = exportStl(currentPicture);
+    if (!filename) {
+      if (currentFileName) {
+        const baseName = currentFileName.replace(/\.[^.]+$/, '');
+        filename = baseName + '_edited.stl';
+      } else {
+        filename = 'screen.stl';
+      }
+    }
+    downloadFile(new Blob([stlData], { type: 'application/octet-stream' }), filename);
+    if (activePictureIndex >= 0 && activePictureIndex < openPictures.length) {
+      openPictures[activePictureIndex].modified = false;
+      if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
+    }
+    return;
+  }
+
+  if (currentFormat === FORMAT.BSP && currentPicture && typeof exportBsp === 'function') {
+    // BSP: sync screenData back to picture, then export with header + RLE border
+    if (typeof syncPictureFromScreenData === 'function') {
+      syncPictureFromScreenData(screenData, currentPicture);
+    }
+    const bspData = exportBsp(currentPicture);
+    if (!filename) {
+      if (currentFileName) {
+        const baseName = currentFileName.replace(/\.[^.]+$/, '');
+        filename = baseName + '_edited.bsp';
+      } else {
+        filename = 'screen.bsp';
+      }
+    }
+    if (bspData) {
+      downloadFile(new Blob([bspData], { type: 'application/octet-stream' }), filename);
+      if (activePictureIndex >= 0 && activePictureIndex < openPictures.length) {
+        openPictures[activePictureIndex].modified = false;
+        if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
+      }
+    }
+    return;
+  }
+
   if (currentFormat === FORMAT.SPECSCII) {
     // SPECSCII: sync grids to stream and save (special case — stream format)
     if (specsciiCharGrid && specsciiAttrGrid) {
@@ -10118,7 +10414,7 @@ function saveScrFile(filename) {
     const formatSizeMap = {
       [FORMAT.ATTR_53C]: 768, [FORMAT.BSC]: BSC.TOTAL_SIZE, [FORMAT.IFL]: IFL.TOTAL_SIZE,
       [FORMAT.MLT]: MLT.TOTAL_SIZE, [FORMAT.BMC4]: BMC4.TOTAL_SIZE, [FORMAT.RGB3]: RGB3.TOTAL_SIZE,
-      [FORMAT.GIGASCREEN]: GIGASCREEN.TOTAL_SIZE, [FORMAT.HLR]: GIGASCREEN.TOTAL_SIZE, [FORMAT.MONO_FULL]: 6144,
+      [FORMAT.GIGASCREEN]: GIGASCREEN.TOTAL_SIZE, [FORMAT.HLR]: GIGASCREEN.TOTAL_SIZE, [FORMAT.STL]: 15360, [FORMAT.MONO_FULL]: 6144,
       [FORMAT.MONO_2_3]: 4096, [FORMAT.MONO_1_3]: 2048, [FORMAT.SCR_ULAPLUS]: ULAPLUS.TOTAL_SIZE,
       [FORMAT.SCR]: SCREEN.TOTAL_SIZE
     };
@@ -10139,6 +10435,8 @@ function saveScrFile(filename) {
                  currentFormat === FORMAT.GIGASCREEN ? 'screen.img' :
                  currentFormat === FORMAT.MGH ? (currentPicture && currentPicture.attrCellHeight === 1 ? 'screen.mg1' : currentPicture && currentPicture.attrCellHeight === 2 ? 'screen.mg2' : currentPicture && currentPicture.attrCellHeight === 4 ? 'screen.mg4' : 'screen.mg8') :
                  currentFormat === FORMAT.HLR ? 'screen.hlr' :
+                 currentFormat === FORMAT.STL ? 'screen.stl' :
+                 currentFormat === FORMAT.BSP ? 'screen.bsp' :
                  currentFormat === FORMAT.SPECSCII ? 'screen.specscii' :
                  currentFormat === FORMAT.ZXP ? 'screen.zxp' :
                  currentFormat === FORMAT.CHR ? 'screen.ch$' : 'screen.scr';
@@ -10339,6 +10637,105 @@ function createNewPicture(format, params) {
       newFormat = FORMAT.BSC;
       newFileName = 'new_screen.bsc';
       break;
+
+    case 'bsp':
+      // BSP non-giga + border: same screenData layout as BSC (11136 bytes)
+      newData = new Uint8Array(BSC.TOTAL_SIZE);
+      for (let i = SCREEN.BITMAP_SIZE; i < SCREEN.TOTAL_SIZE; i++) {
+        newData[i] = newAttr;
+      }
+      for (let i = BSC.BORDER_OFFSET; i < BSC.TOTAL_SIZE; i++) {
+        newData[i] = borderByte;
+      }
+      newFormat = FORMAT.BSP;
+      newFileName = 'new_screen.bsp';
+      if (typeof makePicture === 'function') {
+        newInternalPicture = makePicture({
+          sourceFormat: 'bsp',
+          fileName: newFileName,
+          width: 256,
+          height: 192,
+          attrCellHeight: 8,
+          planeCount: 1,
+          contentMode: 'pixel',
+          colorMode: 'standard'
+        });
+        for (let i = 0; i < 768; i++) {
+          newInternalPicture.planes[0].attrs[i] = newAttr;
+        }
+        if (typeof extractBorder === 'function') {
+          newInternalPicture.border = extractBorder(newData, BSC.BORDER_OFFSET);
+        }
+        newInternalPicture.bspTitle = (params && params.title) || '';
+        newInternalPicture.bspAuthor = (params && params.author) || '';
+        newInternalPicture.bspConfig = 0x40; // hasBorder
+        newInternalPicture.bspBorderColor = bc;
+      }
+      break;
+
+    case 'bsp_giga': {
+      // BSP gigascreen + border: 13824-byte IMG layout + border on picture object
+      const bspGigaData = new Uint8Array(SCREEN.TOTAL_SIZE * 2); // 13824
+      // Fill both frames' attrs
+      if (typeof gigascreenVirtualPalette !== 'undefined' && gigascreenVirtualPalette.length === 0 &&
+          typeof generateGigascreenVirtualPalette === 'function') {
+        generateGigascreenVirtualPalette();
+      }
+      let bspAttr1 = newAttr;
+      let bspAttr2 = newAttr;
+      if (typeof gigascreenVirtualPalette !== 'undefined' && gigascreenVirtualPalette.length > 0) {
+        const bspInkEntry = gigascreenVirtualPalette[typeof gigascreenVirtualInk !== 'undefined' ? gigascreenVirtualInk : 0];
+        const bspPaperEntry = gigascreenVirtualPalette[typeof gigascreenVirtualPaper !== 'undefined' ? gigascreenVirtualPaper : 0];
+        if (bspInkEntry && bspPaperEntry) {
+          const f1ink = bspInkEntry.frame1Color & 7;
+          const f1paper = bspPaperEntry.frame1Color & 7;
+          const f1bright = bspInkEntry.frame1Color >= 8 || bspPaperEntry.frame1Color >= 8;
+          const f2ink = bspInkEntry.frame2Color & 7;
+          const f2paper = bspPaperEntry.frame2Color & 7;
+          const f2bright = bspInkEntry.frame2Color >= 8 || bspPaperEntry.frame2Color >= 8;
+          bspAttr1 = buildAttribute(f1ink, f1paper, f1bright, false);
+          bspAttr2 = buildAttribute(f2ink, f2paper, f2bright, false);
+        }
+      }
+      for (let i = 0; i < 768; i++) {
+        bspGigaData[6144 + i] = bspAttr1;
+        bspGigaData[6912 + 6144 + i] = bspAttr2;
+      }
+      newData = bspGigaData;
+      newFormat = FORMAT.BSP;
+      newFileName = 'new_screen.bsp';
+      if (typeof makePicture === 'function') {
+        newInternalPicture = makePicture({
+          sourceFormat: 'bsp',
+          fileName: newFileName,
+          width: 256,
+          height: 192,
+          attrCellHeight: 8,
+          planeCount: 2,
+          contentMode: 'pixel',
+          colorMode: 'gigascreen'
+        });
+        for (let i = 0; i < 768; i++) {
+          newInternalPicture.planes[0].attrs[i] = bspAttr1;
+          newInternalPicture.planes[1].attrs[i] = bspAttr2;
+        }
+        // Create border filled with border color
+        if (typeof makeBorder === 'function') {
+          newInternalPicture.border = makeBorder();
+          newInternalPicture.border.top.fill(borderByte);
+          newInternalPicture.border.sides.fill(borderByte);
+          newInternalPicture.border.bottom.fill(borderByte);
+        }
+        newInternalPicture.bspTitle = (params && params.title) || '';
+        newInternalPicture.bspAuthor = (params && params.author) || '';
+        newInternalPicture.bspConfig = 0xC0; // hasGiga + hasBorder
+        newInternalPicture.bspBorderColor = bc;
+      }
+      if (typeof generateGigascreenVirtualPalette === 'function') {
+        generateGigascreenVirtualPalette();
+      }
+      break;
+    }
 
     case 'ifl':
       newData = new Uint8Array(IFL.TOTAL_SIZE);
@@ -10553,6 +10950,80 @@ function createNewPicture(format, params) {
           }
           for (let i = 0; i < 768; i++) {
             newInternalPicture.planes[p].attrs[i] = planeAttrs[p];
+          }
+        }
+      }
+      break;
+    }
+
+    case 'stl': {
+      // STL (Stellar): gigascreen layout with fixed 0x0F bitmap and
+      // attrCellHeight=4. Two frames of 7680 bytes each (6144 bitmap + 1536 attrs).
+      const stlAttrSize = 1536; // 32 cols × 48 rows
+      const stlFrameSize = 6144 + stlAttrSize; // 7680
+      newData = new Uint8Array(stlFrameSize * 2); // 15360
+      // Fill both frames' bitmap with fixed 0x0F (interleaved SCR layout)
+      for (let third = 0; third < 3; third++) {
+        const thirdBase = third * 2048;
+        for (let pixelLine = 0; pixelLine < 8; pixelLine++) {
+          for (let charRow = 0; charRow < 8; charRow++) {
+            const rowOff = thirdBase + charRow * 32 + pixelLine * 256;
+            for (let col = 0; col < 32; col++) {
+              newData[rowOff + col] = 0x0F;
+              newData[stlFrameSize + rowOff + col] = 0x0F;
+            }
+          }
+        }
+      }
+      // Build per-frame attributes from the current gigascreen virtual ink/paper
+      if (gigascreenVirtualPalette.length === 0) {
+        generateGigascreenVirtualPalette();
+      }
+      let stlAttr1 = newAttr;
+      let stlAttr2 = newAttr;
+      const stlInkEntry = gigascreenVirtualPalette[gigascreenVirtualInk];
+      const stlPaperEntry = gigascreenVirtualPalette[gigascreenVirtualPaper];
+      if (stlInkEntry && stlPaperEntry) {
+        const f1ink = stlInkEntry.frame1Color & 7;
+        const f1paper = stlPaperEntry.frame1Color & 7;
+        const f1bright = stlInkEntry.frame1Color >= 8 || stlPaperEntry.frame1Color >= 8;
+        const f2ink = stlInkEntry.frame2Color & 7;
+        const f2paper = stlPaperEntry.frame2Color & 7;
+        const f2bright = stlInkEntry.frame2Color >= 8 || stlPaperEntry.frame2Color >= 8;
+        stlAttr1 = buildAttribute(f1ink, f1paper, f1bright, false);
+        stlAttr2 = buildAttribute(f2ink, f2paper, f2bright, false);
+      }
+      // Fill the two attribute banks
+      for (let i = 0; i < stlAttrSize; i++) {
+        newData[6144 + i] = stlAttr1;
+        newData[stlFrameSize + 6144 + i] = stlAttr2;
+      }
+      newFormat = FORMAT.STL;
+      newFileName = 'new_screen.stl';
+      // Create internal picture
+      if (typeof makePicture === 'function') {
+        newInternalPicture = makePicture({
+          sourceFormat: 'stl',
+          fileName: newFileName,
+          width: 256,
+          height: 192,
+          attrCellHeight: 4,
+          planeCount: 2,
+          contentMode: 'pixel',
+          colorMode: 'gigascreen'
+        });
+        // Fill both plane bitmaps with 0x0F (linear row-major)
+        const stlPlaneAttrs = [stlAttr1, stlAttr2];
+        for (let p = 0; p < 2; p++) {
+          const bm = newInternalPicture.planes[p].bitmap;
+          for (let y = 0; y < 192; y++) {
+            const rowOff = y * 32;
+            for (let col = 0; col < 32; col++) {
+              bm[rowOff + col] = 0x0F;
+            }
+          }
+          for (let i = 0; i < stlAttrSize; i++) {
+            newInternalPicture.planes[p].attrs[i] = stlPlaneAttrs[p];
           }
         }
       }
@@ -11518,7 +11989,7 @@ function update4ColorPicker() {
   // (Ink+Ink, top half) and 3 (Paper+Paper, bottom half) are physically
   // displayable. Filter the picker to those two cells and clamp the active
   // primary/secondary selection to a valid index.
-  const isHlr = (typeof FORMAT !== 'undefined' && currentFormat === FORMAT.HLR);
+  const isHlr = (typeof FORMAT !== 'undefined' && (currentFormat === FORMAT.HLR || currentFormat === FORMAT.STL));
   if (isHlr) {
     if (gigascreenPrimaryColor !== 0 && gigascreenPrimaryColor !== 3) {
       gigascreenPrimaryColor = 0;
@@ -11717,6 +12188,97 @@ let ulaPlusPaperIndex = 15; // Default to paper 7 (white) in CLUT 0
 
 /** @type {number} - Transparent color for ULA+ mode */
 const ULAPLUS_TRANSPARENT = -1;
+
+/** @type {number} - ULA+ palette copy/swap source index (-1 = none) */
+let ulaPlusCopySource = -1;
+
+/**
+ * Clears the ULA+ palette copy source selection
+ */
+function ulaPlusClearCopySource() {
+  ulaPlusCopySource = -1;
+  document.querySelectorAll('.ulaplus-grid-cell.copy-source, .ulaplus-classic-cell.copy-source')
+    .forEach((el) => el.classList.remove('copy-source'));
+  const status = document.getElementById('ulaPlusCopyStatus');
+  if (status) status.textContent = '';
+}
+
+/**
+ * Copies ULA+ palette color from source to destination
+ * @param {number} srcIdx - Source palette index (0-63)
+ * @param {number} dstIdx - Destination palette index (0-63)
+ */
+function ulaPlusCopyColor(srcIdx, dstIdx) {
+  if (!ulaPlusPalette || !screenData) return;
+  saveUndoState();
+  ulaPlusPalette[dstIdx] = ulaPlusPalette[srcIdx];
+  if (screenData.length >= ULAPLUS.TOTAL_SIZE) {
+    screenData[ULAPLUS.PALETTE_OFFSET + dstIdx] = ulaPlusPalette[dstIdx];
+  }
+  ulaPlusClearCopySource();
+  buildUlaPlusGrid();
+  buildUlaPlusClassic();
+  updateUlaPlusPalette();
+  editorRender();
+  if (typeof renderPreview === 'function') renderPreview();
+}
+
+/**
+ * Swaps two ULA+ palette colors
+ * @param {number} idx1 - First palette index (0-63)
+ * @param {number} idx2 - Second palette index (0-63)
+ */
+function ulaPlusSwapColors(idx1, idx2) {
+  if (!ulaPlusPalette || !screenData) return;
+  saveUndoState();
+  const tmp = ulaPlusPalette[idx1];
+  ulaPlusPalette[idx1] = ulaPlusPalette[idx2];
+  ulaPlusPalette[idx2] = tmp;
+  if (screenData.length >= ULAPLUS.TOTAL_SIZE) {
+    screenData[ULAPLUS.PALETTE_OFFSET + idx1] = ulaPlusPalette[idx1];
+    screenData[ULAPLUS.PALETTE_OFFSET + idx2] = ulaPlusPalette[idx2];
+  }
+  ulaPlusClearCopySource();
+  buildUlaPlusGrid();
+  buildUlaPlusClassic();
+  updateUlaPlusPalette();
+  editorRender();
+  if (typeof renderPreview === 'function') renderPreview();
+}
+
+/**
+ * Handles Shift+click on a ULA+ palette cell for copy/swap workflow
+ * @param {number} idx - Palette index clicked (0-63)
+ * @param {boolean} isSwap - True for swap (Shift+click on target), false for copy (plain click)
+ * @returns {boolean} True if the event was handled (caller should return early)
+ */
+function ulaPlusHandleCopySwapClick(idx, isSwap) {
+  if (ulaPlusCopySource < 0) {
+    // No source selected yet — set source
+    ulaPlusCopySource = idx;
+    // Highlight the source cell
+    document.querySelectorAll('.ulaplus-grid-cell, .ulaplus-classic-cell').forEach((el) => {
+      if (parseInt(/** @type {HTMLElement} */ (el).dataset.index || '-1', 10) === idx) {
+        el.classList.add('copy-source');
+      }
+    });
+    const status = document.getElementById('ulaPlusCopyStatus');
+    if (status) status.textContent = `Source: #${idx} — click to copy, Shift+click to swap, Esc to cancel`;
+    return true;
+  }
+  // Source already selected
+  if (idx === ulaPlusCopySource) {
+    // Same cell — cancel
+    ulaPlusClearCopySource();
+    return true;
+  }
+  if (isSwap) {
+    ulaPlusSwapColors(ulaPlusCopySource, idx);
+  } else {
+    ulaPlusCopyColor(ulaPlusCopySource, idx);
+  }
+  return true;
+}
 
 /**
  * Resets ULA+ ink/paper selection to CLUT 0 defaults
@@ -12073,6 +12635,7 @@ function pickColorFromCanvas(x, y, isInk) {
     case FORMAT.GIGASCREEN:
     case FORMAT.MGH:
     case FORMAT.HLR:
+    case FORMAT.STL:
       return pickGigascreenColorFromCanvas(x, y, isInk);
 
     case FORMAT.RGB3:
@@ -12439,9 +13002,17 @@ function buildUlaPlusGrid() {
     }
 
     // Left click = set ink (only allow ink colors: pos 0-7 within CLUT)
-    // Ctrl+click = edit color
+    // Ctrl+click = edit color, Shift+click = copy/swap source selection
     cell.addEventListener('click', (e) => {
       e.preventDefault();
+      if (ulaPlusCopySource >= 0) {
+        ulaPlusHandleCopySwapClick(i, e.shiftKey);
+        return;
+      }
+      if (e.shiftKey) {
+        ulaPlusHandleCopySwapClick(i, false);
+        return;
+      }
       if (e.ctrlKey || e.metaKey) {
         openUlaPlusColorPicker(i);
         return;
@@ -12482,6 +13053,11 @@ function buildUlaPlusGrid() {
 
       updateUlaPlusPalette();
     });
+
+    // Restore copy-source highlight if rebuilding while source is selected
+    if (ulaPlusCopySource === i) {
+      cell.classList.add('copy-source');
+    }
 
     container.appendChild(cell);
   }
@@ -12544,9 +13120,17 @@ function buildUlaPlusClassic() {
     cell.title = `INK ${i} (#${paletteIdx}) - Ctrl+click to edit`;
 
     // Left click = set ink (allowed for ink colors)
-    // Ctrl+click = edit color
+    // Ctrl+click = edit color, Shift+click = copy/swap source selection
     cell.addEventListener('click', (e) => {
       e.preventDefault();
+      if (ulaPlusCopySource >= 0) {
+        ulaPlusHandleCopySwapClick(paletteIdx, e.shiftKey);
+        return;
+      }
+      if (e.shiftKey) {
+        ulaPlusHandleCopySwapClick(paletteIdx, false);
+        return;
+      }
       if (e.ctrlKey || e.metaKey) {
         openUlaPlusColorPicker(paletteIdx);
         return;
@@ -12571,6 +13155,11 @@ function buildUlaPlusClassic() {
       // Don't allow setting paper from ink row
     });
 
+    // Restore copy-source highlight if rebuilding while source is selected
+    if (ulaPlusCopySource === paletteIdx) {
+      cell.classList.add('copy-source');
+    }
+
     container.appendChild(cell);
   }
 
@@ -12588,9 +13177,17 @@ function buildUlaPlusClassic() {
     // Tooltip
     cell.title = `PAPER ${i % 8} (#${paletteIdx}) - Ctrl+click to edit`;
 
-    // Left click = edit color (Ctrl+click)
+    // Left click = edit color (Ctrl+click), Shift+click = copy/swap source selection
     cell.addEventListener('click', (e) => {
       e.preventDefault();
+      if (ulaPlusCopySource >= 0) {
+        ulaPlusHandleCopySwapClick(paletteIdx, e.shiftKey);
+        return;
+      }
+      if (e.shiftKey) {
+        ulaPlusHandleCopySwapClick(paletteIdx, false);
+        return;
+      }
       if (e.ctrlKey || e.metaKey) {
         openUlaPlusColorPicker(paletteIdx);
         return;
@@ -12614,6 +13211,11 @@ function buildUlaPlusClassic() {
 
       updateUlaPlusPalette();
     });
+
+    // Restore copy-source highlight if rebuilding while source is selected
+    if (ulaPlusCopySource === paletteIdx) {
+      cell.classList.add('copy-source');
+    }
 
     container.appendChild(cell);
   }
@@ -13984,11 +14586,17 @@ function isFormatEditable() {
   if (currentFormat === FORMAT.GIGASCREEN && screenData && screenData.length >= GIGASCREEN.TOTAL_SIZE) return true;
   if (currentFormat === FORMAT.MGH && screenData && screenData.length >= GIGASCREEN.TOTAL_SIZE && isGigascreenEditable()) return true;
   if (currentFormat === FORMAT.HLR && screenData && screenData.length >= GIGASCREEN.TOTAL_SIZE && isGigascreenEditable()) return true;
+  if (currentFormat === FORMAT.STL && screenData && screenData.length >= getGigaFrameSize() * 2 && isGigascreenEditable()) return true;
   if (currentFormat === FORMAT.MONO_FULL && screenData && screenData.length >= 6144) return true;
   if (currentFormat === FORMAT.MONO_2_3 && screenData && screenData.length >= 4096) return true;
   if (currentFormat === FORMAT.MONO_1_3 && screenData && screenData.length >= 2048) return true;
   if (currentFormat === FORMAT.SPECSCII && screenData) return true;
   if ((currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) && screenData && currentPicture) return true;
+  // BSP: non-giga (standard or with border) and giga variants
+  if (currentFormat === FORMAT.BSP && screenData && currentPicture) {
+    if (currentPicture.colorMode === 'gigascreen' && screenData.length >= GIGASCREEN.TOTAL_SIZE && isGigascreenEditable()) return true;
+    if (currentPicture.colorMode !== 'gigascreen' && screenData.length >= SCREEN.TOTAL_SIZE) return true;
+  }
   return false;
 }
 
@@ -14022,7 +14630,8 @@ function isBscEditor() {
  * @returns {boolean}
  */
 function isBorderFormatEditor() {
-  return editorActive && (currentFormat === FORMAT.BSC || currentFormat === FORMAT.BMC4);
+  return editorActive && (currentFormat === FORMAT.BSC || currentFormat === FORMAT.BMC4 ||
+    (currentFormat === FORMAT.BSP && currentPicture && currentPicture.border));
 }
 
 /**
@@ -14031,7 +14640,8 @@ function isBorderFormatEditor() {
  * @returns {boolean}
  */
 function isBorderEditable() {
-  return editorActive && (currentFormat === FORMAT.BSC || currentFormat === FORMAT.BMC4);
+  return editorActive && (currentFormat === FORMAT.BSC || currentFormat === FORMAT.BMC4 ||
+    (currentFormat === FORMAT.BSP && currentPicture && currentPicture.border));
 }
 
 /**
@@ -14041,7 +14651,8 @@ function isBorderEditable() {
  * @returns {number}
  */
 function getMainScreenOffset() {
-  if (currentFormat === FORMAT.BSC || currentFormat === FORMAT.BMC4) {
+  if (currentFormat === FORMAT.BSC || currentFormat === FORMAT.BMC4 ||
+      (currentFormat === FORMAT.BSP && currentPicture && currentPicture.border)) {
     return BSC.BORDER_LEFT_PX * zoom;
   }
   return borderSize * zoom;
@@ -17596,8 +18207,19 @@ function updateConvertOptions() {
     convertSelect.innerHTML += '<option value="attr-to-scr">→ SCR (add pattern)</option>';
     convertSelect.innerHTML += '<option value="attr-to-bsc">→ BSC (add pattern + border)</option>';
   } else if (currentFormat === FORMAT.BSC) {
-    // BSC can convert to SCR
+    // BSC can convert to SCR or BSP
     convertSelect.innerHTML += '<option value="bsc-to-scr">→ SCR (strip border)</option>';
+    convertSelect.innerHTML += '<option value="bsc-to-bsp">→ BSP (add header)</option>';
+  } else if (currentFormat === FORMAT.BSP) {
+    // BSP can convert to SCR or BSC
+    const isGiga = currentPicture && currentPicture.colorMode === 'gigascreen';
+    const hasBorder = currentPicture && currentPicture.border;
+    if (!isGiga) {
+      convertSelect.innerHTML += '<option value="bsp-to-scr">→ SCR (strip header' + (hasBorder ? ' + border' : '') + ')</option>';
+      if (hasBorder) {
+        convertSelect.innerHTML += '<option value="bsp-to-bsc">→ BSC (strip header, keep border)</option>';
+      }
+    }
   }
 }
 
@@ -17627,6 +18249,15 @@ function handleConversion(action) {
       break;
     case 'bsc-to-scr':
       convertBscToScr();
+      break;
+    case 'bsc-to-bsp':
+      convertBscToBsp();
+      break;
+    case 'bsp-to-scr':
+      convertBspToScr();
+      break;
+    case 'bsp-to-bsc':
+      convertBspToBsc();
       break;
   }
 }
@@ -18113,6 +18744,119 @@ function convertBscToScr() {
   }
   updateEditorColorPickers();
   // Update Export ASM button visibility
+  updateExportAsmButton();
+  updateConvertOptions();
+  updateFileInfo();
+  updatePictureTabBar();
+  renderScreen();
+  editorRender();
+}
+
+/**
+ * Convert BSC to BSP - add BSP header, keep border
+ */
+function convertBscToBsp() {
+  if (!screenData || screenData.length < BSC.TOTAL_SIZE) {
+    alert('No valid BSC data to convert');
+    return;
+  }
+
+  saveUndoState();
+
+  // screenData stays the same (BSC layout: screen + border at 6912)
+  currentFormat = FORMAT.BSP;
+  currentFileName = currentFileName.replace(/\.[^.]+$/, '.bsp');
+
+  // Create BSP picture
+  if (typeof importBsc === 'function') {
+    currentPicture = importBsc(screenData, currentFileName);
+    if (currentPicture) {
+      currentPicture.sourceFormat = 'bsp';
+      currentPicture.bspTitle = '';
+      currentPicture.bspAuthor = '';
+      currentPicture.bspConfig = 0x40; // hasBorder
+      currentPicture.bspBorderColor = 0;
+    }
+  }
+
+  markPictureModified();
+  saveCurrentPictureState();
+
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+  updateEditorColorPickers();
+  updateExportAsmButton();
+  updateConvertOptions();
+  updateFileInfo();
+  updatePictureTabBar();
+  renderScreen();
+  editorRender();
+}
+
+/**
+ * Convert BSP to SCR - strip header and border, keep screen data
+ */
+function convertBspToScr() {
+  if (!screenData || screenData.length < SCREEN.TOTAL_SIZE) {
+    alert('No valid BSP data to convert');
+    return;
+  }
+
+  saveUndoState();
+
+  const scrData = new Uint8Array(SCREEN.TOTAL_SIZE);
+  scrData.set(screenData.slice(0, SCREEN.TOTAL_SIZE));
+
+  screenData = scrData;
+  currentFormat = FORMAT.SCR;
+  currentFileName = currentFileName.replace(/\.[^.]+$/, '.scr');
+
+  if (typeof importScr === 'function') {
+    currentPicture = importScr(scrData, currentFileName);
+  }
+
+  markPictureModified();
+  saveCurrentPictureState();
+
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+  updateEditorColorPickers();
+  updateExportAsmButton();
+  updateConvertOptions();
+  updateFileInfo();
+  updatePictureTabBar();
+  renderScreen();
+  editorRender();
+}
+
+/**
+ * Convert BSP to BSC - strip BSP header metadata, keep border
+ */
+function convertBspToBsc() {
+  if (!screenData || screenData.length < BSC.TOTAL_SIZE) {
+    alert('No valid BSP data to convert');
+    return;
+  }
+
+  saveUndoState();
+
+  // screenData already in BSC layout, just change format
+  currentFormat = FORMAT.BSC;
+  currentFileName = currentFileName.replace(/\.[^.]+$/, '.bsc');
+
+  if (typeof importBsc === 'function') {
+    currentPicture = importBsc(screenData, currentFileName);
+  }
+
+  markPictureModified();
+  saveCurrentPictureState();
+
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+  updateEditorColorPickers();
   updateExportAsmButton();
   updateConvertOptions();
   updateFileInfo();
@@ -19618,8 +20362,13 @@ function initEditor() {
       }
     }
 
-    // Escape: cancel paste/selection, then brush capture
+    // Escape: cancel ULA+ copy source, paste/selection, then brush capture
     if (e.key === 'Escape') {
+      if (ulaPlusCopySource >= 0) {
+        ulaPlusClearCopySource();
+        e.preventDefault();
+        return;
+      }
       if (isPasting || selectionStartPoint || selectionEndPoint || isSelecting) {
         e.preventDefault();
         cancelSelection();

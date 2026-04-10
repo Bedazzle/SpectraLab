@@ -911,6 +911,314 @@ function exportHlr(picture) {
 }
 
 // ============================================================================
+// STL Import / Export (Stellar 64×48 multicolor + gigascreen, 3072 bytes)
+// ============================================================================
+//
+// STL ("Stellar") is a compact gigascreen multicolor format with 64×48 fat
+// pixels (each 4×4 real pixels). Two attribute frames (1536 bytes each) are
+// interleaved in 4-byte groups: [f1_a, f1_b, f2_a, f2_b]. The bitmap is a
+// fixed pattern 0x0F for every byte: left 4 pixels = paper, right 4 pixels =
+// ink, giving each 8×4 multicolor cell two independently colorable halves.
+//
+// File layout (3072 bytes total):
+//   Interleaved attrs: for each pair index j (0..1535 step 2):
+//     byte[j*2+0] = frame1[j], byte[j*2+1] = frame1[j+1],
+//     byte[j*2+2] = frame2[j], byte[j*2+3] = frame2[j+1]
+
+const STL_TOTAL_SIZE = 3072;
+const STL_ATTRS_PER_FRAME = 1536;  // 32 cols × 48 rows
+
+/**
+ * Imports a 3072-byte STL file into a 2-plane gigascreen Picture with
+ * attrCellHeight=4.
+ * De-interleaves 4-byte groups into two 1536-byte attribute frames;
+ * both plane bitmaps are filled with the fixed 0x0F pattern.
+ * @param {Uint8Array} fileBytes - File data (3072 bytes)
+ * @param {string} fileName - Original file name
+ * @returns {Picture}
+ */
+function importStl(fileBytes, fileName) {
+  const pic = makePicture({
+    sourceFormat: 'stl',
+    fileName: fileName,
+    width: 256,
+    height: 192,
+    attrCellHeight: 4,
+    planeCount: 2,
+    contentMode: 'pixel',
+    colorMode: 'gigascreen'
+  });
+
+  // De-interleave 4-byte groups into two 1536-byte attr frames
+  const frame1 = new Uint8Array(STL_ATTRS_PER_FRAME);
+  const frame2 = new Uint8Array(STL_ATTRS_PER_FRAME);
+  for (let i = 0, j = 0; i < STL_TOTAL_SIZE; i += 4, j += 2) {
+    frame1[j]     = fileBytes[i];
+    frame1[j + 1] = fileBytes[i + 1];
+    frame2[j]     = fileBytes[i + 2];
+    frame2[j + 1] = fileBytes[i + 3];
+  }
+
+  // Fill both plane bitmaps with fixed 0x0F pattern
+  for (let y = 0; y < 192; y++) {
+    const rowOff = y * 32;
+    for (let col = 0; col < 32; col++) {
+      pic.planes[0].bitmap[rowOff + col] = 0x0F;
+      pic.planes[1].bitmap[rowOff + col] = 0x0F;
+    }
+  }
+
+  pic.planes[0].attrs.set(frame1);
+  pic.planes[1].attrs.set(frame2);
+
+  return pic;
+}
+
+/**
+ * Exports a Picture to a 3072-byte STL file.
+ * Re-interleaves two 1536-byte attr frames into 4-byte groups.
+ * The bitmap is ignored on export (fixed 0x0F pattern).
+ * @param {Picture} picture
+ * @returns {Uint8Array} 3072-byte STL data
+ */
+function exportStl(picture) {
+  const result = new Uint8Array(STL_TOTAL_SIZE);
+  const attrs1 = picture.planes[0].attrs;
+  const attrs2 = picture.planes[1].attrs;
+
+  for (let j = 0, i = 0; j < STL_ATTRS_PER_FRAME; j += 2, i += 4) {
+    result[i]     = attrs1[j]     || 0;
+    result[i + 1] = attrs1[j + 1] || 0;
+    result[i + 2] = attrs2[j]     || 0;
+    result[i + 3] = attrs2[j + 1] || 0;
+  }
+
+  return result;
+}
+
+// ============================================================================
+// BSP Import / Export (header + screen + optional border + optional gigascreen)
+// ============================================================================
+
+/**
+ * Imports a BSP file into a Picture.
+ * Supports 4 variants: screen-only, screen+border, gigascreen, gigascreen+border.
+ * @param {Uint8Array} fileBytes - Raw BSP file data
+ * @param {string} fileName - Original file name
+ * @returns {Picture|null}
+ */
+function importBsp(fileBytes, fileName) {
+  if (typeof parseBspHeader !== 'function') return null;
+  const header = parseBspHeader(fileBytes);
+  if (!header) return null;
+
+  const dataOffset = 70; // BSP.HEADER_SIZE
+  const hasGiga = header.hasGiga;
+  const hasBorder = header.hasBorder;
+
+  if (hasGiga) {
+    // Gigascreen: 2 planes
+    const pic = makePicture({
+      sourceFormat: 'bsp',
+      fileName: fileName,
+      width: 256,
+      height: 192,
+      attrCellHeight: 8,
+      planeCount: 2,
+      contentMode: 'pixel',
+      colorMode: 'gigascreen'
+    });
+
+    if (hasBorder) {
+      // Giga+border layout: [header:70][secondBorderOffset:2][screen1:6912][screen2:6912][border1_RLE][border2_RLE]
+      const secondBorderOffset = fileBytes[dataOffset] | (fileBytes[dataOffset + 1] << 8);
+      const screensStart = dataOffset + 2; // offset 72
+
+      // Frame 1: offset 72
+      pic.planes[0].bitmap = deinterleaveBitmap(fileBytes, screensStart, 256, 192);
+      for (let i = 0; i < 768; i++) {
+        pic.planes[0].attrs[i] = fileBytes[screensStart + 6144 + i];
+      }
+      // Frame 2: offset 72 + 6912
+      pic.planes[1].bitmap = deinterleaveBitmap(fileBytes, screensStart + 6912, 256, 192);
+      for (let i = 0; i < 768; i++) {
+        pic.planes[1].attrs[i] = fileBytes[screensStart + 6912 + 6144 + i];
+      }
+
+      // Decode borders from RLE
+      const border1Start = screensStart + 6912 * 2; // after both screens
+      if (typeof decodeBspBorder === 'function') {
+        const border1Len = secondBorderOffset > 0 ? secondBorderOffset - border1Start : fileBytes.length - border1Start;
+        const rawBorder1 = decodeBspBorder(fileBytes, border1Start, border1Len);
+        pic.border = extractBorder(rawBorder1, 0);
+        // Second border stored as bspBorder2 for gigascreen flicker
+        if (secondBorderOffset > 0 && secondBorderOffset < fileBytes.length) {
+          const rawBorder2 = decodeBspBorder(fileBytes, secondBorderOffset, fileBytes.length - secondBorderOffset);
+          pic.bspBorder2 = extractBorder(rawBorder2, 0);
+        }
+      }
+    } else {
+      // Giga without border: [header:70][screen1:6912][screen2:6912]
+      // Frame 1: offset 70
+      pic.planes[0].bitmap = deinterleaveBitmap(fileBytes, dataOffset, 256, 192);
+      for (let i = 0; i < 768; i++) {
+        pic.planes[0].attrs[i] = fileBytes[dataOffset + 6144 + i];
+      }
+      // Frame 2: offset 70 + 6912
+      pic.planes[1].bitmap = deinterleaveBitmap(fileBytes, dataOffset + 6912, 256, 192);
+      for (let i = 0; i < 768; i++) {
+        pic.planes[1].attrs[i] = fileBytes[dataOffset + 6912 + 6144 + i];
+      }
+    }
+
+    pic.bspTitle = header.title;
+    pic.bspAuthor = header.author;
+    pic.bspConfig = header.config;
+    pic.bspBorderColor = header.borderColor;
+
+    return pic;
+
+  } else {
+    // Single screen: 1 plane
+    const pic = makePicture({
+      sourceFormat: 'bsp',
+      fileName: fileName,
+      width: 256,
+      height: 192,
+      attrCellHeight: 8,
+      planeCount: 1,
+      contentMode: 'pixel',
+      colorMode: 'standard'
+    });
+
+    pic.planes[0].bitmap = deinterleaveBitmap(fileBytes, dataOffset, 256, 192);
+    for (let i = 0; i < 768; i++) {
+      pic.planes[0].attrs[i] = fileBytes[dataOffset + 6144 + i];
+    }
+
+    if (hasBorder && typeof decodeBspBorder === 'function') {
+      const borderRleStart = dataOffset + 6912;
+      const rawBorder = decodeBspBorder(fileBytes, borderRleStart, fileBytes.length - borderRleStart);
+      pic.border = extractBorder(rawBorder, 0);
+    }
+
+    pic.bspTitle = header.title;
+    pic.bspAuthor = header.author;
+    pic.bspConfig = header.config;
+    pic.bspBorderColor = header.borderColor;
+
+    return pic;
+  }
+}
+
+/**
+ * Exports a Picture to BSP file format.
+ * @param {Picture} picture
+ * @returns {Uint8Array|null}
+ */
+function exportBsp(picture) {
+  const hasGiga = picture.colorMode === 'gigascreen' && picture.planeCount >= 2;
+  const hasBorder = !!picture.border;
+  const config = (hasGiga ? 0x80 : 0) | (hasBorder ? 0x40 : 0);
+
+  // Build header (70 bytes)
+  const header = new Uint8Array(70);
+  header[0] = 0x62; header[1] = 0x73; header[2] = 0x70; // "bsp"
+  header[3] = config;
+  header[4] = 0; // reserved
+  header[5] = (picture.bspBorderColor != null) ? (picture.bspBorderColor & 7) : 0;
+
+  // Title
+  const title = picture.bspTitle || '';
+  for (let i = 0; i < 32 && i < title.length; i++) {
+    header[6 + i] = title.charCodeAt(i) & 0x7F;
+  }
+  // Author
+  const author = picture.bspAuthor || '';
+  for (let i = 0; i < 32 && i < author.length; i++) {
+    header[38 + i] = author.charCodeAt(i) & 0x7F;
+  }
+
+  // Build data sections
+  const screen1 = exportScr(picture);
+
+  if (!hasGiga && !hasBorder) {
+    // Screen only
+    const result = new Uint8Array(70 + 6912);
+    result.set(header, 0);
+    result.set(screen1, 70);
+    return result;
+  }
+
+  if (!hasGiga && hasBorder) {
+    // Screen + border RLE
+    const rawBorder = new Uint8Array(4224);
+    writeBorder(picture.border, rawBorder, 0);
+    let borderRle;
+    if (typeof encodeBspBorder === 'function') {
+      borderRle = encodeBspBorder(rawBorder);
+    } else {
+      borderRle = new Uint8Array(0);
+    }
+    const result = new Uint8Array(70 + 6912 + borderRle.length);
+    result.set(header, 0);
+    result.set(screen1, 70);
+    result.set(borderRle, 70 + 6912);
+    return result;
+  }
+
+  // Build screen2 for gigascreen
+  const screen2Bm = interleaveBitmap(picture.planes[1].bitmap, picture.width, picture.height);
+  const screen2 = new Uint8Array(6912);
+  screen2.set(screen2Bm, 0);
+  for (let i = 0; i < 768; i++) {
+    screen2[6144 + i] = picture.planes[1].attrs[i];
+  }
+
+  if (hasGiga && !hasBorder) {
+    // Gigascreen: 2 × 6912
+    const result = new Uint8Array(70 + 6912 * 2);
+    result.set(header, 0);
+    result.set(screen1, 70);
+    result.set(screen2, 70 + 6912);
+    return result;
+  }
+
+  // Gigascreen + border: [header][screen1][screen2][secondBorderOffset:2LE][border1_RLE][border2_RLE]
+  const rawBorder1 = new Uint8Array(4224);
+  writeBorder(picture.border, rawBorder1, 0);
+  let border1Rle;
+  if (typeof encodeBspBorder === 'function') {
+    border1Rle = encodeBspBorder(rawBorder1);
+  } else {
+    border1Rle = new Uint8Array(0);
+  }
+
+  let border2Rle = new Uint8Array(0);
+  if (picture.bspBorder2) {
+    const rawBorder2 = new Uint8Array(4224);
+    writeBorder(picture.bspBorder2, rawBorder2, 0);
+    if (typeof encodeBspBorder === 'function') {
+      border2Rle = encodeBspBorder(rawBorder2);
+    }
+  }
+
+  // Layout: [header:70][secondBorderOffset:2][screen1:6912][screen2:6912][border1_RLE][border2_RLE]
+  const border1Start = 70 + 2 + 6912 * 2;
+  const secondBorderOffset = border1Start + border1Rle.length;
+  const totalSize = secondBorderOffset + border2Rle.length;
+  const result = new Uint8Array(totalSize);
+  result.set(header, 0);
+  result[70] = secondBorderOffset & 0xFF;
+  result[71] = (secondBorderOffset >> 8) & 0xFF;
+  result.set(screen1, 72);
+  result.set(screen2, 72 + 6912);
+  result.set(border1Rle, border1Start);
+  result.set(border2Rle, secondBorderOffset);
+  return result;
+}
+
+// ============================================================================
 // RGB3 Import / Export (3 x bitmap planes, 18432 bytes)
 // ============================================================================
 
@@ -1292,9 +1600,10 @@ function syncPictureFromScreenData(scrData, picture) {
     return;
   }
 
-  if (fmt === 'img' || fmt === 'mgh' || fmt === 'hlr') {
-    // Gigascreen / MGH / HLR: two complete frames in interleaved layout
-    const attrSize = picture.planes[0].attrs.length; // 768 for mg8/.img/.hlr, 1536 for mg4, 3072 for mg2, 6144 for mg1
+  if (fmt === 'img' || fmt === 'mgh' || fmt === 'hlr' || fmt === 'stl' ||
+      (fmt === 'bsp' && picture.colorMode === 'gigascreen')) {
+    // Gigascreen / MGH / HLR / STL / BSP-giga: two complete frames in interleaved layout
+    const attrSize = picture.planes[0].attrs.length; // 768 for mg8/.img/.hlr/bsp, 1536 for mg4/stl, 3072 for mg2, 6144 for mg1
     const frameSize = 6144 + attrSize;
     picture.planes[0].bitmap = deinterleaveBitmap(scrData, 0, 256, 192);
     for (let i = 0; i < attrSize; i++) {
@@ -1304,6 +1613,8 @@ function syncPictureFromScreenData(scrData, picture) {
     for (let i = 0; i < attrSize; i++) {
       picture.planes[1].attrs[i] = scrData[frameSize + 6144 + i];
     }
+    // BSP giga+border: border is stored on picture.border, NOT in screenData
+    // (screenData only has the 13824-byte IMG layout for giga)
     return;
   }
 
@@ -1385,8 +1696,8 @@ function syncPictureFromScreenData(scrData, picture) {
     }
   }
 
-  // Copy border for BSC
-  if (fmt === 'bsc' && picture.border) {
+  // Copy border for BSC / BSP (non-giga with border)
+  if ((fmt === 'bsc' || fmt === 'bsp') && picture.border) {
     picture.border = extractBorder(scrData, 6912);
   }
 }
@@ -1425,9 +1736,10 @@ function syncScreenDataFromPicture(picture, scrData) {
     return;
   }
 
-  if (fmt === 'img' || fmt === 'mgh' || fmt === 'hlr') {
-    // Gigascreen / MGH / HLR: two frames in interleaved layout
-    const attrSize = picture.planes[0].attrs.length; // 768 for mg8/.img/.hlr, 1536 for mg4, 3072 for mg2, 6144 for mg1
+  if (fmt === 'img' || fmt === 'mgh' || fmt === 'hlr' || fmt === 'stl' ||
+      (fmt === 'bsp' && picture.colorMode === 'gigascreen')) {
+    // Gigascreen / MGH / HLR / STL / BSP-giga: two frames in interleaved layout
+    const attrSize = picture.planes[0].attrs.length; // 768 for mg8/.img/.hlr/bsp, 1536 for mg4/stl, 3072 for mg2, 6144 for mg1
     const frameSize = 6144 + attrSize;
     const bm1 = interleaveBitmap(picture.planes[0].bitmap, 256, 192);
     scrData.set(bm1, 0);
@@ -1439,6 +1751,8 @@ function syncScreenDataFromPicture(picture, scrData) {
     for (let i = 0; i < attrSize; i++) {
       scrData[frameSize + 6144 + i] = picture.planes[1].attrs[i];
     }
+    // BSP giga+border: border is stored on picture.border, NOT in screenData
+    // (screenData only has the 13824-byte IMG layout for giga)
     return;
   }
 
@@ -1522,8 +1836,8 @@ function syncScreenDataFromPicture(picture, scrData) {
     }
   }
 
-  // Write border for BSC
-  if (fmt === 'bsc' && picture.border) {
+  // Write border for BSC / BSP (non-giga with border)
+  if ((fmt === 'bsc' || fmt === 'bsp') && picture.border) {
     writeBorder(picture.border, scrData, 6912);
   }
 }
@@ -1555,6 +1869,8 @@ function importPicture(format, fileBytes, fileName, opts) {
     case 'bmc4':      return importBmc4(fileBytes, fileName);
     case 'img':       return importGigascreen(fileBytes, fileName);
     case 'hlr':       return importHlr(fileBytes, fileName);
+    case 'stl':       return importStl(fileBytes, fileName);
+    case 'bsp':       return importBsp(fileBytes, fileName);
     case 'rgb3':      return importRgb3(fileBytes, fileName);
     case '53c': {
       const pat = (opts && opts.pattern) || [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
@@ -1586,6 +1902,8 @@ function exportPicture(picture) {
     case 'img':       return exportGigascreen(picture);
     case 'mgh':       return exportMgh(picture);
     case 'hlr':       return exportHlr(picture);
+    case 'stl':       return exportStl(picture);
+    case 'bsp':       return exportBsp(picture);
     case 'rgb3':      return exportRgb3(picture);
     case '53c':       return export53c(picture);
     case 'specscii':  return exportSpecscii(picture);

@@ -22,7 +22,7 @@ You can load a file in two ways:
 1. Click the **file input** at the top of the sidebar and browse for a file
 2. **Drag and drop** a file directly onto the canvas
 
-SpectraLab supports many formats: `.scr`, `.53c`, `.atr`, `.bsc`, `.bmc4`, `.ifl`, `.mlt`, `.mc`, `.3`, `.img`, `.specscii`, `.sca`, `.sna`, `.z80`, `.zip`, `.png`, `.gif`, `.jpg`, `.webp`, `.bmp`.
+SpectraLab supports many formats: `.scr`, `.53c`, `.atr`, `.bsc`, `.bsp`, `.bmc4`, `.ifl`, `.mlt`, `.mc`, `.3`, `.img`, `.hlr`, `.stl`, `.specscii`, `.sca`, `.sna`, `.z80`, `.zip`, `.png`, `.gif`, `.jpg`, `.webp`, `.bmp`.
 
 ![First launch](screenshots/tutorial_first_launch.png)
 
@@ -89,7 +89,7 @@ Expand the **File Info** section to see the file name, size, format, and dimensi
 1. Click the **New** button (next to Save)
 2. In the New Picture dialog, select a format from the dropdown:
    - **Screen (.scr)** is the most common choice — 256×192 pixels with 8×8 color attributes
-   - Choose other formats for specific needs (ULA+ for 64 colors, IFL/MLT for multicolor, etc.)
+   - Choose other formats for specific needs (ULA+ for 64 colors, IFL/MLT for multicolor, HLR/STL for low-res gigascreen, etc.)
    - **chr$ (.ch$)** — variable-size interleaved 8x8 cell format
    - **ZXP (.zxp)** — variable-size picture (8-2048px) with ULA or ULA+ palette
 3. Click **Create**
@@ -311,7 +311,7 @@ When you load a `.png`, `.gif`, `.jpg`, `.webp`, or `.bmp` file, the Image Impor
 
 ### Choose Target Format
 
-In the **Output** section, select the target ZX Spectrum format (SCR, ULA+, IFL, MLT, ZXP, etc.).
+In the **Output** section, select the target ZX Spectrum format (SCR, ULA+, IFL, MLT, Gigascreen, HLR, STL, ZXP, etc.).
 
 For **ZXP** format, you can specify custom width and height (8-2048 pixels, divisible by 8) and choose between ULA and ULA+ palette types.
 
@@ -476,6 +476,14 @@ Toggle between **Grid** mode (all 64 colors) and **Classic** mode with the check
 - See the Original and New color side by side
 - Click **Apply** to set the new color
 
+### Copy and Swap Colors
+
+**Shift+click** on any palette color to mark it as the copy source (animated border appears):
+- **Click** another color to copy the source's GRB value to it
+- **Shift+click** another color to swap both GRB values
+- **Click the same cell** or press **Escape** to cancel
+- All copy/swap operations support undo (Ctrl+Z)
+
 ### Save and Load Palettes
 
 - Click 💾 to save the palette as a `.pal` file
@@ -531,6 +539,24 @@ The Gigascreen palette shows all virtual colors as a 16-column grid:
 In the View tab, select the Gigascreen display mode:
 - **Average** — shows the blended (perceived) image
 - **Flicker** — alternates between frames to simulate real hardware
+
+### Gigascreen Variants: HLR and STL
+
+Two additional gigascreen-based formats offer low-resolution modes with large "fat" pixels:
+
+**HLR (High Lores)** — 32×24 fat pixels (each 8×8 real pixels):
+1. Click **New** → select **HLR (.hlr)** → **Create**
+2. Each fat pixel is a full 8×8 attribute cell, using the gigascreen palette to blend two frames
+3. A user-editable 8-byte fill pattern determines how ink and paper contribute to the perceived color
+4. File size: 1536 bytes (two interleaved 768-byte attribute frames)
+
+**STL (Stellar)** — 64×48 fat pixels (each 4×4 real pixels):
+1. Click **New** → select **STL (.stl)** → **Create**
+2. Uses multicolor attributes (8×4 cell height) with gigascreen blending
+3. A fixed bitmap pattern splits each 8-pixel column into left half (paper) and right half (ink)
+4. File size: 3072 bytes (two interleaved 1536-byte attribute frames)
+
+Both formats use the same gigascreen palette and Average/Flicker display modes. Drawing tools (pencil, fill, color picker) work on the fat-pixel level. Only pure ink+ink and paper+paper virtual colors are available per cell half.
 
 ![Gigascreen editing](screenshots/tutorial_gigascreen.png)
 
@@ -642,7 +668,7 @@ Click **Clear** to remove the reference image.
 Save all your open pictures at once with **Save Workspace** in the Xform tab. Load them back later — preserving layers, sprites, settings, and reference images. Workspace buttons are always available in the Xform tab, even without a loaded picture.
 
 ### Barcode Brushes
-For BSC/BMC4 border formats, use barcode slots to capture and stamp border stripe patterns. Shift+click a slot to capture from the border.
+For BSC/BSP/BMC4 border formats, use barcode slots to capture and stamp border stripe patterns. Shift+click a slot to capture from the border.
 
 ### Gradient Tool Dither Patterns
 The Gradient tool (D) supports 6 gradient types (Linear, Radial, Diamond, Conical, Square, Spiral) with Bayer or Blue Noise dithering. Great for backgrounds.

@@ -123,6 +123,10 @@ function initScreenViewerUI() {
       loadMghFile(file);
     } else if (typeof isHlrFile === 'function' && isHlrFile(file.name)) {
       loadHlrFile(file);
+    } else if (typeof isStlFile === 'function' && isStlFile(file.name)) {
+      loadStlFile(file);
+    } else if (typeof isBspFile === 'function' && isBspFile(file.name)) {
+      loadBspFile(file);
     } else {
       loadScreenFile(file);
     }

@@ -1,5 +1,15 @@
 # SpectraLab Version History
 
+## v1.65
+- BSP (Border Screen with Header) format support: load, view, edit, create, save, and image import
+  - 4 variants: screen-only, screen+border, gigascreen, gigascreen+border
+  - New Picture, Image Import, format conversions (BSC↔BSP, BSP→SCR), ZIP loading
+
+## v1.64
+- STL (Stellar) format support: view, edit, create, save — 64×48 fat-pixel gigascreen with fixed bitmap pattern; New Picture, ZIP loading
+- Image Import: SPECSCII output format — converts images to 32×24 character grid using ROM font glyphs and block graphics
+- ULA+ palette copy/swap: Shift+click to copy or swap palette cells; works in Grid and Classic views; undoable
+
 ## v1.63
 - ULA+ palette import: added support for 176-byte `.tap` palette loaders (BASIC + MC programs, e.g. from sourcesolutions.itch.io/ulaplus10); 64-byte GRB332 palette is extracted from offset 110, validated by 0D 0A trailer
   - Works in both the editor palette Load button and the Image Import palette source file picker

@@ -121,7 +121,9 @@ const FORMAT = {
   ZXP: 'zxp',             // ZXP variable-size (non-standard dimensions)
   CHR: 'ch$',             // chr$ variable-size (interleaved cell format)
   MGH: 'mgh',             // Multiartist MGH multicolor gigascreen (.mg1/.mg2/.mg4/.mg8)
-  HLR: 'hlr'              // Gigascreen Lowres (1628-byte self-extracting .hlr)
+  HLR: 'hlr',             // Gigascreen Lowres (1628-byte self-extracting .hlr)
+  STL: 'stl',             // Stellar (64×48 multicolor + gigascreen, 3072 bytes)
+  BSP: 'bsp'              // BSP (header + screen + optional border + optional gigascreen)
 };
 
 // SPECSCII format constants
@@ -223,6 +225,39 @@ const HLR = {
   ATTRS1_OFFSET: 92,       // 0x5C
   ATTRS2_OFFSET: 860,      // 0x35C (ATTRS1_OFFSET + 768)
   ATTRS_SIZE: 768          // Standard 32x24 attribute layout
+};
+
+// STL (Stellar) format constants
+// 64×48 lowres multicolor + gigascreen: 3072 bytes total
+// Two gigascreen frames of 1536 attrs each (32 cols × 48 rows, 8×4 multicolor cells)
+// Data is interleaved in 4-byte groups: [f1_a, f1_b, f2_a, f2_b]
+// where (f1_a, f1_b) are consecutive frame-1 attrs and (f2_a, f2_b) are frame-2 attrs.
+// Fixed bitmap pattern 0x0F per cell: left 4px = paper color, right 4px = ink color.
+// Effective resolution: 64×48 fat pixels (each 4×4 real pixels).
+const STL = {
+  TOTAL_SIZE: 3072,
+  ATTRS_PER_FRAME: 1536,  // 32 cols × 48 rows
+  COLS: 32,               // Attribute columns (8px each)
+  ROWS: 48,               // Attribute rows (4px each)
+  FAT_COLS: 64,           // Fat-pixel columns (4px each)
+  FAT_ROWS: 48,           // Fat-pixel rows (4px each)
+  CELL_HEIGHT: 4           // Multicolor cell height in pixels
+};
+
+// BSP format constants (Border Screen with Header)
+// Header (70 bytes): magic "bsp" + config + border color + title + author
+// Config flags: bit7=hasGigaData, bit6=hasBorderData
+// Data: screen(s) + optional RLE-compressed border(s)
+// Border encoding: RLE "tacts" — each byte = (tactsCode<<3)|color
+const BSP = {
+  HEADER_SIZE: 70,
+  MAGIC: [0x62, 0x73, 0x70],  // "bsp"
+  FLAG_GIGA: 0x80,
+  FLAG_BORDER: 0x40,
+  CONFIG_OFFSET: 3,
+  BORDER_COLOR_OFFSET: 5,
+  TITLE_OFFSET: 6, TITLE_LENGTH: 32,
+  AUTHOR_OFFSET: 38, AUTHOR_LENGTH: 32
 };
 
 // BMC4 format constants (border + 8x4 multicolor)
@@ -2012,6 +2047,167 @@ function renderGigascreenAverage(ctx, borderOffset) {
 }
 
 /**
+ * Renders STL (Stellar) format: multicolor + gigascreen at 64×48 fat pixels.
+ * De-interleaves 4-byte groups into two attribute frames, blends colors.
+ * Fixed bitmap pattern 0x0F: left 4px = paper, right 4px = ink per cell.
+ * @param {CanvasRenderingContext2D} ctx - Canvas context
+ * @param {number} borderOffset - Border offset in canvas pixels
+ */
+function renderStlScreen(ctx, borderOffset) {
+  if (gigascreenMode === GIGASCREEN_MODE.FLICKER && gigascreenFlickerFrameId !== null) {
+    renderStlFrame(ctx, borderOffset, gigascreenFlickerPhase);
+  } else {
+    renderStlAverage(ctx, borderOffset);
+  }
+}
+
+/**
+ * Extracts the two STL attribute frames from screenData, handling both the
+ * raw 3072-byte interleaved format and the gigascreen-layout editing format
+ * (15360 bytes: [bm1][at1][bm2][at2] with 1536-byte attr sections).
+ * @returns {{frame1: Uint8Array, frame2: Uint8Array}}
+ */
+function getStlAttrFrames() {
+  const frame1 = new Uint8Array(STL.ATTRS_PER_FRAME);
+  const frame2 = new Uint8Array(STL.ATTRS_PER_FRAME);
+
+  if (screenData && screenData.length > STL.TOTAL_SIZE) {
+    // Gigascreen layout: [bm1(6144)][at1(1536)][bm2(6144)][at2(1536)]
+    const frameSize = 6144 + STL.ATTRS_PER_FRAME; // 7680
+    for (let i = 0; i < STL.ATTRS_PER_FRAME; i++) {
+      frame1[i] = screenData[6144 + i];
+      frame2[i] = screenData[frameSize + 6144 + i];
+    }
+  } else if (screenData) {
+    // Raw 3072-byte interleaved format
+    for (let i = 0, j = 0; i < STL.TOTAL_SIZE; i += 4, j += 2) {
+      frame1[j]     = screenData[i];
+      frame1[j + 1] = screenData[i + 1];
+      frame2[j]     = screenData[i + 2];
+      frame2[j + 1] = screenData[i + 3];
+    }
+  }
+
+  return { frame1, frame2 };
+}
+
+/**
+ * Renders STL with averaged gigascreen colors (pristine blend)
+ * @param {CanvasRenderingContext2D} ctx - Canvas context
+ * @param {number} borderOffset - Border offset in canvas pixels
+ */
+function renderStlAverage(ctx, borderOffset) {
+  const imageData = ctx.createImageData(SCREEN.WIDTH, SCREEN.HEIGHT);
+  const data = imageData.data;
+
+  const { frame1, frame2 } = getStlAttrFrames();
+
+  // Render 32 cols × 48 rows, each cell is 8px wide × 4px tall
+  // Fixed bitmap 0x0F: left 4 pixels = paper, right 4 pixels = ink
+  for (let row = 0; row < STL.ROWS; row++) {
+    for (let col = 0; col < STL.COLS; col++) {
+      const attrIdx = row * STL.COLS + col;
+      const attr1 = frame1[attrIdx];
+      const attr2 = frame2[attrIdx];
+
+      const colors1 = getColorsRgb(attr1);
+      const colors2 = getColorsRgb(attr2);
+
+      // Left half (paper): average paper colors from both frames
+      const leftR = Math.round((colors1.paperRgb[0] + colors2.paperRgb[0]) / 2);
+      const leftG = Math.round((colors1.paperRgb[1] + colors2.paperRgb[1]) / 2);
+      const leftB = Math.round((colors1.paperRgb[2] + colors2.paperRgb[2]) / 2);
+
+      // Right half (ink): average ink colors from both frames
+      const rightR = Math.round((colors1.inkRgb[0] + colors2.inkRgb[0]) / 2);
+      const rightG = Math.round((colors1.inkRgb[1] + colors2.inkRgb[1]) / 2);
+      const rightB = Math.round((colors1.inkRgb[2] + colors2.inkRgb[2]) / 2);
+
+      const baseX = col * 8;
+      const baseY = row * STL.CELL_HEIGHT;
+
+      // Fill 8×4 cell: left 4 pixels = paper blend, right 4 pixels = ink blend
+      for (let py = 0; py < STL.CELL_HEIGHT; py++) {
+        const y = baseY + py;
+        // Left 4 pixels (paper)
+        for (let px = 0; px < 4; px++) {
+          const pixelIndex = (y * SCREEN.WIDTH + baseX + px) * 4;
+          data[pixelIndex] = leftR;
+          data[pixelIndex + 1] = leftG;
+          data[pixelIndex + 2] = leftB;
+          data[pixelIndex + 3] = 255;
+        }
+        // Right 4 pixels (ink)
+        for (let px = 4; px < 8; px++) {
+          const pixelIndex = (y * SCREEN.WIDTH + baseX + px) * 4;
+          data[pixelIndex] = rightR;
+          data[pixelIndex + 1] = rightG;
+          data[pixelIndex + 2] = rightB;
+          data[pixelIndex + 3] = 255;
+        }
+      }
+    }
+  }
+
+  const temp = getTempRenderCanvas(SCREEN.WIDTH, SCREEN.HEIGHT);
+  if (!temp) return;
+  temp.ctx.putImageData(imageData, 0, 0);
+  applyRenderSmoothing(ctx);
+  ctx.drawImage(temp.canvas, borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom);
+}
+
+/**
+ * Renders a single STL frame (for flicker mode)
+ * @param {CanvasRenderingContext2D} ctx - Canvas context
+ * @param {number} borderOffset - Border offset in canvas pixels
+ * @param {number} frameIndex - Which frame to show (0 or 1)
+ */
+function renderStlFrame(ctx, borderOffset, frameIndex) {
+  const imageData = ctx.createImageData(SCREEN.WIDTH, SCREEN.HEIGHT);
+  const data = imageData.data;
+
+  const { frame1, frame2 } = getStlAttrFrames();
+  const frame = frameIndex === 0 ? frame1 : frame2;
+
+  for (let row = 0; row < STL.ROWS; row++) {
+    for (let col = 0; col < STL.COLS; col++) {
+      const attrIdx = row * STL.COLS + col;
+      const attr = frame[attrIdx];
+      const { inkRgb, paperRgb } = getColorsRgb(attr);
+
+      const baseX = col * 8;
+      const baseY = row * STL.CELL_HEIGHT;
+
+      for (let py = 0; py < STL.CELL_HEIGHT; py++) {
+        const y = baseY + py;
+        // Left 4 pixels (paper)
+        for (let px = 0; px < 4; px++) {
+          const pixelIndex = (y * SCREEN.WIDTH + baseX + px) * 4;
+          data[pixelIndex] = paperRgb[0];
+          data[pixelIndex + 1] = paperRgb[1];
+          data[pixelIndex + 2] = paperRgb[2];
+          data[pixelIndex + 3] = 255;
+        }
+        // Right 4 pixels (ink)
+        for (let px = 4; px < 8; px++) {
+          const pixelIndex = (y * SCREEN.WIDTH + baseX + px) * 4;
+          data[pixelIndex] = inkRgb[0];
+          data[pixelIndex + 1] = inkRgb[1];
+          data[pixelIndex + 2] = inkRgb[2];
+          data[pixelIndex + 3] = 255;
+        }
+      }
+    }
+  }
+
+  const temp = getTempRenderCanvas(SCREEN.WIDTH, SCREEN.HEIGHT);
+  if (!temp) return;
+  temp.ctx.putImageData(imageData, 0, 0);
+  applyRenderSmoothing(ctx);
+  ctx.drawImage(temp.canvas, borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom);
+}
+
+/**
  * Renders a Gigascreen Picture from the internal linear layout.
  * Dispatches between average-blend and flicker modes.
  * @param {CanvasRenderingContext2D} ctx - Canvas context
@@ -2149,7 +2345,7 @@ function setGigascreenMode(mode) {
   gigascreenMode = mode;
 
   const isGiga = currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.MGH ||
-    currentFormat === FORMAT.HLR ||
+    currentFormat === FORMAT.HLR || currentFormat === FORMAT.STL ||
     (currentFormat === FORMAT.CHR && currentPicture && currentPicture.colorMode === 'gigascreen');
   if (mode === GIGASCREEN_MODE.FLICKER && isGiga) {
     startGigascreenFlicker();
@@ -3112,6 +3308,163 @@ function renderBscMainScreen(ctx, offsetX, offsetY) {
   ctx.drawImage(temp.canvas, offsetX, offsetY, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom);
 }
 
+/**
+ * Renders BSP gigascreen + border.
+ * Draws BSC-style border frame (384×304) and renders main screen area (256×192)
+ * using gigascreen average/flicker blending from the current Picture's two planes.
+ * Border data comes from screenData[6912..] (BSC raw format).
+ * @param {CanvasRenderingContext2D} ctx
+ */
+function renderBspGigaBorder(ctx) {
+  if (!currentPicture) return;
+  const pic = currentPicture;
+
+  // Sync picture from screenData so edits are visible
+  if (typeof syncPictureFromScreenData === 'function') {
+    syncPictureFromScreenData(screenData, pic);
+  }
+
+  const frameWidth = BSC.FRAME_WIDTH * zoom;
+  const frameHeight = BSC.FRAME_HEIGHT * zoom;
+  screenCanvas.width = frameWidth;
+  screenCanvas.height = frameHeight;
+
+  ctx.fillStyle = ZX_PALETTE.REGULAR[0];
+  ctx.fillRect(0, 0, frameWidth, frameHeight);
+
+  // --- Draw border from picture.border (PictureBorder object) ---
+  const border = pic.border;
+  const pxPerColor = BSC.PIXELS_PER_COLOR;
+  const bitmapLeft = BSC.BORDER_LEFT_PX;
+  const bitmapRight = bitmapLeft + SCREEN.WIDTH;
+
+  function drawBorderSegment(color, startX, endX, screenY) {
+    if (startX >= endX) return;
+    ctx.fillStyle = color;
+    ctx.fillRect(Math.round(startX * zoom), Math.round(screenY * zoom),
+                 Math.round((endX - startX) * zoom), zoom);
+  }
+
+  function drawFullBorderLineFromBuf(buf, bufOffset, screenY) {
+    let x = 0;
+    for (let byteIdx = 0; byteIdx < BSC.BYTES_PER_FULL_LINE; byteIdx++) {
+      const byte = buf[bufOffset + byteIdx];
+      const c1 = byte & 7;
+      const c2 = (byte >> 3) & 7;
+      drawBorderSegment(ZX_PALETTE.REGULAR[c1], x, x + pxPerColor, screenY);
+      x += pxPerColor;
+      drawBorderSegment(ZX_PALETTE.REGULAR[c2], x, x + pxPerColor, screenY);
+      x += pxPerColor;
+    }
+  }
+
+  function drawSideBorderLineFromBuf(buf, bufOffset, screenY) {
+    let x = 0;
+    for (let byteIdx = 0; byteIdx < 4; byteIdx++) {
+      const byte = buf[bufOffset + byteIdx];
+      const c1 = byte & 7;
+      const c2 = (byte >> 3) & 7;
+      drawBorderSegment(ZX_PALETTE.REGULAR[c1], x, x + pxPerColor, screenY);
+      x += pxPerColor;
+      drawBorderSegment(ZX_PALETTE.REGULAR[c2], x, x + pxPerColor, screenY);
+      x += pxPerColor;
+    }
+    x = bitmapRight;
+    for (let byteIdx = 4; byteIdx < 8; byteIdx++) {
+      const byte = buf[bufOffset + byteIdx];
+      const c1 = byte & 7;
+      const c2 = (byte >> 3) & 7;
+      drawBorderSegment(ZX_PALETTE.REGULAR[c1], x, x + pxPerColor, screenY);
+      x += pxPerColor;
+      drawBorderSegment(ZX_PALETTE.REGULAR[c2], x, x + pxPerColor, screenY);
+      x += pxPerColor;
+    }
+  }
+
+  if (border) {
+    // Top border: 64 lines × 24 bytes
+    for (let line = 0; line < 64; line++) {
+      drawFullBorderLineFromBuf(border.top, line * 24, line);
+    }
+    // Side borders: 192 lines × 8 bytes
+    for (let line = 0; line < 192; line++) {
+      drawSideBorderLineFromBuf(border.sides, line * 8, 64 + line);
+    }
+    // Bottom border: 48 lines × 24 bytes
+    for (let line = 0; line < 48; line++) {
+      drawFullBorderLineFromBuf(border.bottom, line * 24, 256 + line);
+    }
+  }
+
+  // --- Draw main screen as gigascreen ---
+  const cols = pic.cols;
+  const width = pic.width;
+  const height = pic.height;
+  const attrCellH = pic.attrCellHeight;
+  const imageData = ctx.createImageData(width, height);
+  const idata = imageData.data;
+
+  const isFlicker = gigascreenMode === GIGASCREEN_MODE.FLICKER && gigascreenFlickerFrameId !== null;
+
+  if (isFlicker) {
+    const plane = pic.planes[gigascreenFlickerPhase];
+    const bitmap = plane.bitmap;
+    const attrs = plane.attrs;
+    for (let y = 0; y < height; y++) {
+      const attrRow = attrCellH > 0 ? Math.floor(y / attrCellH) : (y >> 3);
+      for (let col = 0; col < cols; col++) {
+        const byte = bitmap[y * cols + col];
+        const attr = attrs[attrRow * cols + col];
+        const { inkRgb, paperRgb } = getColorsRgb(attr);
+        const x = col * 8;
+        for (let bit = 0; bit < 8; bit++) {
+          const px = x + bit;
+          const pixelIndex = (y * width + px) * 4;
+          const rgb = (byte & (0x80 >> bit)) ? inkRgb : paperRgb;
+          idata[pixelIndex] = rgb[0];
+          idata[pixelIndex + 1] = rgb[1];
+          idata[pixelIndex + 2] = rgb[2];
+          idata[pixelIndex + 3] = 255;
+        }
+      }
+    }
+  } else {
+    const bm1 = pic.planes[0].bitmap;
+    const at1 = pic.planes[0].attrs;
+    const bm2 = pic.planes[1].bitmap;
+    const at2 = pic.planes[1].attrs;
+    for (let y = 0; y < height; y++) {
+      const attrRow = attrCellH > 0 ? Math.floor(y / attrCellH) : (y >> 3);
+      for (let col = 0; col < cols; col++) {
+        const byte1 = bm1[y * cols + col];
+        const byte2 = bm2[y * cols + col];
+        const colors1 = getColorsRgb(at1[attrRow * cols + col]);
+        const colors2 = getColorsRgb(at2[attrRow * cols + col]);
+        const x = col * 8;
+        for (let bit = 0; bit < 8; bit++) {
+          const px = x + bit;
+          const pixelIndex = (y * width + px) * 4;
+          const mask = 0x80 >> bit;
+          const rgb1 = (byte1 & mask) ? colors1.inkRgb : colors1.paperRgb;
+          const rgb2 = (byte2 & mask) ? colors2.inkRgb : colors2.paperRgb;
+          idata[pixelIndex] = Math.round((rgb1[0] + rgb2[0]) / 2);
+          idata[pixelIndex + 1] = Math.round((rgb1[1] + rgb2[1]) / 2);
+          idata[pixelIndex + 2] = Math.round((rgb1[2] + rgb2[2]) / 2);
+          idata[pixelIndex + 3] = 255;
+        }
+      }
+    }
+  }
+
+  const temp = getTempRenderCanvas(width, height);
+  if (!temp) return;
+  temp.ctx.putImageData(imageData, 0, 0);
+  applyRenderSmoothing(ctx);
+  const offsetX = BSC.BORDER_LEFT_PX * zoom;
+  const offsetY = BSC.BORDER_TOP_PX * zoom;
+  ctx.drawImage(temp.canvas, offsetX, offsetY, width * zoom, height * zoom);
+}
+
 // ============================================================================
 // SCA Animation Functions
 // ============================================================================
@@ -3504,7 +3857,7 @@ function toggleFormatControlsVisibility() {
     }
   }
   const isGigascreenFormat = currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.MGH ||
-    currentFormat === FORMAT.HLR ||
+    currentFormat === FORMAT.HLR || currentFormat === FORMAT.STL ||
     (currentFormat === FORMAT.CHR && currentPicture && currentPicture.colorMode === 'gigascreen');
   const gigascreenControls = document.getElementById('gigascreenControls');
   if (gigascreenControls) {
@@ -3641,7 +3994,7 @@ function getUlaPlusPaletteIndex(attr, isInk) {
 // ============================================================================
 
 /** @type {string[]} - List of supported file extensions */
-const SUPPORTED_EXTENSIONS = ['scr', '53c', 'atr', 'bsc', 'ifl', 'bmc4', 'mlt', 'mc', '3', 'img', 'mem', 'specscii', 'sca', 'sna', 'z80', 'btile', 'wtile', 'zxp', 'ch$', 'chr$', 'ch-', 'mg1', 'mg2', 'mg4', 'mg8', 'hlr'];
+const SUPPORTED_EXTENSIONS = ['scr', '53c', 'atr', 'bsc', 'bsp', 'ifl', 'bmc4', 'mlt', 'mc', '3', 'img', 'mem', 'specscii', 'sca', 'sna', 'z80', 'btile', 'wtile', 'zxp', 'ch$', 'chr$', 'ch-', 'mg1', 'mg2', 'mg4', 'mg8', 'hlr', 'stl'];
 const IMAGE_EXTENSIONS = ['png', 'gif', 'jpg', 'jpeg', 'webp', 'bmp'];
 
 /** @type {JSZip|null} - Current loaded ZIP archive */
@@ -3842,6 +4195,26 @@ async function loadFileFromZip(fileName) {
       return;
     }
 
+    // Handle STL files from ZIP (Stellar 64×48 multicolor + gigascreen)
+    if (typeof isStlFile === 'function' && isStlFile(fileName)) {
+      const blob = new Blob([arrayBuffer]);
+      const file = new File([blob], fileName);
+      if (typeof loadStlFile === 'function') {
+        loadStlFile(file);
+      }
+      return;
+    }
+
+    // Handle BSP files from ZIP (Border Screen with Header)
+    if (typeof isBspFile === 'function' && isBspFile(fileName)) {
+      const blob = new Blob([arrayBuffer]);
+      const file = new File([blob], fileName);
+      if (typeof loadBspFile === 'function') {
+        loadBspFile(file);
+      }
+      return;
+    }
+
     const format = detectFormat(fileName, data.length);
 
     // Check for invalid format (e.g., .img file with wrong size)
@@ -3991,7 +4364,8 @@ function renderScreen() {
 
   // Calculate full logical dimensions (image × zoom + borders)
   // BSC/BMC4 manage their own frame size (384×304) including borders
-  const isBscLike = currentFormat === FORMAT.BSC || currentFormat === FORMAT.BMC4;
+  const isBscLike = currentFormat === FORMAT.BSC || currentFormat === FORMAT.BMC4 ||
+    (currentFormat === FORMAT.BSP && currentPicture && currentPicture.border);
   const picW = currentPicture ? currentPicture.width : SCREEN.WIDTH;
   const picH = currentPicture ? currentPicture.height : SCREEN.HEIGHT;
   const logicalWidth = isBscLike ? BSC.FRAME_WIDTH * zoom : picW * zoom + borderPixels * 2;
@@ -4089,9 +4463,11 @@ function renderScreen() {
 
   // Render based on format — prefer Picture-based renderers when currentPicture exists
   let rendered = false;
+  // BSP with border uses legacy BSC path; BSP without border uses Picture path
+  const bspHasBorder = currentFormat === FORMAT.BSP && currentPicture && currentPicture.border;
   if (currentPicture &&
       currentFormat !== FORMAT.BSC && currentFormat !== FORMAT.BMC4 &&
-      currentFormat !== FORMAT.SCA && currentPicture.contentMode !== 'text') {
+      currentFormat !== FORMAT.SCA && !bspHasBorder && currentPicture.contentMode !== 'text') {
     // Unified Picture-based dispatch
     if (currentPicture.colorMode === 'gigascreen') {
       renderPictureGigascreen(ctx, borderPixels, currentPicture);
@@ -4108,9 +4484,10 @@ function renderScreen() {
 
   if (!rendered) {
     // Legacy format-based dispatch (BSC, BMC4, SPECSCII, SCA, fallbacks)
-    if (currentFormat === FORMAT.BSC) {
-      // BSC format: standard screen + per-line border colors
-      // BSC handles its own canvas size and border rendering
+    if (currentFormat === FORMAT.BSC ||
+        (currentFormat === FORMAT.BSP && bspHasBorder && currentPicture && currentPicture.colorMode !== 'gigascreen')) {
+      // BSC / BSP-with-border format: standard screen + per-line border colors
+      // Handles its own canvas size and border rendering
       renderBscScreen(ctx);
       if (typeof applyPostProcessFilters === 'function') applyPostProcessFilters();
       // Draw paper grid overlay if enabled (BSC has different dimensions)
@@ -4149,6 +4526,26 @@ function renderScreen() {
       }
       if (typeof applyOverlayFilters === 'function') applyOverlayFilters();
       return; // BMC4 handles everything including grid
+    } else if (currentFormat === FORMAT.BSP && bspHasBorder && currentPicture && currentPicture.colorMode === 'gigascreen') {
+      // BSP gigascreen + border: render border frame + gigascreen main screen
+      renderBspGigaBorder(ctx);
+      if (typeof applyPostProcessFilters === 'function') applyPostProcessFilters();
+      if (gridSize > 0 || subgridSize > 0) {
+        drawCharGrid(ctx, BSC.BORDER_LEFT_PX * zoom, BSC.BORDER_TOP_PX * zoom);
+      }
+      if (borderGridSize > 0 || borderSubgridSize > 0) {
+        drawBscBorderGrid(ctx);
+      }
+      if (typeof drawReferenceOverlay === 'function' &&
+          typeof showReference !== 'undefined' && showReference &&
+          typeof referenceImage !== 'undefined' && referenceImage) {
+        drawReferenceOverlay();
+      }
+      if (typeof applyOverlayFilters === 'function') applyOverlayFilters();
+      return;
+    } else if (currentFormat === FORMAT.STL) {
+      // STL format: Stellar multicolor + gigascreen 64×48
+      renderStlScreen(ctx, borderPixels);
     } else if (currentFormat === FORMAT.SPECSCII) {
       // SPECSCII text screen
       renderSpecsciiScreen(ctx, borderPixels);
@@ -4613,6 +5010,12 @@ function getFormatName(format) {
       return mode + ' (Multiartist gigascreen)';
     }
     case FORMAT.HLR: return 'HLR (Gigascreen lowres)';
+    case FORMAT.STL: return 'STL (Stellar 64×48)';
+    case FORMAT.BSP: {
+      const giga = currentPicture && currentPicture.colorMode === 'gigascreen';
+      const border = currentPicture && currentPicture.border;
+      return 'BSP (header' + (giga ? ' + gigascreen' : ' + screen') + (border ? ' + border' : '') + ')';
+    }
     default: return 'Unknown';
   }
 }
@@ -4627,6 +5030,11 @@ function getFormatDimensions(format) {
     case FORMAT.BSC:
     case FORMAT.BMC4:
       return { width: BSC.FRAME_WIDTH, height: BSC.FRAME_HEIGHT };
+    case FORMAT.BSP:
+      if (currentPicture && currentPicture.border) {
+        return { width: BSC.FRAME_WIDTH, height: BSC.FRAME_HEIGHT };
+      }
+      return { width: SCREEN.WIDTH, height: SCREEN.HEIGHT };
     case FORMAT.MONO_2_3:
       return { width: SCREEN.WIDTH, height: 128 };
     case FORMAT.MONO_1_3:
@@ -4635,6 +5043,8 @@ function getFormatDimensions(format) {
       if (scaHeader) {
         return { width: scaHeader.width, height: scaHeader.height };
       }
+      return { width: SCREEN.WIDTH, height: SCREEN.HEIGHT };
+    case FORMAT.STL:
       return { width: SCREEN.WIDTH, height: SCREEN.HEIGHT };
     case FORMAT.ZXP:
     case FORMAT.CHR:
@@ -4679,14 +5089,28 @@ function updateFileInfo() {
     } else if (currentFormat === FORMAT.SCR_ULAPLUS && isUlaPlusMode) {
       formatDisplay = `${formatName} (64 colors)`;
     }
+    // Add BSP title/author if present
+    if (currentFormat === FORMAT.BSP && currentPicture) {
+      const title = currentPicture.bspTitle;
+      const author = currentPicture.bspAuthor;
+      if (title || author) {
+        const parts = [];
+        if (title) parts.push(title);
+        if (author) parts.push('by ' + author);
+        formatDisplay += ' — ' + parts.join(' ');
+      }
+    }
     infoFormat.textContent = currentFileName ? formatDisplay : '-';
   }
   if (infoDimensions) {
     if (currentFileName) {
       // For cell-based formats (HLR, 53c) individual pixels carry no
       // user-meaningful color, so show the dimensions in 8x8 cells instead.
+      // STL is a special case: 64×48 fat pixels (each 4×4 real pixels).
       const useCells = (currentFormat === FORMAT.HLR || currentFormat === FORMAT.ATTR_53C);
-      if (useCells) {
+      if (currentFormat === FORMAT.STL) {
+        infoDimensions.textContent = '64 × 48 fat pixels';
+      } else if (useCells) {
         const cellsW = Math.ceil(dimensions.width / 8);
         const cellsH = Math.ceil(dimensions.height / 8);
         infoDimensions.textContent = `${cellsW} × ${cellsH} cells`;
@@ -5033,6 +5457,10 @@ function detectFormat(fileName, fileSize) {
     return FORMAT.BSC;
   }
 
+  if (ext === 'bsp') {
+    return FORMAT.BSP;
+  }
+
   if (ext === 'ifl') {
     return FORMAT.IFL;
   }
@@ -5061,6 +5489,13 @@ function detectFormat(fileName, fileSize) {
   if (ext === 'hlr') {
     if (fileSize === HLR.TOTAL_SIZE) {
       return FORMAT.HLR;
+    }
+    return FORMAT.UNKNOWN;
+  }
+
+  if (ext === 'stl') {
+    if (fileSize === STL.TOTAL_SIZE) {
+      return FORMAT.STL;
     }
     return FORMAT.UNKNOWN;
   }
@@ -5837,6 +6272,546 @@ function loadHlrFile(file) {
     screenData = data;
     currentFileName = file.name;
     currentFormat = FORMAT.HLR;
+    currentPicture = newInternalPicture;
+
+    toggleScaControlsVisibility();
+    toggleFormatControlsVisibility();
+    updateScaControls();
+    updateFileInfo();
+    renderScreen();
+    if (typeof updateEditorState === 'function') updateEditorState();
+    if (typeof editorActive !== 'undefined' && editorActive && typeof renderPreview === 'function') renderPreview();
+    updateFlashTimer();
+    if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
+  });
+
+  reader.readAsArrayBuffer(file);
+}
+
+/**
+ * Checks if a file is an STL (Stellar) file by extension.
+ * @param {string} fileName
+ * @returns {boolean}
+ */
+function isStlFile(fileName) {
+  return fileName.toLowerCase().endsWith('.stl');
+}
+
+/**
+ * Loads an STL (Stellar) file. De-interleaves the 3072-byte file into two
+ * 1536-byte attr frames, builds a gigascreen-layout screenData with fixed
+ * 0x0F bitmaps, and creates a 2-plane gigascreen Picture via importStl().
+ * @param {File} file
+ */
+function loadStlFile(file) {
+  const reader = new FileReader();
+
+  reader.addEventListener('load', function(event) {
+    const buffer = event.target?.result;
+    if (!(buffer instanceof ArrayBuffer)) return;
+
+    if (buffer.byteLength !== STL.TOTAL_SIZE) {
+      alert('Invalid STL file: expected ' + STL.TOTAL_SIZE + ' bytes.');
+      return;
+    }
+
+    stopFlashTimer();
+    resetScaState();
+
+    if (typeof saveCurrentPictureState === 'function') {
+      saveCurrentPictureState();
+    }
+
+    const fileBytes = new Uint8Array(buffer);
+
+    // De-interleave 4-byte groups into two attr frames
+    const frame1 = new Uint8Array(STL.ATTRS_PER_FRAME);
+    const frame2 = new Uint8Array(STL.ATTRS_PER_FRAME);
+    for (let i = 0, j = 0; i < STL.TOTAL_SIZE; i += 4, j += 2) {
+      frame1[j]     = fileBytes[i];
+      frame1[j + 1] = fileBytes[i + 1];
+      frame2[j]     = fileBytes[i + 2];
+      frame2[j + 1] = fileBytes[i + 3];
+    }
+
+    // Build gigascreen-layout screenData: [bm1(6144)][at1(1536)][bm2(6144)][at2(1536)]
+    // attrCellHeight=4 → attrSize=1536, frameSize=7680, total=15360
+    const frameSize = 6144 + STL.ATTRS_PER_FRAME; // 7680
+    const data = new Uint8Array(frameSize * 2);    // 15360
+
+    // Fill both frames' bitmaps with fixed 0x0F (interleaved SCR layout)
+    for (let third = 0; third < 3; third++) {
+      const thirdBase = third * 2048;
+      for (let pixelLine = 0; pixelLine < 8; pixelLine++) {
+        for (let charRow = 0; charRow < 8; charRow++) {
+          const rowOffset = thirdBase + charRow * 32 + pixelLine * 256;
+          for (let col = 0; col < 32; col++) {
+            data[rowOffset + col] = 0x0F;
+            data[frameSize + rowOffset + col] = 0x0F;
+          }
+        }
+      }
+    }
+
+    // Copy attrs into screenData
+    data.set(frame1, 6144);
+    data.set(frame2, frameSize + 6144);
+
+    initUlaPlusMode(data, FORMAT.UNKNOWN);
+
+    let newInternalPicture = null;
+    if (typeof importStl === 'function') {
+      newInternalPicture = importStl(fileBytes, file.name);
+    }
+
+    if (typeof addPicture === 'function') {
+      const pictureResult = addPicture(file.name, FORMAT.STL, data, newInternalPicture, true);
+      if (pictureResult >= 0) {
+        updateFlashTimer();
+        return;
+      }
+    }
+
+    screenData = data;
+    currentFileName = file.name;
+    currentFormat = FORMAT.STL;
+    currentPicture = newInternalPicture;
+
+    toggleScaControlsVisibility();
+    toggleFormatControlsVisibility();
+    updateScaControls();
+    updateFileInfo();
+    renderScreen();
+    if (typeof updateEditorState === 'function') updateEditorState();
+    if (typeof editorActive !== 'undefined' && editorActive && typeof renderPreview === 'function') renderPreview();
+    updateFlashTimer();
+    if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
+  });
+
+  reader.readAsArrayBuffer(file);
+}
+
+/**
+ * Checks if a file is a BSP (Border Screen with Header) file by extension.
+ * @param {string} fileName
+ * @returns {boolean}
+ */
+function isBspFile(fileName) {
+  return fileName.toLowerCase().endsWith('.bsp');
+}
+
+/**
+ * Parses the 70-byte BSP header.
+ * @param {Uint8Array} bytes - at least 70 bytes
+ * @returns {{hasGiga: boolean, hasBorder: boolean, borderColor: number, title: string, author: string, config: number}|null}
+ */
+function parseBspHeader(bytes) {
+  if (bytes.length < BSP.HEADER_SIZE) return null;
+  if (bytes[0] !== BSP.MAGIC[0] || bytes[1] !== BSP.MAGIC[1] || bytes[2] !== BSP.MAGIC[2]) return null;
+  const config = bytes[BSP.CONFIG_OFFSET];
+  const hasGiga = !!(config & BSP.FLAG_GIGA);
+  const hasBorder = !!(config & BSP.FLAG_BORDER);
+  const borderColor = bytes[BSP.BORDER_COLOR_OFFSET] & 7;
+
+  // Read null-terminated ASCII strings
+  let title = '';
+  for (let i = 0; i < BSP.TITLE_LENGTH; i++) {
+    const ch = bytes[BSP.TITLE_OFFSET + i];
+    if (ch === 0) break;
+    title += String.fromCharCode(ch);
+  }
+  let author = '';
+  for (let i = 0; i < BSP.AUTHOR_LENGTH; i++) {
+    const ch = bytes[BSP.AUTHOR_OFFSET + i];
+    if (ch === 0) break;
+    author += String.fromCharCode(ch);
+  }
+
+  return { hasGiga, hasBorder, borderColor, title, author, config };
+}
+
+/**
+ * Decodes BSP RLE border data into raw 4224-byte BSC border format.
+ * Each RLE byte: color = byte & 7, tactsCode = (byte >> 3) & 0x1F.
+ * tactsCode: 0=fill to end of segment, 1=next byte is count,
+ *   2=count is 12, >=3=count is tactsCode+13. Final pixels = count*2.
+ * RLE operates on individual pixels in 384×304 border space,
+ * skipping the 256×192 center area on side rows.
+ *
+ * @param {Uint8Array} data - source buffer
+ * @param {number} offset - start of RLE data in the buffer
+ * @param {number} maxLen - maximum bytes to read from offset
+ * @returns {Uint8Array} 4224-byte raw BSC border
+ */
+function decodeBspBorder(data, offset, maxLen) {
+  // Decode BSP RLE border into 4224-byte BSC raw border format.
+  // RLE operates on a 384×304 pixel canvas, skipping the 256×192 center.
+  // Each RLE byte: bits[2:0]=color, bits[7:3]=tactsCode.
+  // tactsCode: 0=fill to end of segment, 1=next byte is count,
+  //   2=count is 12, >=3=count is tactsCode+13. Final pixels = count*2.
+  const raw = new Uint8Array(BSC.BORDER_SIZE); // 4224
+
+  const maxWidth = 384;  // 256 + 64*2
+  const maxHeight = 304; // 192 + 64 + 48
+  const borderLeft = 64;
+  const borderTop = 64;
+  const screenWidth = 256;
+
+  // Build per-pixel color map for border area
+  // Use x,y cursor like the reference implementation
+  let x = 0;
+  let y = 0;
+  let inCenter = false;
+  let pos = offset;
+  const end = offset + maxLen;
+
+  // borderData[y][x] = color (3-bit)
+  // Instead of a full 384×304 array, write directly to BSC raw format
+  // We'll collect pixels into a flat border pixel buffer first
+  const borderPixels = new Uint8Array(384 * 304); // oversized, only border pixels used
+
+  while (pos < end && y < maxHeight) {
+    const b = data[pos++];
+    const color = b & 7;
+    const tactsCode = (b >> 3) & 0x1F;
+
+    let count;
+    let untilEnd = false;
+    if (tactsCode === 0) {
+      untilEnd = true;
+      count = 0; // unused when untilEnd
+    } else if (tactsCode === 1) {
+      if (pos >= end) break;
+      count = data[pos++] * 2;
+    } else if (tactsCode === 2) {
+      count = 12 * 2;
+    } else {
+      count = (tactsCode + 13) * 2;
+    }
+
+    let remaining = count;
+    while ((untilEnd || remaining > 0) && y < maxHeight) {
+      borderPixels[y * maxWidth + x] = color;
+      x++;
+      remaining--;
+
+      // In center rows, skip from left border edge to right border edge
+      if (inCenter && x === borderLeft) {
+        x = borderLeft + screenWidth;
+        if (untilEnd) {
+          untilEnd = false;
+          remaining = 0; // stop fill-to-end at center skip
+        }
+      }
+      if (x >= maxWidth) {
+        if (untilEnd) {
+          untilEnd = false;
+          remaining = 0;
+        }
+        x = 0;
+        y++;
+        inCenter = (y >= borderTop && y < maxHeight - 48);
+      }
+    }
+  }
+
+  // Convert pixel map to BSC raw format
+  // BSC layout: top(64 lines × 24 bytes) + sides(192 lines × 8 bytes) + bottom(48 lines × 24 bytes)
+  // Each byte: bits[2:0] = first 8-pixel color, bits[5:3] = second 8-pixel color
+
+  // Top border: 64 lines, each 384 pixels = 24 bytes (each byte = 16px)
+  for (let line = 0; line < 64; line++) {
+    for (let col = 0; col < 24; col++) {
+      const px = col * 16;
+      const c1 = borderPixels[line * maxWidth + px] & 7;
+      const c2 = borderPixels[line * maxWidth + px + 8] & 7;
+      raw[line * 24 + col] = c1 | (c2 << 3);
+    }
+  }
+
+  // Sides: 192 lines, left 64px (4 bytes) + right 64px (4 bytes) = 8 bytes per line
+  const sidesOffset = 1536;
+  for (let line = 0; line < 192; line++) {
+    const srcY = 64 + line;
+    // Left 4 bytes (64 pixels)
+    for (let col = 0; col < 4; col++) {
+      const px = col * 16;
+      const c1 = borderPixels[srcY * maxWidth + px] & 7;
+      const c2 = borderPixels[srcY * maxWidth + px + 8] & 7;
+      raw[sidesOffset + line * 8 + col] = c1 | (c2 << 3);
+    }
+    // Right 4 bytes (64 pixels)
+    for (let col = 0; col < 4; col++) {
+      const px = (borderLeft + screenWidth) + col * 16;
+      const c1 = borderPixels[srcY * maxWidth + px] & 7;
+      const c2 = borderPixels[srcY * maxWidth + px + 8] & 7;
+      raw[sidesOffset + line * 8 + 4 + col] = c1 | (c2 << 3);
+    }
+  }
+
+  // Bottom border: 48 lines, each 384 pixels = 24 bytes
+  const bottomOffset = 1536 + 1536;
+  for (let line = 0; line < 48; line++) {
+    const srcY = 64 + 192 + line;
+    for (let col = 0; col < 24; col++) {
+      const px = col * 16;
+      const c1 = borderPixels[srcY * maxWidth + px] & 7;
+      const c2 = borderPixels[srcY * maxWidth + px + 8] & 7;
+      raw[bottomOffset + line * 24 + col] = c1 | (c2 << 3);
+    }
+  }
+
+  return raw;
+}
+
+/**
+ * Encodes raw 4224-byte BSC border data into BSP RLE format.
+ * Reverse of decodeBspBorder. RLE operates on individual pixels in
+ * 384×304 border coordinate space, skipping the 256×192 center area.
+ * @param {Uint8Array} rawBorder - 4224-byte BSC border
+ * @returns {Uint8Array} RLE-encoded bytes
+ */
+function encodeBspBorder(rawBorder) {
+  const maxWidth = 384;
+  const borderLeft = 64;
+  const screenWidth = 256;
+
+  // Build a pixel stream from BSC raw border (border-only pixels in scan order)
+  // Each BSC byte: bits[2:0]=first 8px color, bits[5:3]=second 8px color
+  const pixels = [];
+
+  // Top: 64 lines, full width (384px = 24 bytes per line)
+  for (let line = 0; line < 64; line++) {
+    for (let col = 0; col < 24; col++) {
+      const b = rawBorder[line * 24 + col];
+      const c1 = b & 7;
+      const c2 = (b >> 3) & 7;
+      for (let p = 0; p < 8; p++) pixels.push(c1);
+      for (let p = 0; p < 8; p++) pixels.push(c2);
+    }
+  }
+
+  // Sides: 192 lines, left 64px (4 bytes) + right 64px (4 bytes)
+  for (let line = 0; line < 192; line++) {
+    // Left
+    for (let col = 0; col < 4; col++) {
+      const b = rawBorder[1536 + line * 8 + col];
+      const c1 = b & 7;
+      const c2 = (b >> 3) & 7;
+      for (let p = 0; p < 8; p++) pixels.push(c1);
+      for (let p = 0; p < 8; p++) pixels.push(c2);
+    }
+    // Right
+    for (let col = 0; col < 4; col++) {
+      const b = rawBorder[1536 + line * 8 + 4 + col];
+      const c1 = b & 7;
+      const c2 = (b >> 3) & 7;
+      for (let p = 0; p < 8; p++) pixels.push(c1);
+      for (let p = 0; p < 8; p++) pixels.push(c2);
+    }
+  }
+
+  // Bottom: 48 lines, full width (384px = 24 bytes per line)
+  for (let line = 0; line < 48; line++) {
+    for (let col = 0; col < 24; col++) {
+      const b = rawBorder[3072 + line * 24 + col];
+      const c1 = b & 7;
+      const c2 = (b >> 3) & 7;
+      for (let p = 0; p < 8; p++) pixels.push(c1);
+      for (let p = 0; p < 8; p++) pixels.push(c2);
+    }
+  }
+
+  // Build segment boundaries (pixels per segment in the stream)
+  // Top: 64 full lines of 384px, Sides: 192 lines of 128px (64+64),
+  // Bottom: 48 full lines of 384px
+  const segments = [];
+  for (let i = 0; i < 64; i++) segments.push(384);
+  for (let i = 0; i < 192; i++) segments.push(64, 64); // left strip, right strip
+  for (let i = 0; i < 48; i++) segments.push(384);
+
+  // RLE encode pixel stream using segment boundaries for tactsCode=0
+  const result = [];
+  let pixIdx = 0;
+  let segIdx = 0;
+  let segUsed = 0;
+
+  while (pixIdx < pixels.length && segIdx < segments.length) {
+    const segLen = segments[segIdx];
+    const segRemaining = segLen - segUsed;
+    if (segRemaining <= 0) {
+      segUsed = 0;
+      segIdx++;
+      continue;
+    }
+
+    const color = pixels[pixIdx];
+    // Count consecutive same-color pixels within current segment
+    let run = 0;
+    while (run < segRemaining && (pixIdx + run) < pixels.length && pixels[pixIdx + run] === color) {
+      run++;
+    }
+
+    if (run >= segRemaining) {
+      // Fill rest of segment: tactsCode=0
+      result.push(color & 7); // tactsCode=0, color
+      pixIdx += segRemaining;
+      segUsed = 0;
+      segIdx++;
+    } else if (run >= 2) {
+      // Encode as RLE. count = run (round down to even)
+      const evenRun = run & ~1;
+      if (evenRun < 2) {
+        // Can't encode single pixel, use tactsCode=1, count=1 (2 pixels)
+        result.push((1 << 3) | (color & 7));
+        result.push(1);
+        pixIdx += 2;
+        segUsed += 2;
+      } else {
+        const half = evenRun >> 1; // pixels = half * 2
+        // Find best encoding
+        if (half === 12) {
+          // tactsCode=2 → 12*2=24 pixels
+          result.push((2 << 3) | (color & 7));
+        } else if (half >= 16 && half <= 44) {
+          // tactsCode=half-13 (3..31) → (tactsCode+13)*2 pixels
+          const tc = half - 13;
+          if (tc >= 3 && tc <= 31) {
+            result.push((tc << 3) | (color & 7));
+          } else {
+            result.push((1 << 3) | (color & 7));
+            result.push(half);
+          }
+        } else {
+          // tactsCode=1, next byte=half
+          result.push((1 << 3) | (color & 7));
+          result.push(half);
+        }
+        pixIdx += evenRun;
+        segUsed += evenRun;
+      }
+    } else {
+      // Single pixel run — encode as 2 pixels (minimum)
+      result.push((1 << 3) | (color & 7));
+      result.push(1);
+      pixIdx += Math.min(2, run);
+      segUsed += Math.min(2, run);
+    }
+
+    if (segIdx < segments.length && segUsed >= segments[segIdx]) {
+      segUsed = 0;
+      segIdx++;
+    }
+  }
+
+  return new Uint8Array(result);
+}
+
+/**
+ * Loads a BSP (Border Screen with Header) file.
+ * Supports 4 variants: screen-only, screen+border, gigascreen, gigascreen+border.
+ * @param {File} file
+ */
+function loadBspFile(file) {
+  const reader = new FileReader();
+
+  reader.addEventListener('load', function(event) {
+    const buffer = event.target?.result;
+    if (!(buffer instanceof ArrayBuffer)) return;
+
+    const fileBytes = new Uint8Array(buffer);
+    if (fileBytes.length < BSP.HEADER_SIZE) {
+      alert('Invalid BSP file: too short.');
+      return;
+    }
+
+    const header = parseBspHeader(fileBytes);
+    if (!header) {
+      alert('Invalid BSP file: bad magic or header.');
+      return;
+    }
+
+    stopFlashTimer();
+    resetScaState();
+
+    if (typeof saveCurrentPictureState === 'function') {
+      saveCurrentPictureState();
+    }
+
+    const dataOffset = BSP.HEADER_SIZE; // 70
+    const hasGiga = header.hasGiga;
+    const hasBorder = header.hasBorder;
+
+    let data;
+    let newInternalPicture = null;
+
+    if (!hasGiga && !hasBorder) {
+      // Screen only: 6912 bytes
+      data = new Uint8Array(SCREEN.TOTAL_SIZE);
+      data.set(fileBytes.subarray(dataOffset, dataOffset + SCREEN.TOTAL_SIZE));
+
+      if (typeof importBsp === 'function') {
+        newInternalPicture = importBsp(fileBytes, file.name);
+      }
+
+    } else if (!hasGiga && hasBorder) {
+      // Screen + border: use BSC layout (11136 bytes)
+      data = new Uint8Array(BSC.TOTAL_SIZE);
+      // Copy screen (6912 bytes)
+      data.set(fileBytes.subarray(dataOffset, dataOffset + SCREEN.TOTAL_SIZE));
+      // Decode RLE border → raw 4224 at offset 6912
+      const borderRaw = decodeBspBorder(fileBytes, dataOffset + SCREEN.TOTAL_SIZE,
+        fileBytes.length - dataOffset - SCREEN.TOTAL_SIZE);
+      data.set(borderRaw, BSC.BORDER_OFFSET);
+
+      if (typeof importBsp === 'function') {
+        newInternalPicture = importBsp(fileBytes, file.name);
+      }
+
+    } else if (hasGiga && !hasBorder) {
+      // Gigascreen: 2 × 6912 = 13824 bytes (IMG layout)
+      const totalSize = SCREEN.TOTAL_SIZE * 2;
+      data = new Uint8Array(totalSize);
+      data.set(fileBytes.subarray(dataOffset, dataOffset + totalSize));
+
+      if (typeof importBsp === 'function') {
+        newInternalPicture = importBsp(fileBytes, file.name);
+      }
+
+    } else {
+      // Gigascreen + border
+      // Layout: [header:70][secondBorderOffset:2][screen1:6912][screen2:6912][border1_RLE][border2_RLE]
+      const screensStart = dataOffset + 2; // offset 72, after 2-byte secondBorderOffset
+      const totalSize = SCREEN.TOTAL_SIZE * 2;
+      data = new Uint8Array(totalSize);
+      data.set(fileBytes.subarray(screensStart, screensStart + totalSize));
+
+      if (typeof importBsp === 'function') {
+        newInternalPicture = importBsp(fileBytes, file.name);
+      }
+    }
+
+    initUlaPlusMode(data, FORMAT.UNKNOWN);
+
+    // Store BSP metadata on picture
+    if (newInternalPicture) {
+      newInternalPicture.bspTitle = header.title;
+      newInternalPicture.bspAuthor = header.author;
+      newInternalPicture.bspConfig = header.config;
+      newInternalPicture.bspBorderColor = header.borderColor;
+    }
+
+    if (typeof addPicture === 'function') {
+      const pictureResult = addPicture(file.name, FORMAT.BSP, data, newInternalPicture, true);
+      if (pictureResult >= 0) {
+        updateFlashTimer();
+        return;
+      }
+    }
+
+    screenData = data;
+    currentFileName = file.name;
+    currentFormat = FORMAT.BSP;
     currentPicture = newInternalPicture;
 
     toggleScaControlsVisibility();
