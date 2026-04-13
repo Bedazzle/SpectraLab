@@ -208,24 +208,6 @@ function generateIflAsm(iflData, baseName = 'ifl', embedData = true) {
   return { asm: asm.join('\n') };
 }
 
-function generateTestIfl() {
-  const data = new Uint8Array(9216);
-  // White bitmap (all pixels set)
-  for (let i = 0; i < 6144; i++) data[i] = 0xFF;
-  // Alternating red/blue attrs per row
-  for (let row = 0; row < 96; row++) {
-    const offset = 6144 + row * 32;
-    const color = (row % 2 === 0) ? 0x02 : 0x01; // red=2, blue=1
-    for (let col = 0; col < 32; col++) data[offset + col] = color;
-  }
-  return data;
-}
-
-function downloadTestIfl() {
-  const testData = generateTestIfl();
-  downloadFile(new Blob([testData], { type: 'application/octet-stream' }), 'timing-test.ifl');
-}
-
 function exportIflAsm() {
   if (currentFormat !== FORMAT.IFL || !screenData || screenData.length < 9216) {
     alert('Export ASM is only available for IFL (8x2 multicolor) format.');

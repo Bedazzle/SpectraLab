@@ -442,63 +442,6 @@ function splitFramesToSprites() {
   if (spriteEditorOpen) renderSpriteEditor();
 }
 
-function mergeSpritesToFrames() {
-  const sprite = getSelectedSprite();
-  if (!sprite) return;
-  const idx = selectedSpriteIndex;
-  // Find consecutive compatible sprites
-  let count = 1;
-  for (let i = idx + 1; i < spriteSheet.sprites.length; i++) {
-    const s = spriteSheet.sprites[i];
-    if (s.cellsW === sprite.cellsW && s.cellsH === sprite.cellsH && s.mode === sprite.mode) {
-      count++;
-    } else {
-      break;
-    }
-  }
-  if (count <= 1) {
-    alert('No compatible consecutive sprites to merge (need same dimensions and mode).');
-    return;
-  }
-  const firstName = spriteSheet.sprites[idx].name;
-  const lastName = spriteSheet.sprites[idx + count - 1].name;
-  if (!confirm('Merge ' + count + ' sprites (' + firstName + ' .. ' + lastName + ') into one sprite with multiple frames?')) {
-    return;
-  }
-  // Collect all frames
-  const mergedFrames = [];
-  for (let i = idx; i < idx + count; i++) {
-    for (const frame of spriteSheet.sprites[i].frames) {
-      mergedFrames.push(deepCopyFrame(frame));
-    }
-  }
-  const merged = {
-    name: firstName,
-    cellsW: sprite.cellsW,
-    cellsH: sprite.cellsH,
-    mode: sprite.mode,
-    frames: mergedFrames
-  };
-  // Replace the range with the single merged sprite
-  spriteSheet.sprites.splice(idx, count, merged);
-  setActiveSprite(idx);
-  currentFrameIndex = 0;
-  updateSpriteList();
-  updateSpriteProps();
-  if (spriteEditorOpen) renderSpriteEditor();
-}
-
-function selectSprite(index) {
-  if (index < 0 || index >= spriteSheet.sprites.length) return;
-  setActiveSprite(index);
-  currentFrameIndex = 0;
-  spriteUndoStack = [];
-  spriteRedoStack = [];
-  updateSpriteListSelection();
-  updateSpriteProps();
-  if (spriteEditorOpen) renderSpriteEditor();
-}
-
 function getSelectedSprite() {
   if (selectedSpriteIndex < 0 || selectedSpriteIndex >= spriteSheet.sprites.length) return null;
   return spriteSheet.sprites[selectedSpriteIndex];

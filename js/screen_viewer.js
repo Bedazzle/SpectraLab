@@ -123,7 +123,9 @@ const FORMAT = {
   MGH: 'mgh',             // Multiartist MGH multicolor gigascreen (.mg1/.mg2/.mg4/.mg8)
   HLR: 'hlr',             // Gigascreen Lowres (1628-byte self-extracting .hlr)
   STL: 'stl',             // Stellar (64×48 multicolor + gigascreen, 3072 bytes)
-  BSP: 'bsp'              // BSP (header + screen + optional border + optional gigascreen)
+  BSP: 'bsp',             // BSP (header + screen + optional border + optional gigascreen)
+  NXI: 'nxi',             // ZX Spectrum Next Layer 2 with embedded palette (49664 bytes)
+  SL2: 'sl2'              // ZX Spectrum Next Layer 2 raw pixels (49152 or 49280 bytes)
 };
 
 // SPECSCII format constants
@@ -200,7 +202,8 @@ const GIGASCREEN = {
 // Gigascreen display modes
 const GIGASCREEN_MODE = {
   AVERAGE: 'average',     // Blend colors by averaging RGB values
-  FLICKER: 'flicker'      // Alternate frames at 50fps
+  FLICKER: 'flicker',     // Alternate frames at 50fps
+  BLEND_DARK: 'blend_dark' // Blend using minimum (darker) RGB values
 };
 
 // MGH format constants (Multiartist multicolor gigascreen)
@@ -259,6 +262,80 @@ const BSP = {
   TITLE_OFFSET: 6, TITLE_LENGTH: 32,
   AUTHOR_OFFSET: 38, AUTHOR_LENGTH: 32
 };
+
+// NXI format constants (ZX Spectrum Next Layer 2 with palette)
+// 256×192: 512-byte palette (256×2 RGB333) + 49152 pixels = 49664 bytes, row-major
+// 320×256: 512-byte palette (256×2 RGB333) + 81920 pixels = 82432 bytes, column-major
+// 640×256:  32-byte palette (16×2  RGB333) + 81920 pixels = 81952 bytes, column-major, 4bpp
+const NXI = {
+  TOTAL_SIZE: 49664,
+  TOTAL_SIZE_320: 82432,
+  TOTAL_SIZE_640: 81952,
+  PALETTE_SIZE: 512,
+  PALETTE_SIZE_4BPP: 32,
+  PALETTE_ENTRIES: 256,
+  PALETTE_ENTRIES_4BPP: 16,
+  PIXEL_OFFSET: 512,
+  PIXEL_OFFSET_4BPP: 32,
+  WIDTH: 256, HEIGHT: 192,
+  WIDTH_320: 320, HEIGHT_320: 256,
+  WIDTH_640: 640, HEIGHT_640: 256,
+  PIXEL_DATA_SIZE_EXT: 81920
+};
+
+// SL2 format constants (ZX Spectrum Next Layer 2 raw pixels)
+// No palette — uses default Next identity RGB332 mapping
+// Raw = 49152 bytes; with 128-byte header = 49280 bytes
+// Extended = 81920 bytes (ambiguous: 320×256 8bpp or 640×256 4bpp)
+const SL2 = {
+  RAW_SIZE: 49152,
+  HEADER_SIZE: 49280,
+  HEADER_OFFSET: 128,
+  EXT_SIZE: 81920,
+  WIDTH: 256, HEIGHT: 192,
+  WIDTH_320: 320, HEIGHT_320: 256,
+  WIDTH_640: 640, HEIGHT_640: 256
+};
+
+/**
+ * Returns the pixel data offset within screenData for NXI/SL2 formats.
+ * @returns {number}
+ */
+function getNxiPixelOffset() {
+  if (currentFormat === FORMAT.NXI) {
+    return nxiLayer2Mode === '640x256' ? NXI.PIXEL_OFFSET_4BPP : NXI.PIXEL_OFFSET;
+  }
+  if (currentFormat === FORMAT.SL2) {
+    if (nxiLayer2Mode !== '256x192') return 0; // extended SL2 has no header
+    return screenData.length === SL2.HEADER_SIZE ? SL2.HEADER_OFFSET : 0;
+  }
+  return 0;
+}
+
+/**
+ * Returns the flat pixel index within the pixel data area for NXI/SL2 formats.
+ * Handles row-major (256×192) and column-major (320×256, 640×256) addressing.
+ * For 640×256 4bpp, returns the BYTE index (each byte holds 2 pixels).
+ * @param {number} x - pixel X coordinate
+ * @param {number} y - pixel Y coordinate
+ * @returns {number} byte offset within pixel data
+ */
+function getNxiPixelIndex(x, y) {
+  if (nxiLayer2Mode === '320x256') return x * 256 + y;        // column-major 8bpp
+  if (nxiLayer2Mode === '640x256') return (x >> 1) * 256 + y; // column-major 4bpp (byte index)
+  return y * 256 + x;                                          // row-major 8bpp (256×192)
+}
+
+/**
+ * Returns the vertical display scale factor for the current format.
+ * 640×256 Layer 2 pixels are displayed 2× tall to match the real hardware
+ * aspect ratio (pixels are half-width on the Next, so we double the height).
+ * @returns {number} 1 for all formats except 640×256 which returns 2
+ */
+function getPixelScaleY() {
+  if ((currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) && nxiLayer2Mode === '640x256') return 2;
+  return 1;
+}
 
 // BMC4 format constants (border + 8x4 multicolor)
 // Layout: bitmap + attr1 + attr2 + border
@@ -634,6 +711,12 @@ let currentFileName = '';
 /** @type {string} */
 let currentFormat = FORMAT.UNKNOWN;
 
+/** @type {number[][]|null} - Resolved NXI/SL2 palette (256 entries of [r,g,b], or 16 for 4bpp) */
+let nxiResolvedPalette = null;
+
+/** @type {'256x192'|'320x256'|'640x256'} - Current NXI/SL2 Layer 2 mode */
+let nxiLayer2Mode = '256x192';
+
 /** @type {boolean} - Current flash phase (false = normal, true = swapped) */
 let flashPhase = false;
 
@@ -856,8 +939,8 @@ let fontInfo;
 /** @type {HTMLSelectElement} */
 let pattern53cSelect;
 
-/** @type {boolean} - RGB3 flicker emulation enabled */
-let rgb3FlickerEnabled = false;
+/** @type {string} - RGB3 display mode: 'blend', 'flicker', or 'blend_dark' */
+let rgb3Mode = 'blend_dark';
 
 /** @type {number} - Current RGB3 flicker phase (0=R, 1=G, 2=B) */
 let rgb3FlickerPhase = 0;
@@ -868,8 +951,8 @@ let rgb3FlickerFrameId = null;
 /** @type {number} - Last RGB3 flicker frame timestamp */
 let rgb3FlickerLastTime = 0;
 
-/** @type {string} - Gigascreen display mode: 'average', 'opacity', or 'flicker' */
-let gigascreenMode = GIGASCREEN_MODE.AVERAGE;
+/** @type {string} - Gigascreen display mode: 'average', 'flicker', or 'blend_dark' */
+let gigascreenMode = GIGASCREEN_MODE.BLEND_DARK;
 
 /** @type {number} - Current Gigascreen flicker phase (0 or 1) */
 let gigascreenFlickerPhase = 0;
@@ -882,6 +965,14 @@ let gigascreenFlickerLastTime = 0;
 
 /** @type {number} - Flicker frame interval in ms (20ms = 50Hz) */
 const FLICKER_INTERVAL_MS = 20;
+
+/**
+ * CRT darkening factor for "blend dark" mode.
+ * On real hardware each frame includes a vertical retrace period (~32 of 320
+ * lines on Pentagon 128K) during which the beam is blanked. Over a multi-frame
+ * cycle this reduces perceived brightness compared to an ideal static LCD.
+ */
+const CRT_DARK_FACTOR = 0.8;
 
 /**
  * Caches DOM element references for performance
@@ -936,30 +1027,6 @@ function getColorIndices(attr) {
   }
 
   return { inkIndex, paperIndex, isBright };
-}
-
-/**
- * Gets ink and paper colors from attribute byte
- * @param {number} attr - Attribute byte
- * @returns {{ink: string, paper: string}} Color values
- */
-function getColors(attr) {
-  // ULA+ mode uses 64-color palette
-  if (isUlaPlusMode && ulaPlusPalette) {
-    const inkIdx = getUlaPlusPaletteIndex(attr, true);
-    const paperIdx = getUlaPlusPaletteIndex(attr, false);
-    const inkRgb = getUlaPlusColor(inkIdx);
-    const paperRgb = getUlaPlusColor(paperIdx);
-    return {
-      ink: `rgb(${inkRgb[0]},${inkRgb[1]},${inkRgb[2]})`,
-      paper: `rgb(${paperRgb[0]},${paperRgb[1]},${paperRgb[2]})`
-    };
-  }
-
-  // Standard ZX Spectrum mode
-  const { inkIndex, paperIndex, isBright } = getColorIndices(attr);
-  const palette = isBright ? ZX_PALETTE.BRIGHT : ZX_PALETTE.REGULAR;
-  return { ink: palette[inkIndex], paper: palette[paperIndex] };
 }
 
 // ============================================================================
@@ -1141,72 +1208,6 @@ function renderScrFast(ctx, borderOffset) {
 }
 
 /**
- * Renders SCR format from the internal picture format (linear bitmap layout).
- * Reads from currentPicture.planes[0].bitmap and .attrs with linear offsets.
- * Produces pixel-identical output to renderScrFast.
- * @param {CanvasRenderingContext2D} ctx - Canvas context
- * @param {number} borderOffset - Border offset in canvas pixels
- */
-function renderScrFromPicture(ctx, borderOffset) {
-  if (!currentPicture) return;
-
-  // Sync from screenData so in-progress drawing is visible immediately
-  if (typeof syncPictureFromScreenData === 'function') {
-    syncPictureFromScreenData(screenData, currentPicture);
-  }
-
-  const bitmap = currentPicture.planes[0].bitmap;
-  const attrs = currentPicture.planes[0].attrs;
-  const cols = currentPicture.cols; // 32
-
-  const imageData = ctx.createImageData(SCREEN.WIDTH, SCREEN.HEIGHT);
-  const data = imageData.data;
-
-  for (let y = 0; y < SCREEN.HEIGHT; y++) {
-    const attrRow = y >> 3; // Math.floor(y / 8)
-    for (let col = 0; col < cols; col++) {
-      const byte = bitmap[y * cols + col];
-      const attr = attrs[attrRow * cols + col];
-
-      let inkRgb, paperRgb;
-      if (showAttributes) {
-        ({ inkRgb, paperRgb } = getColorsRgb(attr));
-      } else {
-        inkRgb = [0, 0, 0];
-        paperRgb = [255, 255, 255];
-      }
-
-      const x = col * 8;
-      for (let bit = 0; bit < 8; bit++) {
-        const px = x + bit;
-        const maskIdx = y * SCREEN.WIDTH + px;
-        const pixelIndex = maskIdx * 4;
-
-        const rgb = isPixelTransparent(maskIdx)
-          ? getCheckerboardColor(px, y)
-          : ((byte & (0x80 >> bit)) ? inkRgb : paperRgb);
-        data[pixelIndex] = rgb[0];
-        data[pixelIndex + 1] = rgb[1];
-        data[pixelIndex + 2] = rgb[2];
-        data[pixelIndex + 3] = 255;
-      }
-    }
-  }
-
-  const temp = getTempRenderCanvas(SCREEN.WIDTH, SCREEN.HEIGHT);
-  if (!temp) return;
-
-  temp.ctx.putImageData(imageData, 0, 0);
-
-  applyRenderSmoothing(ctx);
-  ctx.drawImage(
-    temp.canvas,
-    0, 0, SCREEN.WIDTH, SCREEN.HEIGHT,
-    borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom
-  );
-}
-
-/**
  * Renders any single-plane Picture from the internal linear layout.
  * Covers SCR, SCR+/ULA+, IFL, MLT, 53c (pattern), and Mono formats.
  * Parametric on attrCellHeight: 8=SCR, 2=IFL, 1=MLT, 0=Mono/no-attrs.
@@ -1378,22 +1379,6 @@ function renderPictureStandard(ctx, borderOffset, pic, scrollInfo) {
   }
 }
 
-/**
- * Toggles attribute display on/off and re-renders
- */
-function toggleAttributes() {
-  showAttributes = !showAttributes;
-  const cb = document.getElementById('showAttrsCheckbox');
-  if (cb) /** @type {HTMLInputElement} */ (cb).checked = showAttributes;
-  renderScreen();
-}
-
-/**
- * Renders a 53c format screen (attribute-only with pattern bitmap)
- * In 53c format, each 8x8 cell shows a dither pattern using ink and paper colors
- * @param {CanvasRenderingContext2D} ctx - Canvas context
- * @param {number} borderOffset - Border offset in canvas pixels
- */
 /**
  * Returns the selected fill pattern array (8 bytes) based on the pattern dropdown.
  * For SCA type 1 "file" option, returns the embedded fill pattern from the SCA header.
@@ -1627,22 +1612,35 @@ function renderRgb3Screen(ctx, borderOffset) {
   const imageData = ctx.createImageData(SCREEN.WIDTH, SCREEN.HEIGHT);
   const data = imageData.data;
 
-  // Precompute 8 blended RGB3 colors from current palette.
-  // Each bitplane flickers through black: perceived = average of 3 frames.
-  const black = ZX_PALETTE_RGB.BRIGHT[0];
+  // Precompute 8 RGB3 colors from current palette.
+  // Blend: direct RGB channel mapping — each plane controls its R/G/B channel.
+  // Blend dark: average of 3 CRT frames (each shows one color against black),
+  //   darkened by CRT_DARK_FACTOR for retrace blanking.
+  const isBlendDark = rgb3Mode === 'blend_dark';
   const palBlue = ZX_PALETTE_RGB.BRIGHT[1];
   const palRed = ZX_PALETTE_RGB.BRIGHT[2];
   const palGreen = ZX_PALETTE_RGB.BRIGHT[4];
   const rgb3Lut = new Array(8);
-  for (let i = 0; i < 8; i++) {
-    const fR = (i & 2) ? palRed : black;
-    const fG = (i & 4) ? palGreen : black;
-    const fB = (i & 1) ? palBlue : black;
-    rgb3Lut[i] = [
-      Math.round((fR[0] + fG[0] + fB[0]) / 3),
-      Math.round((fR[1] + fG[1] + fB[1]) / 3),
-      Math.round((fR[2] + fG[2] + fB[2]) / 3)
-    ];
+  if (isBlendDark) {
+    const black = ZX_PALETTE_RGB.BRIGHT[0];
+    for (let i = 0; i < 8; i++) {
+      const fR = (i & 2) ? palRed : black;
+      const fG = (i & 4) ? palGreen : black;
+      const fB = (i & 1) ? palBlue : black;
+      rgb3Lut[i] = [
+        Math.round((fR[0] + fG[0] + fB[0]) / 3 * CRT_DARK_FACTOR),
+        Math.round((fR[1] + fG[1] + fB[1]) / 3 * CRT_DARK_FACTOR),
+        Math.round((fR[2] + fG[2] + fB[2]) / 3 * CRT_DARK_FACTOR)
+      ];
+    }
+  } else {
+    for (let i = 0; i < 8; i++) {
+      rgb3Lut[i] = [
+        (i & 2) ? palRed[0] : 0,
+        (i & 4) ? palGreen[1] : 0,
+        (i & 1) ? palBlue[2] : 0
+      ];
+    }
   }
 
   // Process each pixel line from 0 to 191
@@ -1777,7 +1775,8 @@ function renderPictureRgb3(ctx, borderOffset, pic) {
   const imageData = ctx.createImageData(width, height);
   const data = imageData.data;
 
-  const isFlicker = rgb3FlickerEnabled && rgb3FlickerFrameId !== null;
+  const isFlicker = rgb3Mode === 'flicker' && rgb3FlickerFrameId !== null;
+  const isBlendDark = rgb3Mode === 'blend_dark';
 
   if (isFlicker) {
     // Flicker: show one bitplane based on phase
@@ -1815,21 +1814,31 @@ function renderPictureRgb3(ctx, borderOffset, pic) {
       }
     }
   } else {
-    // Average: combine 3 linear bitmaps with precomputed 8-color palette LUT
-    const black = ZX_PALETTE_RGB.BRIGHT[0];
+    // Blend: direct RGB channel mapping. Blend dark: average of 3 CRT frames.
     const palBlue = ZX_PALETTE_RGB.BRIGHT[1];
     const palRed = ZX_PALETTE_RGB.BRIGHT[2];
     const palGreen = ZX_PALETTE_RGB.BRIGHT[4];
     const rgb3Lut = new Array(8);
-    for (let i = 0; i < 8; i++) {
-      const fR = (i & 2) ? palRed : black;
-      const fG = (i & 4) ? palGreen : black;
-      const fB = (i & 1) ? palBlue : black;
-      rgb3Lut[i] = [
-        Math.round((fR[0] + fG[0] + fB[0]) / 3),
-        Math.round((fR[1] + fG[1] + fB[1]) / 3),
-        Math.round((fR[2] + fG[2] + fB[2]) / 3)
-      ];
+    if (isBlendDark) {
+      const black = ZX_PALETTE_RGB.BRIGHT[0];
+      for (let i = 0; i < 8; i++) {
+        const fR = (i & 2) ? palRed : black;
+        const fG = (i & 4) ? palGreen : black;
+        const fB = (i & 1) ? palBlue : black;
+        rgb3Lut[i] = [
+          Math.round((fR[0] + fG[0] + fB[0]) / 3 * CRT_DARK_FACTOR),
+          Math.round((fR[1] + fG[1] + fB[1]) / 3 * CRT_DARK_FACTOR),
+          Math.round((fR[2] + fG[2] + fB[2]) / 3 * CRT_DARK_FACTOR)
+        ];
+      }
+    } else {
+      for (let i = 0; i < 8; i++) {
+        rgb3Lut[i] = [
+          (i & 2) ? palRed[0] : 0,
+          (i & 4) ? palGreen[1] : 0,
+          (i & 1) ? palBlue[2] : 0
+        ];
+      }
     }
 
     const redBm = pic.planes[0].bitmap;
@@ -1918,18 +1927,16 @@ function stopRgb3Flicker() {
 }
 
 /**
- * Toggles RGB3 flicker emulation
- * @param {boolean} enabled
+ * Sets RGB3 display mode
+ * @param {string} mode - 'blend', 'flicker', or 'blend_dark'
  */
-function setRgb3FlickerEnabled(enabled) {
-  rgb3FlickerEnabled = enabled;
-  if (enabled && currentFormat === FORMAT.RGB3) {
+function setRgb3Mode(mode) {
+  stopRgb3Flicker();
+  rgb3Mode = mode;
+  if (mode === 'flicker' && currentFormat === FORMAT.RGB3) {
     startRgb3Flicker();
-  } else {
-    stopRgb3Flicker();
-    if (currentFormat === FORMAT.RGB3) {
-      renderScreen(); // Re-render with blended colors
-    }
+  } else if (currentFormat === FORMAT.RGB3) {
+    renderScreen();
   }
 }
 
@@ -1993,13 +2000,14 @@ function renderGigascreenFrame(ctx, borderOffset, frameIndex) {
 }
 
 /**
- * Renders Gigascreen with averaged colors (pristine blend)
+ * Renders Gigascreen with blended colors (average or dark blend)
  * @param {CanvasRenderingContext2D} ctx - Canvas context
  * @param {number} borderOffset - Border offset in canvas pixels
  */
 function renderGigascreenAverage(ctx, borderOffset) {
   const imageData = ctx.createImageData(SCREEN.WIDTH, SCREEN.HEIGHT);
   const data = imageData.data;
+  const darkMul = gigascreenMode === GIGASCREEN_MODE.BLEND_DARK ? CRT_DARK_FACTOR : 1;
 
   for (let y = 0; y < SCREEN.HEIGHT; y++) {
     const third = Math.floor(y / 64);
@@ -2030,10 +2038,9 @@ function renderGigascreenAverage(ctx, borderOffset) {
         const isInk2 = isBitSet(bitmap2, bit);
         const rgb2 = isInk2 ? colors2.inkRgb : colors2.paperRgb;
 
-        // Average the two colors
-        data[pixelIndex] = Math.round((rgb1[0] + rgb2[0]) / 2);
-        data[pixelIndex + 1] = Math.round((rgb1[1] + rgb2[1]) / 2);
-        data[pixelIndex + 2] = Math.round((rgb1[2] + rgb2[2]) / 2);
+        data[pixelIndex] = Math.round((rgb1[0] + rgb2[0]) / 2 * darkMul);
+        data[pixelIndex + 1] = Math.round((rgb1[1] + rgb2[1]) / 2 * darkMul);
+        data[pixelIndex + 2] = Math.round((rgb1[2] + rgb2[2]) / 2 * darkMul);
         data[pixelIndex + 3] = 255;
       }
     }
@@ -2092,13 +2099,14 @@ function getStlAttrFrames() {
 }
 
 /**
- * Renders STL with averaged gigascreen colors (pristine blend)
+ * Renders STL with blended gigascreen colors (average or dark blend)
  * @param {CanvasRenderingContext2D} ctx - Canvas context
  * @param {number} borderOffset - Border offset in canvas pixels
  */
 function renderStlAverage(ctx, borderOffset) {
   const imageData = ctx.createImageData(SCREEN.WIDTH, SCREEN.HEIGHT);
   const data = imageData.data;
+  const darkMul = gigascreenMode === GIGASCREEN_MODE.BLEND_DARK ? CRT_DARK_FACTOR : 1;
 
   const { frame1, frame2 } = getStlAttrFrames();
 
@@ -2113,15 +2121,15 @@ function renderStlAverage(ctx, borderOffset) {
       const colors1 = getColorsRgb(attr1);
       const colors2 = getColorsRgb(attr2);
 
-      // Left half (paper): average paper colors from both frames
-      const leftR = Math.round((colors1.paperRgb[0] + colors2.paperRgb[0]) / 2);
-      const leftG = Math.round((colors1.paperRgb[1] + colors2.paperRgb[1]) / 2);
-      const leftB = Math.round((colors1.paperRgb[2] + colors2.paperRgb[2]) / 2);
+      // Left half (paper): blend paper colors from both frames
+      const leftR = Math.round((colors1.paperRgb[0] + colors2.paperRgb[0]) / 2 * darkMul);
+      const leftG = Math.round((colors1.paperRgb[1] + colors2.paperRgb[1]) / 2 * darkMul);
+      const leftB = Math.round((colors1.paperRgb[2] + colors2.paperRgb[2]) / 2 * darkMul);
 
-      // Right half (ink): average ink colors from both frames
-      const rightR = Math.round((colors1.inkRgb[0] + colors2.inkRgb[0]) / 2);
-      const rightG = Math.round((colors1.inkRgb[1] + colors2.inkRgb[1]) / 2);
-      const rightB = Math.round((colors1.inkRgb[2] + colors2.inkRgb[2]) / 2);
+      // Right half (ink): blend ink colors from both frames
+      const rightR = Math.round((colors1.inkRgb[0] + colors2.inkRgb[0]) / 2 * darkMul);
+      const rightG = Math.round((colors1.inkRgb[1] + colors2.inkRgb[1]) / 2 * darkMul);
+      const rightB = Math.round((colors1.inkRgb[2] + colors2.inkRgb[2]) / 2 * darkMul);
 
       const baseX = col * 8;
       const baseY = row * STL.CELL_HEIGHT;
@@ -2256,7 +2264,8 @@ function renderPictureGigascreen(ctx, borderOffset, pic) {
       }
     }
   } else {
-    // Average: blend both planes
+    // Blend: average both planes, optionally darkened for CRT simulation
+    const darkMul = gigascreenMode === GIGASCREEN_MODE.BLEND_DARK ? CRT_DARK_FACTOR : 1;
     const bm1 = pic.planes[0].bitmap;
     const at1 = pic.planes[0].attrs;
     const bm2 = pic.planes[1].bitmap;
@@ -2278,9 +2287,9 @@ function renderPictureGigascreen(ctx, borderOffset, pic) {
           const rgb1 = (byte1 & mask) ? colors1.inkRgb : colors1.paperRgb;
           const rgb2 = (byte2 & mask) ? colors2.inkRgb : colors2.paperRgb;
 
-          data[pixelIndex] = Math.round((rgb1[0] + rgb2[0]) / 2);
-          data[pixelIndex + 1] = Math.round((rgb1[1] + rgb2[1]) / 2);
-          data[pixelIndex + 2] = Math.round((rgb1[2] + rgb2[2]) / 2);
+          data[pixelIndex] = Math.round((rgb1[0] + rgb2[0]) / 2 * darkMul);
+          data[pixelIndex + 1] = Math.round((rgb1[1] + rgb2[1]) / 2 * darkMul);
+          data[pixelIndex + 2] = Math.round((rgb1[2] + rgb2[2]) / 2 * darkMul);
           data[pixelIndex + 3] = 255;
         }
       }
@@ -2336,7 +2345,7 @@ function stopGigascreenFlicker() {
 
 /**
  * Sets Gigascreen display mode
- * @param {string} mode - 'average', 'opacity', or 'flicker'
+ * @param {string} mode - 'average', 'flicker', or 'blend_dark'
  */
 function setGigascreenMode(mode) {
   // Stop existing flicker if running
@@ -3429,6 +3438,7 @@ function renderBspGigaBorder(ctx) {
       }
     }
   } else {
+    const darkMul = gigascreenMode === GIGASCREEN_MODE.BLEND_DARK ? CRT_DARK_FACTOR : 1;
     const bm1 = pic.planes[0].bitmap;
     const at1 = pic.planes[0].attrs;
     const bm2 = pic.planes[1].bitmap;
@@ -3447,9 +3457,9 @@ function renderBspGigaBorder(ctx) {
           const mask = 0x80 >> bit;
           const rgb1 = (byte1 & mask) ? colors1.inkRgb : colors1.paperRgb;
           const rgb2 = (byte2 & mask) ? colors2.inkRgb : colors2.paperRgb;
-          idata[pixelIndex] = Math.round((rgb1[0] + rgb2[0]) / 2);
-          idata[pixelIndex + 1] = Math.round((rgb1[1] + rgb2[1]) / 2);
-          idata[pixelIndex + 2] = Math.round((rgb1[2] + rgb2[2]) / 2);
+          idata[pixelIndex] = Math.round((rgb1[0] + rgb2[0]) / 2 * darkMul);
+          idata[pixelIndex + 1] = Math.round((rgb1[1] + rgb2[1]) / 2 * darkMul);
+          idata[pixelIndex + 2] = Math.round((rgb1[2] + rgb2[2]) / 2 * darkMul);
           idata[pixelIndex + 3] = 255;
         }
       }
@@ -3844,15 +3854,18 @@ function toggleFormatControlsVisibility() {
   if (rgb3Controls) {
     rgb3Controls.style.display = (currentFormat === FORMAT.RGB3) ? 'flex' : 'none';
   }
-  // Handle RGB3 flicker: stop when switching away, start if checkbox is checked when switching to
+  // Handle RGB3 mode: stop flicker when switching away, start if mode is flicker when switching to
   if (currentFormat !== FORMAT.RGB3) {
     if (rgb3FlickerFrameId !== null) {
       stopRgb3Flicker();
     }
   } else {
-    // Switching to RGB3: start flicker if checkbox is checked
-    const flickerCheckbox = /** @type {HTMLInputElement|null} */ (document.getElementById('flickerRgb3Checkbox'));
-    if (flickerCheckbox && flickerCheckbox.checked && rgb3FlickerFrameId === null) {
+    // Switching to RGB3: sync mode from dropdown
+    const modeSelect = /** @type {HTMLSelectElement|null} */ (document.getElementById('rgb3ModeSelect'));
+    if (modeSelect) {
+      rgb3Mode = modeSelect.value;
+    }
+    if (rgb3Mode === 'flicker' && rgb3FlickerFrameId === null) {
       startRgb3Flicker();
     }
   }
@@ -3886,6 +3899,20 @@ function toggleFormatControlsVisibility() {
   if (scrEditorControls) {
     scrEditorControls.style.display = (currentFormat === FORMAT.SCR || currentFormat === FORMAT.SCR_ULAPLUS || currentFormat === FORMAT.ATTR_53C || currentFormat === FORMAT.BSC || currentFormat === FORMAT.IFL || currentFormat === FORMAT.MLT || currentFormat === FORMAT.BMC4 || currentFormat === FORMAT.RGB3 || currentFormat === FORMAT.MONO_FULL || currentFormat === FORMAT.MONO_2_3 || currentFormat === FORMAT.MONO_1_3 || currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) ? 'flex' : 'none';
   }
+  // Hide palette/flash/attrs controls for NXI/SL2 (no ZX attributes or palette)
+  const isNextLayer2 = currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2;
+  const paletteLabel = document.getElementById('paletteLabel');
+  if (paletteLabel) {
+    paletteLabel.style.display = isNextLayer2 ? 'none' : '';
+  }
+  const flashLabel = document.getElementById('flashLabel');
+  if (flashLabel) {
+    flashLabel.style.display = isNextLayer2 ? 'none' : '';
+  }
+  const attrsLabel = document.getElementById('attrsLabel');
+  if (attrsLabel) {
+    attrsLabel.style.display = isNextLayer2 ? 'none' : '';
+  }
   // Update ULA+ palette section visibility
   if (typeof updateUlaPlusSectionVisibility === 'function') {
     updateUlaPlusSectionVisibility();
@@ -3893,6 +3920,17 @@ function toggleFormatControlsVisibility() {
   // Update barcode section visibility (for border formats)
   if (typeof updateBarcodeVisibility === 'function') {
     updateBarcodeVisibility();
+  }
+  // Hide Sprites tab for formats that don't support ZX-style sprite extraction
+  const spritesTab = document.querySelector('.panel-tab[data-tab="sprites"]');
+  if (spritesTab) {
+    const hideSprites = isNextLayer2 || currentFormat === FORMAT.SCA;
+    /** @type {HTMLElement} */ (spritesTab).style.display = hideSprites ? 'none' : '';
+    // If sprites tab was active and now hidden, switch to View tab
+    if (hideSprites && spritesTab.classList.contains('active')) {
+      const viewTab = document.querySelector('.panel-tab[data-tab="view"]');
+      if (viewTab) /** @type {HTMLElement} */ (viewTab).click();
+    }
   }
 }
 
@@ -3994,7 +4032,7 @@ function getUlaPlusPaletteIndex(attr, isInk) {
 // ============================================================================
 
 /** @type {string[]} - List of supported file extensions */
-const SUPPORTED_EXTENSIONS = ['scr', '53c', 'atr', 'bsc', 'bsp', 'ifl', 'bmc4', 'mlt', 'mc', '3', 'img', 'mem', 'specscii', 'sca', 'sna', 'z80', 'btile', 'wtile', 'zxp', 'ch$', 'chr$', 'ch-', 'mg1', 'mg2', 'mg4', 'mg8', 'hlr', 'stl'];
+const SUPPORTED_EXTENSIONS = ['scr', '53c', 'atr', 'bsc', 'bsp', 'ifl', 'bmc4', 'mlt', 'mc', '3', 'img', 'mem', 'specscii', 'sca', 'sna', 'z80', 'btile', 'wtile', 'zxp', 'ch$', 'chr$', 'ch-', 'mg1', 'mg2', 'mg4', 'mg8', 'hlr', 'stl', 'nxi', 'sl2'];
 const IMAGE_EXTENSIONS = ['png', 'gif', 'jpg', 'jpeg', 'webp', 'bmp'];
 
 /** @type {JSZip|null} - Current loaded ZIP archive */
@@ -4215,6 +4253,26 @@ async function loadFileFromZip(fileName) {
       return;
     }
 
+    // Handle NXI files from ZIP (ZX Spectrum Next Layer 2 with palette)
+    if (typeof isNxiFile === 'function' && isNxiFile(fileName)) {
+      const blob = new Blob([arrayBuffer]);
+      const file = new File([blob], fileName);
+      if (typeof loadNxiFile === 'function') {
+        loadNxiFile(file);
+      }
+      return;
+    }
+
+    // Handle SL2 files from ZIP (ZX Spectrum Next Layer 2 raw pixels)
+    if (typeof isSl2File === 'function' && isSl2File(fileName)) {
+      const blob = new Blob([arrayBuffer]);
+      const file = new File([blob], fileName);
+      if (typeof loadSl2File === 'function') {
+        loadSl2File(file);
+      }
+      return;
+    }
+
     const format = detectFormat(fileName, data.length);
 
     // Check for invalid format (e.g., .img file with wrong size)
@@ -4366,10 +4424,12 @@ function renderScreen() {
   // BSC/BMC4 manage their own frame size (384×304) including borders
   const isBscLike = currentFormat === FORMAT.BSC || currentFormat === FORMAT.BMC4 ||
     (currentFormat === FORMAT.BSP && currentPicture && currentPicture.border);
-  const picW = currentPicture ? currentPicture.width : SCREEN.WIDTH;
-  const picH = currentPicture ? currentPicture.height : SCREEN.HEIGHT;
+  const defaultDims = getFormatDimensions(currentFormat);
+  const picW = currentPicture ? currentPicture.width : defaultDims.width;
+  const picH = currentPicture ? currentPicture.height : defaultDims.height;
+  const scaleY = getPixelScaleY();
   const logicalWidth = isBscLike ? BSC.FRAME_WIDTH * zoom : picW * zoom + borderPixels * 2;
-  const logicalHeight = isBscLike ? BSC.FRAME_HEIGHT * zoom : picH * zoom + borderPixels * 2;
+  const logicalHeight = isBscLike ? BSC.FRAME_HEIGHT * zoom : picH * scaleY * zoom + borderPixels * 2;
 
   // Canvas is capped to viewport size — never allocate huge canvases.
   // Wrapper div provides the logical size for scrollbars.
@@ -4543,6 +4603,9 @@ function renderScreen() {
       }
       if (typeof applyOverlayFilters === 'function') applyOverlayFilters();
       return;
+    } else if (currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) {
+      // NXI/SL2: ZX Spectrum Next Layer 2 (256-color indexed)
+      renderNxiScreen(ctx, borderPixels);
     } else if (currentFormat === FORMAT.STL) {
       // STL format: Stellar multicolor + gigascreen 64×48
       renderStlScreen(ctx, borderPixels);
@@ -4562,7 +4625,7 @@ function renderScreen() {
       renderMltScreen(ctx, borderPixels);
     } else if (currentFormat === FORMAT.RGB3) {
       // RGB3 format: tricolor RGB (legacy fallback)
-      if (rgb3FlickerEnabled && rgb3FlickerFrameId !== null) {
+      if (rgb3Mode === 'flicker' && rgb3FlickerFrameId !== null) {
         renderRgb3ScreenFlicker(ctx, borderPixels, rgb3FlickerPhase);
       } else {
         renderRgb3Screen(ctx, borderPixels);
@@ -4623,8 +4686,11 @@ function renderScreen() {
  * @param {number} [offsetY] - Y offset in canvas pixels (defaults to offsetX)
  */
 function drawCharGrid(ctx, offsetX, offsetY = offsetX) {
-  const width = currentPicture ? currentPicture.width : SCREEN.WIDTH;
-  const height = currentPicture ? currentPicture.height : SCREEN.HEIGHT;
+  const dims = getFormatDimensions(currentFormat);
+  const width = currentPicture ? currentPicture.width : dims.width;
+  const height = currentPicture ? currentPicture.height : dims.height;
+  const scaleY = getPixelScaleY();
+  const zoomY = zoom * scaleY;
 
   ctx.lineWidth = 1;
 
@@ -4638,7 +4704,7 @@ function drawCharGrid(ctx, offsetX, offsetY = offsetX) {
       if (gridSize > 0 && px % gridSize === 0) continue;
       ctx.beginPath();
       ctx.moveTo(offsetX + px * zoom, offsetY);
-      ctx.lineTo(offsetX + px * zoom, offsetY + height * zoom);
+      ctx.lineTo(offsetX + px * zoom, offsetY + height * zoomY);
       ctx.stroke();
     }
 
@@ -4647,8 +4713,8 @@ function drawCharGrid(ctx, offsetX, offsetY = offsetX) {
       // Skip if this line would be drawn by main grid
       if (gridSize > 0 && py % gridSize === 0) continue;
       ctx.beginPath();
-      ctx.moveTo(offsetX, offsetY + py * zoom);
-      ctx.lineTo(offsetX + width * zoom, offsetY + py * zoom);
+      ctx.moveTo(offsetX, offsetY + py * zoomY);
+      ctx.lineTo(offsetX + width * zoom, offsetY + py * zoomY);
       ctx.stroke();
     }
   }
@@ -4661,15 +4727,15 @@ function drawCharGrid(ctx, offsetX, offsetY = offsetX) {
     for (let px = 0; px <= width; px += gridSize) {
       ctx.beginPath();
       ctx.moveTo(offsetX + px * zoom, offsetY);
-      ctx.lineTo(offsetX + px * zoom, offsetY + height * zoom);
+      ctx.lineTo(offsetX + px * zoom, offsetY + height * zoomY);
       ctx.stroke();
     }
 
     // Horizontal grid lines
     for (let py = 0; py <= height; py += gridSize) {
       ctx.beginPath();
-      ctx.moveTo(offsetX, offsetY + py * zoom);
-      ctx.lineTo(offsetX + width * zoom, offsetY + py * zoom);
+      ctx.moveTo(offsetX, offsetY + py * zoomY);
+      ctx.lineTo(offsetX + width * zoom, offsetY + py * zoomY);
       ctx.stroke();
     }
   }
@@ -4724,12 +4790,15 @@ function drawMg1InnerBoundary(ctx, offset) {
  * @param {number} mainOffset - Offset to main screen area in canvas pixels
  */
 function drawStandardBorderGrid(ctx, mainOffset) {
-  const gridW = currentPicture ? currentPicture.width : SCREEN.WIDTH;
-  const gridH = currentPicture ? currentPicture.height : SCREEN.HEIGHT;
+  const dims = getFormatDimensions(currentFormat);
+  const gridW = currentPicture ? currentPicture.width : dims.width;
+  const gridH = currentPicture ? currentPicture.height : dims.height;
+  const scaleY = getPixelScaleY();
+  const zoomY = zoom * scaleY;
   const totalWidth = gridW * zoom + mainOffset * 2;
-  const totalHeight = gridH * zoom + mainOffset * 2;
+  const totalHeight = gridH * zoomY + mainOffset * 2;
   const mainRight = mainOffset + gridW * zoom;
-  const mainBottom = mainOffset + gridH * zoom;
+  const mainBottom = mainOffset + gridH * zoomY;
 
   // Helper to draw border grid lines with given step size
   const drawBorderGridLines = (step) => {
@@ -5016,6 +5085,14 @@ function getFormatName(format) {
       const border = currentPicture && currentPicture.border;
       return 'BSP (header' + (giga ? ' + gigascreen' : ' + screen') + (border ? ' + border' : '') + ')';
     }
+    case FORMAT.NXI:
+      if (nxiLayer2Mode === '320x256') return 'NXI (Next Layer 2 320\u00d7256)';
+      if (nxiLayer2Mode === '640x256') return 'NXI (Next Layer 2 640\u00d7256)';
+      return 'NXI (Next Layer 2 + palette)';
+    case FORMAT.SL2:
+      if (nxiLayer2Mode === '320x256') return 'SL2 (Next Layer 2 320\u00d7256)';
+      if (nxiLayer2Mode === '640x256') return 'SL2 (Next Layer 2 640\u00d7256)';
+      return 'SL2 (Next Layer 2)';
     default: return 'Unknown';
   }
 }
@@ -5046,6 +5123,11 @@ function getFormatDimensions(format) {
       return { width: SCREEN.WIDTH, height: SCREEN.HEIGHT };
     case FORMAT.STL:
       return { width: SCREEN.WIDTH, height: SCREEN.HEIGHT };
+    case FORMAT.NXI:
+    case FORMAT.SL2:
+      if (nxiLayer2Mode === '320x256') return { width: 320, height: 256 };
+      if (nxiLayer2Mode === '640x256') return { width: 640, height: 256 };
+      return { width: NXI.WIDTH, height: NXI.HEIGHT };
     case FORMAT.ZXP:
     case FORMAT.CHR:
       if (currentPicture) {
@@ -5508,6 +5590,20 @@ function detectFormat(fileName, fileSize) {
     return FORMAT.SCA;
   }
 
+  if (ext === 'nxi') {
+    if (fileSize === NXI.TOTAL_SIZE || fileSize === NXI.TOTAL_SIZE_320 || fileSize === NXI.TOTAL_SIZE_640) {
+      return FORMAT.NXI;
+    }
+    return FORMAT.UNKNOWN;
+  }
+
+  if (ext === 'sl2') {
+    if (fileSize === SL2.RAW_SIZE || fileSize === SL2.HEADER_SIZE || fileSize === SL2.EXT_SIZE) {
+      return FORMAT.SL2;
+    }
+    return FORMAT.UNKNOWN;
+  }
+
   // Check by size
   if (fileSize === SCREEN.ATTR_SIZE) {
     return FORMAT.ATTR_53C;
@@ -5539,6 +5635,10 @@ function detectFormat(fileName, fileSize) {
 
   if (fileSize === HLR.TOTAL_SIZE) {
     return FORMAT.HLR;
+  }
+
+  if (fileSize === NXI.TOTAL_SIZE || fileSize === NXI.TOTAL_SIZE_320 || fileSize === NXI.TOTAL_SIZE_640) {
+    return FORMAT.NXI;
   }
 
   if (fileSize === ULAPLUS.TOTAL_SIZE) {
@@ -6826,6 +6926,459 @@ function loadBspFile(file) {
   });
 
   reader.readAsArrayBuffer(file);
+}
+
+// ============================================================================
+// NXI / SL2 (ZX Spectrum Next Layer 2) format support
+// ============================================================================
+
+/**
+ * Checks if a file is an NXI file by extension
+ * @param {string} fileName
+ * @returns {boolean}
+ */
+function isNxiFile(fileName) {
+  return fileName.toLowerCase().endsWith('.nxi');
+}
+
+/**
+ * Checks if a file is an SL2 file by extension
+ * @param {string} fileName
+ * @returns {boolean}
+ */
+function isSl2File(fileName) {
+  return fileName.toLowerCase().endsWith('.sl2');
+}
+
+/**
+ * Parses a 512-byte NXI palette into 256 [r,g,b] entries.
+ * Each entry is 2 bytes: byte0 = RRRGGGBB, byte1 = P000000B (LSB of blue).
+ * RGB333 → RGB888: Math.round(v * 255 / 7).
+ * @param {Uint8Array} data - at least 512 bytes
+ * @returns {number[][]} 256 entries of [r, g, b]
+ */
+function parseNxiPalette(data) {
+  const palette = new Array(NXI.PALETTE_ENTRIES);
+  for (let i = 0; i < NXI.PALETTE_ENTRIES; i++) {
+    const byte0 = data[i * 2];
+    const byte1 = data[i * 2 + 1];
+    const r3 = (byte0 >> 5) & 7;
+    const g3 = (byte0 >> 2) & 7;
+    const b3 = ((byte0 & 3) << 1) | (byte1 & 1);
+    palette[i] = [
+      Math.round(r3 * 255 / 7),
+      Math.round(g3 * 255 / 7),
+      Math.round(b3 * 255 / 7)
+    ];
+  }
+  return palette;
+}
+
+/**
+ * Generates the default ZX Spectrum Next identity RGB332 palette (256 entries).
+ * Index i = RRRGGGBB → r3 = (i>>5)&7, g3 = (i>>2)&7, b2 = i&3 → b3 = b2<<1|b2>>1.
+ * @returns {number[][]} 256 entries of [r, g, b]
+ */
+function generateDefaultNextPalette() {
+  const palette = new Array(256);
+  for (let i = 0; i < 256; i++) {
+    const r3 = (i >> 5) & 7;
+    const g3 = (i >> 2) & 7;
+    const b2 = i & 3;
+    // Expand 2-bit blue to 3-bit: replicate top bit into bottom
+    const b3 = (b2 << 1) | (b2 >> 1);
+    palette[i] = [
+      Math.round(r3 * 255 / 7),
+      Math.round(g3 * 255 / 7),
+      Math.round(b3 * 255 / 7)
+    ];
+  }
+  return palette;
+}
+
+/**
+ * Parses a 32-byte NXI 4bpp palette into 16 [r,g,b] entries.
+ * Same RGB333 encoding as the standard palette but only 16 entries.
+ * @param {Uint8Array} data - at least 32 bytes
+ * @returns {number[][]} 16 entries of [r, g, b]
+ */
+function parseNxi4bppPalette(data) {
+  const palette = new Array(NXI.PALETTE_ENTRIES_4BPP);
+  for (let i = 0; i < NXI.PALETTE_ENTRIES_4BPP; i++) {
+    const byte0 = data[i * 2];
+    const byte1 = data[i * 2 + 1];
+    const r3 = (byte0 >> 5) & 7;
+    const g3 = (byte0 >> 2) & 7;
+    const b3 = ((byte0 & 3) << 1) | (byte1 & 1);
+    palette[i] = [
+      Math.round(r3 * 255 / 7),
+      Math.round(g3 * 255 / 7),
+      Math.round(b3 * 255 / 7)
+    ];
+  }
+  return palette;
+}
+
+/**
+ * Generates the default 16-color palette for 4bpp mode (first 16 entries of RGB332).
+ * @returns {number[][]} 16 entries of [r, g, b]
+ */
+function generateDefaultNext4bppPalette() {
+  return generateDefaultNextPalette().slice(0, 16);
+}
+
+/**
+ * Renders an NXI or SL2 screen using the resolved palette.
+ * Supports three modes: 256×192 (row-major), 320×256 (column-major 8bpp),
+ * 640×256 (column-major 4bpp packed).
+ * @param {CanvasRenderingContext2D} ctx - Canvas context
+ * @param {number} borderOffset - Border offset in canvas pixels
+ */
+function renderNxiScreen(ctx, borderOffset) {
+  if (!nxiResolvedPalette) return;
+
+  let width, height;
+  if (nxiLayer2Mode === '320x256') { width = 320; height = 256; }
+  else if (nxiLayer2Mode === '640x256') { width = 640; height = 256; }
+  else { width = 256; height = 192; }
+
+  const imageData = ctx.createImageData(width, height);
+  const pixels = imageData.data;
+  const pixelOffset = getNxiPixelOffset();
+
+  if (nxiLayer2Mode === '640x256') {
+    // 4bpp column-major: 2 pixels per byte, address = (x/2)*256 + y
+    for (let x = 0; x < 640; x += 2) {
+      const col = (x >> 1) * 256;
+      for (let y = 0; y < 256; y++) {
+        const byteVal = screenData[pixelOffset + col + y] || 0;
+        const idx0 = (byteVal >> 4) & 0x0F;
+        const idx1 = byteVal & 0x0F;
+        const rgb0 = nxiResolvedPalette[idx0];
+        const rgb1 = nxiResolvedPalette[idx1];
+        const dst0 = (y * 640 + x) * 4;
+        const dst1 = (y * 640 + x + 1) * 4;
+        pixels[dst0] = rgb0[0]; pixels[dst0 + 1] = rgb0[1]; pixels[dst0 + 2] = rgb0[2]; pixels[dst0 + 3] = 255;
+        pixels[dst1] = rgb1[0]; pixels[dst1 + 1] = rgb1[1]; pixels[dst1 + 2] = rgb1[2]; pixels[dst1 + 3] = 255;
+      }
+    }
+  } else if (nxiLayer2Mode === '320x256') {
+    // 8bpp column-major: address = x*256 + y
+    for (let x = 0; x < 320; x++) {
+      const col = x * 256;
+      for (let y = 0; y < 256; y++) {
+        const colorIdx = screenData[pixelOffset + col + y] || 0;
+        const rgb = nxiResolvedPalette[colorIdx];
+        const dst = (y * 320 + x) * 4;
+        pixels[dst] = rgb[0]; pixels[dst + 1] = rgb[1]; pixels[dst + 2] = rgb[2]; pixels[dst + 3] = 255;
+      }
+    }
+  } else {
+    // 256×192 row-major (original mode)
+    for (let y = 0; y < 192; y++) {
+      for (let x = 0; x < 256; x++) {
+        const srcIdx = pixelOffset + y * 256 + x;
+        const colorIdx = screenData[srcIdx] || 0;
+        const rgb = nxiResolvedPalette[colorIdx];
+        const dstIdx = (y * 256 + x) * 4;
+        pixels[dstIdx] = rgb[0];
+        pixels[dstIdx + 1] = rgb[1];
+        pixels[dstIdx + 2] = rgb[2];
+        pixels[dstIdx + 3] = 255;
+      }
+    }
+  }
+
+  const temp = getTempRenderCanvas(width, height);
+  if (!temp) return;
+  temp.ctx.putImageData(imageData, 0, 0);
+  applyRenderSmoothing(ctx);
+  const scaleY = getPixelScaleY();
+  ctx.drawImage(temp.canvas, borderOffset, borderOffset, width * zoom, height * scaleY * zoom);
+}
+
+/**
+ * Loads an NXI file (ZX Spectrum Next Layer 2 with embedded palette).
+ * Supports 256×192 (49664), 320×256 (82432), and 640×256 (81952) modes.
+ * @param {File} file
+ */
+function loadNxiFile(file) {
+  const reader = new FileReader();
+
+  reader.addEventListener('load', function(event) {
+    const buffer = event.target?.result;
+    if (!(buffer instanceof ArrayBuffer)) return;
+
+    const sz = buffer.byteLength;
+    if (sz !== NXI.TOTAL_SIZE && sz !== NXI.TOTAL_SIZE_320 && sz !== NXI.TOTAL_SIZE_640) {
+      alert('Invalid NXI file: unexpected size ' + sz + ' bytes.');
+      return;
+    }
+
+    stopFlashTimer();
+    resetScaState();
+
+    // Determine mode from file size (unambiguous)
+    if (sz === NXI.TOTAL_SIZE_320) nxiLayer2Mode = '320x256';
+    else if (sz === NXI.TOTAL_SIZE_640) nxiLayer2Mode = '640x256';
+    else nxiLayer2Mode = '256x192';
+
+    const data = new Uint8Array(buffer);
+    if (nxiLayer2Mode === '640x256') {
+      nxiResolvedPalette = parseNxi4bppPalette(data);
+    } else {
+      nxiResolvedPalette = parseNxiPalette(data);
+    }
+    initUlaPlusMode(data, FORMAT.UNKNOWN);
+
+    if (typeof addPicture === 'function') {
+      const pictureResult = addPicture(file.name, FORMAT.NXI, data, null, true);
+      if (pictureResult >= 0) {
+        updateFlashTimer();
+        return;
+      }
+    }
+
+    // Fallback if editor not loaded or max pictures reached
+    if (typeof saveCurrentPictureState === 'function') {
+      saveCurrentPictureState();
+    }
+
+    screenData = data;
+    currentFileName = file.name;
+    currentFormat = FORMAT.NXI;
+    currentPicture = null;
+
+    toggleScaControlsVisibility();
+    toggleFormatControlsVisibility();
+    updateScaControls();
+    updateFileInfo();
+    renderScreen();
+    if (typeof updateEditorState === 'function') updateEditorState();
+    if (typeof editorActive !== 'undefined' && editorActive && typeof renderPreview === 'function') renderPreview();
+    updateFlashTimer();
+    if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
+  });
+
+  reader.readAsArrayBuffer(file);
+}
+
+/**
+ * Loads an SL2 file (ZX Spectrum Next Layer 2 raw pixels, default palette).
+ * Supports 256×192 (49152/49280) and extended (81920, ambiguous) modes.
+ * @param {File} file
+ */
+function loadSl2File(file) {
+  const reader = new FileReader();
+
+  reader.addEventListener('load', function(event) {
+    const buffer = event.target?.result;
+    if (!(buffer instanceof ArrayBuffer)) return;
+
+    const sz = buffer.byteLength;
+    if (sz !== SL2.RAW_SIZE && sz !== SL2.HEADER_SIZE && sz !== SL2.EXT_SIZE) {
+      alert('Invalid SL2 file: expected ' + SL2.RAW_SIZE + ', ' + SL2.HEADER_SIZE + ', or ' + SL2.EXT_SIZE + ' bytes, got ' + sz + '.');
+      return;
+    }
+
+    if (sz === SL2.EXT_SIZE) {
+      // Ambiguous: show disambiguation dialog
+      showSl2DisambiguationDialog(new Uint8Array(buffer), file.name);
+      return;
+    }
+
+    // 256×192 path
+    stopFlashTimer();
+    resetScaState();
+
+    nxiLayer2Mode = '256x192';
+    const data = new Uint8Array(buffer);
+    nxiResolvedPalette = generateDefaultNextPalette();
+    initUlaPlusMode(data, FORMAT.UNKNOWN);
+
+    if (typeof addPicture === 'function') {
+      const pictureResult = addPicture(file.name, FORMAT.SL2, data, null, true);
+      if (pictureResult >= 0) {
+        updateFlashTimer();
+        return;
+      }
+    }
+
+    // Fallback if editor not loaded or max pictures reached
+    if (typeof saveCurrentPictureState === 'function') {
+      saveCurrentPictureState();
+    }
+
+    screenData = data;
+    currentFileName = file.name;
+    currentFormat = FORMAT.SL2;
+    currentPicture = null;
+
+    toggleScaControlsVisibility();
+    toggleFormatControlsVisibility();
+    updateScaControls();
+    updateFileInfo();
+    renderScreen();
+    if (typeof updateEditorState === 'function') updateEditorState();
+    if (typeof editorActive !== 'undefined' && editorActive && typeof renderPreview === 'function') renderPreview();
+    updateFlashTimer();
+    if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
+  });
+
+  reader.readAsArrayBuffer(file);
+}
+
+/**
+ * Shows the SL2 disambiguation dialog for 81920-byte files.
+ * Renders preview images for both 320×256 and 640×256 interpretations.
+ * @param {Uint8Array} data - Raw pixel data (81920 bytes)
+ * @param {string} fileName - Original file name
+ */
+function showSl2DisambiguationDialog(data, fileName) {
+  const overlay = document.getElementById('sl2DisambiguationOverlay');
+  if (!overlay) {
+    // Dialog not present in HTML — default to 320×256
+    finishLoadSl2Extended(data, fileName, '320x256');
+    return;
+  }
+
+  // Render 320×256 preview (8bpp column-major)
+  const canvas320 = /** @type {HTMLCanvasElement|null} */ (document.getElementById('sl2Preview320'));
+  if (canvas320) {
+    const ctx = canvas320.getContext('2d');
+    if (ctx) {
+      const pal = generateDefaultNextPalette();
+      const img = ctx.createImageData(320, 256);
+      const px = img.data;
+      for (let x = 0; x < 320; x++) {
+        const col = x * 256;
+        for (let y = 0; y < 256; y++) {
+          const colorIdx = data[col + y] || 0;
+          const rgb = pal[colorIdx];
+          const dst = (y * 320 + x) * 4;
+          px[dst] = rgb[0]; px[dst + 1] = rgb[1]; px[dst + 2] = rgb[2]; px[dst + 3] = 255;
+        }
+      }
+      ctx.putImageData(img, 0, 0);
+    }
+  }
+
+  // Render 640×256 preview (4bpp column-major, drawn at half width into 320×256 canvas)
+  const canvas640 = /** @type {HTMLCanvasElement|null} */ (document.getElementById('sl2Preview640'));
+  if (canvas640) {
+    const ctx = canvas640.getContext('2d');
+    if (ctx) {
+      const pal = generateDefaultNext4bppPalette();
+      // Render at full 640×256, then scale down
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = 640;
+      tempCanvas.height = 256;
+      const tempCtx = tempCanvas.getContext('2d');
+      if (tempCtx) {
+        const img = tempCtx.createImageData(640, 256);
+        const px = img.data;
+        for (let x = 0; x < 640; x += 2) {
+          const col = (x >> 1) * 256;
+          for (let y = 0; y < 256; y++) {
+            const byteVal = data[col + y] || 0;
+            const idx0 = (byteVal >> 4) & 0x0F;
+            const idx1 = byteVal & 0x0F;
+            const rgb0 = pal[idx0];
+            const rgb1 = pal[idx1];
+            const dst0 = (y * 640 + x) * 4;
+            const dst1 = (y * 640 + x + 1) * 4;
+            px[dst0] = rgb0[0]; px[dst0 + 1] = rgb0[1]; px[dst0 + 2] = rgb0[2]; px[dst0 + 3] = 255;
+            px[dst1] = rgb1[0]; px[dst1 + 1] = rgb1[1]; px[dst1 + 2] = rgb1[2]; px[dst1 + 3] = 255;
+          }
+        }
+        tempCtx.putImageData(img, 0, 0);
+        // Scale to 320×256 for display
+        canvas640.width = 320;
+        canvas640.height = 256;
+        ctx.drawImage(tempCanvas, 0, 0, 320, 256);
+      }
+    }
+  }
+
+  // Show dialog
+  overlay.style.display = '';
+
+  // Wire up click handlers (replace to avoid stacking listeners)
+  const choice320 = document.getElementById('sl2Choice320');
+  const choice640 = document.getElementById('sl2Choice640');
+  const cancelBtn = document.getElementById('sl2DisambiguationCancel');
+
+  function closeDialog() {
+    overlay.style.display = 'none';
+    if (choice320) choice320.onclick = null;
+    if (choice640) choice640.onclick = null;
+    if (cancelBtn) cancelBtn.onclick = null;
+  }
+
+  if (choice320) {
+    choice320.onclick = function() {
+      closeDialog();
+      finishLoadSl2Extended(data, fileName, '320x256');
+    };
+  }
+  if (choice640) {
+    choice640.onclick = function() {
+      closeDialog();
+      finishLoadSl2Extended(data, fileName, '640x256');
+    };
+  }
+  if (cancelBtn) {
+    cancelBtn.onclick = function() {
+      closeDialog();
+    };
+  }
+}
+
+/**
+ * Completes loading an extended SL2 file after mode disambiguation.
+ * @param {Uint8Array} data - Raw pixel data (81920 bytes)
+ * @param {string} fileName - Original file name
+ * @param {'320x256'|'640x256'} mode - Selected Layer 2 mode
+ */
+function finishLoadSl2Extended(data, fileName, mode) {
+  stopFlashTimer();
+  resetScaState();
+
+  nxiLayer2Mode = mode;
+  if (mode === '640x256') {
+    nxiResolvedPalette = generateDefaultNext4bppPalette();
+  } else {
+    nxiResolvedPalette = generateDefaultNextPalette();
+  }
+  initUlaPlusMode(data, FORMAT.UNKNOWN);
+
+  if (typeof addPicture === 'function') {
+    const pictureResult = addPicture(fileName, FORMAT.SL2, data, null, true);
+    if (pictureResult >= 0) {
+      updateFlashTimer();
+      return;
+    }
+  }
+
+  // Fallback if editor not loaded or max pictures reached
+  if (typeof saveCurrentPictureState === 'function') {
+    saveCurrentPictureState();
+  }
+
+  screenData = data;
+  currentFileName = fileName;
+  currentFormat = FORMAT.SL2;
+  currentPicture = null;
+
+  toggleScaControlsVisibility();
+  toggleFormatControlsVisibility();
+  updateScaControls();
+  updateFileInfo();
+  renderScreen();
+  if (typeof updateEditorState === 'function') updateEditorState();
+  if (typeof editorActive !== 'undefined' && editorActive && typeof renderPreview === 'function') renderPreview();
+  updateFlashTimer();
+  if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
 }
 
 /**

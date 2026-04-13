@@ -1,4 +1,4 @@
-// SpectraLab v1.30.0 - UI Event Handlers
+// SpectraLab v1.71 - UI Event Handlers
 // @ts-check
 "use strict";
 
@@ -107,8 +107,12 @@ function initScreenViewerUI() {
       if (typeof loadProject === 'function') {
         loadProject(file);
       }
-    } else if (typeof isImageFile === 'function' && isImageFile(file.name)) {
-      openImportDialog(file);
+    } else if (typeof isImageFileExt === 'function' && isImageFileExt(file.name)) {
+      if (lowerName.endsWith('.gif') && typeof importAnimatedGifOrFallback === 'function') {
+        importAnimatedGifOrFallback(file);
+      } else {
+        openImportDialog(file);
+      }
     } else if (typeof isSnapshotFile === 'function' && isSnapshotFile(file.name)) {
       loadSnapshotFile(file);
     } else if (typeof isNirvanaTileFile === 'function' && isNirvanaTileFile(file.name)) {
@@ -127,6 +131,10 @@ function initScreenViewerUI() {
       loadStlFile(file);
     } else if (typeof isBspFile === 'function' && isBspFile(file.name)) {
       loadBspFile(file);
+    } else if (typeof isNxiFile === 'function' && isNxiFile(file.name)) {
+      loadNxiFile(file);
+    } else if (typeof isSl2File === 'function' && isSl2File(file.name)) {
+      loadSl2File(file);
     } else {
       loadScreenFile(file);
     }
@@ -284,10 +292,10 @@ function initScreenViewerUI() {
     saveSettings();
   });
 
-  // RGB3 flicker checkbox handler
-  document.getElementById('flickerRgb3Checkbox')?.addEventListener('change', function() {
-    if (typeof setRgb3FlickerEnabled === 'function') {
-      setRgb3FlickerEnabled(/** @type {HTMLInputElement} */ (this).checked);
+  // RGB3 mode select handler
+  document.getElementById('rgb3ModeSelect')?.addEventListener('change', function() {
+    if (typeof setRgb3Mode === 'function') {
+      setRgb3Mode(/** @type {HTMLSelectElement} */ (this).value);
     }
   });
 
@@ -467,10 +475,11 @@ function initScreenViewerUI() {
         createNewPicture(format);
       }
     }
-    // Switch to Edit tab after creating new picture
-    const editTab = document.querySelector('.panel-tab[data-tab="edit"]');
-    if (editTab) {
-      /** @type {HTMLElement} */ (editTab).click();
+    // Switch to Edit tab after creating new picture (or View tab for view-only formats)
+    const canEditNew = typeof isFormatEditable === 'function' && isFormatEditable();
+    const targetTab = document.querySelector(canEditNew ? '.panel-tab[data-tab="edit"]' : '.panel-tab[data-tab="view"]');
+    if (targetTab) {
+      /** @type {HTMLElement} */ (targetTab).click();
     }
   });
 
@@ -622,12 +631,12 @@ function initScreenViewerUI() {
         return; // SCA editor handles its own UI
       }
 
-      // If switching to Edit tab without an editable picture, show New Picture dialog
+      // If switching to Edit tab without any picture loaded, show New Picture dialog
+      // (but if a picture IS loaded in a view-only format, just switch to the tab normally)
       if (tabName === 'edit') {
-        const canEdit = typeof isFormatEditable === 'function' && isFormatEditable() &&
-                        typeof screenData !== 'undefined' && screenData &&
-                        (screenData.length > 0 || (typeof currentFormat !== 'undefined' && currentFormat === FORMAT.SPECSCII));
-        if (!canEdit && newPictureDialog) {
+        const hasPicture = typeof screenData !== 'undefined' && screenData &&
+                           (screenData.length > 0 || (typeof currentFormat !== 'undefined' && currentFormat === FORMAT.SPECSCII));
+        if (!hasPicture && newPictureDialog) {
           restoreNewPictureFormat();
           newPictureDialog.style.display = '';
           return; // Don't switch tab yet
@@ -713,9 +722,13 @@ function initScreenViewerUI() {
         if (cd) cd.scrollTop += 40;
         break;
 
-      case 'Escape':
+      case 'Escape': {
         // Close dialogs if open
-        if (helpDialog && helpDialog.style.display !== 'none') {
+        const sl2Disambig = document.getElementById('sl2DisambiguationOverlay');
+        if (sl2Disambig && sl2Disambig.style.display !== 'none') {
+          sl2Disambig.style.display = 'none';
+          event.preventDefault();
+        } else if (helpDialog && helpDialog.style.display !== 'none') {
           helpDialog.style.display = 'none';
           event.preventDefault();
         } else if (newPictureDialog && newPictureDialog.style.display !== 'none') {
@@ -723,6 +736,7 @@ function initScreenViewerUI() {
           event.preventDefault();
         }
         break;
+      }
     }
 
     // Use event.code for layout-independent letter shortcuts (works with non-Latin keyboards)

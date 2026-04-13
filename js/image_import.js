@@ -2669,7 +2669,7 @@ function generateOptimalUlaPlusPalette(pixels) {
 }
 
 /**
- * Find best CLUT and ink/paper for a cell
+ * Find best CLUT and ink/paper for a cell (256x192 shortcut)
  * @param {Float32Array} pixels - Float array of RGB values
  * @param {number} cellX - Cell X position
  * @param {number} cellY - Cell Y position
@@ -2677,59 +2677,7 @@ function generateOptimalUlaPlusPalette(pixels) {
  * @returns {{clut: number, ink: number, paper: number, inkRgb: number[], paperRgb: number[]}}
  */
 function findUlaPlusCellColors(pixels, cellX, cellY, palette) {
-  // Collect cell colors
-  const cellColors = [];
-  for (let dy = 0; dy < 8; dy++) {
-    for (let dx = 0; dx < 8; dx++) {
-      const px = cellX * 8 + dx;
-      const py = cellY * 8 + dy;
-      const idx = (py * 256 + px) * 3;
-      cellColors.push([pixels[idx], pixels[idx + 1], pixels[idx + 2]]);
-    }
-  }
-
-  let bestError = Infinity;
-  let bestClut = 0;
-  let bestInk = 0;
-  let bestPaper = 0;
-
-  // Try all CLUTs and all ink/paper combinations within each
-  for (let clut = 0; clut < 4; clut++) {
-    const baseIdx = clut * 16;
-
-    for (let ink = 0; ink < 8; ink++) {
-      const inkGrb = palette[baseIdx + ink];
-      const inkRgb = grb332ToRgb(inkGrb);
-
-      for (let paper = 0; paper < 8; paper++) {
-        const paperGrb = palette[baseIdx + 8 + paper];
-        const paperRgb = grb332ToRgb(paperGrb);
-
-        let totalError = 0;
-        for (const color of cellColors) {
-          const inkDist = colorDistance(color, inkRgb);
-          const paperDist = colorDistance(color, paperRgb);
-          totalError += Math.min(inkDist, paperDist);
-        }
-
-        if (totalError < bestError) {
-          bestError = totalError;
-          bestClut = clut;
-          bestInk = ink;
-          bestPaper = paper;
-        }
-      }
-    }
-  }
-
-  const baseIdx = bestClut * 16;
-  return {
-    clut: bestClut,
-    ink: bestInk,
-    paper: bestPaper,
-    inkRgb: grb332ToRgb(palette[baseIdx + bestInk]),
-    paperRgb: grb332ToRgb(palette[baseIdx + 8 + bestPaper])
-  };
+  return findUlaPlusCellColorsParam(pixels, cellX, cellY, 256, 192, palette);
 }
 
 /**
@@ -5654,7 +5602,7 @@ function convertTo53c(sourceCanvas, brightness, contrast, saturation = 0, gamma 
  * @param {number} [balanceB=0]
  * @returns {{stream: Uint8Array, charGrid: Uint8Array, attrGrid: Uint8Array, mask: Uint8Array}}
  */
-function convertToSpecscii(sourceCanvas, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0) {
+function convertToSpecscii(sourceCanvas, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, charset = 'full') {
   updateColorDistanceMode();
 
   const ctx = sourceCanvas.getContext('2d');
@@ -5668,40 +5616,52 @@ function convertToSpecscii(sourceCanvas, brightness, contrast, saturation = 0, g
   const floatPixels = rgbaToFloat(pixels, 256 * 192);
   const palette = getCombinedPalette();
 
-  // Prepare font glyph bitmaps (96 ROM chars + 16 block graphics = 112 total)
+  // Prepare font glyph bitmaps based on charset selection
   // Each entry: { code, rows[8] } where rows[i] is a byte (MSB=left)
   const glyphs = [];
 
-  // ROM font characters 0x20-0x7F
-  for (let code = 0x20; code <= 0x7F; code++) {
-    const glyphIndex = code - 0x20;
-    const offset = glyphIndex * 8;
-    const rows = new Uint8Array(8);
-    for (let line = 0; line < 8; line++) {
-      rows[line] = (typeof fontData !== 'undefined' && offset + line < fontData.length) ? fontData[offset + line] : 0;
+  // ROM font characters 0x20-0x7F (included in 'full' and 'ascii' modes)
+  if (charset === 'full' || charset === 'ascii') {
+    for (let code = 0x20; code <= 0x7F; code++) {
+      const glyphIndex = code - 0x20;
+      const offset = glyphIndex * 8;
+      const rows = new Uint8Array(8);
+      for (let line = 0; line < 8; line++) {
+        rows[line] = (typeof fontData !== 'undefined' && offset + line < fontData.length) ? fontData[offset + line] : 0;
+      }
+      glyphs.push({ code, rows });
     }
-    glyphs.push({ code, rows });
   }
 
-  // Block graphics characters 0x80-0x8F
-  for (let code = 0x80; code <= 0x8F; code++) {
-    const pattern = code & 0x0F;
-    const rows = new Uint8Array(8);
-    for (let line = 0; line < 8; line++) {
-      const inTop = line < 4;
-      let rowByte = 0;
-      for (let bit = 0; bit < 8; bit++) {
-        const inLeft = bit < 4;
-        let isSet = false;
-        if (inTop && inLeft) isSet = (pattern & 0x02) !== 0;
-        else if (inTop && !inLeft) isSet = (pattern & 0x01) !== 0;
-        else if (!inTop && inLeft) isSet = (pattern & 0x08) !== 0;
-        else isSet = (pattern & 0x04) !== 0;
-        if (isSet) rowByte |= (0x80 >> bit);
+  // Block graphics characters 0x80-0x8F (included in 'full' and 'udg' modes)
+  if (charset === 'full' || charset === 'udg') {
+    // In UDG-only mode, include space (0x20) as a solid-color fallback
+    if (charset === 'udg') {
+      const rows = new Uint8Array(8);
+      for (let line = 0; line < 8; line++) {
+        rows[line] = (typeof fontData !== 'undefined' && line < fontData.length) ? fontData[line] : 0;
       }
-      rows[line] = rowByte;
+      glyphs.push({ code: 0x20, rows });
     }
-    glyphs.push({ code, rows });
+    for (let code = 0x80; code <= 0x8F; code++) {
+      const pattern = code & 0x0F;
+      const rows = new Uint8Array(8);
+      for (let line = 0; line < 8; line++) {
+        const inTop = line < 4;
+        let rowByte = 0;
+        for (let bit = 0; bit < 8; bit++) {
+          const inLeft = bit < 4;
+          let isSet = false;
+          if (inTop && inLeft) isSet = (pattern & 0x02) !== 0;
+          else if (inTop && !inLeft) isSet = (pattern & 0x01) !== 0;
+          else if (!inTop && inLeft) isSet = (pattern & 0x08) !== 0;
+          else isSet = (pattern & 0x04) !== 0;
+          if (isSet) rowByte |= (0x80 >> bit);
+        }
+        rows[line] = rowByte;
+      }
+      glyphs.push({ code, rows });
+    }
   }
 
   const charGrid = new Uint8Array(768);
@@ -6937,6 +6897,687 @@ function renderMonoToCanvas(monoData, canvas, zoom = 2, thirds = 3) {
 }
 
 // ============================================================================
+// NXI / SL2 (ZX Spectrum Next Layer 2 — 256-color indexed, 256×192)
+// ============================================================================
+
+/**
+ * Shared quantization helper for NXI/SL2 formats.
+ * Applies image adjustments, builds palette, dithers pixels.
+ * @param {HTMLCanvasElement} sourceCanvas
+ * @param {string} dithering
+ * @param {number} brightness
+ * @param {number} contrast
+ * @param {number} saturation
+ * @param {number} gamma
+ * @param {boolean} grayscale
+ * @param {number} sharpness
+ * @param {number} smoothing
+ * @param {number} blackPoint
+ * @param {number} whitePoint
+ * @param {number} balanceR
+ * @param {number} balanceG
+ * @param {number} balanceB
+ * @param {boolean} optimizePalette - true: pick best 256 from RGB333; false: use default RGB332
+ * @returns {{palette: number[][], paletteR3: Uint8Array, paletteG3: Uint8Array, paletteB3: Uint8Array, pixels: Uint8Array}}
+ */
+function quantizeNextPixels(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, optimizePalette) {
+  const W = 256, H = 192;
+  const ctx = sourceCanvas.getContext('2d');
+  if (!ctx) return { palette: [], paletteR3: new Uint8Array(256), paletteG3: new Uint8Array(256), paletteB3: new Uint8Array(256), pixels: new Uint8Array(W * H) };
+
+  const imageData = ctx.getImageData(0, 0, W, H);
+  const src = imageData.data;
+
+  // Apply adjustments
+  applyImageAdjustments(src, W, H, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
+
+  // Build palette
+  const palette = new Array(256);
+  const palR3 = new Uint8Array(256);
+  const palG3 = new Uint8Array(256);
+  const palB3 = new Uint8Array(256);
+
+  if (optimizePalette) {
+    // Count which RGB333 colors appear in the image (512 possible)
+    const rgb333Count = new Uint32Array(512);
+    for (let i = 0; i < W * H; i++) {
+      const r3 = Math.min(7, Math.round(src[i * 4] * 7 / 255));
+      const g3 = Math.min(7, Math.round(src[i * 4 + 1] * 7 / 255));
+      const b3 = Math.min(7, Math.round(src[i * 4 + 2] * 7 / 255));
+      rgb333Count[(r3 << 6) | (g3 << 3) | b3]++;
+    }
+    // Pick the 256 most frequent RGB333 colors
+    const ranked = Array.from({ length: 512 }, (_, i) => i);
+    ranked.sort((a, b) => rgb333Count[b] - rgb333Count[a]);
+    for (let p = 0; p < 256; p++) {
+      const c = ranked[p];
+      const r3 = (c >> 6) & 7;
+      const g3 = (c >> 3) & 7;
+      const b3 = c & 7;
+      palR3[p] = r3;
+      palG3[p] = g3;
+      palB3[p] = b3;
+      palette[p] = [
+        Math.round(r3 * 255 / 7),
+        Math.round(g3 * 255 / 7),
+        Math.round(b3 * 255 / 7)
+      ];
+    }
+  } else {
+    // Default RGB332 identity palette
+    for (let i = 0; i < 256; i++) {
+      const r3 = (i >> 5) & 7;
+      const g3 = (i >> 2) & 7;
+      const b2 = i & 3;
+      const b3 = (b2 << 1) | (b2 >> 1);
+      palR3[i] = r3;
+      palG3[i] = g3;
+      palB3[i] = b3;
+      palette[i] = [
+        Math.round(r3 * 255 / 7),
+        Math.round(g3 * 255 / 7),
+        Math.round(b3 * 255 / 7)
+      ];
+    }
+  }
+
+  // Find nearest palette entry
+  function findNearest(r, g, b) {
+    let bestIdx = 0, bestDist = Infinity;
+    for (let i = 0; i < 256; i++) {
+      const dr = r - palette[i][0];
+      const dg = g - palette[i][1];
+      const db = b - palette[i][2];
+      const dist = dr * dr + dg * dg + db * db;
+      if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+    }
+    return bestIdx;
+  }
+
+  // Working copy for dithering (float)
+  const work = new Float32Array(W * H * 3);
+  for (let i = 0; i < W * H; i++) {
+    work[i * 3] = src[i * 4];
+    work[i * 3 + 1] = src[i * 4 + 1];
+    work[i * 3 + 2] = src[i * 4 + 2];
+  }
+
+  const pixels = new Uint8Array(W * H);
+  const useDither = dithering !== 'none' && dithering !== 'ordered' && dithering !== 'ordered8';
+
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const idx = y * W + x;
+      const r = Math.max(0, Math.min(255, Math.round(work[idx * 3])));
+      const g = Math.max(0, Math.min(255, Math.round(work[idx * 3 + 1])));
+      const b = Math.max(0, Math.min(255, Math.round(work[idx * 3 + 2])));
+
+      const palIdx = findNearest(r, g, b);
+      pixels[idx] = palIdx;
+
+      if (useDither) {
+        const er = r - palette[palIdx][0];
+        const eg = g - palette[palIdx][1];
+        const eb = b - palette[palIdx][2];
+        // Floyd-Steinberg error diffusion
+        if (x + 1 < W) {
+          const n = idx + 1;
+          work[n * 3] += er * 7 / 16;
+          work[n * 3 + 1] += eg * 7 / 16;
+          work[n * 3 + 2] += eb * 7 / 16;
+        }
+        if (y + 1 < H) {
+          if (x > 0) {
+            const n = idx + W - 1;
+            work[n * 3] += er * 3 / 16;
+            work[n * 3 + 1] += eg * 3 / 16;
+            work[n * 3 + 2] += eb * 3 / 16;
+          }
+          {
+            const n = idx + W;
+            work[n * 3] += er * 5 / 16;
+            work[n * 3 + 1] += eg * 5 / 16;
+            work[n * 3 + 2] += eb * 5 / 16;
+          }
+          if (x + 1 < W) {
+            const n = idx + W + 1;
+            work[n * 3] += er * 1 / 16;
+            work[n * 3 + 1] += eg * 1 / 16;
+            work[n * 3 + 2] += eb * 1 / 16;
+          }
+        }
+      }
+    }
+  }
+
+  return { palette, paletteR3: palR3, paletteG3: palG3, paletteB3: palB3, pixels };
+}
+
+/**
+ * Shared quantization helper for NXI/SL2 extended modes (320×256 8bpp, 640×256 4bpp).
+ * @param {HTMLCanvasElement} sourceCanvas
+ * @param {number} W - Target width
+ * @param {number} H - Target height
+ * @param {number} paletteSize - 256 for 8bpp, 16 for 4bpp
+ * @param {string} dithering
+ * @param {number} brightness
+ * @param {number} contrast
+ * @param {number} saturation
+ * @param {number} gamma
+ * @param {boolean} grayscale
+ * @param {number} sharpness
+ * @param {number} smoothing
+ * @param {number} blackPoint
+ * @param {number} whitePoint
+ * @param {number} balanceR
+ * @param {number} balanceG
+ * @param {number} balanceB
+ * @param {boolean} optimizePalette
+ * @returns {{palette: number[][], paletteR3: Uint8Array, paletteG3: Uint8Array, paletteB3: Uint8Array, pixels: Uint8Array}}
+ */
+function quantizeNextPixelsExt(sourceCanvas, W, H, paletteSize, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, optimizePalette) {
+  const ctx = sourceCanvas.getContext('2d');
+  if (!ctx) return { palette: [], paletteR3: new Uint8Array(paletteSize), paletteG3: new Uint8Array(paletteSize), paletteB3: new Uint8Array(paletteSize), pixels: new Uint8Array(W * H) };
+
+  const imageData = ctx.getImageData(0, 0, W, H);
+  const src = imageData.data;
+
+  applyImageAdjustments(src, W, H, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
+
+  const palette = new Array(paletteSize);
+  const palR3 = new Uint8Array(paletteSize);
+  const palG3 = new Uint8Array(paletteSize);
+  const palB3 = new Uint8Array(paletteSize);
+
+  if (optimizePalette) {
+    const rgb333Count = new Uint32Array(512);
+    for (let i = 0; i < W * H; i++) {
+      const r3 = Math.min(7, Math.round(src[i * 4] * 7 / 255));
+      const g3 = Math.min(7, Math.round(src[i * 4 + 1] * 7 / 255));
+      const b3 = Math.min(7, Math.round(src[i * 4 + 2] * 7 / 255));
+      rgb333Count[(r3 << 6) | (g3 << 3) | b3]++;
+    }
+    const ranked = Array.from({ length: 512 }, (_, i) => i);
+    ranked.sort((a, b) => rgb333Count[b] - rgb333Count[a]);
+    for (let p = 0; p < paletteSize; p++) {
+      const c = ranked[p];
+      const r3 = (c >> 6) & 7;
+      const g3 = (c >> 3) & 7;
+      const b3 = c & 7;
+      palR3[p] = r3;
+      palG3[p] = g3;
+      palB3[p] = b3;
+      palette[p] = [Math.round(r3 * 255 / 7), Math.round(g3 * 255 / 7), Math.round(b3 * 255 / 7)];
+    }
+  } else {
+    // Default RGB332 identity palette (for 256 entries) or first 16 for 4bpp
+    for (let i = 0; i < paletteSize; i++) {
+      const r3 = (i >> 5) & 7;
+      const g3 = (i >> 2) & 7;
+      const b2 = i & 3;
+      const b3 = (b2 << 1) | (b2 >> 1);
+      palR3[i] = r3;
+      palG3[i] = g3;
+      palB3[i] = b3;
+      palette[i] = [Math.round(r3 * 255 / 7), Math.round(g3 * 255 / 7), Math.round(b3 * 255 / 7)];
+    }
+  }
+
+  function findNearest(r, g, b) {
+    let bestIdx = 0, bestDist = Infinity;
+    for (let i = 0; i < paletteSize; i++) {
+      const dr = r - palette[i][0];
+      const dg = g - palette[i][1];
+      const db = b - palette[i][2];
+      const dist = dr * dr + dg * dg + db * db;
+      if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+    }
+    return bestIdx;
+  }
+
+  const work = new Float32Array(W * H * 3);
+  for (let i = 0; i < W * H; i++) {
+    work[i * 3] = src[i * 4];
+    work[i * 3 + 1] = src[i * 4 + 1];
+    work[i * 3 + 2] = src[i * 4 + 2];
+  }
+
+  const pixels = new Uint8Array(W * H);
+  const useDither = dithering !== 'none' && dithering !== 'ordered' && dithering !== 'ordered8';
+
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const idx = y * W + x;
+      const r = Math.max(0, Math.min(255, Math.round(work[idx * 3])));
+      const g = Math.max(0, Math.min(255, Math.round(work[idx * 3 + 1])));
+      const b = Math.max(0, Math.min(255, Math.round(work[idx * 3 + 2])));
+
+      const palIdx = findNearest(r, g, b);
+      pixels[idx] = palIdx;
+
+      if (useDither) {
+        const er = r - palette[palIdx][0];
+        const eg = g - palette[palIdx][1];
+        const eb = b - palette[palIdx][2];
+        if (x + 1 < W) {
+          const n = idx + 1;
+          work[n * 3] += er * 7 / 16;
+          work[n * 3 + 1] += eg * 7 / 16;
+          work[n * 3 + 2] += eb * 7 / 16;
+        }
+        if (y + 1 < H) {
+          if (x > 0) {
+            const n = idx + W - 1;
+            work[n * 3] += er * 3 / 16;
+            work[n * 3 + 1] += eg * 3 / 16;
+            work[n * 3 + 2] += eb * 3 / 16;
+          }
+          {
+            const n = idx + W;
+            work[n * 3] += er * 5 / 16;
+            work[n * 3 + 1] += eg * 5 / 16;
+            work[n * 3 + 2] += eb * 5 / 16;
+          }
+          if (x + 1 < W) {
+            const n = idx + W + 1;
+            work[n * 3] += er * 1 / 16;
+            work[n * 3 + 1] += eg * 1 / 16;
+            work[n * 3 + 2] += eb * 1 / 16;
+          }
+        }
+      }
+    }
+  }
+
+  return { palette, paletteR3: palR3, paletteG3: palG3, paletteB3: palB3, pixels };
+}
+
+/**
+ * Convert source canvas to NXI 320×256 format (512-byte palette + 81920 column-major pixels).
+ * @param {HTMLCanvasElement} sourceCanvas
+ * @param {string} dithering
+ * @param {number} brightness
+ * @param {number} contrast
+ * @param {number} saturation
+ * @param {number} gamma
+ * @param {boolean} grayscale
+ * @param {number} sharpness
+ * @param {number} smoothing
+ * @param {number} blackPoint
+ * @param {number} whitePoint
+ * @param {number} balanceR
+ * @param {number} balanceG
+ * @param {number} balanceB
+ * @returns {Uint8Array} NXI data (82432 bytes)
+ */
+function convertToNxi320(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB) {
+  const W = 320, H = 256;
+  const q = quantizeNextPixelsExt(sourceCanvas, W, H, 256, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, true);
+
+  const nxi = new Uint8Array(512 + W * H);
+  // Write palette (256 entries, RGB333)
+  for (let i = 0; i < 256; i++) {
+    const r3 = q.paletteR3[i], g3 = q.paletteG3[i], b3 = q.paletteB3[i];
+    nxi[i * 2] = (r3 << 5) | (g3 << 2) | (b3 >> 1);
+    nxi[i * 2 + 1] = b3 & 1;
+  }
+  // Write pixels in column-major order: address = x * 256 + y
+  for (let x = 0; x < W; x++) {
+    for (let y = 0; y < H; y++) {
+      nxi[512 + x * 256 + y] = q.pixels[y * W + x];
+    }
+  }
+  return nxi;
+}
+
+/**
+ * Convert source canvas to SL2 320×256 format (81920 column-major pixel bytes).
+ * @param {HTMLCanvasElement} sourceCanvas
+ * @param {string} dithering
+ * @param {number} brightness
+ * @param {number} contrast
+ * @param {number} saturation
+ * @param {number} gamma
+ * @param {boolean} grayscale
+ * @param {number} sharpness
+ * @param {number} smoothing
+ * @param {number} blackPoint
+ * @param {number} whitePoint
+ * @param {number} balanceR
+ * @param {number} balanceG
+ * @param {number} balanceB
+ * @returns {Uint8Array} SL2 data (81920 bytes)
+ */
+function convertToSl2_320(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB) {
+  const W = 320, H = 256;
+  const q = quantizeNextPixelsExt(sourceCanvas, W, H, 256, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, false);
+
+  const sl2 = new Uint8Array(W * H);
+  for (let x = 0; x < W; x++) {
+    for (let y = 0; y < H; y++) {
+      sl2[x * 256 + y] = q.pixels[y * W + x];
+    }
+  }
+  return sl2;
+}
+
+/**
+ * Convert source canvas to NXI 640×256 format (32-byte palette + 81920 column-major 4bpp pixels).
+ * @param {HTMLCanvasElement} sourceCanvas
+ * @param {string} dithering
+ * @param {number} brightness
+ * @param {number} contrast
+ * @param {number} saturation
+ * @param {number} gamma
+ * @param {boolean} grayscale
+ * @param {number} sharpness
+ * @param {number} smoothing
+ * @param {number} blackPoint
+ * @param {number} whitePoint
+ * @param {number} balanceR
+ * @param {number} balanceG
+ * @param {number} balanceB
+ * @returns {Uint8Array} NXI data (81952 bytes)
+ */
+function convertToNxi640(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB) {
+  const W = 640, H = 256;
+  const q = quantizeNextPixelsExt(sourceCanvas, W, H, 16, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, true);
+
+  const PALETTE_SIZE = 32; // 16 entries × 2 bytes
+  const PIXEL_DATA_SIZE = (W / 2) * H; // 81920
+  const nxi = new Uint8Array(PALETTE_SIZE + PIXEL_DATA_SIZE);
+  // Write palette (16 entries, RGB333)
+  for (let i = 0; i < 16; i++) {
+    const r3 = q.paletteR3[i], g3 = q.paletteG3[i], b3 = q.paletteB3[i];
+    nxi[i * 2] = (r3 << 5) | (g3 << 2) | (b3 >> 1);
+    nxi[i * 2 + 1] = b3 & 1;
+  }
+  // Write pixels in column-major 4bpp: address = (x/2)*256 + y, high nibble = even x, low nibble = odd x
+  for (let x = 0; x < W; x += 2) {
+    const col = (x >> 1) * 256;
+    for (let y = 0; y < H; y++) {
+      const idx0 = q.pixels[y * W + x] & 0x0F;
+      const idx1 = q.pixels[y * W + x + 1] & 0x0F;
+      nxi[PALETTE_SIZE + col + y] = (idx0 << 4) | idx1;
+    }
+  }
+  return nxi;
+}
+
+/**
+ * Convert source canvas to SL2 640×256 format (81920 column-major 4bpp pixel bytes).
+ * @param {HTMLCanvasElement} sourceCanvas
+ * @param {string} dithering
+ * @param {number} brightness
+ * @param {number} contrast
+ * @param {number} saturation
+ * @param {number} gamma
+ * @param {boolean} grayscale
+ * @param {number} sharpness
+ * @param {number} smoothing
+ * @param {number} blackPoint
+ * @param {number} whitePoint
+ * @param {number} balanceR
+ * @param {number} balanceG
+ * @param {number} balanceB
+ * @returns {Uint8Array} SL2 data (81920 bytes)
+ */
+function convertToSl2_640(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB) {
+  const W = 640, H = 256;
+  const q = quantizeNextPixelsExt(sourceCanvas, W, H, 16, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, false);
+
+  const sl2 = new Uint8Array((W / 2) * H);
+  for (let x = 0; x < W; x += 2) {
+    const col = (x >> 1) * 256;
+    for (let y = 0; y < H; y++) {
+      const idx0 = q.pixels[y * W + x] & 0x0F;
+      const idx1 = q.pixels[y * W + x + 1] & 0x0F;
+      sl2[col + y] = (idx0 << 4) | idx1;
+    }
+  }
+  return sl2;
+}
+
+/**
+ * Convert source canvas to NXI format (512-byte RGB333 palette + 49152 pixel bytes).
+ * Generates an optimal 256-color palette from the image by picking the most
+ * frequent RGB333 colors, then quantizes with error-diffusion dithering.
+ * @param {HTMLCanvasElement} sourceCanvas
+ * @param {string} dithering - Dithering method
+ * @param {number} brightness
+ * @param {number} contrast
+ * @param {number} saturation
+ * @param {number} gamma
+ * @param {boolean} grayscale
+ * @param {number} sharpness
+ * @param {number} smoothing
+ * @param {number} blackPoint
+ * @param {number} whitePoint
+ * @param {number} balanceR
+ * @param {number} balanceG
+ * @param {number} balanceB
+ * @returns {Uint8Array} NXI data (49664 bytes: 512 palette + 49152 pixels)
+ */
+function convertToNxi(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB) {
+  const W = 256, H = 192;
+  const q = quantizeNextPixels(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, true);
+
+  // Build NXI output: 512-byte palette (RGB333) + 49152 pixel bytes
+  const nxi = new Uint8Array(512 + W * H);
+  for (let i = 0; i < 256; i++) {
+    const r3 = q.paletteR3[i];
+    const g3 = q.paletteG3[i];
+    const b3 = q.paletteB3[i];
+    // byte0 = RRRGGGBB (top 2 bits of blue)
+    nxi[i * 2] = (r3 << 5) | (g3 << 2) | (b3 >> 1);
+    // byte1 = P000000B (LSB of blue)
+    nxi[i * 2 + 1] = b3 & 1;
+  }
+  nxi.set(q.pixels, 512);
+  return nxi;
+}
+
+/**
+ * Convert source canvas to SL2 format (raw 49152 pixel bytes, no header).
+ * Uses the default RGB332 identity palette since SL2 has no embedded palette.
+ * @param {HTMLCanvasElement} sourceCanvas
+ * @param {string} dithering
+ * @param {number} brightness
+ * @param {number} contrast
+ * @param {number} saturation
+ * @param {number} gamma
+ * @param {boolean} grayscale
+ * @param {number} sharpness
+ * @param {number} smoothing
+ * @param {number} blackPoint
+ * @param {number} whitePoint
+ * @param {number} balanceR
+ * @param {number} balanceG
+ * @param {number} balanceB
+ * @returns {Uint8Array} SL2 data (49152 bytes: raw pixels only)
+ */
+function convertToSl2(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB) {
+  const q = quantizeNextPixels(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, false);
+  return q.pixels;
+}
+
+/**
+ * Render NXI/SL2 preview to canvas with zoom.
+ * @param {Uint8Array} nxiData - Full NXI data (512+49152) or raw SL2 pixels (49152)
+ * @param {HTMLCanvasElement} canvas - Target canvas
+ * @param {number} zoom - Zoom level
+ * @param {boolean} [isSl2=false] - If true, treat data as raw SL2 (no palette header)
+ */
+function renderNxiToCanvas(nxiData, canvas, zoom = 2, isSl2 = false) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const W = 256, H = 192;
+  canvas.width = W * zoom;
+  canvas.height = H * zoom;
+
+  const imageData = ctx.createImageData(W, H);
+  const pix = imageData.data;
+
+  // Build palette from NXI header or use default RGB332
+  const palette = new Array(256);
+  if (!isSl2 && nxiData.length >= 512 + W * H) {
+    // Parse NXI palette from first 512 bytes
+    for (let i = 0; i < 256; i++) {
+      const byte0 = nxiData[i * 2];
+      const byte1 = nxiData[i * 2 + 1];
+      const r3 = (byte0 >> 5) & 7;
+      const g3 = (byte0 >> 2) & 7;
+      const b3 = ((byte0 & 3) << 1) | (byte1 & 1);
+      palette[i] = [
+        Math.round(r3 * 255 / 7),
+        Math.round(g3 * 255 / 7),
+        Math.round(b3 * 255 / 7)
+      ];
+    }
+  } else {
+    // Default RGB332 palette
+    for (let i = 0; i < 256; i++) {
+      const r3 = (i >> 5) & 7;
+      const g3 = (i >> 2) & 7;
+      const b2 = i & 3;
+      const b3 = (b2 << 1) | (b2 >> 1);
+      palette[i] = [
+        Math.round(r3 * 255 / 7),
+        Math.round(g3 * 255 / 7),
+        Math.round(b3 * 255 / 7)
+      ];
+    }
+  }
+
+  const pixelOffset = isSl2 ? 0 : 512;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const idx = pixelOffset + y * W + x;
+      const colorIdx = nxiData[idx] || 0;
+      const rgb = palette[colorIdx];
+      const dst = (y * W + x) * 4;
+      pix[dst] = rgb[0];
+      pix[dst + 1] = rgb[1];
+      pix[dst + 2] = rgb[2];
+      pix[dst + 3] = 255;
+    }
+  }
+
+  const temp = getImportTempCanvas(W, H);
+  if (temp) {
+    temp.ctx.putImageData(imageData, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(temp.canvas, 0, 0, W * zoom, H * zoom);
+  }
+}
+
+/**
+ * Render NXI 320×256 preview to canvas. Data is column-major 8bpp with 512-byte palette header.
+ * @param {Uint8Array} nxiData - Full NXI data (82432 bytes)
+ * @param {HTMLCanvasElement} canvas
+ * @param {number} zoom
+ * @param {boolean} [isSl2=false] - If true, raw 81920 bytes (no palette), use default palette
+ */
+function renderNxi320ToCanvas(nxiData, canvas, zoom = 2, isSl2 = false) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const W = 320, H = 256;
+  canvas.width = W * zoom;
+  canvas.height = H * zoom;
+
+  const palette = new Array(256);
+  if (!isSl2 && nxiData.length >= 512 + W * H) {
+    for (let i = 0; i < 256; i++) {
+      const byte0 = nxiData[i * 2];
+      const byte1 = nxiData[i * 2 + 1];
+      const r3 = (byte0 >> 5) & 7, g3 = (byte0 >> 2) & 7, b3 = ((byte0 & 3) << 1) | (byte1 & 1);
+      palette[i] = [Math.round(r3 * 255 / 7), Math.round(g3 * 255 / 7), Math.round(b3 * 255 / 7)];
+    }
+  } else {
+    for (let i = 0; i < 256; i++) {
+      const r3 = (i >> 5) & 7, g3 = (i >> 2) & 7, b2 = i & 3, b3 = (b2 << 1) | (b2 >> 1);
+      palette[i] = [Math.round(r3 * 255 / 7), Math.round(g3 * 255 / 7), Math.round(b3 * 255 / 7)];
+    }
+  }
+
+  const pixelOffset = isSl2 ? 0 : 512;
+  const imageData = ctx.createImageData(W, H);
+  const pix = imageData.data;
+  for (let x = 0; x < W; x++) {
+    const col = x * 256;
+    for (let y = 0; y < H; y++) {
+      const colorIdx = nxiData[pixelOffset + col + y] || 0;
+      const rgb = palette[colorIdx];
+      const dst = (y * W + x) * 4;
+      pix[dst] = rgb[0]; pix[dst + 1] = rgb[1]; pix[dst + 2] = rgb[2]; pix[dst + 3] = 255;
+    }
+  }
+
+  const temp = getImportTempCanvas(W, H);
+  if (temp) {
+    temp.ctx.putImageData(imageData, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(temp.canvas, 0, 0, W * zoom, H * zoom);
+  }
+}
+
+/**
+ * Render NXI 640×256 preview to canvas. Data is column-major 4bpp with 32-byte palette header.
+ * Displayed at 640×512 (2× vertical stretch for correct aspect ratio).
+ * @param {Uint8Array} nxiData - Full NXI data (81952 bytes)
+ * @param {HTMLCanvasElement} canvas
+ * @param {number} zoom
+ * @param {boolean} [isSl2=false] - If true, raw 81920 bytes (no palette), use first 16 default colors
+ */
+function renderNxi640ToCanvas(nxiData, canvas, zoom = 2, isSl2 = false) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const W = 640, H = 256;
+  canvas.width = W * zoom;
+  canvas.height = H * 2 * zoom; // 2× vertical stretch
+
+  const palette = new Array(16);
+  if (!isSl2 && nxiData.length >= 32 + (W / 2) * H) {
+    for (let i = 0; i < 16; i++) {
+      const byte0 = nxiData[i * 2];
+      const byte1 = nxiData[i * 2 + 1];
+      const r3 = (byte0 >> 5) & 7, g3 = (byte0 >> 2) & 7, b3 = ((byte0 & 3) << 1) | (byte1 & 1);
+      palette[i] = [Math.round(r3 * 255 / 7), Math.round(g3 * 255 / 7), Math.round(b3 * 255 / 7)];
+    }
+  } else {
+    for (let i = 0; i < 16; i++) {
+      const r3 = (i >> 5) & 7, g3 = (i >> 2) & 7, b2 = i & 3, b3 = (b2 << 1) | (b2 >> 1);
+      palette[i] = [Math.round(r3 * 255 / 7), Math.round(g3 * 255 / 7), Math.round(b3 * 255 / 7)];
+    }
+  }
+
+  const pixelOffset = isSl2 ? 0 : 32;
+  const imageData = ctx.createImageData(W, H);
+  const pix = imageData.data;
+  for (let x = 0; x < W; x += 2) {
+    const col = (x >> 1) * 256;
+    for (let y = 0; y < H; y++) {
+      const byteVal = nxiData[pixelOffset + col + y] || 0;
+      const idx0 = (byteVal >> 4) & 0x0F;
+      const idx1 = byteVal & 0x0F;
+      const rgb0 = palette[idx0], rgb1 = palette[idx1];
+      const dst0 = (y * W + x) * 4;
+      const dst1 = (y * W + x + 1) * 4;
+      pix[dst0] = rgb0[0]; pix[dst0 + 1] = rgb0[1]; pix[dst0 + 2] = rgb0[2]; pix[dst0 + 3] = 255;
+      pix[dst1] = rgb1[0]; pix[dst1 + 1] = rgb1[1]; pix[dst1 + 2] = rgb1[2]; pix[dst1 + 3] = 255;
+    }
+  }
+
+  const temp = getImportTempCanvas(W, H);
+  if (temp) {
+    temp.ctx.putImageData(imageData, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(temp.canvas, 0, 0, W * zoom, H * 2 * zoom); // 2× vertical stretch
+  }
+}
+
+// ============================================================================
 // Reusable Temporary Canvas (for preview rendering)
 // ============================================================================
 
@@ -6964,6 +7605,713 @@ function getImportTempCanvas(width, height) {
   }
   if (!importTempCtx) return null;
   return { canvas: importTempCanvas, ctx: importTempCtx };
+}
+
+// ============================================================================
+// Animated GIF Decoder & Import to SCA
+// ============================================================================
+
+/**
+ * Quickly count the number of image frames in a GIF without full decoding.
+ * Scans for 0x2C (Image Descriptor) blocks, skipping sub-blocks properly.
+ * @param {Uint8Array} data - Raw GIF file bytes
+ * @returns {number} Number of image frames found
+ */
+function countGifFrames(data) {
+  if (data.length < 13) return 0;
+  // Validate GIF signature
+  const sig = String.fromCharCode(data[0], data[1], data[2]);
+  if (sig !== 'GIF') return 0;
+
+  let pos = 6; // skip signature + version
+  // Skip Logical Screen Descriptor
+  const packed = data[10];
+  const hasGct = (packed >> 7) & 1;
+  const gctSize = packed & 0x07;
+  pos = 13;
+  if (hasGct) pos += 3 * (2 << gctSize);
+
+  let count = 0;
+  while (pos < data.length) {
+    const block = data[pos++];
+    if (block === 0x3B) break; // Trailer
+    if (block === 0x21) {
+      // Extension — skip label + sub-blocks
+      pos++; // label
+      while (pos < data.length) {
+        const sz = data[pos++];
+        if (sz === 0) break;
+        pos += sz;
+      }
+    } else if (block === 0x2C) {
+      count++;
+      // Skip Image Descriptor (9 bytes total, already read 1)
+      const imgPacked = data[pos + 8];
+      const hasLct = (imgPacked >> 7) & 1;
+      const lctSize = imgPacked & 0x07;
+      pos += 9;
+      if (hasLct) pos += 3 * (2 << lctSize);
+      pos++; // LZW minimum code size
+      // Skip LZW sub-blocks
+      while (pos < data.length) {
+        const sz = data[pos++];
+        if (sz === 0) break;
+        pos += sz;
+      }
+    }
+  }
+  return count;
+}
+
+/**
+ * GIF decoder class — parses GIF87a/GIF89a files and returns decoded RGBA frames.
+ */
+class GifDecoder {
+  /**
+   * @param {Uint8Array} data - Raw GIF file bytes
+   */
+  constructor(data) {
+    this.data = data;
+    this.pos = 0;
+  }
+
+  /**
+   * Decode the GIF and return frames.
+   * @returns {{ width: number, height: number, frames: Array<{ imageData: ImageData, delay: number }> }}
+   */
+  decode() {
+    const d = this.data;
+    // Validate signature
+    const sig = String.fromCharCode(d[0], d[1], d[2], d[3], d[4], d[5]);
+    if (sig !== 'GIF87a' && sig !== 'GIF89a') {
+      throw new Error('Not a valid GIF file');
+    }
+    this.pos = 6;
+
+    // Logical Screen Descriptor
+    const width = this._readU16();
+    const height = this._readU16();
+    const packed = d[this.pos++];
+    const hasGct = (packed >> 7) & 1;
+    const gctSizeBits = packed & 0x07;
+    const bgColorIndex = d[this.pos++];
+    this.pos++; // pixel aspect ratio
+
+    // Global Color Table
+    /** @type {Uint8Array|null} */
+    let gct = null;
+    if (hasGct) {
+      const gctLen = 3 * (2 << gctSizeBits);
+      gct = d.slice(this.pos, this.pos + gctLen);
+      this.pos += gctLen;
+    }
+
+    // Composite buffer (RGBA)
+    const compositeBuffer = new Uint8ClampedArray(width * height * 4);
+    // Previous buffer for disposal method 3
+    let previousBuffer = new Uint8ClampedArray(width * height * 4);
+
+    /** @type {Array<{ imageData: ImageData, delay: number }>} */
+    const frames = [];
+
+    // Per-frame GCE state
+    let disposalMethod = 0;
+    let transparentFlag = false;
+    let transparentIndex = 0;
+    let delayCs = 0;
+
+    // Previous frame's rect and disposal for applying BEFORE drawing next frame
+    let prevDisposal = 0;
+    let prevLeft = 0, prevTop = 0, prevWidth = 0, prevHeight = 0;
+
+    while (this.pos < d.length) {
+      const block = d[this.pos++];
+      if (block === 0x3B) break; // Trailer
+
+      if (block === 0x21) {
+        // Extension
+        const label = d[this.pos++];
+        if (label === 0xF9) {
+          // Graphic Control Extension
+          const sz = d[this.pos++]; // should be 4
+          const gcPacked = d[this.pos];
+          disposalMethod = (gcPacked >> 2) & 0x07;
+          transparentFlag = (gcPacked & 0x01) === 1;
+          delayCs = d[this.pos + 1] | (d[this.pos + 2] << 8);
+          transparentIndex = d[this.pos + 3];
+          this.pos += sz;
+          this.pos++; // block terminator
+        } else {
+          // Skip other extensions
+          this._skipSubBlocks();
+        }
+      } else if (block === 0x2C) {
+        // Image Descriptor
+        const imgLeft = this._readU16();
+        const imgTop = this._readU16();
+        const imgWidth = this._readU16();
+        const imgHeight = this._readU16();
+        const imgPacked = d[this.pos++];
+        const hasLct = (imgPacked >> 7) & 1;
+        const interlaced = (imgPacked >> 6) & 1;
+        const lctSizeBits = imgPacked & 0x07;
+
+        /** @type {Uint8Array} */
+        let colorTable = gct || new Uint8Array(768);
+        if (hasLct) {
+          const lctLen = 3 * (2 << lctSizeBits);
+          colorTable = d.slice(this.pos, this.pos + lctLen);
+          this.pos += lctLen;
+        }
+
+        // Apply previous frame's disposal BEFORE drawing this frame
+        if (frames.length > 0) {
+          if (prevDisposal === 2) {
+            // Restore to background — clear previous frame's rect
+            for (let y = prevTop; y < prevTop + prevHeight && y < height; y++) {
+              for (let x = prevLeft; x < prevLeft + prevWidth && x < width; x++) {
+                const idx = (y * width + x) * 4;
+                compositeBuffer[idx] = 0;
+                compositeBuffer[idx + 1] = 0;
+                compositeBuffer[idx + 2] = 0;
+                compositeBuffer[idx + 3] = 0;
+              }
+            }
+          } else if (prevDisposal === 3) {
+            // Restore to previous
+            compositeBuffer.set(previousBuffer);
+          }
+        }
+
+        // For disposal method 3 on THIS frame, save buffer before drawing
+        if (disposalMethod === 3) {
+          previousBuffer = new Uint8ClampedArray(compositeBuffer);
+        }
+
+        // LZW decode
+        const lzwMinCodeSize = d[this.pos++];
+        const pixels = this._lzwDecode(lzwMinCodeSize, imgWidth * imgHeight);
+
+        // De-interlace if needed
+        /** @type {Uint8Array} */
+        let orderedPixels;
+        if (interlaced) {
+          orderedPixels = new Uint8Array(imgWidth * imgHeight);
+          const passes = [
+            { start: 0, step: 8 },
+            { start: 4, step: 8 },
+            { start: 2, step: 4 },
+            { start: 1, step: 2 }
+          ];
+          let srcRow = 0;
+          for (const pass of passes) {
+            for (let y = pass.start; y < imgHeight; y += pass.step) {
+              if (srcRow < pixels.length / imgWidth) {
+                orderedPixels.set(
+                  pixels.slice(srcRow * imgWidth, (srcRow + 1) * imgWidth),
+                  y * imgWidth
+                );
+                srcRow++;
+              }
+            }
+          }
+        } else {
+          orderedPixels = pixels;
+        }
+
+        // Composite frame onto buffer
+        for (let y = 0; y < imgHeight; y++) {
+          for (let x = 0; x < imgWidth; x++) {
+            const px = y * imgWidth + x;
+            if (px >= orderedPixels.length) continue;
+            const ci = orderedPixels[px];
+            if (transparentFlag && ci === transparentIndex) continue;
+            const dx = imgLeft + x;
+            const dy = imgTop + y;
+            if (dx >= width || dy >= height) continue;
+            const dstIdx = (dy * width + dx) * 4;
+            const srcIdx = ci * 3;
+            compositeBuffer[dstIdx] = colorTable[srcIdx];
+            compositeBuffer[dstIdx + 1] = colorTable[srcIdx + 1];
+            compositeBuffer[dstIdx + 2] = colorTable[srcIdx + 2];
+            compositeBuffer[dstIdx + 3] = 255;
+          }
+        }
+
+        // Capture frame
+        const frameData = new ImageData(
+          new Uint8ClampedArray(compositeBuffer),
+          width, height
+        );
+        frames.push({
+          imageData: frameData,
+          delay: delayCs
+        });
+
+        // Save this frame's rect/disposal for next iteration
+        prevDisposal = disposalMethod;
+        prevLeft = imgLeft;
+        prevTop = imgTop;
+        prevWidth = imgWidth;
+        prevHeight = imgHeight;
+
+        // Reset GCE state for next frame (GCE applies to next image only)
+        disposalMethod = 0;
+        transparentFlag = false;
+        transparentIndex = 0;
+        delayCs = 0;
+      }
+    }
+
+    return { width, height, frames };
+  }
+
+  /** @returns {number} */
+  _readU16() {
+    const v = this.data[this.pos] | (this.data[this.pos + 1] << 8);
+    this.pos += 2;
+    return v;
+  }
+
+  _skipSubBlocks() {
+    while (this.pos < this.data.length) {
+      const sz = this.data[this.pos++];
+      if (sz === 0) break;
+      this.pos += sz;
+    }
+  }
+
+  /**
+   * LZW decompression for GIF image data
+   * @param {number} minCodeSize - LZW minimum code size
+   * @param {number} pixelCount - Expected number of output pixels
+   * @returns {Uint8Array} Decoded pixel indices
+   */
+  _lzwDecode(minCodeSize, pixelCount) {
+    const d = this.data;
+    const clearCode = 1 << minCodeSize;
+    const eoiCode = clearCode + 1;
+
+    // Collect all sub-block data into a single buffer
+    const subBlockData = [];
+    let totalBytes = 0;
+    while (this.pos < d.length) {
+      const sz = d[this.pos++];
+      if (sz === 0) break;
+      subBlockData.push(d.slice(this.pos, this.pos + sz));
+      totalBytes += sz;
+      this.pos += sz;
+    }
+    const byteStream = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of subBlockData) {
+      byteStream.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    // Bit reader
+    let bytePos = 0;
+    let bitPos = 0;
+    const readBits = (/** @type {number} */ numBits) => {
+      let result = 0;
+      let bitsRead = 0;
+      while (bitsRead < numBits) {
+        if (bytePos >= byteStream.length) return -1;
+        const bitsAvail = 8 - bitPos;
+        const bitsNeeded = numBits - bitsRead;
+        const bitsToRead = Math.min(bitsAvail, bitsNeeded);
+        const mask = (1 << bitsToRead) - 1;
+        result |= ((byteStream[bytePos] >> bitPos) & mask) << bitsRead;
+        bitsRead += bitsToRead;
+        bitPos += bitsToRead;
+        if (bitPos >= 8) {
+          bytePos++;
+          bitPos = 0;
+        }
+      }
+      return result;
+    };
+
+    // Decode
+    const output = new Uint8Array(pixelCount);
+    let outPos = 0;
+
+    let codeSize = minCodeSize + 1;
+    let nextCode = eoiCode + 1;
+    const maxTableSize = 4096;
+
+    // Code table: store as prefix + suffix for memory efficiency
+    const prefix = new Int32Array(maxTableSize);
+    const suffix = new Uint8Array(maxTableSize);
+    const lengths = new Uint16Array(maxTableSize);
+
+    // Initialize table
+    const initTable = () => {
+      codeSize = minCodeSize + 1;
+      nextCode = eoiCode + 1;
+      for (let i = 0; i < clearCode; i++) {
+        prefix[i] = -1;
+        suffix[i] = i;
+        lengths[i] = 1;
+      }
+    };
+
+    // Output a code's string to the output buffer
+    const outputCode = (/** @type {number} */ code) => {
+      const len = lengths[code];
+      if (outPos + len > output.length) {
+        // Clamp to remaining space
+        let c = code;
+        const stack = [];
+        while (c >= 0 && stack.length < output.length - outPos) {
+          stack.push(suffix[c]);
+          c = prefix[c];
+        }
+        for (let i = stack.length - 1; i >= 0; i--) {
+          output[outPos++] = stack[i];
+        }
+        return;
+      }
+      // Walk the chain and write backwards
+      let p = outPos + len - 1;
+      let c = code;
+      while (c >= 0) {
+        output[p--] = suffix[c];
+        c = prefix[c];
+      }
+      outPos += len;
+    };
+
+    // Get first character of a code's string
+    const firstChar = (/** @type {number} */ code) => {
+      let c = code;
+      while (prefix[c] >= 0) c = prefix[c];
+      return suffix[c];
+    };
+
+    initTable();
+
+    let code = readBits(codeSize);
+    if (code === clearCode) {
+      initTable();
+      code = readBits(codeSize);
+    }
+    if (code === eoiCode || code < 0) return output;
+
+    outputCode(code);
+    let prevCode = code;
+
+    while (outPos < pixelCount) {
+      code = readBits(codeSize);
+      if (code < 0 || code === eoiCode) break;
+
+      if (code === clearCode) {
+        initTable();
+        code = readBits(codeSize);
+        if (code === eoiCode || code < 0) break;
+        outputCode(code);
+        prevCode = code;
+        continue;
+      }
+
+      if (code < nextCode) {
+        // Code is in the table
+        outputCode(code);
+        if (nextCode < maxTableSize) {
+          prefix[nextCode] = prevCode;
+          suffix[nextCode] = firstChar(code);
+          lengths[nextCode] = lengths[prevCode] + 1;
+          nextCode++;
+        }
+      } else {
+        // Code is not yet in the table (code === nextCode)
+        const fc = firstChar(prevCode);
+        if (nextCode < maxTableSize) {
+          prefix[nextCode] = prevCode;
+          suffix[nextCode] = fc;
+          lengths[nextCode] = lengths[prevCode] + 1;
+          nextCode++;
+        }
+        outputCode(code < maxTableSize ? code : prevCode);
+      }
+
+      // Increase code size when table is full at current width
+      if (nextCode >= (1 << codeSize) && codeSize < 12) {
+        codeSize++;
+      }
+
+      prevCode = code;
+    }
+
+    return output;
+  }
+}
+
+/**
+ * Check if a GIF file is animated. If so, decode all frames and import as SCA animation.
+ * If single-frame, fall back to the standard image import dialog.
+ * @param {File} file - The GIF file
+ */
+async function importAnimatedGifOrFallback(file) {
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const data = new Uint8Array(arrayBuffer);
+    const frameCount = countGifFrames(data);
+    if (frameCount > 1) {
+      await importAnimatedGif(data, file.name);
+    } else {
+      openImportDialog(file);
+    }
+  } catch (e) {
+    console.error('GIF detection failed, falling back to import dialog:', e);
+    openImportDialog(file);
+  }
+}
+
+/**
+ * Decode an animated GIF and load it as an SCA animation.
+ * @param {Uint8Array} data - Raw GIF file bytes
+ * @param {string} fileName - Original file name
+ */
+async function importAnimatedGif(data, fileName) {
+  let gif;
+  try {
+    gif = new GifDecoder(data).decode();
+  } catch (e) {
+    console.error('GIF decode error:', e);
+    alert('Failed to decode animated GIF: ' + e.message);
+    return;
+  }
+
+  if (gif.frames.length === 0) {
+    alert('No frames found in GIF file.');
+    return;
+  }
+
+  const frameCount = gif.frames.length;
+  const frameSize = 6912;
+  const headerSize = 14;
+  const scaSize = headerSize + frameCount + frameCount * frameSize;
+  const scaBinary = new Uint8Array(scaSize);
+
+  // SCA Header (14 bytes)
+  scaBinary[0] = 0x53; // 'S'
+  scaBinary[1] = 0x43; // 'C'
+  scaBinary[2] = 0x41; // 'A'
+  scaBinary[3] = 0;    // version 0
+  scaBinary[4] = 0;    // width low (256 & 0xFF = 0)
+  scaBinary[5] = 1;    // width high (256 >> 8 = 1)
+  scaBinary[6] = 0xC0; // height low (192 & 0xFF = 0xC0)
+  scaBinary[7] = 0;    // height high (192 >> 8 = 0)
+  scaBinary[8] = 0;    // border color
+  scaBinary[9] = frameCount & 0xFF;         // frame count low
+  scaBinary[10] = (frameCount >> 8) & 0xFF; // frame count high
+  scaBinary[11] = 0;   // payload type 0 (full frames)
+  scaBinary[12] = headerSize & 0xFF;         // payload offset low
+  scaBinary[13] = (headerSize >> 8) & 0xFF;  // payload offset high
+
+  // Delay table
+  for (let i = 0; i < frameCount; i++) {
+    let gifDelay = gif.frames[i].delay;
+    if (gifDelay === 0) gifDelay = 10; // treat 0 as 100ms
+    const scaDelay = Math.max(1, Math.min(255, Math.round(gifDelay / 2)));
+    scaBinary[headerSize + i] = scaDelay;
+  }
+
+  // Convert each frame to SCR using fast batch path
+  // Build RGB→palette index LUT once (avoids per-pixel colorDistance in inner loop)
+  const palette = getCombinedPalette();
+  const fullPalette = [...palette.regular, ...palette.bright];
+  // 32×32×32 quantized LUT (32768 entries) — map each 5-bit-quantized RGB to nearest palette index
+  const palLut = new Uint8Array(32768);
+  for (let ri = 0; ri < 32; ri++) {
+    const r = (ri << 3) | 4; // center of bin
+    for (let gi = 0; gi < 32; gi++) {
+      const g = (gi << 3) | 4;
+      for (let bi = 0; bi < 32; bi++) {
+        const b = (bi << 3) | 4;
+        let bestDist = Infinity;
+        let bestIdx = 0;
+        for (let p = 0; p < fullPalette.length; p++) {
+          const pc = fullPalette[p];
+          const dr = r - pc[0], dg = g - pc[1], db = b - pc[2];
+          const dist = dr * dr + dg * dg + db * db; // fast squared RGB distance for LUT
+          if (dist < bestDist) { bestDist = dist; bestIdx = p; }
+        }
+        palLut[(ri << 10) | (gi << 5) | bi] = bestIdx;
+      }
+    }
+  }
+
+  // Reusable canvases
+  const tempCanvas = document.createElement('canvas');
+  tempCanvas.width = 256;
+  tempCanvas.height = 192;
+  const tempCtx = tempCanvas.getContext('2d');
+  if (!tempCtx) {
+    alert('Cannot create canvas context for GIF conversion.');
+    return;
+  }
+
+  const srcCanvas = document.createElement('canvas');
+  const srcCtx = srcCanvas.getContext('2d');
+  const nativeSize = (gif.width === 256 && gif.height === 192);
+
+  const frameDataStart = headerSize + frameCount;
+
+  for (let i = 0; i < frameCount; i++) {
+    const frame = gif.frames[i];
+
+    // Get 256×192 RGBA pixels
+    /** @type {Uint8ClampedArray} */
+    let rgba;
+    if (nativeSize) {
+      rgba = frame.imageData.data;
+    } else {
+      if (srcCanvas.width !== frame.imageData.width || srcCanvas.height !== frame.imageData.height) {
+        srcCanvas.width = frame.imageData.width;
+        srcCanvas.height = frame.imageData.height;
+      }
+      if (srcCtx) {
+        srcCtx.putImageData(frame.imageData, 0, 0);
+        tempCtx.clearRect(0, 0, 256, 192);
+        tempCtx.drawImage(srcCanvas, 0, 0, 256, 192);
+        rgba = tempCtx.getImageData(0, 0, 256, 192).data;
+      } else {
+        rgba = frame.imageData.data;
+      }
+    }
+
+    // Fast SCR conversion: for each 8×8 cell, find best ink/paper and build bitmap
+    const scr = new Uint8Array(6912);
+
+    for (let cellY = 0; cellY < 24; cellY++) {
+      for (let cellX = 0; cellX < 32; cellX++) {
+        // Collect palette indices for 64 pixels in cell via LUT
+        const cellIndices = new Uint8Array(64);
+        for (let dy = 0; dy < 8; dy++) {
+          const py = cellY * 8 + dy;
+          for (let dx = 0; dx < 8; dx++) {
+            const px = cellX * 8 + dx;
+            const si = (py * 256 + px) * 4;
+            const ri = rgba[si] >> 3;
+            const gi = rgba[si + 1] >> 3;
+            const bi = rgba[si + 2] >> 3;
+            cellIndices[dy * 8 + dx] = palLut[(ri << 10) | (gi << 5) | bi];
+          }
+        }
+
+        // Count occurrences of each palette color in this cell
+        const counts = new Uint8Array(16);
+        for (let j = 0; j < 64; j++) counts[cellIndices[j]]++;
+
+        // Find the two most common palette indices
+        let best1 = 0, best2 = 0;
+        let max1 = 0, max2 = 0;
+        for (let p = 0; p < 16; p++) {
+          if (counts[p] > max1) {
+            max2 = max1; best2 = best1;
+            max1 = counts[p]; best1 = p;
+          } else if (counts[p] > max2) {
+            max2 = counts[p]; best2 = p;
+          }
+        }
+
+        // Both must be from same brightness group
+        // best1 and best2 are indices in fullPalette (0-7 regular, 8-15 bright)
+        const bright1 = best1 >= 8;
+        const bright2 = best2 >= 8;
+        let inkIdx, paperIdx, bright;
+        if (bright1 === bright2) {
+          bright = bright1;
+          inkIdx = best1 % 8;
+          paperIdx = best2 % 8;
+        } else {
+          // Use the brightness of the more common color
+          bright = bright1;
+          inkIdx = best1 % 8;
+          paperIdx = best2 >= 8 === bright ? best2 % 8 : best1 % 8;
+          if (inkIdx === paperIdx) paperIdx = (paperIdx + 1) % 8;
+        }
+
+        const inkPalIdx = bright ? 8 + inkIdx : inkIdx;
+        const paperPalIdx = bright ? 8 + paperIdx : paperIdx;
+
+        // Build bitmap: for each pixel, pick ink or paper (whichever is closer)
+        const inkColor = fullPalette[inkPalIdx];
+        const paperColor = fullPalette[paperPalIdx];
+
+        for (let dy = 0; dy < 8; dy++) {
+          let byte = 0;
+          const py = cellY * 8 + dy;
+          for (let dx = 0; dx < 8; dx++) {
+            const px = cellX * 8 + dx;
+            const si = (py * 256 + px) * 4;
+            const r = rgba[si], g = rgba[si + 1], b = rgba[si + 2];
+            const dInk = (r - inkColor[0]) ** 2 + (g - inkColor[1]) ** 2 + (b - inkColor[2]) ** 2;
+            const dPaper = (r - paperColor[0]) ** 2 + (g - paperColor[1]) ** 2 + (b - paperColor[2]) ** 2;
+            if (dInk < dPaper) byte |= (0x80 >> dx);
+          }
+          // Write to SCR bitmap area (interleaved ZX Spectrum layout)
+          const y = cellY * 8 + dy;
+          const scrOffset = ((y & 0xC0) << 5) | ((y & 0x07) << 8) | ((y & 0x38) << 2) | cellX;
+          scr[scrOffset] = byte;
+        }
+
+        // Write attribute
+        const attrOffset = 6144 + cellY * 32 + cellX;
+        scr[attrOffset] = (paperIdx << 3) | inkIdx | (bright ? 0x40 : 0);
+      }
+    }
+
+    scaBinary.set(scr, frameDataStart + i * frameSize);
+
+    // Yield every frame for UI responsiveness and progress
+    if (i % 4 === 0) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+  }
+
+  // Load as SCA — mirror screen_viewer.js loadScreenFile SCA handling
+  stopFlashTimer();
+  resetScaState();
+
+  if (typeof activePictureIndex !== 'undefined') {
+    activePictureIndex = -1;
+  }
+
+  screenData = scaBinary;
+  currentFileName = fileName.replace(/\.gif$/i, '') + '.sca';
+  currentFormat = FORMAT.SCA;
+  currentPicture = null;
+  scaHeader = parseScaHeader(screenData);
+
+  if (scaHeader) {
+    borderColor = scaHeader.borderColor;
+    if (borderColorSelect) {
+      borderColorSelect.value = String(borderColor);
+    }
+    startScaAnimation();
+  } else {
+    currentFormat = FORMAT.UNKNOWN;
+  }
+
+  if (typeof updatePictureTabBar === 'function') {
+    updatePictureTabBar();
+  }
+
+  toggleScaControlsVisibility();
+  toggleFormatControlsVisibility();
+  updateScaControls();
+  updateFileInfo();
+  renderScreen();
+
+  if (typeof updateExportAsmButton === 'function') {
+    updateExportAsmButton();
+  }
+  if (typeof updateEditorState === 'function') {
+    updateEditorState();
+  }
 }
 
 // ============================================================================
@@ -7140,6 +8488,8 @@ function getImportFormatDimensions(format) {
   if (format === 'zxp' || format === 'ch$') return { w: importSize.w, h: importSize.h };
   if (format === 'mono_2_3') return { w: 256, h: 128 };
   if (format === 'mono_1_3') return { w: 256, h: 64 };
+  if (format === 'nxi320' || format === 'sl2_320') return { w: 320, h: 256 };
+  if (format === 'nxi640' || format === 'sl2_640') return { w: 640, h: 256 };
   return { w: 256, h: 192 };
 }
 
@@ -7202,6 +8552,15 @@ function updateTileLabel() {
 function applyCropAndFit() {
   if (!importImage || !importSourceCanvas) return;
 
+  // Resize source canvas for extended NXI/SL2 modes
+  const format = importElements.format?.value || 'scr';
+  const fmtDims = getImportFormatDimensions(format);
+  // For BSC/ZXP/chr$ use their own canvases; standard canvas handles the rest
+  const canvasW = (format === 'bsc' || format === 'bsp' || format === 'bmc4' || format === 'zxp' || format === 'ch$') ? 256 : fmtDims.w;
+  const canvasH = (format === 'bsc' || format === 'bsp' || format === 'bmc4' || format === 'zxp' || format === 'ch$') ? 192 : fmtDims.h;
+  if (importSourceCanvas.width !== canvasW) importSourceCanvas.width = canvasW;
+  if (importSourceCanvas.height !== canvasH) importSourceCanvas.height = canvasH;
+
   const ctx = importSourceCanvas.getContext('2d');
   if (!ctx) return;
 
@@ -7210,7 +8569,7 @@ function applyCropAndFit() {
 
   // Clear canvas
   ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, 256, 192);
+  ctx.fillRect(0, 0, canvasW, canvasH);
 
   const srcX = importCrop.x;
   const srcY = importCrop.y;
@@ -7218,8 +8577,8 @@ function applyCropAndFit() {
   const srcH = importCrop.h;
 
   // Use user-specified size (clamped to available area after offset)
-  const availW = Math.min(importSize.w, 256 - importOffset.x);
-  const availH = Math.min(importSize.h, 192 - importOffset.y);
+  const availW = Math.min(importSize.w, canvasW - importOffset.x);
+  const availH = Math.min(importSize.h, canvasH - importOffset.y);
 
   // Calculate destination based on fit mode (fit within available area)
   let destX = importOffset.x, destY = importOffset.y, destW = availW, destH = availH;
@@ -8011,6 +9370,8 @@ function initImageImport() {
   // chr$ mode selector (standard / gigascreen)
   importElements.chrGigaRow = document.getElementById('importChrGigaRow');
   importElements.chrMode = /** @type {HTMLSelectElement} */ (document.getElementById('importChrMode'));
+  importElements.specsciiCharsetRow = document.getElementById('importSpecsciiCharsetRow');
+  importElements.specsciiCharset = /** @type {HTMLSelectElement} */ (document.getElementById('importSpecsciiCharset'));
   // ULA+ palette import elements
   importElements.paletteRow = document.getElementById('importPaletteRow');
   importElements.ulaPlusPaletteSource = /** @type {HTMLSelectElement} */ (document.getElementById('importUlaPlusPaletteSource'));
@@ -8159,7 +9520,8 @@ function initImageImport() {
       const attrData = convertTo53c(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, pattern);
       render53cToCanvas(attrData, importPreviewCanvas, currentZoom, pattern);
     } else if (format === 'specscii') {
-      const result = convertToSpecscii(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      const specsciiCharset = importElements.specsciiCharset?.value || 'full';
+      const result = convertToSpecscii(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, specsciiCharset);
       renderSpecsciiToCanvas(result.charGrid, result.attrGrid, importPreviewCanvas, currentZoom);
     } else if ((format === 'bsc' || format === 'bsp') && importSourceCanvasBsc) {
       const bscData = convertToBsc(importSourceCanvasBsc, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
@@ -8221,6 +9583,24 @@ function initImageImport() {
         const chrData = convertToZxp(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
         renderZxpToCanvas(chrData, importPreviewCanvas, currentZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
       }
+    } else if (format === 'nxi') {
+      const nxiData = convertToNxi(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      renderNxiToCanvas(nxiData, importPreviewCanvas, currentZoom, false);
+    } else if (format === 'nxi320') {
+      const nxiData = convertToNxi320(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      renderNxi320ToCanvas(nxiData, importPreviewCanvas, currentZoom, false);
+    } else if (format === 'nxi640') {
+      const nxiData = convertToNxi640(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      renderNxi640ToCanvas(nxiData, importPreviewCanvas, currentZoom, false);
+    } else if (format === 'sl2') {
+      const sl2Data = convertToSl2(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      renderNxiToCanvas(sl2Data, importPreviewCanvas, currentZoom, true);
+    } else if (format === 'sl2_320') {
+      const sl2Data = convertToSl2_320(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      renderNxi320ToCanvas(sl2Data, importPreviewCanvas, currentZoom, true);
+    } else if (format === 'sl2_640') {
+      const sl2Data = convertToSl2_640(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      renderNxi640ToCanvas(sl2Data, importPreviewCanvas, currentZoom, true);
     } else {
       const scrData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderScrToCanvas(scrData, importPreviewCanvas, currentZoom);
@@ -8419,30 +9799,22 @@ function initImageImport() {
   formatSelect?.addEventListener('change', () => {
     // Update size defaults based on format
     const format = formatSelect?.value || 'scr';
-    let defaultW = 256, defaultH = 192;
-    if (format === 'bsc' || format === 'bsp' || format === 'bmc4') {
-      defaultW = 384; defaultH = 304;
-    } else if (format === 'zxp' || format === 'ch$') {
-      defaultW = 256; defaultH = 192;
-    } else if (format === 'mono_2_3') {
-      defaultH = 128;
-    } else if (format === 'mono_1_3') {
-      defaultH = 64;
-    }
+    const fmtDims = getImportFormatDimensions(format);
+    let defaultW = fmtDims.w, defaultH = fmtDims.h;
     importSize.w = defaultW;
     importSize.h = defaultH;
     if (importElements.sizeW) {
       importElements.sizeW.value = String(defaultW);
       importElements.sizeW.max = String(
         (format === 'bsc' || format === 'bsp' || format === 'bmc4') ? 384 :
-        (format === 'zxp' || format === 'ch$') ? 2048 : 256
+        (format === 'zxp' || format === 'ch$') ? 2048 : defaultW
       );
     }
     if (importElements.sizeH) {
       importElements.sizeH.value = String(defaultH);
       importElements.sizeH.max = String(
         (format === 'bsc' || format === 'bsp' || format === 'bmc4') ? 304 :
-        (format === 'zxp' || format === 'ch$') ? 2048 : 192
+        (format === 'zxp' || format === 'ch$') ? 2048 : defaultH
       );
     }
     // Also reset offset for format change
@@ -8463,6 +9835,9 @@ function initImageImport() {
     if (importElements.chrGigaRow) {
       importElements.chrGigaRow.style.display = format === 'ch$' ? 'flex' : 'none';
     }
+    if (importElements.specsciiCharsetRow) {
+      importElements.specsciiCharsetRow.style.display = format === 'specscii' ? 'flex' : 'none';
+    }
     const ditheringRow = document.getElementById('importDitheringRow');
     if (ditheringRow) {
       // HLR/STL have a fixed bitmap, so dithering does nothing — hide the row.
@@ -8472,7 +9847,7 @@ function initImageImport() {
     // Hide cell-aware dithering for formats without attribute cells (RGB3, Mono)
     // and for HLR (bitmap is fixed so cell-aware methods don't apply either).
     const cellGroup = document.getElementById('importDitherCellGroup');
-    const noCellFormats = format === 'rgb3' || format === 'mono' || format === 'mono_2_3' || format === 'mono_1_3' || format === 'hlr' || format === 'stl' || format === 'specscii';
+    const noCellFormats = format === 'rgb3' || format === 'mono' || format === 'mono_2_3' || format === 'mono_1_3' || format === 'hlr' || format === 'stl' || format === 'specscii' || format === 'nxi' || format === 'nxi320' || format === 'nxi640' || format === 'sl2' || format === 'sl2_320' || format === 'sl2_640';
     if (cellGroup) {
       cellGroup.style.display = noCellFormats ? 'none' : '';
     }
@@ -8498,9 +9873,10 @@ function initImageImport() {
     if (importPreviewCanvas) {
       importPreviewCanvas.style.cursor = showUlaPlusRow ? 'crosshair' : '';
     }
-    // Hide standard Palette: row for ULA+ (it has its own palette system)
+    // Hide standard Palette: row for ULA+ and NXI/SL2 (they have their own palette systems)
+    const isNextFormat = format === 'nxi' || format === 'nxi320' || format === 'nxi640' || format === 'sl2' || format === 'sl2_320' || format === 'sl2_640';
     if (importElements.paletteRow) {
-      importElements.paletteRow.style.display = showUlaPlusRow ? 'none' : 'flex';
+      importElements.paletteRow.style.display = (showUlaPlusRow || isNextFormat) ? 'none' : 'flex';
     }
     // Auto-set zoom to x1 for ZXP/chr$ (dimensions can be very large)
     if ((format === 'zxp' || format === 'ch$') && importElements.zoom) {
@@ -8546,6 +9922,7 @@ function initImageImport() {
   importElements.pattern53c?.addEventListener('change', updatePreview);
   importElements.hlrPattern?.addEventListener('change', updatePreview);
   importElements.chrMode?.addEventListener('change', updatePreview);
+  importElements.specsciiCharset?.addEventListener('change', updatePreview);
   contrastSlider?.addEventListener('input', updatePreview);
   brightnessSlider?.addEventListener('input', updatePreview);
   saturationSlider?.addEventListener('input', function() {
@@ -8709,8 +10086,8 @@ function initImageImport() {
   // Size controls with aspect ratio lock
   const getSourceAspect = () => importCrop.w / importCrop.h;
   const format = () => formatSelect?.value || 'scr';
-  const maxW = () => (format() === 'bsc' || format() === 'bmc4') ? 384 : (format() === 'zxp' || format() === 'ch$') ? 2048 : 256;
-  const maxH = () => (format() === 'bsc' || format() === 'bmc4') ? 304 : (format() === 'zxp' || format() === 'ch$') ? 2048 : 192;
+  const maxW = () => { const f = format(); return (f === 'bsc' || f === 'bmc4') ? 384 : (f === 'zxp' || f === 'ch$') ? 2048 : getImportFormatDimensions(f).w; };
+  const maxH = () => { const f = format(); return (f === 'bsc' || f === 'bmc4') ? 304 : (f === 'zxp' || f === 'ch$') ? 2048 : getImportFormatDimensions(f).h; };
 
   const onSizeWChange = () => {
     const newW = Math.max(8, Math.min(maxW(), parseInt(importElements.sizeW?.value || String(maxW()), 10) || maxW()));
@@ -8950,6 +10327,8 @@ function initImageImport() {
       else if (tileFormat === 'stl') tileExt = '.stl';
       else if (tileFormat === 'zxp') tileExt = '.zxp';
       else if (tileFormat === 'ch$') tileExt = '.ch$';
+      else if (tileFormat === 'nxi') tileExt = '.nxi';
+      else if (tileFormat === 'sl2') tileExt = '.sl2';
       else tileExt = '.scr';
 
       const baseName = importFile ? importFile.name.replace(/\.[^.]+$/, '') : 'imported';
@@ -9029,7 +10408,8 @@ function initImageImport() {
             tileData = convertTo53c(importSourceCanvas, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, pattern);
             tileOutputFormat = FORMAT.ATTR_53C;
           } else if (tileFormat === 'specscii') {
-            const specsciiResult = convertToSpecscii(importSourceCanvas, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB);
+            const tileSpecsciiCharset = importElements.specsciiCharset?.value || 'full';
+            const specsciiResult = convertToSpecscii(importSourceCanvas, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileSpecsciiCharset);
             tileData = specsciiResult.stream;
             tileOutputFormat = FORMAT.SPECSCII;
           } else if (tileFormat === 'bsc' && importSourceCanvasBsc) {
@@ -9097,6 +10477,12 @@ function initImageImport() {
               tileData = convertToZxp(importSourceCanvasZxp, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileMonoOutput);
             }
             tileOutputFormat = FORMAT.CHR;
+          } else if (tileFormat === 'nxi') {
+            tileData = convertToNxi(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB);
+            tileOutputFormat = FORMAT.NXI;
+          } else if (tileFormat === 'sl2') {
+            tileData = convertToSl2(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB);
+            tileOutputFormat = FORMAT.SL2;
           } else {
             tileData = convertToScr(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileMonoOutput);
             tileOutputFormat = FORMAT.SCR;
@@ -9245,6 +10631,12 @@ function initImageImport() {
       importOffset = savedOffset;
       importSize = savedSize;
 
+      // Set up NXI/SL2 palette and mode for viewer/editor after tile import
+      if ((tileFormat === 'nxi' || tileFormat === 'sl2') && typeof generateDefaultNextPalette === 'function') {
+        nxiLayer2Mode = '256x192';
+        nxiResolvedPalette = generateDefaultNextPalette();
+      }
+
       // Close dialog and update UI
       closeImportDialog();
 
@@ -9290,7 +10682,8 @@ function initImageImport() {
       outputFormat = FORMAT.ATTR_53C;
       fileExt = '.53c';
     } else if (format === 'specscii') {
-      const specsciiResult = convertToSpecscii(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      const saveSpecsciiCharset = importElements.specsciiCharset?.value || 'full';
+      const specsciiResult = convertToSpecscii(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, saveSpecsciiCharset);
       outputData = specsciiResult.stream;
       outputFormat = FORMAT.SPECSCII;
       fileExt = '.specscii';
@@ -9379,6 +10772,30 @@ function initImageImport() {
       }
       outputFormat = FORMAT.CHR;
       fileExt = '.ch$';
+    } else if (format === 'nxi') {
+      outputData = convertToNxi(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputFormat = FORMAT.NXI;
+      fileExt = '.nxi';
+    } else if (format === 'nxi320') {
+      outputData = convertToNxi320(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputFormat = FORMAT.NXI;
+      fileExt = '.nxi';
+    } else if (format === 'nxi640') {
+      outputData = convertToNxi640(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputFormat = FORMAT.NXI;
+      fileExt = '.nxi';
+    } else if (format === 'sl2') {
+      outputData = convertToSl2(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputFormat = FORMAT.SL2;
+      fileExt = '.sl2';
+    } else if (format === 'sl2_320') {
+      outputData = convertToSl2_320(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputFormat = FORMAT.SL2;
+      fileExt = '.sl2';
+    } else if (format === 'sl2_640') {
+      outputData = convertToSl2_640(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputFormat = FORMAT.SL2;
+      fileExt = '.sl2';
     } else {
       outputData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.SCR;
@@ -9578,6 +10995,26 @@ function initImageImport() {
       currentPicture = newInternalPicture;
     }
 
+    // Set up NXI/SL2 palette and mode for viewer/editor after import
+    if ((outputFormat === FORMAT.NXI || outputFormat === FORMAT.SL2) && typeof generateDefaultNextPalette === 'function') {
+      if (format === 'nxi320' || format === 'sl2_320') {
+        nxiLayer2Mode = '320x256';
+      } else if (format === 'nxi640' || format === 'sl2_640') {
+        nxiLayer2Mode = '640x256';
+      } else {
+        nxiLayer2Mode = '256x192';
+      }
+      if (format === 'nxi640') {
+        nxiResolvedPalette = typeof parseNxi4bppPalette === 'function' ? parseNxi4bppPalette(outputData) : generateDefaultNext4bppPalette();
+      } else if (format === 'nxi' || format === 'nxi320') {
+        nxiResolvedPalette = typeof parseNxiPalette === 'function' ? parseNxiPalette(outputData) : generateDefaultNextPalette();
+      } else if (format === 'sl2_640') {
+        nxiResolvedPalette = typeof generateDefaultNext4bppPalette === 'function' ? generateDefaultNext4bppPalette() : generateDefaultNextPalette();
+      } else {
+        nxiResolvedPalette = generateDefaultNextPalette();
+      }
+    }
+
     // Close dialog and render
     closeImportDialog();
 
@@ -9751,29 +11188,21 @@ function openImportDialog(file) {
 
     // Reset size to defaults based on current format
     const format = importElements.format?.value || 'scr';
-    let defaultW = 256, defaultH = 192;
-    if (format === 'bsc' || format === 'bsp' || format === 'bmc4') {
-      defaultW = 384; defaultH = 304;
-    } else if (format === 'zxp' || format === 'ch$') {
-      defaultW = 256; defaultH = 192;
-    } else if (format === 'mono_2_3') {
-      defaultH = 128;
-    } else if (format === 'mono_1_3') {
-      defaultH = 64;
-    }
+    const fmtDimsInit = getImportFormatDimensions(format);
+    let defaultW = fmtDimsInit.w, defaultH = fmtDimsInit.h;
     importSize = { w: defaultW, h: defaultH };
     if (importElements.sizeW) {
       importElements.sizeW.value = String(defaultW);
       importElements.sizeW.max = String(
         (format === 'bsc' || format === 'bsp' || format === 'bmc4') ? 384 :
-        (format === 'zxp' || format === 'ch$') ? 2048 : 256
+        (format === 'zxp' || format === 'ch$') ? 2048 : defaultW
       );
     }
     if (importElements.sizeH) {
       importElements.sizeH.value = String(defaultH);
       importElements.sizeH.max = String(
         (format === 'bsc' || format === 'bsp' || format === 'bmc4') ? 304 :
-        (format === 'zxp' || format === 'ch$') ? 2048 : 192
+        (format === 'zxp' || format === 'ch$') ? 2048 : defaultH
       );
     }
 
@@ -9812,7 +11241,8 @@ function openImportDialog(file) {
       const attrData = convertTo53c(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, pattern);
       render53cToCanvas(attrData, importPreviewCanvas, importZoom, pattern);
     } else if (format === 'specscii') {
-      const specsciiResult = convertToSpecscii(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      const liveSpecsciiCharset = importElements.specsciiCharset?.value || 'full';
+      const specsciiResult = convertToSpecscii(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, liveSpecsciiCharset);
       renderSpecsciiToCanvas(specsciiResult.charGrid, specsciiResult.attrGrid, importPreviewCanvas, importZoom);
     } else if (format === 'ifl') {
       const iflData = convertToIfl(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
@@ -9908,12 +11338,4 @@ function closeImportDialog() {
   if (importPreviewCanvas) importPreviewCanvas.style.cursor = '';
 }
 
-/**
- * Check if file is an image file
- * @param {string} filename - File name to check
- * @returns {boolean} True if image file
- */
-function isImageFile(filename) {
-  const ext = filename.toLowerCase().split('.').pop() || '';
-  return ['png', 'gif', 'jpg', 'jpeg', 'webp', 'bmp'].includes(ext);
-}
+

@@ -1,5 +1,84 @@
 # SpectraLab Version History
 
+## v1.73
+- ASM export for ZX Spectrum Next Layer 2 (NXI/SL2) — generates sjasmplus source that builds a .nex file via SAVENEX
+  - Supports all three Layer 2 modes: 256×192 8bpp, 320×256 8bpp, 640×256 4bpp
+  - Pixel data placed directly into L2 bank pages at assembly time (no runtime copy)
+  - Palette programmed via NEXTREG $43/$40/$44 (9-bit RGB333)
+  - Clip window configured for extended modes via NEXTREG $1C/$18
+  - Embed data as DB lines or reference original file via INCBIN
+  - For NXI: uses embedded palette from file; for SL2: generates default RGB332→RGB333 identity palette
+- UI: moved PNG/GIF export button to separate row so ASM export dropdown has full width
+
+## v1.72
+- Gigascreen and RGB3 display mode dropdown with three options:
+  - **Blend dark** (default) — simulates perceived brightness on real CRT hardware, accounting for vertical retrace blanking (CRT dark factor 0.8)
+  - **Blend** — full-brightness color mixing (Gigascreen: average of two frames; RGB3: direct RGB channel mapping at full palette intensity)
+  - **Emulate flicker** — alternating frame display to simulate real hardware
+- RGB3 preview in the editor now uses the same rendering as the main canvas, respecting the selected display mode
+- Renamed Gigascreen "Average" mode to "Blend" for consistency with RGB3
+
+## v1.71
+- ZX Spectrum Next Layer 2 extended mode support:
+  - NXI 320×256 (82432 bytes, 8bpp column-major with 256-color palette)
+  - NXI 640×256 (81952 bytes, 4bpp column-major with 16-color palette)
+  - SL2 extended (81920 bytes) with disambiguation dialog showing side-by-side previews
+  - File size based auto-detection for NXI; interactive mode selection for ambiguous SL2
+  - Full editing support for all three Layer 2 modes (256×192, 320×256, 640×256)
+  - 640×256 mode displays with 2× vertical stretch (half-width pixels on real hardware)
+  - Per-picture Layer 2 mode preserved when switching between open pictures
+- Image Import: NXI 320×256, NXI 640×256, SL2 320×256, SL2 640×256 added as target formats
+- Format conversions for Next Layer 2 extended modes:
+  - Lossless: NXI 320×256 ↔ SL2 320×256, NXI 640×256 ↔ SL2 640×256 (strip/add palette)
+  - Lossy cross-mode: NXI/SL2 256×192 ↔ 320×256 ↔ 640×256 (render + re-quantize)
+  - Lossy from other formats: SCR → NXI 320/640, ULA+ → NXI 256/320/640
+  - Lossy to SCR: NXI/SL2 any mode → SCR (downscale + ZX attribute quantization)
+
+## v1.70
+- Import animated GIF to SCA animation with frame delay preservation
+  - Multi-frame GIFs are automatically detected and decoded with full GIF87a/GIF89a support
+  - Each frame is converted to ZX Spectrum SCR format (Floyd-Steinberg dithering) and assembled into an SCA animation
+  - Per-frame delays from the GIF are converted to SCA 20ms delay units
+  - Supports disposal methods, transparency, interlaced frames, local color tables, and non-standard sizes
+  - Single-frame GIFs continue to use the existing Image Import dialog
+  - After import, full SCA editor access: filmstrip, playback, trim, delay editing, optimize, export
+- Export to PNG/GIF: new "PNG/GIF" button next to Save opens a dialog to export the current screen
+  - All ZX formats supported (SCR, BSC, BMC4, IFL, MLT, Gigascreen, MGH, HLR, STL, BSP, NXI, SL2, etc.)
+  - Zoom options: 1x, 2x, 3x, 4x
+  - Optional border with selectable ZX color (hidden for BSC/BMC4/BSP-border/NXI/SL2)
+  - Gigascreen-family formats: choose Blended (PNG) or Flicker (animated GIF at ~50fps)
+  - Output dimensions shown in dialog, updated dynamically
+
+## v1.68
+- Lossless cross-format conversions (Xform → Convert dropdown):
+  - SCR → IFL (8×2 multicolor): replicate 8×8 attrs to 8×2
+  - SCR → MLT (8×1 multicolor): replicate 8×8 attrs to 8×1
+  - SCR → BMC4 (8×4 + border): attrs to both banks, border color dialog
+  - SCR → Gigascreen (duplicate): duplicate SCR to both frames
+  - SCR → NXI (Next Layer 2): convert 1-bit+attrs to 8-bit indexed with 16-color ZX palette
+  - IFL → MLT (8×1 multicolor): replicate 8×2 attrs to 8×1
+  - BSC → BMC4 (8×4 multicolor): attrs to both banks, preserve border
+  - Gigascreen → BSP (add header): wrap with BSP metadata
+  - NXI → SL2 (strip palette): remove 512-byte palette header
+  - SL2 → NXI (add palette): embed current or default palette
+- Refactored border color picker into shared `showBorderColorDialog()` helper
+
+## v1.67
+- NXI and SL2 (ZX Spectrum Next Layer 2) format support with pixel editing
+  - NXI: 49664 bytes (512-byte RGB333 palette + 256×192 indexed pixels)
+  - SL2: 49152 or 49280 bytes (raw pixels with default RGB332 palette)
+  - 256-color palette grid (16×16), left click = ink, right click = paper
+  - Drawing tools: Pixel, Line, Rectangle, Circle, Airbrush, Gradient, Flood Fill, Eraser, Color Picker
+  - Undo/redo with palette state preservation; save back to .nxi/.sl2
+
+## v1.66
+- New Picture and Image Import format dropdowns grouped with `<optgroup>` dividers for better navigation
+  - Standard (256×192), With border (384×304), Gigascreen, Tricolor/Monochrome, Text & attributes, Variable size
+- Image Import improvements:
+  - SPECSCII charset selector — choose which glyphs are used during conversion: Full (ROM + blocks, 112 glyphs), ASCII (ROM only, 96), UDG (blocks only, 16 + space)
+  - Default preview zoom changed from x2 to x1
+  - Fixed bottom controls (Zoom, Grid, Cancel/Import) being clipped on smaller screens
+
 ## v1.65
 - BSP (Border Screen with Header) format support: load, view, edit, create, save, and image import
   - 4 variants: screen-only, screen+border, gigascreen, gigascreen+border

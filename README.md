@@ -4,12 +4,13 @@ A pure JavaScript viewer and editor for ZX Spectrum graphics formats. No server 
 
 ## Features
 
-- **View** a wide range of ZX Spectrum screen formats (standard, multicolor, ULA+, Gigascreen, tricolor RGB, SPECSCII, chr$, Nirvana tiles, MGH, HLR, etc.)
-- **Edit** SCR, ULA+, 53c/127c, BSC, BMC4, IFL, MLT, Gigascreen, RGB3, SPECSCII, chr$, ZXP, MGH (mg1/mg2/mg4/mg8) and HLR pictures with pixel-accurate tools
+- **View** a wide range of ZX Spectrum screen formats (standard, multicolor, ULA+, Gigascreen, tricolor RGB, SPECSCII, chr$, Nirvana tiles, MGH, HLR, STL, BSP, NXI, SL2, etc.)
+- **Edit** SCR, ULA+, 53c/127c, BSC, BSP, BMC4, IFL, MLT, Gigascreen, RGB3, SPECSCII, chr$, ZXP, MGH (mg1/mg2/mg4/mg8), HLR, STL, NXI and SL2 pictures with pixel-accurate tools
 - **Multi-picture editing**: open and edit up to 15 pictures simultaneously with tab switching, per-picture undo, layers and zoom
 - **Workspace files**: save/load all open pictures as a single .slw file (palette, filters, grid, reference image, sprite sheet, etc.)
 - **Project files**: save a single picture with full layers/attributes/border/mask data as .slp
 - **Import** PNG/GIF/JPG/WebP/BMP images with dithering, LAB color space matching, alignment controls and conversion to any editable format
+- **Import animated GIF** directly as SCA animation — multi-frame GIFs are auto-detected, each frame converted to SCR with dithering, per-frame delays preserved
 - **Tile to screens**: split a large image into a grid of output-format-sized pictures with automatic edge padding
 - **Sprite editor**: floating multi-tile sprite sheet editor with mono / attributed / multicolour (8×1, 8×2, 8×4) modes, animation, onion skinning, grab from screen/memory, Nirvana .btile/.wtile export
 - **Load** .sna and .z80 snapshots (48K and 128K, V1/V2/V3) and extract screens and sprites from snapshot RAM
@@ -22,12 +23,13 @@ A pure JavaScript viewer and editor for ZX Spectrum graphics formats. No server 
 - **Tabbed UI**: View (display + filters), Edit (drawing tools + layers), Transform (undo / save / convert / workspace)
 - **Load** files directly from ZIP archives (auto-extract) and drag-and-drop anywhere on the window
 - **Custom fonts** for SPECSCII and Text tool (768/ch8 ZX Spectrum fonts plus TrueType/OpenType)
+- **Export to PNG/GIF**: export any screen to PNG or animated GIF (gigascreen flicker) using current view settings (zoom, border, grid, palette, filters)
 - **QR code generator**: V1–V20, module sizes 1/2/3/4/8, grid-snapped placement
 - **Dark / light theme** (follows OS preference on first visit)
 
 ## Screen Editor
 
-Edit SCR, ULA+, BSC, BMC4, IFL, MLT, Gigascreen, RGB3, 53c/127c, SPECSCII, ZXP, chr$, MGH and HLR pictures with authentic ZX Spectrum color handling:
+Edit SCR, ULA+, BSC, BSP, BMC4, IFL, MLT, Gigascreen, RGB3, 53c/127c, SPECSCII, ZXP, chr$, MGH, HLR, STL, NXI and SL2 pictures with authentic ZX Spectrum color handling:
 
 - **Tools**: Pixel (P), Line (L), Rectangle (R), Circle/Ellipse (O), Airbrush (G), Gradient (D), Flood Fill (I), Fill Cell (C), Recolor (A), Eraser (E), Text (T), Select (S), Color Picker (K)
 - **Eraser (E)**: makes pixels transparent on upper layers; paints paper on background
@@ -40,7 +42,7 @@ Edit SCR, ULA+, BSC, BMC4, IFL, MLT, Gigascreen, RGB3, 53c/127c, SPECSCII, ZXP, 
   - Dithering: Bayer 8×8 or blue noise 16×16
   - Supports custom brushes and all paint modes
 - **Color Picker (K)**: dedicated eyedropper tool, or Alt+click in any drawing tool
-  - Works on SCR, BSC, IFL, MLT, BMC4, ULA+, Gigascreen, 53c/127c, RGB3, SPECSCII
+  - Works on SCR, BSC, BSP, IFL, MLT, BMC4, ULA+, Gigascreen, STL, 53c/127c, RGB3, NXI, SL2, SPECSCII
   - Left click picks ink/primary, right click picks paper/secondary
 - **Fill with patterns**: Flood Fill uses the selected brush — custom brush patterns tile across the fill area for dithered fills
 - **Brush**: sizes 1–16px, shapes Square / Round / Horizontal / Vertical / Stroke (/) / Back stroke (\) — applies to Pixel, Line, Rectangle, Circle, Eraser, Fill, Airbrush
@@ -72,7 +74,7 @@ Edit SCR, ULA+, BSC, BMC4, IFL, MLT, Gigascreen, RGB3, 53c/127c, SPECSCII, ZXP, 
 - **QR code generator**: V1–V20 (20–970 characters), module sizes 1/2/3/4/8px, grid-snapped placement, live preview
 - **Fullscreen mode (F11)**: maximizes canvas with floating tool palette (Tab toggles palette)
 - **Save**: export back to the original format (Ctrl+S); layers are automatically flattened
-- **Format conversion**: SCR ↔ ATTR ↔ BSC with border color picker and 18 bitmap patterns for attr→bitmap conversion
+- **Format conversion**: SCR ↔ ATTR ↔ BSC ↔ BSP, SCR/ULA+ → NXI/SL2 (256/320/640), NXI ↔ SL2, NXI/SL2 cross-mode (256↔320↔640), NXI/SL2 → SCR; border color picker, 18 bitmap patterns for attr→bitmap
 - **Multi-picture tab bar**: appears with 2+ pictures, independent undo/layers/zoom, unsaved-changes indicator (•)
 - **Workspace**: save/load all open pictures as a single .slw file
 
@@ -108,8 +110,8 @@ Full support for the ULA+ 64-color extension:
 
 Import PNG, GIF, JPG, WebP, BMP and convert to any editable format:
 
-- **Output formats**: SCR, ULA+, IFL, MLT, BMC4, BSC, 53c/127c (attribute-only), Gigascreen (.img), MGH (mg1/mg2/mg4/mg8), RGB3, Monochrome, ZXP (variable dimensions)
-- **Automatic scaling** to the format's native dimensions (256×192, 384×304 for BSC/BMC4, 8–2048 custom for ZXP, etc.)
+- **Output formats**: SCR, ULA+, IFL, MLT, BMC4, BSC, BSP, 53c/127c (attribute-only), Gigascreen (.img), MGH (mg1/mg2/mg4/mg8), STL, RGB3, NXI (256×192, 320×256, 640×256), SL2 (256×192, 320×256, 640×256), Monochrome, SPECSCII, ZXP (variable dimensions)
+- **Automatic scaling** to the format's native dimensions (256×192, 320×256, 640×256, 384×304 for BSC/BMC4, 8–2048 custom for ZXP, etc.)
 - **Dithering**:
   - Global: Floyd-Steinberg, Serpentine Floyd-Steinberg, Ordered (Bayer 4×4), Atkinson, Two-row Sierra, Riemersma (Hilbert curve), Blue noise, Pattern, None
   - Cell-aware variants (Floyd/Atkinson/Ordered/None) that dither inside each cell using its chosen colors
@@ -129,18 +131,19 @@ Import PNG, GIF, JPG, WebP, BMP and convert to any editable format:
   - Works for all output formats including Gigascreen and MGH variants
 - **Live preview**: side-by-side original and converted output with grid overlay and x1–x3 zoom
 
-## BSC / BMC4 (border screen) Editor
+## BSC / BSP / BMC4 (border screen) Editor
 
-Edit 11136-byte .bsc and 11904-byte .bmc4 files with full border editing:
+Edit .bsc (11136-byte), .bsp (variable, with 70-byte header), and .bmc4 (11904-byte) files with full border editing:
 
 - **Per-line border colors** for top, bottom, and side borders
 - **Hidden zone indicator**: grid shows leftmost/rightmost 16px with red overlay (typically hidden on real hardware)
 - **Border drawing**: click/drag with rectangle, flood fill and brush-sized vertical lines (left = ink, right = paper)
 - **Barcodes**: vertical color patterns for border decoration — 8 slots, capture with Shift+click, stamp by clicking the border, save/load as .slbc
 - **Layer system** preserves per-layer border data
+- **BSP header**: 70-byte header with title/author metadata, 4 variants (screen, screen+border, gigascreen, gigascreen+border), RLE border compression
 - **ASM export**: sjasmplus Pentagon 128K source with exact 224T/line cycle-accurate timing, 71680T/frame, OUT-on-change + NOPs, SAVESNA output
 
-## Gigascreen Editor (.img / .mg1 / .mg2 / .mg4 / .mg8 / .hlr / gigascreen chr$)
+## Gigascreen Editor (.img / .mg1 / .mg2 / .mg4 / .mg8 / .hlr / .stl / gigascreen chr$)
 
 Edit two-frame gigascreen formats with live blended preview:
 
@@ -152,7 +155,7 @@ Edit two-frame gigascreen formats with live blended preview:
 - **Display modes**: Average (blended) or Flicker (50 fps alternating frames)
 - **HLR fill pattern**: editable 8-byte mask defining ink/paper regions per cell, with presets (halves, checker, stripes, diagonals) or custom hex input, live 8×8 preview, undoable pattern changes
 - **All drawing tools**, layers, eyedropper and clear work with virtual colors
-- **Save**: preserves the full file format including MGH 256-byte header (mg*) or HLR self-contained loader
+- **Save**: preserves the full file format including MGH 256-byte header (mg*), HLR self-contained loader, or STL interleaved attrs
 - **ASM export**: sjasmplus dual-screen banking (banks 5/7), 25 Hz alternation, SAVESNA output
 
 ## RGB3 Viewer / Editor (.3)
@@ -300,11 +303,15 @@ Collapsible section in the View tab with CRT/retro post-processing effects:
 | `.img` | 13824 bytes | Gigascreen (2×SCR), average/flicker modes — **editable** |
 | `.mg1` / `.mg2` / `.mg4` / `.mg8` | variable | Multiartist MGH gigascreen with 256-byte header — **editable** |
 | `.hlr` | 1628 bytes | Gigascreen Lowres with self-contained loader + 8-byte fill pattern — **editable** |
+| `.stl` | 3072 bytes | Stellar (64×48 multicolor gigascreen) — **editable** |
+| `.bsp` | variable | Border screen with 70-byte header (screen/gigascreen ± border) — **editable** |
 | `.zxp` | variable | ZX-Paintbrush text format, 8–2048 px per axis (÷8), optional ULA+ — **editable** |
 | `.ch$` / `.chr$` / `.ch-` | variable | chr$ character array, 8×8 cells, optional gigascreen — **editable** |
 | `.btile` / `.wtile` | variable | Nirvana 8×2 multicolour tile sets — **editable** |
 | `.specscii` | variable | Text mode with colors (stream + control codes) — **editable** |
 | `.sca` | variable | Animation (type 0 full frames, type 1 attribute-only) — **editable** |
+| `.nxi` | 49664 / 82432 / 81952 bytes | ZX Next Layer 2 (256×192, 320×256, 640×256) + palette — **editable** |
+| `.sl2` | 49152 / 49280 / 81920 bytes | ZX Next Layer 2 (256×192, 320×256, 640×256), default palette — **editable** |
 | `.sna` | 49179 / 131103 bytes | 48K / 128K ZX Spectrum snapshot — screen extraction |
 | `.z80` | variable | Z80 snapshot (V1, V2, V3 with RLE) — screen extraction |
 | `.pal` | 64 bytes | ULA+ palette (GRB332) |

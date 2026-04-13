@@ -514,16 +514,6 @@ function isFrameMarked(frameIndex) {
 }
 
 /**
- * Gets the trimmed frame index for a given original frame index
- * @param {number} originalIndex - Original frame index
- * @returns {number} Trimmed frame index or -1 if marked
- */
-function getTrimmedFrameIndex(originalIndex) {
-  if (isFrameMarked(originalIndex)) return -1;
-  return originalIndex - editTrimStart;
-}
-
-/**
  * Gets the total count of remaining frames (after trim, optimization, and manual deletion)
  * @returns {number}
  */

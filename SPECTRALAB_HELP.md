@@ -42,7 +42,7 @@ When multiple pictures are open, a tab bar appears above the canvas. Each tab sh
 Click the file input at the top of the left sidebar or **drag and drop** a file onto the canvas.
 
 **Supported input formats:**
-`.scr`, `.53c`, `.atr`, `.bsc`, `.bsp`, `.bmc4`, `.ifl`, `.mlt`, `.mc`, `.3`, `.img`, `.hlr`, `.stl`, `.specscii`, `.sca`, `.btile`, `.wtile`, `.ch$`, `.chr$`, `.ch-`, `.zxp`, `.slp`, `.slw`, `.sna`, `.z80`, `.zip`, `.png`, `.gif`, `.jpg`, `.jpeg`, `.webp`, `.bmp`
+`.scr`, `.53c`, `.atr`, `.bsc`, `.bsp`, `.bmc4`, `.ifl`, `.mlt`, `.mc`, `.3`, `.img`, `.hlr`, `.stl`, `.nxi`, `.sl2`, `.specscii`, `.sca`, `.btile`, `.wtile`, `.ch$`, `.chr$`, `.ch-`, `.zxp`, `.slp`, `.slw`, `.sna`, `.z80`, `.zip`, `.png`, `.gif`, `.jpg`, `.jpeg`, `.webp`, `.bmp`
 
 ### New Picture
 
@@ -130,12 +130,16 @@ For `.53c` / `.atr` attribute-only formats, select the fill pattern: **Checker**
 - **Blend colors** checkbox — when checked, each cell renders as a solid averaged color instead of a dither pattern
 
 #### RGB3 Controls
-For `.3` tricolor format: toggle **Emulate flicker** to simulate real hardware display.
+For `.3` tricolor format, select display mode:
+- **Blend dark** — simulates perceived brightness on real CRT, accounting for vertical retrace blanking
+- **Blend** — full-brightness direct RGB channel mapping (each R/G/B plane controls its channel at full palette intensity)
+- **Emulate flicker** — alternating frame display to simulate real hardware
 
 #### Gigascreen Controls
 For `.img` gigascreen, `.hlr` (High Lores), and `.stl` (Stellar) formats, select display mode:
-- **Average** — blended view of both frames
-- **Flicker** — alternating frame display
+- **Blend dark** — simulates perceived brightness on real CRT, accounting for vertical retrace blanking
+- **Blend** — blended view of both frames at full brightness
+- **Emulate flicker** — alternating frame display to simulate real hardware
 
 #### Font Controls
 For SPECSCII format: click **Browse** to load a custom font file (`.bin`, `.SpecCHR`). The default font is the ZX Spectrum ROM font.
@@ -286,7 +290,7 @@ Shown when editing 53c/atr attribute-only format. Displays a grid of unique dith
 
 ### RGB3 Palette
 
-Shown for RGB3 (.3) tricolor format. 8-color palette with left/right click selection (no separate ink/paper). Palette shows realistic perceived colors (1/3 brightness per channel due to flicker through black).
+Shown for RGB3 (.3) tricolor format. 8-color palette with left/right click selection (no separate ink/paper). Palette colors depend on the display mode: Blend shows full-brightness RGB, Blend dark shows realistic perceived colors (1/3 brightness per channel × CRT dark factor), Flicker alternates frames.
 
 ![Palette controls](screenshots/palette_controls.png)
 
@@ -475,11 +479,37 @@ Workspace buttons are always available, even without a loaded picture. The remai
 
 Use the **Convert to...** dropdown to convert the current picture to a different format.
 
+Available conversions include:
+- **Lossless**: SCR ↔ ATTR, SCR ↔ BSC ↔ BSP, SCR ↔ ULA+, NXI ↔ SL2 (all modes: 256×192, 320×256, 640×256)
+- **Lossy (render + re-quantize)**: SCR/ULA+ → NXI 320×256/640×256, NXI/SL2 cross-mode (256↔320↔640), NXI/SL2 → SCR
+
 ### Export
 
-- **Export format** dropdown — select the export format
-- **Embed** checkbox — embed data in the export file
+- **Export format** dropdown — select the export format (available options depend on the loaded format)
+- **Embed** checkbox — embed data as DB lines in ASM output (unchecked = use INCBIN references)
 - **Export** button — export to the selected format
+- **PNG/GIF** button — export the current screen to PNG or animated GIF image
+  - Uses all current View tab settings: zoom, border size/color, grid/subgrid, palette, filters
+  - For gigascreen-family formats (Gigascreen, MGH, HLR, STL, BSP-gigascreen, chr$-gigascreen): a dialog lets you choose **Blended** (averaged colors → PNG) or **Flicker** (two alternating frames → animated GIF at ~50fps)
+  - For all other formats: exports directly as PNG
+
+### Format ASM Export
+
+The Export dropdown generates self-contained sjasmplus-compatible ASM source files that display the loaded picture on real hardware. Each export produces a complete viewer program — just assemble and run.
+
+Available format exports:
+
+| Format | Export option | Target | Output |
+|--------|-------------|--------|--------|
+| BSC | ASM (Pentagon border) | Pentagon 128K | .sna — cycle-exact border color effects |
+| Gigascreen / MGH | ASM (Pentagon dual-screen) | Pentagon 128K | .sna — alternating screen banks |
+| RGB3 | ASM (Pentagon RGB flicker) | Pentagon 128K | .sna — RGB channel flicker |
+| IFL | ASM (Pentagon 8x2 multicolor) | Pentagon 128K | .sna — 8×2 multicolor display |
+| ULA+ | ASM (ULA+ palette) | ZX Spectrum 48K + ULA+ | .sna — 64-entry palette programming |
+| NXI / SL2 | ASM (Next Layer 2 .nex) | ZX Spectrum Next | .nex — Layer 2 with palette, all modes (256×192, 320×256, 640×256) |
+
+- **Embed** checkbox controls whether pixel data is included as DB lines (embedded) or as INCBIN references to the original file. Palette data is always embedded (small size). For RGB3, data is always embedded.
+- All exports target the **sjasmplus** assembler. Pentagon exports produce .sna snapshots; Next Layer 2 exports produce .nex files via SAVENEX.
 
 ### Generate
 
@@ -648,7 +678,9 @@ For Attributed and Multicolour mode sprites:
 
 ## 18. Image Import
 
-When loading a PNG, GIF, JPG, WebP, or BMP file, the Image Import dialog opens.
+When loading a PNG, JPG, WebP, or BMP file (or a single-frame GIF), the Image Import dialog opens.
+
+**Animated GIF → SCA**: When loading a multi-frame animated GIF, the frames are automatically decoded, each frame is converted to ZX Spectrum SCR format (Floyd-Steinberg dithering), and the result is loaded as an SCA animation. Per-frame delays from the GIF are preserved (converted to SCA 20ms units). After import, the full SCA editor is available (filmstrip, playback, trim, delay editing, optimize, export).
 
 ### Layout
 
@@ -699,9 +731,10 @@ Crop the source image:
 
 #### Output
 
-- **Format:** SCR, ULA+, 53c (attr), IFL (8×2), BMC4 (8×4), MLT (8×1), BSC, BSP, RGB3, Gigascreen, HLR, STL, Mono, Mono 2/3, Mono 1/3
+- **Format:** SCR, ULA+, 53c (attr), IFL (8×2), BMC4 (8×4), MLT (8×1), BSC, BSP, RGB3, Gigascreen, HLR, STL, NXI (256×192, 320×256, 640×256), SL2 (256×192, 320×256, 640×256), SPECSCII, Mono, Mono 2/3, Mono 1/3
 - **Palette** selector
 - **53c Pattern** (for 53c format): Checker, Stripes, DD/77
+- **SPECSCII Charset** (for SPECSCII format): Full (ROM font + block graphics, 112 glyphs), ASCII (ROM font only, 96 glyphs), UDG (block graphics only, 16 glyphs + space)
 - **ULA+ Palette:** Auto, Load .pal, From picture
 - **Position:** X, Y offset
 - **Size:** W, H (with lock aspect ratio)
@@ -984,16 +1017,21 @@ The floating palette includes all drawing tools, selection/clipboard tools, colo
 | .zxp | variable | ZX-Paintbrush (variable-size, ULA or ULA+ palette) |
 | .btile | variable | Nirvana btile (variable-size, 8×2 multicolor) |
 | .wtile | variable | Nirvana wtile (variable-size, 8×2 multicolor) |
+| .nxi | 49664 bytes | ZX Next Layer 2 256×192 + embedded RGB333 palette (256-color indexed) |
+| .nxi | 82432 bytes | ZX Next Layer 2 320×256 + embedded RGB333 palette (256-color, column-major) |
+| .nxi | 81952 bytes | ZX Next Layer 2 640×256 + embedded RGB333 palette (16-color, 4bpp column-major) |
+| .sl2 | 49152/49280 bytes | ZX Next Layer 2 256×192, default RGB332 palette (256-color indexed) |
+| .sl2 | 81920 bytes | ZX Next Layer 2 320×256 or 640×256 (disambiguation dialog) |
 
 ### View-Only Formats
 
-| Extension | Description |
-|-----------|-------------|
-| .zip | Archive (auto-extract, select file from list) |
+| Extension | Size | Description |
+|-----------|------|-------------|
+| .zip | var | Archive (auto-extract, select file from list) |
 
 ### Import (Convert to ZX Spectrum)
 
-`.png`, `.gif`, `.jpg`, `.jpeg`, `.webp`, `.bmp` — via the Image Import dialog with dithering and adjustments.
+`.png`, `.gif`, `.jpg`, `.jpeg`, `.webp`, `.bmp` — via the Image Import dialog with dithering and adjustments. Animated GIFs (multi-frame) are imported directly as SCA animations with frame delay preservation.
 
 ### Nirvana Tile Formats
 

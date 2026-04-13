@@ -22,7 +22,7 @@ You can load a file in two ways:
 1. Click the **file input** at the top of the sidebar and browse for a file
 2. **Drag and drop** a file directly onto the canvas
 
-SpectraLab supports many formats: `.scr`, `.53c`, `.atr`, `.bsc`, `.bsp`, `.bmc4`, `.ifl`, `.mlt`, `.mc`, `.3`, `.img`, `.hlr`, `.stl`, `.specscii`, `.sca`, `.sna`, `.z80`, `.zip`, `.png`, `.gif`, `.jpg`, `.webp`, `.bmp`.
+SpectraLab supports many formats: `.scr`, `.53c`, `.atr`, `.bsc`, `.bsp`, `.bmc4`, `.ifl`, `.mlt`, `.mc`, `.3`, `.img`, `.hlr`, `.stl`, `.nxi`, `.sl2`, `.specscii`, `.sca`, `.sna`, `.z80`, `.zip`, `.png`, `.gif`, `.jpg`, `.webp`, `.bmp`.
 
 ![First launch](screenshots/tutorial_first_launch.png)
 
@@ -311,7 +311,9 @@ When you load a `.png`, `.gif`, `.jpg`, `.webp`, or `.bmp` file, the Image Impor
 
 ### Choose Target Format
 
-In the **Output** section, select the target ZX Spectrum format (SCR, ULA+, IFL, MLT, Gigascreen, HLR, STL, ZXP, etc.).
+In the **Output** section, select the target ZX Spectrum format (SCR, ULA+, IFL, MLT, Gigascreen, HLR, STL, SPECSCII, ZXP, etc.).
+
+For **SPECSCII** format, the **Charset** dropdown selects which glyphs are used: **Full** (ROM font + block graphics), **ASCII** (ROM font only), or **UDG** (block graphics only).
 
 For **ZXP** format, you can specify custom width and height (8-2048 pixels, divisible by 8) and choose between ULA and ULA+ palette types.
 
@@ -537,8 +539,9 @@ The Gigascreen palette shows all virtual colors as a 16-column grid:
 ### Preview with Blending
 
 In the View tab, select the Gigascreen display mode:
-- **Average** — shows the blended (perceived) image
-- **Flicker** — alternates between frames to simulate real hardware
+- **Blend dark** — shows the perceived image as it appears on a real CRT, with darkening from vertical retrace blanking
+- **Blend** — shows the blended image at full brightness
+- **Emulate flicker** — alternates between frames to simulate real hardware
 
 ### Gigascreen Variants: HLR and STL
 
@@ -556,7 +559,7 @@ Two additional gigascreen-based formats offer low-resolution modes with large "f
 3. A fixed bitmap pattern splits each 8-pixel column into left half (paper) and right half (ink)
 4. File size: 3072 bytes (two interleaved 1536-byte attribute frames)
 
-Both formats use the same gigascreen palette and Average/Flicker display modes. Drawing tools (pencil, fill, color picker) work on the fat-pixel level. Only pure ink+ink and paper+paper virtual colors are available per cell half.
+Both formats use the same gigascreen palette and Blend dark/Blend/Emulate flicker display modes. Drawing tools (pencil, fill, color picker) work on the fat-pixel level. Only pure ink+ink and paper+paper virtual colors are available per cell half.
 
 ![Gigascreen editing](screenshots/tutorial_gigascreen.png)
 
@@ -574,11 +577,35 @@ Press **Ctrl+S** or click the **Save** button. The file is downloaded in its ori
 2. Use the **Convert to...** dropdown
 3. Select the target format — the picture is converted in place
 
+Conversions include lossless transformations (e.g. NXI ↔ SL2 strips or adds the palette header) and lossy ones (e.g. SCR → NXI 320×256 renders and upscales the image, NXI/SL2 → SCR downscales and quantizes to ZX attributes). Cross-mode NXI/SL2 conversions between 256×192, 320×256, and 640×256 are also available.
+
 ### Export to Other Formats
 
 1. In the **Xform** tab, select an export format from the dropdown
 2. Optionally check **Embed** to embed data
 3. Click **Export**
+
+### Export to PNG / GIF
+
+Use the **PNG/GIF** button in the Xform tab to export the current screen as a standard image file.
+
+- The exported image uses all your current View tab settings — zoom, border size and color, grid/subgrid overlays, palette, and display filters — so what you see is what you get.
+- For **gigascreen-family formats** (Gigascreen, MGH, HLR, STL, BSP-gigascreen, chr$-gigascreen), a dialog asks you to choose:
+  - **Blended (PNG)** — averaged/blended colors in a single image
+  - **Flicker (animated GIF)** — two alternating frames at ~50fps, just like real hardware
+- For all other formats, clicking the button opens a confirmation dialog and exports a PNG directly.
+
+### Format ASM Export
+
+SpectraLab can generate complete viewer programs as sjasmplus ASM source for several formats. The Export dropdown in the Xform tab shows available options based on the loaded format:
+
+1. Load a picture in a supported format (BSC, Gigascreen, MGH, RGB3, IFL, ULA+, NXI, or SL2)
+2. In the **Xform** tab, the **Export** dropdown appears with the ASM option (e.g. "ASM (Next Layer 2 .nex)")
+3. Optionally toggle **Embed** — checked embeds pixel data as DB lines, unchecked uses INCBIN references to the original file
+4. Click **Export** to download the .asm file
+5. Assemble with sjasmplus to produce a .sna (Pentagon) or .nex (Next) file ready to run in an emulator or on real hardware
+
+Supported formats: BSC (border effects), Gigascreen/MGH (dual-screen), RGB3 (RGB flicker), IFL (8×2 multicolor), ULA+ (64-color palette), and NXI/SL2 (Next Layer 2 in all modes: 256×192, 320×256, 640×256).
 
 ### ASM Code Export
 
@@ -603,6 +630,13 @@ For game developers who need sprite/screen data as Z80 assembly:
 ### Open an SCA File
 
 Load a `.sca` file. The animation controls appear below the main tabs.
+
+### Import Animated GIF as SCA
+
+1. Open a multi-frame animated GIF file (via Open or drag-and-drop)
+2. The frames are automatically decoded and each frame is converted to ZX Spectrum SCR format
+3. The result loads as an SCA animation with per-frame delays preserved from the original GIF
+4. Use the SCA editor (Edit tab) to trim, adjust delays, optimize, and export
 
 ### Navigate Frames
 

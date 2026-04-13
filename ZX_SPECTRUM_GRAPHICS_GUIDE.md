@@ -755,6 +755,166 @@ Same as HLR: each fat pixel is a blend of two of the 15 visually distinct ZX col
 
 ---
 
+### NXI (ZX Spectrum Next Layer 2 with Palette)
+
+A 256-color indexed-pixel format for the ZX Spectrum Next Layer 2 display. Unlike all classic ZX Spectrum formats, NXI uses **direct indexed color** — one byte per pixel mapping to an RGB333 palette — with no attributes, no color clash, and no bitmap interleaving.
+
+Three Layer 2 modes are supported, each with a different file size:
+
+```
+Mode          Palette             Pixel Data                   Total Size
+256×192 8bpp  512 bytes (256×2)   49152 bytes, row-major       49664
+320×256 8bpp  512 bytes (256×2)   81920 bytes, column-major    82432
+640×256 4bpp   32 bytes (16×2)    81920 bytes, column-major    81952
+```
+
+- File extension: `.nxi`
+- Hardware: ZX Spectrum Next (not compatible with classic ZX Spectrum 48/128)
+
+#### Palette Entry Format (RGB333, 9 bits in 2 bytes)
+
+Each palette entry is 2 bytes encoding a 9-bit RGB333 color:
+
+```
+Byte 0:
+  Bit 7-5: Red   (3 bits, 0-7)
+  Bit 4-2: Green (3 bits, 0-7)
+  Bit 1-0: Blue  (upper 2 bits of 3-bit value)
+
+Byte 1:
+  Bit 7-1: Unused (0)
+  Bit 0:   Blue   (lower 1 bit of 3-bit value)
+```
+
+Decoding:
+
+```
+r3 = (byte0 >> 5) & 7
+g3 = (byte0 >> 2) & 7
+b3 = ((byte0 & 3) << 1) | (byte1 & 1)
+
+R = round(r3 * 255 / 7)
+G = round(g3 * 255 / 7)
+B = round(b3 * 255 / 7)
+```
+
+The 9-bit palette gives 512 possible colors. The 256×192 and 320×256 modes use a 256-entry palette (512 bytes). The 640×256 mode uses only 16 entries (32 bytes) since each pixel is 4 bits.
+
+#### Pixel Data — 256×192 (8bpp, row-major)
+
+Pixels are stored in **linear row-major order** (left-to-right, top-to-bottom) with no interleaving:
+
+```
+Row   0: bytes 512-767      (pixels 0-255)
+Row   1: bytes 768-1023     (pixels 256-511)
+...
+Row 191: bytes 49408-49663  (pixels 48896-49151)
+```
+
+Each byte is a palette index (0-255). The pixel at position (x, y) is at offset `512 + y * 256 + x`.
+
+#### Pixel Data — 320×256 (8bpp, column-major)
+
+Pixels are stored in **column-major order** (top-to-bottom, left-to-right). Each byte is a palette index (0-255):
+
+```
+Column   0: bytes 512-767       (y = 0-255)
+Column   1: bytes 768-1023      (y = 0-255)
+...
+Column 319: bytes 82176-82431   (y = 0-255)
+```
+
+The pixel at position (x, y) is at offset `512 + x * 256 + y`.
+
+#### Pixel Data — 640×256 (4bpp, column-major)
+
+Pixels are stored in **column-major order** with 2 pixels packed per byte. Only the first 16 palette entries are used:
+
+```
+Column pair 0-1: bytes 32-287     (y = 0-255)
+Column pair 2-3: bytes 288-543    (y = 0-255)
+...
+Column pair 638-639: bytes 81696-81951  (y = 0-255)
+```
+
+Each byte encodes two horizontally adjacent pixels:
+- **High nibble** (bits 7-4): left pixel (even x)
+- **Low nibble** (bits 3-0): right pixel (odd x)
+
+The byte for pixel column pair (x, x+1) at row y is at offset `32 + (x/2) * 256 + y` (where x is even). Palette indices are 0-15.
+
+---
+
+### SL2 (ZX Spectrum Next Layer 2 Raw)
+
+Same pixel format as NXI but **without an embedded palette**. SL2 files use the Spectrum Next's default identity RGB332 palette where the pixel byte value directly encodes the color.
+
+```
+Variant A — raw pixels, 256×192 (49152 bytes):
+Offset  Size    Content
+0       49152   Pixel data (256 × 192, 1 byte per pixel, linear row-major)
+
+Variant B — with header, 256×192 (49280 bytes):
+Offset  Size    Content
+0       128     Header (contents unspecified)
+128     49152   Pixel data (256 × 192, 1 byte per pixel, linear row-major)
+
+Variant C — extended mode (81920 bytes):
+Offset  Size    Content
+0       81920   Pixel data, column-major (AMBIGUOUS — see below)
+```
+
+- File extension: `.sl2`
+- Hardware: ZX Spectrum Next
+
+#### Extended SL2 Ambiguity
+
+An 81920-byte SL2 file contains raw pixel data without a palette and **is ambiguous**: it could be either 320×256 (8bpp, 1 byte/pixel, column-major) or 640×256 (4bpp, 2 pixels/byte, column-major). Both modes produce exactly 81920 bytes of pixel data. The correct interpretation depends on the intended Layer 2 mode and cannot be determined from the file alone.
+
+- **320×256 (8bpp)**: Each byte is a palette index (0-255). Address = `x * 256 + y`. Uses the full 256-entry default palette.
+- **640×256 (4bpp)**: Each byte packs two pixels (high nibble = left, low nibble = right). Address = `(x/2) * 256 + y`. Uses only the first 16 entries of the default palette.
+
+#### Default RGB332 Identity Palette
+
+Without an embedded palette, each pixel byte maps directly to a color via the RRRGGGBB bit layout:
+
+```
+Pixel byte:
+  Bit 7-5: Red   (3 bits, 0-7)
+  Bit 4-2: Green (3 bits, 0-7)
+  Bit 1-0: Blue  (2 bits, 0-3)
+```
+
+Conversion to 8-bit RGB:
+
+```
+r3 = (byte >> 5) & 7
+g3 = (byte >> 2) & 7
+b2 = byte & 3
+b3 = (b2 << 1) | (b2 >> 1)    // expand 2-bit blue to 3-bit by replicating MSB
+
+R = round(r3 * 255 / 7)
+G = round(g3 * 255 / 7)
+B = round(b3 * 255 / 7)
+```
+
+The 2-bit blue channel limits SL2 to 256 fixed colors (vs NXI's 512 selectable colors). The blue expansion formula `(b2 << 1) | (b2 >> 1)` maps: 0→0, 1→3, 2→4, 3→7, distributing the 4 blue levels across the 0-7 range.
+
+For the 640×256 (4bpp) mode, only the first 16 entries of this default palette are used.
+
+#### Pixel Data
+
+The 256×192 variants use linear row-major layout, same as NXI 256×192. The pixel at (x, y) is at offset `y * 256 + x` (raw variant) or `128 + y * 256 + x` (header variant).
+
+The extended 81920-byte variant uses column-major layout as described above: `x * 256 + y` for 320×256 or `(x/2) * 256 + y` for 640×256.
+
+#### NXI ↔ SL2 Conversion
+
+- **NXI → SL2**: Strip the palette header, keeping only the pixel data. The palette information is lost; the image will display using the default RGB332 palette.
+- **SL2 → NXI**: Prepend a palette. Either generate the default RGB332 palette in RGB333 encoding, or embed a custom palette. Note: conversion is only straightforward for 256×192 mode.
+
+---
+
 ### Monochrome Formats
 
 Bitmap-only formats with no attribute data. Rendered as black-on-white (or user-selected ink/paper).
@@ -1361,19 +1521,27 @@ Quick-reference table for identifying formats by file size when no file extensio
 | 18432        | RGB3         | Tricolor (3 x 6144)               |
 | 18688        | MGH (mg2)    | Multiartist gigascreen 8 x 2       |
 | 19456        | MGH (mg1)    | Multiartist gigascreen 8 x 1       |
+| 49152        | SL2          | Next Layer 2 256×192 raw pixels    |
+| 49280        | SL2          | Next Layer 2 256×192 + 128b header |
+| 49664        | NXI          | Next Layer 2 256×192 + palette     |
+| 81920        | SL2          | Next Layer 2 extended (ambiguous)  |
+| 81952        | NXI          | Next Layer 2 640×256 + palette     |
+| 82432        | NXI          | Next Layer 2 320×256 + palette     |
 
-**Note**: SCA, SPECSCII, ZXP, and chr$ files are variable-size, text-based, or extension-only and cannot be reliably detected by size alone. SCA files are identified by the `"SCA"` signature at offset 0. chr$ files are identified by the `chr$` signature (bytes `63 68 72 24`) at offset 0. ZXP files are text-based and identified by the `"ZX-Paintbrush extended image"` header line. MGH files are identified by the `"MGH"` signature at offset 0.
+**Note**: SCA, SPECSCII, ZXP, and chr$ files are variable-size, text-based, or extension-only and cannot be reliably detected by size alone. SCA files are identified by the `"SCA"` signature at offset 0. chr$ files are identified by the `chr$` signature (bytes `63 68 72 24`) at offset 0. ZXP files are text-based and identified by the `"ZX-Paintbrush extended image"` header line. MGH files are identified by the `"MGH"` signature at offset 0. NXI sizes (49664, 82432, 81952) are unique and don't collide with classic formats. SL2 256×192 sizes (49152, 49280) are also unique. SL2 extended size (81920) is ambiguous between 320×256 8bpp and 640×256 4bpp modes.
 
 ### Detection Priority
 
-1. Check file extension first (`.53c`, `.atr`, `.bsc`, `.ifl`, `.bmc4`, `.mlt`, `.mc`, `.3`, `.img`, `.mg1`, `.mg2`, `.mg4`, `.mg8`, `.hlr`, `.stl`, `.ch$`, `.chr$`, `.ch-`, `.specscii`, `.sca`, `.zxp`)
+1. Check file extension first (`.53c`, `.atr`, `.bsc`, `.ifl`, `.bmc4`, `.mlt`, `.mc`, `.3`, `.img`, `.mg1`, `.mg2`, `.mg4`, `.mg8`, `.hlr`, `.stl`, `.nxi`, `.sl2`, `.ch$`, `.chr$`, `.ch-`, `.specscii`, `.sca`, `.zxp`)
 2. For `.zxp` files, read as text and parse (see ZXP section)
 3. For `.img` files, verify size is exactly 13824 bytes
 4. For `.mg1`/`.mg2`/`.mg4`/`.mg8` files, verify `"MGH"` signature at offset 0
 5. For `.hlr` files, verify size is exactly 1628 bytes
 6. For `.stl` files, verify size is exactly 3072 bytes
-7. For `.ch$`/`.chr$`/`.ch-` files, verify `chr$` signature at offset 0
-8. Fall back to file size lookup from the table above
+7. For `.nxi` files, verify size is 49664 (256×192), 82432 (320×256), or 81952 (640×256) bytes
+8. For `.sl2` files, verify size is 49152, 49280, or 81920 bytes
+9. For `.ch$`/`.chr$`/`.ch-` files, verify `chr$` signature at offset 0
+10. Fall back to file size lookup from the table above
 
 ---
 
@@ -1389,3 +1557,7 @@ Quick-reference table for identifying formats by file size when no file extensio
 - [FZX Format](https://sinclair.wiki.zxnet.co.uk/wiki/FZX_format) -- Proportional font format specification
 - [ZX Spectrum Bitmap Fonts](https://github.com/ZXSpectrumVault/zx-fonts) -- Collection of fonts extracted from games
 - [Multiartist](https://multiartist.untergrund.net/) -- Multicolor gigascreen editor for ZX Spectrum
+- [SpecNext Wiki — Layer 2](https://wiki.specnext.dev/Layer_2) -- ZX Spectrum Next Layer 2 hardware reference
+- [SpecNext Wiki — File Formats](https://wiki.specnext.dev/File_Formats) -- ZX Spectrum Next file format reference
+- [SpecNext Wiki — Palettes](https://wiki.specnext.dev/Palettes) -- ZX Spectrum Next palette registers and formats
+- [zxnext_bmp_tools](https://github.com/stefanbylund/zxnext_bmp_tools) -- BMP to NXI/SL2 conversion tools
