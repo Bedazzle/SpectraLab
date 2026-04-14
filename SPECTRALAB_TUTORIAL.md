@@ -311,11 +311,13 @@ When you load a `.png`, `.gif`, `.jpg`, `.webp`, or `.bmp` file, the Image Impor
 
 ### Choose Target Format
 
-In the **Output** section, select the target ZX Spectrum format (SCR, ULA+, IFL, MLT, Gigascreen, HLR, STL, SPECSCII, ZXP, etc.).
+In the **Output** section, select the target ZX Spectrum format (SCR, ULA+, IFL, MLT, Gigascreen, HLR, STL, SPECSCII, ZXP, btile, wtile, etc.).
 
 For **SPECSCII** format, the **Charset** dropdown selects which glyphs are used: **Full** (ROM font + block graphics), **ASCII** (ROM font only), or **UDG** (block graphics only).
 
 For **ZXP** format, you can specify custom width and height (8-2048 pixels, divisible by 8) and choose between ULA and ULA+ palette types.
+
+For **btile** / **wtile** formats (Nirvana engine tiles), you can specify custom canvas size. Width snaps to tile-aligned values (multiples of 16 for btile, 24 for wtile) and height to multiples of 16. Uses 8×2 multicolor attribute cells.
 
 ### Select Dithering Algorithm
 
@@ -493,6 +495,33 @@ Toggle between **Grid** mode (all 64 colors) and **Classic** mode with the check
 
 ![ULA+ editing](screenshots/tutorial_ulaplus.png)
 
+### Viewing ULANext Files (ZX Spectrum Next)
+
+ULANext is an extended palette mode for the ZX Spectrum Next. Unlike ULA+ (which uses 4 CLUTs of 16 fixed-assignment colors), ULANext uses a configurable **ink mask** to split each attribute byte into ink and paper palette indices. This allows much larger palettes — up to 256 ink or 256 paper colors.
+
+1. Open a `.scr` file with ULANext palette (file size 6945–7426 bytes)
+2. SpectraLab auto-detects the ink mask and palette from the file
+3. The format info panel shows:
+   - The ink mask value (e.g., $0F for 16 ink / 16 paper)
+   - The number of ink and paper colors
+   - Whether the palette uses 8-bit or 9-bit color entries
+4. Drawing tools work as usual — the bitmap and attributes are standard SCR format
+5. Flash is not available (attribute bits 6-7 are used for palette indexing)
+6. Saving preserves the original ink mask and palette
+
+**Valid ink masks and their ink/paper splits:**
+
+| Mask | Ink colors | Paper colors |
+|------|-----------|--------------|
+| $01  | 2         | 128          |
+| $03  | 4         | 64           |
+| $07  | 8         | 32           |
+| $0F  | 16        | 16           |
+| $1F  | 32        | 8            |
+| $3F  | 64        | 4            |
+| $7F  | 128       | 2            |
+| $FF  | 256       | 1            |
+
 ---
 
 ## 14. Working with Multicolor Formats (IFL/MLT)
@@ -577,7 +606,7 @@ Press **Ctrl+S** or click the **Save** button. The file is downloaded in its ori
 2. Use the **Convert to...** dropdown
 3. Select the target format — the picture is converted in place
 
-Conversions include lossless transformations (e.g. NXI ↔ SL2 strips or adds the palette header) and lossy ones (e.g. SCR → NXI 320×256 renders and upscales the image, NXI/SL2 → SCR downscales and quantizes to ZX attributes). Cross-mode NXI/SL2 conversions between 256×192, 320×256, and 640×256 are also available.
+Conversions include lossless transformations (e.g. NXI ↔ SL2 strips or adds the palette header) and lossy ones (e.g. SCR → NXI 320×256 renders and upscales the image, NXI/SL2 → SCR downscales and quantizes to ZX attributes). Cross-mode NXI/SL2 conversions between 256×192, 320×256, and 640×256 are also available. SCR → SPECSCII conversion matches each 8×8 cell bitmap to the best ROM font character or block graphic, preserving attributes.
 
 ### Export to Other Formats
 
@@ -593,6 +622,9 @@ Use the **PNG/GIF** button in the Xform tab to export the current screen as a st
 - For **gigascreen-family formats** (Gigascreen, MGH, HLR, STL, BSP-gigascreen, chr$-gigascreen), a dialog asks you to choose:
   - **Blended (PNG)** — averaged/blended colors in a single image
   - **Flicker (animated GIF)** — two alternating frames at ~50fps, just like real hardware
+- For **pictures with flash attributes**, a dialog asks you to choose:
+  - **Animated GIF** — two-frame flash animation (320ms per phase), matching ZX Spectrum timing
+  - **Static PNG** — normal phase only, no animation
 - For all other formats, clicking the button opens a confirmation dialog and exports a PNG directly.
 
 ### Format ASM Export

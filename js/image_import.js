@@ -2274,6 +2274,161 @@ function convertToZxp(sourceCanvas, dithering, brightness, contrast, saturation 
 }
 
 /**
+ * Convert source canvas to Nirvana tile format (linear bitmap + 8×2 multicolor attributes).
+ * Output layout: bitmap[cols * h] + attrs[cols * attrRows] (linear, row-major).
+ * @param {HTMLCanvasElement} sourceCanvas - Source canvas (variable dimensions)
+ * @param {number} dithering - Dithering algorithm
+ * @param {number} brightness - Brightness adjustment
+ * @param {number} contrast - Contrast adjustment
+ * @param {number} saturation - Saturation adjustment
+ * @param {number} gamma - Gamma correction factor
+ * @param {boolean} grayscale - Grayscale conversion
+ * @param {number} sharpness - Sharpness adjustment
+ * @param {number} smoothing - Smoothing adjustment
+ * @param {number} blackPoint - Black point for levels
+ * @param {number} whitePoint - White point for levels
+ * @param {number} balanceR - Red balance
+ * @param {number} balanceG - Green balance
+ * @param {number} balanceB - Blue balance
+ * @param {boolean} monoOutput - Produce monochrome bitmap
+ * @returns {Uint8Array} Linear bitmap + 8×2 attributes
+ */
+function convertToNirvanaTile(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, monoOutput = false) {
+  updateColorDistanceMode();
+
+  const w = sourceCanvas.width;
+  const h = sourceCanvas.height;
+  const cols = w >> 3;
+  const attrCellH = 2;
+  const attrRows = Math.ceil(h / attrCellH);
+  const bitmapSize = cols * h;
+  const attrSize = cols * attrRows;
+
+  const ctx = sourceCanvas.getContext('2d');
+  if (!ctx) throw new Error('Cannot get canvas context');
+
+  const imageData = ctx.getImageData(0, 0, w, h);
+  const pixels = imageData.data;
+
+  applyImageAdjustments(pixels, w, h, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
+
+  if (monoOutput && !grayscale) {
+    applyGrayscale(pixels);
+  }
+
+  const floatPixels = rgbaToFloat(pixels, w * h);
+
+  const palette = getCombinedPalette();
+  const fullPalette = [...palette.regular, ...palette.bright];
+
+  const buf = new Uint8Array(bitmapSize + attrSize);
+
+  const isCellAware = dithering.startsWith('cell-');
+
+  if (isCellAware) {
+    const cellDitherMethod = dithering.replace('cell-', '');
+    const monoColors = monoOutput ? {
+      ink: 0, paper: 7, bright: true,
+      inkRgb: palette.bright[0], paperRgb: palette.bright[7]
+    } : null;
+
+    const useGlobalDitherForMono = monoOutput && cellDitherMethod === 'floyd';
+
+    if (useGlobalDitherForMono) {
+      const monoPalette = [palette.bright[0], palette.bright[7]];
+      floydSteinbergDither(floatPixels, w, h, monoPalette);
+
+      for (let blockY = 0; blockY < attrRows; blockY++) {
+        for (let blockX = 0; blockX < cols; blockX++) {
+          const block = analyzeBlock2Mono(floatPixels, blockX, blockY, w, monoColors.inkRgb, monoColors.paperRgb);
+
+          for (let line = 0; line < 2; line++) {
+            const y = blockY * 2 + line;
+            if (y >= h) break;
+            buf[y * cols + blockX] = block.bitmap[line];
+          }
+
+          buf[bitmapSize + blockY * cols + blockX] = (7 << 3) | 0 | 0x40;
+        }
+      }
+    } else {
+      for (let blockY = 0; blockY < attrRows; blockY++) {
+        for (let blockX = 0; blockX < cols; blockX++) {
+          const colors = monoColors || findBlockColors2(floatPixels, blockX, blockY, w, palette);
+
+          let bitmap;
+          switch (cellDitherMethod) {
+            case 'floyd':
+              bitmap = ditherBlock2FloydSteinberg(floatPixels, blockX, blockY, w, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'ordered':
+              bitmap = ditherBlock2Ordered(floatPixels, blockX, blockY, w, colors.inkRgb, colors.paperRgb);
+              break;
+            default:
+              bitmap = ditherBlock2None(floatPixels, blockX, blockY, w, colors.inkRgb, colors.paperRgb);
+              break;
+          }
+
+          const ruled = applyPaperRule(colors, bitmap);
+
+          for (let line = 0; line < 2; line++) {
+            const y = blockY * 2 + line;
+            if (y >= h) break;
+            buf[y * cols + blockX] = ruled.bitmap[line];
+          }
+
+          let attr = (ruled.colors.paper << 3) | ruled.colors.ink;
+          if (ruled.colors.bright) attr |= 0x40;
+          buf[bitmapSize + blockY * cols + blockX] = attr;
+        }
+      }
+    }
+  } else {
+    // Global dithering
+    const ditherPalette = monoOutput ? [palette.bright[0], palette.bright[7]] : fullPalette;
+
+    switch (dithering) {
+      case 'floyd-steinberg': floydSteinbergDither(floatPixels, w, h, ditherPalette); break;
+      case 'jarvis': jarvisDither(floatPixels, w, h, ditherPalette); break;
+      case 'stucki': stuckiDither(floatPixels, w, h, ditherPalette); break;
+      case 'burkes': burkesDither(floatPixels, w, h, ditherPalette); break;
+      case 'sierra': sierraDither(floatPixels, w, h, ditherPalette); break;
+      case 'sierra-lite': sierraLiteDither(floatPixels, w, h, ditherPalette); break;
+      case 'sierra2': sierra2Dither(floatPixels, w, h, ditherPalette); break;
+      case 'serpentine': serpentineDither(floatPixels, w, h, ditherPalette); break;
+      case 'riemersma': riemersmaDither(floatPixels, w, h, ditherPalette); break;
+      case 'blue-noise': blueNoiseDither(floatPixels, w, h, ditherPalette); break;
+      case 'pattern': patternDither(floatPixels, w, h, ditherPalette); break;
+      case 'atkinson': atkinsonDither(floatPixels, w, h, ditherPalette); break;
+      case 'ordered': orderedDither(floatPixels, w, h, ditherPalette); break;
+      case 'ordered8': ordered8Dither(floatPixels, w, h, ditherPalette); break;
+      case 'noise': noiseDither(floatPixels, w, h, ditherPalette); break;
+    }
+
+    for (let blockY = 0; blockY < attrRows; blockY++) {
+      for (let blockX = 0; blockX < cols; blockX++) {
+        const block = monoOutput
+          ? analyzeBlock2Mono(floatPixels, blockX, blockY, w, palette.bright[0], palette.bright[7])
+          : analyzeBlock2(floatPixels, blockX, blockY, w);
+
+        const ruled = monoOutput ? { colors: block, bitmap: block.bitmap } : applyPaperRule(block, block.bitmap);
+
+        for (let line = 0; line < 2; line++) {
+          const y = blockY * 2 + line;
+          if (y >= h) break;
+          buf[y * cols + blockX] = ruled.bitmap[line];
+        }
+
+        let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0));
+        buf[bitmapSize + blockY * cols + blockX] = attr;
+      }
+    }
+  }
+
+  return buf;
+}
+
+/**
  * Generate optimal ULA+ palette from image pixels (parametric dimensions).
  * @param {Float32Array} pixels - Float array of RGB values (w*h*3)
  * @param {number} w - Image width
@@ -6353,7 +6508,7 @@ function renderScrToCanvas(scrData, canvas, zoom = 2) {
  * @param {number} w - Pixel width
  * @param {number} h - Pixel height
  */
-function renderZxpToCanvas(zxpData, canvas, zoom, w, h) {
+function renderZxpToCanvas(zxpData, canvas, zoom, w, h, attrCellH) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
@@ -6365,7 +6520,7 @@ function renderZxpToCanvas(zxpData, canvas, zoom, w, h) {
   canvas.height = h * effectiveZoom;
 
   const cols = w >> 3;
-  const attrCellH = 8;
+  if (!attrCellH) attrCellH = 8;
   const bitmapSize = cols * h;
 
   const imageData = ctx.createImageData(w, h);
@@ -7399,6 +7554,127 @@ function convertToNxi(sourceCanvas, dithering, brightness, contrast, saturation,
 function convertToSl2(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB) {
   const q = quantizeNextPixels(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, false);
   return q.pixels;
+}
+
+/**
+ * Convert source image to LoRes 128×96 256-color (raw pixel bytes, default palette).
+ * Uses quantizeNextPixelsExt with W=128, H=96, 256 colors.
+ */
+function convertToLores(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB) {
+  const q = quantizeNextPixelsExt(sourceCanvas, 128, 96, 256, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, false);
+  return q.pixels;
+}
+
+/**
+ * Render LoRes preview to canvas with zoom (128×96, default RGB332 palette).
+ * @param {Uint8Array} data - Raw 12288-byte pixel data
+ * @param {HTMLCanvasElement} canvas - Target canvas
+ * @param {number} zoom - Zoom level
+ */
+function renderLoresToCanvas(data, canvas, zoom = 2) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const W = 128, H = 96;
+  canvas.width = W * zoom;
+  canvas.height = H * zoom;
+
+  const imageData = ctx.createImageData(W, H);
+  const pix = imageData.data;
+
+  // Default RGB332 palette
+  const palette = new Array(256);
+  for (let i = 0; i < 256; i++) {
+    const r3 = (i >> 5) & 7;
+    const g3 = (i >> 2) & 7;
+    const b2 = i & 3;
+    const b3 = (b2 << 1) | (b2 >> 1);
+    palette[i] = [
+      Math.round(r3 * 255 / 7),
+      Math.round(g3 * 255 / 7),
+      Math.round(b3 * 255 / 7)
+    ];
+  }
+
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const colorIdx = data[y * W + x] || 0;
+      const rgb = palette[colorIdx];
+      const dst = (y * W + x) * 4;
+      pix[dst] = rgb[0];
+      pix[dst + 1] = rgb[1];
+      pix[dst + 2] = rgb[2];
+      pix[dst + 3] = 255;
+    }
+  }
+
+  const temp = getImportTempCanvas(W, H);
+  if (temp) {
+    temp.ctx.putImageData(imageData, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(temp.canvas, 0, 0, W * zoom, H * zoom);
+  }
+}
+
+/**
+ * Convert source image to LoRes Radastan 128×96 16-color 4bpp (packed nibbles).
+ * Uses quantizeNextPixelsExt with W=128, H=96, 16 colors, then packs to 4bpp.
+ */
+function convertToLoresRad(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB) {
+  const q = quantizeNextPixelsExt(sourceCanvas, 128, 96, 16, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, false);
+  // Pack 1-byte-per-pixel into 4bpp nibbles (high nibble = left, low nibble = right)
+  const packed = new Uint8Array(LORES_RAD.PIXEL_DATA_SIZE);
+  for (let y = 0; y < 96; y++) {
+    for (let x = 0; x < 128; x += 2) {
+      const left = q.pixels[y * 128 + x] & 0x0F;
+      const right = q.pixels[y * 128 + x + 1] & 0x0F;
+      packed[y * LORES_RAD.BYTES_PER_ROW + (x >> 1)] = (left << 4) | right;
+    }
+  }
+  return packed;
+}
+
+/**
+ * Render LoRes Radastan preview to canvas with zoom (128×96, 16-color 4bpp).
+ * @param {Uint8Array} data - 6144-byte packed pixel data
+ * @param {HTMLCanvasElement} canvas - Target canvas
+ * @param {number} zoom - Zoom level
+ */
+function renderLoresRadToCanvas(data, canvas, zoom = 2) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const W = 128, H = 96;
+  canvas.width = W * zoom;
+  canvas.height = H * zoom;
+
+  const imageData = ctx.createImageData(W, H);
+  const pix = imageData.data;
+
+  // First 16 entries of default RGB332 palette
+  const palette = typeof generateDefaultNext4bppPalette === 'function' ? generateDefaultNext4bppPalette() : null;
+  if (!palette) return;
+
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const byteOffset = y * LORES_RAD.BYTES_PER_ROW + (x >> 1);
+      const byteVal = data[byteOffset] || 0;
+      const colorIdx = (x & 1) === 0 ? (byteVal >> 4) & 0x0F : byteVal & 0x0F;
+      const rgb = palette[colorIdx] || [0, 0, 0];
+      const dst = (y * W + x) * 4;
+      pix[dst] = rgb[0];
+      pix[dst + 1] = rgb[1];
+      pix[dst + 2] = rgb[2];
+      pix[dst + 3] = 255;
+    }
+  }
+
+  const temp = getImportTempCanvas(W, H);
+  if (temp) {
+    temp.ctx.putImageData(imageData, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(temp.canvas, 0, 0, W * zoom, H * zoom);
+  }
 }
 
 /**
@@ -8485,11 +8761,12 @@ function getAlignFactors() {
  */
 function getImportFormatDimensions(format) {
   if (format === 'bsc' || format === 'bsp' || format === 'bmc4') return { w: 384, h: 304 };
-  if (format === 'zxp' || format === 'ch$') return { w: importSize.w, h: importSize.h };
+  if (format === 'zxp' || format === 'ch$' || format === 'btile' || format === 'wtile') return { w: importSize.w, h: importSize.h };
   if (format === 'mono_2_3') return { w: 256, h: 128 };
   if (format === 'mono_1_3') return { w: 256, h: 64 };
   if (format === 'nxi320' || format === 'sl2_320') return { w: 320, h: 256 };
   if (format === 'nxi640' || format === 'sl2_640') return { w: 640, h: 256 };
+  if (format === 'lores' || format === 'lores_rad') return { w: 128, h: 96 };
   return { w: 256, h: 192 };
 }
 
@@ -8555,9 +8832,9 @@ function applyCropAndFit() {
   // Resize source canvas for extended NXI/SL2 modes
   const format = importElements.format?.value || 'scr';
   const fmtDims = getImportFormatDimensions(format);
-  // For BSC/ZXP/chr$ use their own canvases; standard canvas handles the rest
-  const canvasW = (format === 'bsc' || format === 'bsp' || format === 'bmc4' || format === 'zxp' || format === 'ch$') ? 256 : fmtDims.w;
-  const canvasH = (format === 'bsc' || format === 'bsp' || format === 'bmc4' || format === 'zxp' || format === 'ch$') ? 192 : fmtDims.h;
+  // For BSC/ZXP/chr$/btile/wtile use their own canvases; standard canvas handles the rest
+  const canvasW = (format === 'bsc' || format === 'bsp' || format === 'bmc4' || format === 'zxp' || format === 'ch$' || format === 'btile' || format === 'wtile') ? 256 : fmtDims.w;
+  const canvasH = (format === 'bsc' || format === 'bsp' || format === 'bmc4' || format === 'zxp' || format === 'ch$' || format === 'btile' || format === 'wtile') ? 192 : fmtDims.h;
   if (importSourceCanvas.width !== canvasW) importSourceCanvas.width = canvasW;
   if (importSourceCanvas.height !== canvasH) importSourceCanvas.height = canvasH;
 
@@ -9583,6 +9860,9 @@ function initImageImport() {
         const chrData = convertToZxp(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
         renderZxpToCanvas(chrData, importPreviewCanvas, currentZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
       }
+    } else if ((format === 'btile' || format === 'wtile') && importSourceCanvasZxp) {
+      const tileData = convertToNirvanaTile(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      renderZxpToCanvas(tileData, importPreviewCanvas, currentZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height, 2);
     } else if (format === 'nxi') {
       const nxiData = convertToNxi(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
       renderNxiToCanvas(nxiData, importPreviewCanvas, currentZoom, false);
@@ -9601,6 +9881,12 @@ function initImageImport() {
     } else if (format === 'sl2_640') {
       const sl2Data = convertToSl2_640(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
       renderNxi640ToCanvas(sl2Data, importPreviewCanvas, currentZoom, true);
+    } else if (format === 'lores') {
+      const loresData = convertToLores(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      renderLoresToCanvas(loresData, importPreviewCanvas, currentZoom);
+    } else if (format === 'lores_rad') {
+      const radData = convertToLoresRad(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      renderLoresRadToCanvas(radData, importPreviewCanvas, currentZoom);
     } else {
       const scrData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderScrToCanvas(scrData, importPreviewCanvas, currentZoom);
@@ -9799,22 +10085,26 @@ function initImageImport() {
   formatSelect?.addEventListener('change', () => {
     // Update size defaults based on format
     const format = formatSelect?.value || 'scr';
-    const fmtDims = getImportFormatDimensions(format);
-    let defaultW = fmtDims.w, defaultH = fmtDims.h;
+    const isVarSize = format === 'zxp' || format === 'ch$' || format === 'btile' || format === 'wtile';
+    // Set defaults: btile 256×192 (divisible by 16), wtile 240×192 (divisible by 24)
+    let defaultW, defaultH;
+    if (format === 'btile') { defaultW = 256; defaultH = 192; }
+    else if (format === 'wtile') { defaultW = 240; defaultH = 192; }
+    else { const fmtDims = getImportFormatDimensions(format); defaultW = fmtDims.w; defaultH = fmtDims.h; }
     importSize.w = defaultW;
     importSize.h = defaultH;
     if (importElements.sizeW) {
       importElements.sizeW.value = String(defaultW);
       importElements.sizeW.max = String(
         (format === 'bsc' || format === 'bsp' || format === 'bmc4') ? 384 :
-        (format === 'zxp' || format === 'ch$') ? 2048 : defaultW
+        isVarSize ? 2048 : defaultW
       );
     }
     if (importElements.sizeH) {
       importElements.sizeH.value = String(defaultH);
       importElements.sizeH.max = String(
         (format === 'bsc' || format === 'bsp' || format === 'bmc4') ? 304 :
-        (format === 'zxp' || format === 'ch$') ? 2048 : defaultH
+        isVarSize ? 2048 : defaultH
       );
     }
     // Also reset offset for format change
@@ -9847,7 +10137,7 @@ function initImageImport() {
     // Hide cell-aware dithering for formats without attribute cells (RGB3, Mono)
     // and for HLR (bitmap is fixed so cell-aware methods don't apply either).
     const cellGroup = document.getElementById('importDitherCellGroup');
-    const noCellFormats = format === 'rgb3' || format === 'mono' || format === 'mono_2_3' || format === 'mono_1_3' || format === 'hlr' || format === 'stl' || format === 'specscii' || format === 'nxi' || format === 'nxi320' || format === 'nxi640' || format === 'sl2' || format === 'sl2_320' || format === 'sl2_640';
+    const noCellFormats = format === 'rgb3' || format === 'mono' || format === 'mono_2_3' || format === 'mono_1_3' || format === 'hlr' || format === 'stl' || format === 'specscii' || format === 'nxi' || format === 'nxi320' || format === 'nxi640' || format === 'sl2' || format === 'sl2_320' || format === 'sl2_640' || format === 'lores' || format === 'lores_rad';
     if (cellGroup) {
       cellGroup.style.display = noCellFormats ? 'none' : '';
     }
@@ -9874,12 +10164,12 @@ function initImageImport() {
       importPreviewCanvas.style.cursor = showUlaPlusRow ? 'crosshair' : '';
     }
     // Hide standard Palette: row for ULA+ and NXI/SL2 (they have their own palette systems)
-    const isNextFormat = format === 'nxi' || format === 'nxi320' || format === 'nxi640' || format === 'sl2' || format === 'sl2_320' || format === 'sl2_640';
+    const isNextFormat = format === 'nxi' || format === 'nxi320' || format === 'nxi640' || format === 'sl2' || format === 'sl2_320' || format === 'sl2_640' || format === 'lores' || format === 'lores_rad';
     if (importElements.paletteRow) {
       importElements.paletteRow.style.display = (showUlaPlusRow || isNextFormat) ? 'none' : 'flex';
     }
-    // Auto-set zoom to x1 for ZXP/chr$ (dimensions can be very large)
-    if ((format === 'zxp' || format === 'ch$') && importElements.zoom) {
+    // Auto-set zoom to x1 for variable-size formats (dimensions can be very large)
+    if ((format === 'zxp' || format === 'ch$' || format === 'btile' || format === 'wtile') && importElements.zoom) {
       importElements.zoom.value = '1';
       importZoom = 1;
     }
@@ -10086,39 +10376,80 @@ function initImageImport() {
   // Size controls with aspect ratio lock
   const getSourceAspect = () => importCrop.w / importCrop.h;
   const format = () => formatSelect?.value || 'scr';
-  const maxW = () => { const f = format(); return (f === 'bsc' || f === 'bmc4') ? 384 : (f === 'zxp' || f === 'ch$') ? 2048 : getImportFormatDimensions(f).w; };
-  const maxH = () => { const f = format(); return (f === 'bsc' || f === 'bmc4') ? 304 : (f === 'zxp' || f === 'ch$') ? 2048 : getImportFormatDimensions(f).h; };
+  const isVariableSize = (f) => f === 'zxp' || f === 'ch$' || f === 'btile' || f === 'wtile';
+  const maxW = () => { const f = format(); return (f === 'bsc' || f === 'bmc4') ? 384 : isVariableSize(f) ? 2048 : getImportFormatDimensions(f).w; };
+  const maxH = () => { const f = format(); return (f === 'bsc' || f === 'bmc4') ? 304 : isVariableSize(f) ? 2048 : getImportFormatDimensions(f).h; };
+  /** Snap width to tile-aligned value for btile/wtile */
+  const snapW = (w) => { const f = format(); const tileW = f === 'btile' ? 16 : f === 'wtile' ? 24 : 0; return tileW ? Math.max(tileW, Math.round(w / tileW) * tileW) : w; };
+  /** Snap height to 16px for btile/wtile (tile height) */
+  const snapH = (h) => { const f = format(); return (f === 'btile' || f === 'wtile') ? Math.max(16, Math.round(h / 16) * 16) : h; };
 
-  const onSizeWChange = () => {
-    const newW = Math.max(8, Math.min(maxW(), parseInt(importElements.sizeW?.value || String(maxW()), 10) || maxW()));
+  /** Committed size change: snap, clamp, write back, update linked dimension, re-render */
+  const onSizeWCommit = () => {
+    let newW = Math.max(8, Math.min(maxW(), parseInt(importElements.sizeW?.value || String(maxW()), 10) || maxW()));
+    newW = snapW(newW);
     importSize.w = newW;
+    if (importElements.sizeW && parseInt(importElements.sizeW.value, 10) !== newW) importElements.sizeW.value = String(newW);
     if (importElements.lockAspect?.checked && importCrop.h > 0) {
-      // Calculate height from width using source aspect ratio
       const aspect = getSourceAspect();
-      const newH = Math.round(newW / aspect);
-      importSize.h = Math.max(8, Math.min(maxH(), newH));
+      let newH = Math.round(newW / aspect);
+      newH = snapH(Math.max(8, Math.min(maxH(), newH)));
+      importSize.h = newH;
       if (importElements.sizeH) importElements.sizeH.value = String(importSize.h);
     }
     updateAll();
   };
-
-  const onSizeHChange = () => {
-    const newH = Math.max(8, Math.min(maxH(), parseInt(importElements.sizeH?.value || String(maxH()), 10) || maxH()));
+  const onSizeHCommit = () => {
+    let newH = Math.max(8, Math.min(maxH(), parseInt(importElements.sizeH?.value || String(maxH()), 10) || maxH()));
+    newH = snapH(newH);
     importSize.h = newH;
+    if (importElements.sizeH && parseInt(importElements.sizeH.value, 10) !== newH) importElements.sizeH.value = String(newH);
     if (importElements.lockAspect?.checked && importCrop.w > 0) {
-      // Calculate width from height using source aspect ratio
       const aspect = getSourceAspect();
-      const newW = Math.round(newH * aspect);
-      importSize.w = Math.max(8, Math.min(maxW(), newW));
+      let newW = Math.round(newH * aspect);
+      newW = snapW(Math.max(8, Math.min(maxW(), newW)));
+      importSize.w = newW;
       if (importElements.sizeW) importElements.sizeW.value = String(importSize.w);
     }
     updateAll();
   };
 
-  importElements.sizeW?.addEventListener('change', onSizeWChange);
-  importElements.sizeH?.addEventListener('change', onSizeHChange);
-  importElements.sizeW?.addEventListener('input', onSizeWChange);
-  importElements.sizeH?.addEventListener('input', onSizeHChange);
+  /** Live input: update preview without snapping or rewriting the input field.
+   *  Uses a debounce timer to avoid expensive re-renders on every keystroke. */
+  let sizeInputTimer = null;
+  const onSizeWInput = () => {
+    const raw = parseInt(importElements.sizeW?.value, 10);
+    if (!raw || raw < 8) return; // don't update while user is still typing
+    const newW = Math.min(maxW(), raw);
+    if (newW === importSize.w) return;
+    importSize.w = newW;
+    if (importElements.lockAspect?.checked && importCrop.h > 0) {
+      const aspect = getSourceAspect();
+      importSize.h = Math.max(8, Math.min(maxH(), Math.round(newW / aspect)));
+      if (importElements.sizeH) importElements.sizeH.value = String(importSize.h);
+    }
+    clearTimeout(sizeInputTimer);
+    sizeInputTimer = setTimeout(updateAll, 300);
+  };
+  const onSizeHInput = () => {
+    const raw = parseInt(importElements.sizeH?.value, 10);
+    if (!raw || raw < 8) return;
+    const newH = Math.min(maxH(), raw);
+    if (newH === importSize.h) return;
+    importSize.h = newH;
+    if (importElements.lockAspect?.checked && importCrop.w > 0) {
+      const aspect = getSourceAspect();
+      importSize.w = Math.max(8, Math.min(maxW(), Math.round(newH * aspect)));
+      if (importElements.sizeW) importElements.sizeW.value = String(importSize.w);
+    }
+    clearTimeout(sizeInputTimer);
+    sizeInputTimer = setTimeout(updateAll, 300);
+  };
+
+  importElements.sizeW?.addEventListener('change', onSizeWCommit);
+  importElements.sizeH?.addEventListener('change', onSizeHCommit);
+  importElements.sizeW?.addEventListener('input', onSizeWInput);
+  importElements.sizeH?.addEventListener('input', onSizeHInput);
 
   // Tile to screens checkbox
   importElements.tile?.addEventListener('change', function() {
@@ -10772,6 +11103,10 @@ function initImageImport() {
       }
       outputFormat = FORMAT.CHR;
       fileExt = '.ch$';
+    } else if ((format === 'btile' || format === 'wtile') && importSourceCanvasZxp) {
+      outputData = convertToNirvanaTile(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      outputFormat = FORMAT.ZXP;
+      fileExt = format === 'btile' ? '.btile' : '.wtile';
     } else if (format === 'nxi') {
       outputData = convertToNxi(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
       outputFormat = FORMAT.NXI;
@@ -10796,6 +11131,14 @@ function initImageImport() {
       outputData = convertToSl2_640(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
       outputFormat = FORMAT.SL2;
       fileExt = '.sl2';
+    } else if (format === 'lores') {
+      outputData = convertToLores(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputFormat = FORMAT.LORES;
+      fileExt = '.slr';
+    } else if (format === 'lores_rad') {
+      outputData = convertToLoresRad(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputFormat = FORMAT.LORES_RAD;
+      fileExt = '.rad';
     } else {
       outputData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.SCR;
@@ -10839,6 +11182,31 @@ function initImageImport() {
       newInternalPicture.planes[1].attrs.set(outputData.subarray(cgFrameSize + cgBitmapSize, cgFrameSize * 2));
       if (typeof generateGigascreenVirtualPalette === 'function') {
         generateGigascreenVirtualPalette();
+      }
+    } else if ((format === 'btile' || format === 'wtile') && outputFormat === FORMAT.ZXP && typeof importZxp === 'function' && importSourceCanvasZxp) {
+      // Nirvana tile: 8×2 multicolor, linear layout
+      const tW = importSourceCanvasZxp.width;
+      const tH = importSourceCanvasZxp.height;
+      const tCols = tW >> 3;
+      const tBitmapSize = tCols * tH;
+      const tAttrRows = Math.ceil(tH / 2);
+      const tAttrSize = tCols * tAttrRows;
+      const bitmap = outputData.subarray(0, tBitmapSize);
+      const attrs = outputData.subarray(tBitmapSize, tBitmapSize + tAttrSize);
+      newInternalPicture = importZxp(bitmap, attrs, newFileName, tW, tH, 2, null);
+      if (newInternalPicture) {
+        const isBtile = format === 'btile';
+        const cellsW = isBtile ? 2 : 3;
+        const tilePixW = cellsW * 8;
+        const tilesPerRow = tW / tilePixW;
+        const tilesPerCol = tH / 16;
+        newInternalPicture.nirvanaTileInfo = {
+          isBtile: isBtile,
+          cellsW: cellsW,
+          cellsH: 2,
+          tileCount: tilesPerRow * tilesPerCol,
+          tilesPerRow: tilesPerRow
+        };
       }
     } else if ((outputFormat === FORMAT.ZXP || outputFormat === FORMAT.CHR) && typeof importZxp === 'function' && importSourceCanvasZxp) {
       const zxpW = importSourceCanvasZxp.width;
@@ -11015,6 +11383,14 @@ function initImageImport() {
       }
     }
 
+    // Set up LoRes palette after import
+    if (outputFormat === FORMAT.LORES && typeof generateDefaultNextPalette === 'function') {
+      nxiResolvedPalette = generateDefaultNextPalette();
+    }
+    if (outputFormat === FORMAT.LORES_RAD && typeof generateDefaultNext4bppPalette === 'function') {
+      nxiResolvedPalette = generateDefaultNext4bppPalette();
+    }
+
     // Close dialog and render
     closeImportDialog();
 
@@ -11188,21 +11564,24 @@ function openImportDialog(file) {
 
     // Reset size to defaults based on current format
     const format = importElements.format?.value || 'scr';
-    const fmtDimsInit = getImportFormatDimensions(format);
-    let defaultW = fmtDimsInit.w, defaultH = fmtDimsInit.h;
+    const isVarSizeInit = format === 'zxp' || format === 'ch$' || format === 'btile' || format === 'wtile';
+    let defaultW, defaultH;
+    if (format === 'btile') { defaultW = 256; defaultH = 192; }
+    else if (format === 'wtile') { defaultW = 240; defaultH = 192; }
+    else { const fmtDimsInit = getImportFormatDimensions(format); defaultW = fmtDimsInit.w; defaultH = fmtDimsInit.h; }
     importSize = { w: defaultW, h: defaultH };
     if (importElements.sizeW) {
       importElements.sizeW.value = String(defaultW);
       importElements.sizeW.max = String(
         (format === 'bsc' || format === 'bsp' || format === 'bmc4') ? 384 :
-        (format === 'zxp' || format === 'ch$') ? 2048 : defaultW
+        isVarSizeInit ? 2048 : defaultW
       );
     }
     if (importElements.sizeH) {
       importElements.sizeH.value = String(defaultH);
       importElements.sizeH.max = String(
         (format === 'bsc' || format === 'bsp' || format === 'bmc4') ? 304 :
-        (format === 'zxp' || format === 'ch$') ? 2048 : defaultH
+        isVarSizeInit ? 2048 : defaultH
       );
     }
 
@@ -11292,6 +11671,9 @@ function openImportDialog(file) {
         const chrData = convertToZxp(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
         renderZxpToCanvas(chrData, importPreviewCanvas, importZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
       }
+    } else if ((format === 'btile' || format === 'wtile') && importSourceCanvasZxp) {
+      const tileData = convertToNirvanaTile(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      renderZxpToCanvas(tileData, importPreviewCanvas, importZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height, 2);
     } else {
       const scrData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderScrToCanvas(scrData, importPreviewCanvas, importZoom);

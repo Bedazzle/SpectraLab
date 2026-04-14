@@ -125,7 +125,10 @@ const FORMAT = {
   STL: 'stl',             // Stellar (64×48 multicolor + gigascreen, 3072 bytes)
   BSP: 'bsp',             // BSP (header + screen + optional border + optional gigascreen)
   NXI: 'nxi',             // ZX Spectrum Next Layer 2 with embedded palette (49664 bytes)
-  SL2: 'sl2'              // ZX Spectrum Next Layer 2 raw pixels (49152 or 49280 bytes)
+  SL2: 'sl2',             // ZX Spectrum Next Layer 2 raw pixels (49152 or 49280 bytes)
+  LORES: 'lores',          // ZX Spectrum Next LoRes 128×96 256-color (12288 bytes)
+  LORES_RAD: 'lores_rad',  // ZX Spectrum Next LoRes Radastan 128×96 16-color 4bpp (6144 bytes)
+  SCR_ULANEXT: 'scr_ulanext' // SCR with ULANext extended palette (6912 + 1 mask + RGB333 palette)
 };
 
 // SPECSCII format constants
@@ -173,9 +176,10 @@ const IFL = {
 // Each pixel line has its own attribute row
 // 192 attribute rows × 32 columns = 6144 bytes
 const MLT = {
-  TOTAL_SIZE: 12288,      // 6144 + 6144
-  BITMAP_SIZE: 6144,      // Same as standard SCR
-  ATTR_SIZE: 6144,        // 192 rows × 32 columns (one attr row per pixel line)
+  TOTAL_SIZE: 12288,          // 6144 + 6144
+  TOTAL_SIZE_ULAPLUS: 12352,  // 12288 + 64 (with ULA+ palette)
+  BITMAP_SIZE: 6144,          // Same as standard SCR
+  ATTR_SIZE: 6144,            // 192 rows × 32 columns (one attr row per pixel line)
   ATTR_ROWS: 192,
   ATTR_COLS: 32
 };
@@ -292,9 +296,34 @@ const SL2 = {
   HEADER_SIZE: 49280,
   HEADER_OFFSET: 128,
   EXT_SIZE: 81920,
+  PALETTE_SIZE: 512,              // 256 entries × 2 bytes (RGB333)
+  PALETTE_SIZE_4BPP: 32,          // 16 entries × 2 bytes (RGB333) for 640×256 4bpp
+  TOTAL_SIZE_WITH_PAL: 49664,     // 49152 + 512
+  EXT_SIZE_WITH_PAL: 82432,       // 81920 + 512 (8bpp 320×256 with 256-entry palette)
+  EXT_SIZE_WITH_PAL_4BPP: 81952,  // 81920 + 32 (4bpp 640×256 with 16-entry palette)
   WIDTH: 256, HEIGHT: 192,
   WIDTH_320: 320, HEIGHT_320: 256,
   WIDTH_640: 640, HEIGHT_640: 256
+};
+
+// LoRes format constants (ZX Spectrum Next LoRes 128×96 256-color)
+// Raw pixel dump: 128 * 96 = 12288 bytes, no header, no palette
+const LORES = {
+  WIDTH: 128, HEIGHT: 96,
+  PIXEL_DATA_SIZE: 12288,
+  PALETTE_SIZE: 512,            // 256 entries × 2 bytes (RGB333), appended after pixel data
+  TOTAL_SIZE_WITH_PAL: 12800    // 12288 + 512
+};
+
+// LoRes Radastan format constants (ZX Spectrum Next LoRes 128×96 16-color 4bpp)
+// Packed 2 pixels/byte: high nibble = left pixel, low nibble = right pixel
+// Contiguous row-major layout at $4000-$57FF (no gap)
+const LORES_RAD = {
+  WIDTH: 128, HEIGHT: 96,
+  PIXEL_DATA_SIZE: 6144,
+  PALETTE_SIZE: 32,           // 16 entries × 2 bytes (RGB333), appended after pixel data
+  TOTAL_SIZE_WITH_PAL: 6176,  // 6144 + 32
+  BYTES_PER_ROW: 64
 };
 
 /**
@@ -420,6 +449,32 @@ let ulaPlusPalette = null;
 
 /** @type {boolean} - Whether current screen uses ULA+ mode */
 let isUlaPlusMode = false;
+
+// ULANext format constants (ZX Spectrum Next extended palette mode)
+// File layout: 6912 (SCR) + 1 (ink mask byte) + palette entries (2 bytes each, RGB333)
+// The ink mask determines how the attribute byte is split between ink and paper indices.
+const ULANEXT = {
+  MASK_OFFSET: 6912,      // Ink mask byte immediately after SCR data
+  PALETTE_OFFSET: 6913,   // Palette starts after mask byte
+  VALID_MASKS: [0x01, 0x03, 0x07, 0x0F, 0x1F, 0x3F, 0x7F, 0xFF],
+  MIN_FILE_SIZE: 6945,    // Smallest valid: mask $0F → 32 entries × 1 byte + 6913
+  MAX_FILE_SIZE: 7426     // Largest valid: mask $FF → 256×2 + 1×1 = 513 bytes + 6913
+};
+
+/** @type {boolean} - Whether current screen uses ULANext mode */
+let isUlaNextMode = false;
+/** @type {number} - ULANext ink mask byte (determines ink/paper bit split) */
+let ulaNextInkMask = 0;
+/** @type {number} - Number of ink bits (popcount of mask) */
+let ulaNextInkBits = 0;
+/** @type {number[][]} - ULANext palette as array of [r,g,b] entries (inkCount + paperCount) */
+let ulaNextPalette = null;
+/** @type {number} - Number of ink colors (2^inkBits) */
+let ulaNextInkCount = 0;
+/** @type {number} - Number of paper colors (2^paperBits) */
+let ulaNextPaperCount = 0;
+/** @type {boolean} - Whether ULANext palette uses 9-bit (2-byte) entries (false = 8-bit/1-byte) */
+let ulaNextIs9bit = false;
 
 /**
  * Converts GRB332 byte to RGB array
@@ -1113,6 +1168,16 @@ function updateFontInfo() {
  * @returns {{inkRgb: number[], paperRgb: number[]}} RGB color arrays
  */
 function getColorsRgb(attr) {
+  // ULANext mode: ink mask splits attribute into ink/paper indices
+  if (isUlaNextMode && ulaNextPalette) {
+    const inkIdx = attr & ulaNextInkMask;
+    const paperIdx = (attr >>> ulaNextInkBits) + ulaNextInkCount;
+    return {
+      inkRgb: ulaNextPalette[inkIdx] || [0, 0, 0],
+      paperRgb: ulaNextPalette[paperIdx] || [0, 0, 0]
+    };
+  }
+
   // ULA+ mode uses 64-color palette with CLUT selection
   if (isUlaPlusMode && ulaPlusPalette) {
     const inkIdx = getUlaPlusPaletteIndex(attr, true);
@@ -2480,8 +2545,8 @@ function renderMonoScreen(ctx, borderOffset, thirds) {
  * @param {number} borderOffset - Border offset in canvas pixels
  */
 function renderSpecsciiScreen(ctx, borderOffset) {
-  // Fill background with black initially
-  ctx.fillStyle = ZX_PALETTE.REGULAR[0];
+  // Fill background (black when attributes on, white when attributes off — matches SCR)
+  ctx.fillStyle = showAttributes ? ZX_PALETTE.REGULAR[0] : ZX_PALETTE.REGULAR[7];
   ctx.fillRect(borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom);
 
   // If editor grids are available, render directly from grids (avoids stream round-trip)
@@ -2557,7 +2622,7 @@ function renderSpecsciiScreen(ctx, borderOffset) {
               ink = pal[aInk]; paper = pal[aPaper];
             }
           } else {
-            ink = ZX_PALETTE.REGULAR[7]; paper = ZX_PALETTE.REGULAR[0];
+            ink = ZX_PALETTE.REGULAR[0]; paper = ZX_PALETTE.REGULAR[7];
           }
           const x = ccol * 8, y = crow * 8;
           ctx.fillStyle = paper;
@@ -2603,8 +2668,8 @@ function renderSpecsciiScreen(ctx, borderOffset) {
             paper = palBright[paperIdx];
           }
         } else {
-          ink = ZX_PALETTE.REGULAR[7];
-          paper = ZX_PALETTE.REGULAR[0];
+          ink = ZX_PALETTE.REGULAR[0];
+          paper = ZX_PALETTE.REGULAR[7];
         }
 
         const x = col * 8;
@@ -2759,8 +2824,8 @@ function renderSpecsciiScreen(ctx, borderOffset) {
         paper = palette[effectivePaper];
       }
     } else {
-      ink = ZX_PALETTE.REGULAR[7];
-      paper = ZX_PALETTE.REGULAR[0];
+      ink = ZX_PALETTE.REGULAR[0];
+      paper = ZX_PALETTE.REGULAR[7];
     }
 
     // Calculate screen position
@@ -3900,7 +3965,7 @@ function toggleFormatControlsVisibility() {
     scrEditorControls.style.display = (currentFormat === FORMAT.SCR || currentFormat === FORMAT.SCR_ULAPLUS || currentFormat === FORMAT.ATTR_53C || currentFormat === FORMAT.BSC || currentFormat === FORMAT.IFL || currentFormat === FORMAT.MLT || currentFormat === FORMAT.BMC4 || currentFormat === FORMAT.RGB3 || currentFormat === FORMAT.MONO_FULL || currentFormat === FORMAT.MONO_2_3 || currentFormat === FORMAT.MONO_1_3 || currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) ? 'flex' : 'none';
   }
   // Hide palette/flash/attrs controls for NXI/SL2 (no ZX attributes or palette)
-  const isNextLayer2 = currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2;
+  const isNextLayer2 = currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 || currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD;
   const paletteLabel = document.getElementById('paletteLabel');
   if (paletteLabel) {
     paletteLabel.style.display = isNextLayer2 ? 'none' : '';
@@ -3956,6 +4021,7 @@ function initUlaPlusMode(data, format) {
       ulaPlusPalette[i] = data[ULAPLUS.PALETTE_OFFSET + i];
     }
     isUlaPlusMode = true;
+    resetUlaNextMode(); // Mutual exclusion: ULA+ and ULANext cannot be active simultaneously
   } else {
     // Not ULA+ mode - reset state
     ulaPlusPalette = null;
@@ -3983,12 +4049,168 @@ function resetUlaPlusMode() {
 }
 
 /**
+ * Resets ULANext mode state
+ */
+function resetUlaNextMode() {
+  isUlaNextMode = false;
+  ulaNextInkMask = 0;
+  ulaNextInkBits = 0;
+  ulaNextPalette = null;
+  ulaNextInkCount = 0;
+  ulaNextPaperCount = 0;
+  ulaNextIs9bit = false;
+}
+
+/**
+ * Counts the number of set bits (popcount) in a byte
+ * @param {number} v - Byte value (0-255)
+ * @returns {number} Number of set bits
+ */
+function popcount8(v) {
+  v = v - ((v >> 1) & 0x55);
+  v = (v & 0x33) + ((v >> 2) & 0x33);
+  return (v + (v >> 4)) & 0x0F;
+}
+
+/**
+ * Calculates the expected file size for a ULANext SCR with the given ink mask.
+ * @param {number} mask - Ink mask byte
+ * @returns {number} Expected total file size
+ */
+function getUlaNextFileSize(mask) {
+  const inkBits = popcount8(mask);
+  const inkCount = 1 << inkBits;
+  const paperCount = 1 << (8 - inkBits);
+  if (mask === 0xFF) {
+    // Special case: 256 ink entries × 2 bytes + 1 paper entry × 1 byte = 513
+    return 6912 + 1 + 256 * 2 + 1;
+  }
+  return 6912 + 1 + (inkCount + paperCount) * 2;
+}
+
+/**
+ * Calculates the expected file size for a ULANext SCR with 1-byte (8-bit) palette entries.
+ * @param {number} mask - Ink mask byte
+ * @returns {number} Expected total file size
+ */
+function getUlaNextFileSize1b(mask) {
+  const inkBits = popcount8(mask);
+  const inkCount = 1 << inkBits;
+  const paperCount = 1 << (8 - inkBits);
+  // All entries are 1 byte (8-bit RRRGGGBB); for $FF paper is also 1 byte
+  return 6912 + 1 + inkCount + paperCount;
+}
+
+/**
+ * Decodes a single 8-bit RRRGGGBB palette byte to [r, g, b].
+ * Blue is expanded from 2-bit to 3-bit using OR of the two bits (per Next spec).
+ * @param {number} byte0 - 8-bit palette byte (RRRGGGBB)
+ * @returns {number[]} RGB array [r, g, b] (0-255)
+ */
+function decodeUlaNext8bit(byte0) {
+  const r3 = (byte0 >> 5) & 7;
+  const g3 = (byte0 >> 2) & 7;
+  const b2 = byte0 & 3;
+  // Expand 2-bit blue to 3-bit: B1 B0 → B1 B0 (B1|B0)
+  const b3 = (b2 << 1) | ((b2 >> 1) | (b2 & 1));
+  return [
+    Math.round(r3 * 255 / 7),
+    Math.round(g3 * 255 / 7),
+    Math.round(b3 * 255 / 7)
+  ];
+}
+
+/**
+ * Decodes a 9-bit RGB333 palette entry (2 bytes) to [r, g, b].
+ * @param {number} byte0 - First byte (RRRGGGBB)
+ * @param {number} byte1 - Second byte (LSB = B_lsb)
+ * @returns {number[]} RGB array [r, g, b] (0-255)
+ */
+function decodeUlaNext9bit(byte0, byte1) {
+  const r3 = (byte0 >> 5) & 7;
+  const g3 = (byte0 >> 2) & 7;
+  const b3 = ((byte0 & 3) << 1) | (byte1 & 1);
+  return [
+    Math.round(r3 * 255 / 7),
+    Math.round(g3 * 255 / 7),
+    Math.round(b3 * 255 / 7)
+  ];
+}
+
+/**
+ * Initializes ULANext mode from loaded screen data.
+ * Parses the ink mask byte at offset 6912 and the palette that follows.
+ * Supports both 1-byte (8-bit) and 2-byte (9-bit) palette entries.
+ * @param {Uint8Array} data - The full file data (>6912 bytes)
+ * @returns {boolean} True if ULANext mode was successfully initialized
+ */
+function initUlaNextMode(data) {
+  resetUlaNextMode();
+  resetUlaPlusMode();
+
+  if (data.length < ULANEXT.MIN_FILE_SIZE) return false;
+
+  const mask = data[ULANEXT.MASK_OFFSET];
+  if (!ULANEXT.VALID_MASKS.includes(mask)) return false;
+
+  // Determine if this is a 2-byte (9-bit) or 1-byte (8-bit) palette
+  const expectedSize2b = getUlaNextFileSize(mask);
+  const expectedSize1b = getUlaNextFileSize1b(mask);
+  let is9bit;
+  if (data.length === expectedSize2b) {
+    is9bit = true;
+  } else if (data.length === expectedSize1b) {
+    is9bit = false;
+  } else {
+    return false; // File size doesn't match either format
+  }
+
+  const inkBits = popcount8(mask);
+  const inkCount = 1 << inkBits;
+  const paperCount = 1 << (8 - inkBits);
+
+  ulaNextInkMask = mask;
+  ulaNextInkBits = inkBits;
+  ulaNextInkCount = inkCount;
+  ulaNextPaperCount = paperCount;
+
+  const totalEntries = inkCount + paperCount;
+  ulaNextPalette = new Array(totalEntries);
+  let offset = ULANEXT.PALETTE_OFFSET;
+
+  if (mask === 0xFF && is9bit) {
+    // 9-bit: 256 ink entries (2 bytes each) + 1 paper entry (1 byte, always 8-bit)
+    for (let i = 0; i < 256; i++) {
+      ulaNextPalette[i] = decodeUlaNext9bit(data[offset], data[offset + 1]);
+      offset += 2;
+    }
+    ulaNextPalette[256] = decodeUlaNext8bit(data[offset]);
+  } else if (is9bit) {
+    // 9-bit: all entries are 2 bytes (RRRGGGBB + B_lsb)
+    for (let i = 0; i < totalEntries; i++) {
+      ulaNextPalette[i] = decodeUlaNext9bit(data[offset], data[offset + 1]);
+      offset += 2;
+    }
+  } else {
+    // 8-bit: all entries are 1 byte (RRRGGGBB)
+    for (let i = 0; i < totalEntries; i++) {
+      ulaNextPalette[i] = decodeUlaNext8bit(data[offset++]);
+    }
+  }
+
+  isUlaNextMode = true;
+  ulaNextIs9bit = is9bit;
+  return true;
+}
+
+/**
  * Enables ULA+ mode with default or provided palette
  * @param {Uint8Array} [palette] - Optional palette, uses default if not provided
  */
 function enableUlaPlusMode(palette) {
   ulaPlusPalette = palette || generateDefaultUlaPlusPalette();
   isUlaPlusMode = true;
+  resetUlaNextMode(); // Mutual exclusion
 }
 
 /**
@@ -4032,7 +4254,7 @@ function getUlaPlusPaletteIndex(attr, isInk) {
 // ============================================================================
 
 /** @type {string[]} - List of supported file extensions */
-const SUPPORTED_EXTENSIONS = ['scr', '53c', 'atr', 'bsc', 'bsp', 'ifl', 'bmc4', 'mlt', 'mc', '3', 'img', 'mem', 'specscii', 'sca', 'sna', 'z80', 'btile', 'wtile', 'zxp', 'ch$', 'chr$', 'ch-', 'mg1', 'mg2', 'mg4', 'mg8', 'hlr', 'stl', 'nxi', 'sl2'];
+const SUPPORTED_EXTENSIONS = ['scr', '53c', 'atr', 'bsc', 'bsp', 'ifl', 'bmc4', 'mlt', 'mc', '3', 'img', 'mem', 'specscii', 'sca', 'sna', 'z80', 'btile', 'wtile', 'zxp', 'ch$', 'chr$', 'ch-', 'mg1', 'mg2', 'mg4', 'mg8', 'hlr', 'stl', 'nxi', 'sl2', 'slr', 'rad'];
 const IMAGE_EXTENSIONS = ['png', 'gif', 'jpg', 'jpeg', 'webp', 'bmp'];
 
 /** @type {JSZip|null} - Current loaded ZIP archive */
@@ -4269,6 +4491,26 @@ async function loadFileFromZip(fileName) {
       const file = new File([blob], fileName);
       if (typeof loadSl2File === 'function') {
         loadSl2File(file);
+      }
+      return;
+    }
+
+    // Handle LoRes Radastan files from ZIP (Next 128×96 16-color 4bpp)
+    if (typeof isLoresRadFile === 'function' && isLoresRadFile(fileName)) {
+      const blob = new Blob([arrayBuffer]);
+      const file = new File([blob], fileName);
+      if (typeof loadLoresRadFile === 'function') {
+        loadLoresRadFile(file);
+      }
+      return;
+    }
+
+    // Handle LoRes files from ZIP (Next 128×96 256-color)
+    if (typeof isLoresFile === 'function' && isLoresFile(fileName)) {
+      const blob = new Blob([arrayBuffer]);
+      const file = new File([blob], fileName);
+      if (typeof loadLoresFile === 'function') {
+        loadLoresFile(file);
       }
       return;
     }
@@ -4606,6 +4848,12 @@ function renderScreen() {
     } else if (currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) {
       // NXI/SL2: ZX Spectrum Next Layer 2 (256-color indexed)
       renderNxiScreen(ctx, borderPixels);
+    } else if (currentFormat === FORMAT.LORES) {
+      // LoRes: ZX Spectrum Next 128×96 256-color
+      renderLoresScreen(ctx, borderPixels);
+    } else if (currentFormat === FORMAT.LORES_RAD) {
+      // LoRes Radastan: ZX Spectrum Next 128×96 16-color 4bpp
+      renderLoresRadScreen(ctx, borderPixels);
     } else if (currentFormat === FORMAT.STL) {
       // STL format: Stellar multicolor + gigascreen 64×48
       renderStlScreen(ctx, borderPixels);
@@ -5093,6 +5341,12 @@ function getFormatName(format) {
       if (nxiLayer2Mode === '320x256') return 'SL2 (Next Layer 2 320\u00d7256)';
       if (nxiLayer2Mode === '640x256') return 'SL2 (Next Layer 2 640\u00d7256)';
       return 'SL2 (Next Layer 2)';
+    case FORMAT.LORES:
+      return 'SLR (Next LoRes 128\u00d796)';
+    case FORMAT.LORES_RAD:
+      return 'RAD (Next LoRes Radastan 128\u00d796)';
+    case FORMAT.SCR_ULANEXT:
+      return 'SCR (ULANext)';
     default: return 'Unknown';
   }
 }
@@ -5128,6 +5382,10 @@ function getFormatDimensions(format) {
       if (nxiLayer2Mode === '320x256') return { width: 320, height: 256 };
       if (nxiLayer2Mode === '640x256') return { width: 640, height: 256 };
       return { width: NXI.WIDTH, height: NXI.HEIGHT };
+    case FORMAT.LORES:
+      return { width: LORES.WIDTH, height: LORES.HEIGHT };
+    case FORMAT.LORES_RAD:
+      return { width: LORES_RAD.WIDTH, height: LORES_RAD.HEIGHT };
     case FORMAT.ZXP:
     case FORMAT.CHR:
       if (currentPicture) {
@@ -5170,6 +5428,9 @@ function updateFileInfo() {
       formatDisplay = `${formatName} (v${scaHeader.version})`;
     } else if (currentFormat === FORMAT.SCR_ULAPLUS && isUlaPlusMode) {
       formatDisplay = `${formatName} (64 colors)`;
+    } else if (currentFormat === FORMAT.SCR_ULANEXT && isUlaNextMode) {
+      const bits = ulaNextIs9bit ? '9-bit' : '8-bit';
+      formatDisplay = `${formatName} (mask $${ulaNextInkMask.toString(16).toUpperCase().padStart(2, '0')}, ${ulaNextInkCount} ink / ${ulaNextPaperCount} paper, ${bits})`;
     }
     // Add BSP title/author if present
     if (currentFormat === FORMAT.BSP && currentPicture) {
@@ -5447,6 +5708,9 @@ function loadSettings() {
 function hasFlashingAttributes() {
   if (screenData.length === 0) return false;
 
+  // ULA+ and ULANext modes repurpose bits 6-7 for CLUT selection, not flash
+  if (isUlaPlusMode || isUlaNextMode) return false;
+
   // SPECSCII format uses escape codes for flash
   if (currentFormat === FORMAT.SPECSCII) {
     // Look for CC_FLASH (0x12) followed by 0x01
@@ -5598,10 +5862,21 @@ function detectFormat(fileName, fileSize) {
   }
 
   if (ext === 'sl2') {
-    if (fileSize === SL2.RAW_SIZE || fileSize === SL2.HEADER_SIZE || fileSize === SL2.EXT_SIZE) {
+    if (fileSize === SL2.RAW_SIZE || fileSize === SL2.HEADER_SIZE || fileSize === SL2.EXT_SIZE
+        || fileSize === SL2.TOTAL_SIZE_WITH_PAL || fileSize === SL2.EXT_SIZE_WITH_PAL
+        || fileSize === SL2.EXT_SIZE_WITH_PAL_4BPP) {
       return FORMAT.SL2;
     }
     return FORMAT.UNKNOWN;
+  }
+
+  if (ext === 'slr') {
+    if (fileSize === LORES_RAD.PIXEL_DATA_SIZE || fileSize === LORES_RAD.TOTAL_SIZE_WITH_PAL) return FORMAT.LORES_RAD;
+    return FORMAT.LORES; // Extension-only detection; 12288 conflicts with MLT by size
+  }
+
+  if (ext === 'rad') {
+    return FORMAT.LORES_RAD;
   }
 
   // Check by size
@@ -5641,8 +5916,16 @@ function detectFormat(fileName, fileSize) {
     return FORMAT.NXI;
   }
 
+  // ULA+ is exactly 6976 bytes — check it before ULANext range (which now overlaps)
   if (fileSize === ULAPLUS.TOTAL_SIZE) {
     return FORMAT.SCR_ULAPLUS;
+  }
+
+  // ULANext: 6912 SCR + 1 mask byte + palette (1 or 2 bytes per entry)
+  // Range 6945–7426 covers both 8-bit and 9-bit palettes for all valid masks.
+  // ULA+ (6976) is excluded above; actual mask/size validation in initUlaNextMode().
+  if (fileSize >= ULANEXT.MIN_FILE_SIZE && fileSize <= ULANEXT.MAX_FILE_SIZE) {
+    return FORMAT.SCR_ULANEXT;
   }
 
   if (fileSize === SCREEN.TOTAL_SIZE) {
@@ -6951,6 +7234,24 @@ function isSl2File(fileName) {
 }
 
 /**
+ * Checks if a file is a LoRes file by extension
+ * @param {string} fileName
+ * @returns {boolean}
+ */
+function isLoresFile(fileName) {
+  return fileName.toLowerCase().endsWith('.slr');
+}
+
+/**
+ * Checks if a file is a LoRes Radastan file by extension
+ * @param {string} fileName
+ * @returns {boolean}
+ */
+function isLoresRadFile(fileName) {
+  return fileName.toLowerCase().endsWith('.rad');
+}
+
+/**
  * Parses a 512-byte NXI palette into 256 [r,g,b] entries.
  * Each entry is 2 bytes: byte0 = RRRGGGBB, byte1 = P000000B (LSB of blue).
  * RGB333 → RGB888: Math.round(v * 255 / 7).
@@ -7098,6 +7399,74 @@ function renderNxiScreen(ctx, borderOffset) {
 }
 
 /**
+ * Renders LoRes screen (128×96, 256-color, row-major pixel data).
+ * Uses nxiResolvedPalette for color lookup.
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {number} borderOffset
+ */
+function renderLoresScreen(ctx, borderOffset) {
+  if (!nxiResolvedPalette) return;
+
+  const W = LORES.WIDTH, H = LORES.HEIGHT;
+  const imageData = ctx.createImageData(W, H);
+  const pixels = imageData.data;
+
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const colorIdx = screenData[y * W + x] || 0;
+      const rgb = nxiResolvedPalette[colorIdx];
+      const dst = (y * W + x) * 4;
+      pixels[dst] = rgb[0];
+      pixels[dst + 1] = rgb[1];
+      pixels[dst + 2] = rgb[2];
+      pixels[dst + 3] = 255;
+    }
+  }
+
+  const temp = getTempRenderCanvas(W, H);
+  if (!temp) return;
+  temp.ctx.putImageData(imageData, 0, 0);
+  applyRenderSmoothing(ctx);
+  const scaleY = getPixelScaleY();
+  ctx.drawImage(temp.canvas, borderOffset, borderOffset, W * zoom, H * scaleY * zoom);
+}
+
+/**
+ * Renders a LoRes Radastan 128×96 16-color 4bpp screen.
+ * Packed nibbles: high nibble = left pixel, low nibble = right pixel.
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {number} borderOffset
+ */
+function renderLoresRadScreen(ctx, borderOffset) {
+  if (!nxiResolvedPalette) return;
+
+  const W = LORES_RAD.WIDTH, H = LORES_RAD.HEIGHT;
+  const imageData = ctx.createImageData(W, H);
+  const pixels = imageData.data;
+
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const byteOffset = y * LORES_RAD.BYTES_PER_ROW + (x >> 1);
+      const byteVal = screenData[byteOffset] || 0;
+      const colorIdx = (x & 1) === 0 ? (byteVal >> 4) & 0x0F : byteVal & 0x0F;
+      const rgb = nxiResolvedPalette[colorIdx] || [0, 0, 0];
+      const dst = (y * W + x) * 4;
+      pixels[dst] = rgb[0];
+      pixels[dst + 1] = rgb[1];
+      pixels[dst + 2] = rgb[2];
+      pixels[dst + 3] = 255;
+    }
+  }
+
+  const temp = getTempRenderCanvas(W, H);
+  if (!temp) return;
+  temp.ctx.putImageData(imageData, 0, 0);
+  applyRenderSmoothing(ctx);
+  const scaleY = getPixelScaleY();
+  ctx.drawImage(temp.canvas, borderOffset, borderOffset, W * zoom, H * scaleY * zoom);
+}
+
+/**
  * Loads an NXI file (ZX Spectrum Next Layer 2 with embedded palette).
  * Supports 256×192 (49664), 320×256 (82432), and 640×256 (81952) modes.
  * @param {File} file
@@ -7176,14 +7545,30 @@ function loadSl2File(file) {
     if (!(buffer instanceof ArrayBuffer)) return;
 
     const sz = buffer.byteLength;
-    if (sz !== SL2.RAW_SIZE && sz !== SL2.HEADER_SIZE && sz !== SL2.EXT_SIZE) {
-      alert('Invalid SL2 file: expected ' + SL2.RAW_SIZE + ', ' + SL2.HEADER_SIZE + ', or ' + SL2.EXT_SIZE + ' bytes, got ' + sz + '.');
+    const validSizes = [SL2.RAW_SIZE, SL2.HEADER_SIZE, SL2.EXT_SIZE,
+      SL2.TOTAL_SIZE_WITH_PAL, SL2.EXT_SIZE_WITH_PAL, SL2.EXT_SIZE_WITH_PAL_4BPP];
+    if (validSizes.indexOf(sz) === -1) {
+      alert('Invalid SL2 file: unsupported size ' + sz + ' bytes.');
       return;
     }
 
-    if (sz === SL2.EXT_SIZE) {
-      // Ambiguous: show disambiguation dialog
-      showSl2DisambiguationDialog(new Uint8Array(buffer), file.name);
+    if (sz === SL2.EXT_SIZE || sz === SL2.EXT_SIZE_WITH_PAL || sz === SL2.EXT_SIZE_WITH_PAL_4BPP) {
+      // Extended SL2: disambiguation dialog (extract palette if present)
+      const fullData = new Uint8Array(buffer);
+      if (sz === SL2.EXT_SIZE_WITH_PAL) {
+        // 8bpp 320×256 with 256-entry palette (512 bytes)
+        const palData = fullData.slice(SL2.EXT_SIZE);
+        nxiResolvedPalette = parseNxiPalette(palData);
+        showSl2DisambiguationDialog(fullData.slice(0, SL2.EXT_SIZE), file.name);
+      } else if (sz === SL2.EXT_SIZE_WITH_PAL_4BPP) {
+        // 4bpp 640×256 with 16-entry palette (32 bytes) — skip disambiguation
+        const palData = fullData.slice(SL2.EXT_SIZE);
+        nxiResolvedPalette = parseNxi4bppPalette(palData);
+        finishLoadSl2Extended(fullData.slice(0, SL2.EXT_SIZE), file.name, '640x256');
+      } else {
+        nxiResolvedPalette = null;  // Reset so previews use default palette
+        showSl2DisambiguationDialog(fullData, file.name);
+      }
       return;
     }
 
@@ -7192,8 +7577,18 @@ function loadSl2File(file) {
     resetScaState();
 
     nxiLayer2Mode = '256x192';
-    const data = new Uint8Array(buffer);
-    nxiResolvedPalette = generateDefaultNextPalette();
+    const fullData = new Uint8Array(buffer);
+    const data = sz === SL2.TOTAL_SIZE_WITH_PAL
+      ? fullData.slice(0, SL2.RAW_SIZE)
+      : fullData;
+
+    // Use embedded palette if present (512 bytes after pixel data), otherwise default
+    if (sz === SL2.TOTAL_SIZE_WITH_PAL) {
+      const palData = fullData.slice(SL2.RAW_SIZE);
+      nxiResolvedPalette = parseNxiPalette(palData);
+    } else {
+      nxiResolvedPalette = generateDefaultNextPalette();
+    }
     initUlaPlusMode(data, FORMAT.UNKNOWN);
 
     if (typeof addPicture === 'function') {
@@ -7229,6 +7624,147 @@ function loadSl2File(file) {
 }
 
 /**
+ * Loads a LoRes (.slr) file — 12288-byte raw pixel dump, 128×96, 256-color.
+ * @param {File} file
+ */
+function loadLoresFile(file) {
+  const reader = new FileReader();
+
+  reader.addEventListener('load', function(event) {
+    const buffer = event.target?.result;
+    if (!(buffer instanceof ArrayBuffer)) return;
+
+    const sz = buffer.byteLength;
+
+    // Redirect Radastan-sized .slr files (6144 or 6176 bytes) to loadLoresRadFile
+    if (sz === LORES_RAD.PIXEL_DATA_SIZE || sz === LORES_RAD.TOTAL_SIZE_WITH_PAL) {
+      loadLoresRadFile(file);
+      return;
+    }
+
+    if (sz !== LORES.PIXEL_DATA_SIZE && sz !== LORES.TOTAL_SIZE_WITH_PAL) {
+      alert('Invalid SLR file: expected ' + LORES.PIXEL_DATA_SIZE + ' or ' + LORES.TOTAL_SIZE_WITH_PAL + ' bytes, got ' + sz + '.');
+      return;
+    }
+
+    stopFlashTimer();
+    resetScaState();
+
+    nxiLayer2Mode = '256x192'; // not used for LoRes but reset to default
+    const fullData = new Uint8Array(buffer);
+    const data = sz === LORES.TOTAL_SIZE_WITH_PAL
+      ? fullData.slice(0, LORES.PIXEL_DATA_SIZE)
+      : fullData;
+
+    // Use embedded palette if present (512 bytes after pixel data), otherwise default
+    if (sz === LORES.TOTAL_SIZE_WITH_PAL) {
+      const palData = fullData.slice(LORES.PIXEL_DATA_SIZE);
+      nxiResolvedPalette = parseNxiPalette(palData);
+    } else {
+      nxiResolvedPalette = generateDefaultNextPalette();
+    }
+    initUlaPlusMode(data, FORMAT.UNKNOWN);
+
+    if (typeof addPicture === 'function') {
+      const pictureResult = addPicture(file.name, FORMAT.LORES, data, null, true);
+      if (pictureResult >= 0) {
+        updateFlashTimer();
+        return;
+      }
+    }
+
+    // Fallback if editor not loaded or max pictures reached
+    if (typeof saveCurrentPictureState === 'function') {
+      saveCurrentPictureState();
+    }
+
+    screenData = data;
+    currentFileName = file.name;
+    currentFormat = FORMAT.LORES;
+    currentPicture = null;
+
+    toggleScaControlsVisibility();
+    toggleFormatControlsVisibility();
+    updateScaControls();
+    updateFileInfo();
+    renderScreen();
+    if (typeof updateEditorState === 'function') updateEditorState();
+    if (typeof editorActive !== 'undefined' && editorActive && typeof renderPreview === 'function') renderPreview();
+    updateFlashTimer();
+    if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
+  });
+
+  reader.readAsArrayBuffer(file);
+}
+
+/**
+ * Loads a LoRes Radastan 128×96 16-color 4bpp file (.rad)
+ * @param {File} file - The file to load
+ */
+function loadLoresRadFile(file) {
+  const reader = new FileReader();
+
+  reader.addEventListener('load', function(event) {
+    const buffer = event.target?.result;
+    if (!(buffer instanceof ArrayBuffer)) return;
+
+    const sz = buffer.byteLength;
+    if (sz !== LORES_RAD.PIXEL_DATA_SIZE && sz !== LORES_RAD.TOTAL_SIZE_WITH_PAL) {
+      alert('Invalid RAD file: expected ' + LORES_RAD.PIXEL_DATA_SIZE + ' or ' + LORES_RAD.TOTAL_SIZE_WITH_PAL + ' bytes, got ' + sz + '.');
+      return;
+    }
+
+    stopFlashTimer();
+    resetScaState();
+
+    nxiLayer2Mode = '256x192';
+    const fullData = new Uint8Array(buffer);
+    const data = sz === LORES_RAD.TOTAL_SIZE_WITH_PAL
+      ? fullData.slice(0, LORES_RAD.PIXEL_DATA_SIZE)
+      : fullData;
+
+    // Use embedded palette if present (32 bytes after pixel data), otherwise default
+    if (sz === LORES_RAD.TOTAL_SIZE_WITH_PAL) {
+      const palData = fullData.slice(LORES_RAD.PIXEL_DATA_SIZE);
+      nxiResolvedPalette = parseNxi4bppPalette(palData);
+    } else {
+      nxiResolvedPalette = generateDefaultNext4bppPalette();
+    }
+    initUlaPlusMode(data, FORMAT.UNKNOWN);
+
+    if (typeof addPicture === 'function') {
+      const pictureResult = addPicture(file.name, FORMAT.LORES_RAD, data, null, true);
+      if (pictureResult >= 0) {
+        updateFlashTimer();
+        return;
+      }
+    }
+
+    // Fallback if editor not loaded or max pictures reached
+    if (typeof saveCurrentPictureState === 'function') {
+      saveCurrentPictureState();
+    }
+
+    screenData = data;
+    currentFileName = file.name;
+    currentFormat = FORMAT.LORES_RAD;
+    currentPicture = null;
+
+    toggleScaControlsVisibility();
+    toggleFormatControlsVisibility();
+    updateScaControls();
+    updateFileInfo();
+    renderScreen();
+    if (typeof updateEditorState === 'function') updateEditorState();
+    if (typeof editorActive !== 'undefined' && editorActive && typeof renderPreview === 'function') renderPreview();
+    updateFlashTimer();
+    if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
+  });
+
+  reader.readAsArrayBuffer(file);
+}
+
+/**
  * Shows the SL2 disambiguation dialog for 81920-byte files.
  * Renders preview images for both 320×256 and 640×256 interpretations.
  * @param {Uint8Array} data - Raw pixel data (81920 bytes)
@@ -7247,7 +7783,7 @@ function showSl2DisambiguationDialog(data, fileName) {
   if (canvas320) {
     const ctx = canvas320.getContext('2d');
     if (ctx) {
-      const pal = generateDefaultNextPalette();
+      const pal = nxiResolvedPalette || generateDefaultNextPalette();
       const img = ctx.createImageData(320, 256);
       const px = img.data;
       for (let x = 0; x < 320; x++) {
@@ -7268,7 +7804,7 @@ function showSl2DisambiguationDialog(data, fileName) {
   if (canvas640) {
     const ctx = canvas640.getContext('2d');
     if (ctx) {
-      const pal = generateDefaultNext4bppPalette();
+      const pal = nxiResolvedPalette || generateDefaultNext4bppPalette();
       // Render at full 640×256, then scale down
       const tempCanvas = document.createElement('canvas');
       tempCanvas.width = 640;
@@ -7345,10 +7881,13 @@ function finishLoadSl2Extended(data, fileName, mode) {
   resetScaState();
 
   nxiLayer2Mode = mode;
-  if (mode === '640x256') {
-    nxiResolvedPalette = generateDefaultNext4bppPalette();
-  } else {
-    nxiResolvedPalette = generateDefaultNextPalette();
+  // Keep embedded palette if already set by loadSl2File, otherwise use default
+  if (!nxiResolvedPalette) {
+    if (mode === '640x256') {
+      nxiResolvedPalette = generateDefaultNext4bppPalette();
+    } else {
+      nxiResolvedPalette = generateDefaultNextPalette();
+    }
   }
   initUlaPlusMode(data, FORMAT.UNKNOWN);
 
@@ -7630,9 +8169,9 @@ function loadScreenFile(file) {
       stopFlashTimer();
       resetScaState();
 
-      const data = new Uint8Array(buffer);
+      let data = new Uint8Array(buffer);
       const fileName = file.name;
-      const format = detectFormat(fileName, data.length);
+      let format = detectFormat(fileName, data.length);
 
       // Handle SCA format separately (animations don't participate in multi-picture)
       if (format === FORMAT.SCA) {
@@ -7694,8 +8233,41 @@ function loadScreenFile(file) {
         saveCurrentPictureState();
       }
 
-      // Initialize ULA+ mode based on format
-      initUlaPlusMode(data, format);
+      // Handle ULANext SCR (6912 + 1 mask + RGB333 palette)
+      if (format === FORMAT.SCR_ULANEXT) {
+        if (initUlaNextMode(data)) {
+          // Trim to standard SCR 6912 bytes for rendering
+          data = data.slice(0, SCREEN.TOTAL_SIZE);
+        } else {
+          // Validation failed — fall back to standard SCR
+          resetUlaNextMode();
+          format = FORMAT.SCR;
+          data = data.slice(0, Math.min(data.length, SCREEN.TOTAL_SIZE));
+        }
+      }
+
+      // Handle MLT with appended ULA+ palette (12352 = 12288 + 64)
+      if (format === FORMAT.MLT && data.length === MLT.TOTAL_SIZE_ULAPLUS) {
+        // Extract ULA+ palette and trim data before initUlaPlusMode
+        const trimmedData = data.slice(0, MLT.TOTAL_SIZE);
+        // Build a fake ULA+ buffer: 6912-byte SCR + 64-byte palette
+        // initUlaPlusMode expects SCR_ULAPLUS format with palette at offset 6912
+        // Instead, manually set up ULA+ state
+        ulaPlusPalette = new Uint8Array(ULAPLUS.PALETTE_SIZE);
+        for (let i = 0; i < ULAPLUS.PALETTE_SIZE; i++) {
+          ulaPlusPalette[i] = data[MLT.TOTAL_SIZE + i];
+        }
+        isUlaPlusMode = true;
+        resetUlaNextMode(); // Mutual exclusion
+        data = trimmedData;
+        // Update ULA+ palette UI
+        if (typeof buildUlaPlusGrid === 'function') buildUlaPlusGrid();
+        if (typeof buildUlaPlusClassic === 'function') buildUlaPlusClassic();
+        if (typeof updateUlaPlusPalette === 'function') updateUlaPlusPalette();
+      } else {
+        // Initialize ULA+ mode based on format
+        initUlaPlusMode(data, format);
+      }
 
       // Create internal picture format for all supported formats
       let newInternalPicture = null;

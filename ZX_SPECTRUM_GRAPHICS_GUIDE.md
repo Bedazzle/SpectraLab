@@ -239,6 +239,107 @@ paper_idx = (clut * 16) + 8 + ((attr >> 3) & 0x07)
 
 ---
 
+### ULANext (ZX Spectrum Next Enhanced Palette) -- 6945–7426 bytes
+
+**Hardware extension** -- ULANext is a display mode specific to the ZX Spectrum Next. It extends the standard ULA attribute scheme by allowing a configurable split of the attribute byte between ink and paper palette indices, enabling up to 256 ink or 256 paper colors from a programmable RGB palette. It cannot be displayed on a classic ZX Spectrum 48/128 or a ULA+ interface.
+
+Standard SCR with an appended ink mask byte and palette entries.
+
+```
+Offset  Size     Content
+0       6912     Standard SCR data (bitmap + attributes)
+6912    1        Ink mask byte
+6913    variable Palette entries (see table below)
+```
+
+- File extension: `.scr` (detected by size range 6945–7426)
+- Flash is disabled — attribute bits 6-7 are used for palette indexing, not FLASH/BRIGHT
+
+#### Ink Mask
+
+The ink mask byte determines how each attribute byte is split between ink and paper indices:
+
+- **inkBits** = number of set bits in the mask (popcount)
+- **inkCount** = 2^inkBits (number of ink palette entries)
+- **paperCount** = 2^(8 - inkBits) (number of paper palette entries)
+- **totalEntries** = inkCount + paperCount
+
+Color lookup from an attribute byte:
+
+```
+inkIndex   = attr & mask           → palette entry 0..(inkCount-1)
+paperIndex = attr >>> inkBits      → palette entry inkCount..(inkCount+paperCount-1)
+```
+
+#### Valid Masks and File Sizes
+
+Each mask supports two palette encodings: **9-bit** (2 bytes per entry, same RGB333 as NXI) and **8-bit** (1 byte per entry, RRRGGGBB).
+
+| Mask | InkBits | Ink/Paper | Entries | 9-bit file size | 8-bit file size |
+|------|---------|-----------|---------|-----------------|-----------------|
+| $01  | 1       | 2/128     | 130     | 7173            | 7043            |
+| $03  | 2       | 4/64      | 68      | 7049            | 6981            |
+| $07  | 3       | 8/32      | 40      | 6993            | 6953            |
+| $0F  | 4       | 16/16     | 32      | 6977            | 6945            |
+| $1F  | 5       | 32/8      | 40      | 6993            | 6953            |
+| $3F  | 6       | 64/4      | 68      | 7049            | 6981            |
+| $7F  | 7       | 128/2     | 130     | 7173            | 7043            |
+| $FF  | 8       | 256/1     | 257     | 7426            | 7170            |
+
+Note: mask $FF is special — 256 ink entries plus 1 paper entry (257 total).
+
+#### 9-bit Palette Entry Format (2 bytes)
+
+Same encoding as NXI palette entries:
+
+```
+Byte 0:  RRRGGGBB  (bits 7-5 = Red, bits 4-2 = Green, bits 1-0 = Blue high)
+Byte 1:  .......B  (bit 0 = Blue low)
+```
+
+Blue is 3 bits total: `(byte0 & 3) << 1 | (byte1 & 1)`.
+
+Conversion to 8-bit RGB:
+
+```
+r3 = (byte0 >> 5) & 7
+g3 = (byte0 >> 2) & 7
+b3 = ((byte0 & 3) << 1) | (byte1 & 1)
+
+R = round(r3 * 255 / 7)
+G = round(g3 * 255 / 7)
+B = round(b3 * 255 / 7)
+```
+
+#### 8-bit Palette Entry Format (1 byte)
+
+```
+  Bit:  7  6  5    4  3  2    1  0
+      +---------+---------+------+
+      |   RED   |  GREEN  | BLUE |
+      | (3 bit) | (3 bit) |(2bit)|
+      +---------+---------+------+
+```
+
+Note: this is **not** GRB332 like ULA+. ULANext 8-bit uses **RRRGGGBB** (red-green-blue order).
+
+Blue expansion from 2 bits to 3 bits follows the Next hardware rule: `b3 = (b2 << 1) | ((b2 >> 1) | (b2 & 1))`.
+
+Conversion to 8-bit RGB:
+
+```
+r3 = (byte >> 5) & 7
+g3 = (byte >> 2) & 7
+b2 = byte & 3
+b3 = (b2 << 1) | ((b2 >> 1) | (b2 & 1))
+
+R = round(r3 * 255 / 7)
+G = round(g3 * 255 / 7)
+B = round(b3 * 255 / 7)
+```
+
+---
+
 ### 53c / ATR (Attribute-Only) -- 768 bytes
 
 Attribute-only format. The bitmap is generated from a fixed dither pattern rather than stored in the file.
@@ -915,6 +1016,147 @@ The extended 81920-byte variant uses column-major layout as described above: `x 
 
 ---
 
+### SLR (ZX Spectrum Next LoRes) -- 12288 bytes
+
+A low-resolution 256-color mode for the ZX Spectrum Next. Unlike Layer 2 (NXI/SL2), LoRes uses the ULA display path at a reduced resolution of **128 x 96 pixels**, with one byte per pixel indexing the default ULA palette (256 entries, RGB332 encoding).
+
+```
+Offset  Size    Content
+0       12288   Pixel data (128 x 96, 1 byte per pixel, row-major)
+```
+
+- File extension: `.slr`
+- Hardware: ZX Spectrum Next (not compatible with classic ZX Spectrum 48/128)
+- No embedded palette; uses the default RGB332 identity palette (same as SL2)
+
+#### Pixel Data Layout
+
+Pixels are stored in **linear row-major order** (left-to-right, top-to-bottom) with no interleaving:
+
+```
+Row  0: bytes 0-127      (pixels 0-127)
+Row  1: bytes 128-255    (pixels 128-255)
+...
+Row 95: bytes 12160-12287 (pixels 12160-12287)
+```
+
+Each byte is a palette index (0-255). The pixel at position (x, y) is at offset `y * 128 + x`.
+
+#### Hardware Memory Layout
+
+LoRes mode uses bank 5 (pages 10-11) of the ZX Spectrum Next memory, split into two halves with a gap:
+
+```
+$4000-$57FF  Top 48 lines     (6144 bytes) — page 10
+$5800-$5FFF  Gap               (2048 bytes, unused by LoRes)
+$6000-$77FF  Bottom 48 lines  (6144 bytes) — page 11
+```
+
+The gap at `$5800-$5FFF` corresponds to the legacy ULA attribute area and is not used by LoRes mode. When assembling a `.nex` executable, pixel data must be placed respecting this split: the first 6144 bytes at `$4000` and the second 6144 bytes at `$6000`, with 2048 bytes of padding between them.
+
+#### Next Registers
+
+| Register | Value  | Description                                    |
+|----------|--------|------------------------------------------------|
+| `$15`    | `$80`  | Bit 7 = 1: enable LoRes mode                  |
+| `$69`    | `$00`  | ULA palette offset = 0                         |
+| `$6A`    | `$00`  | LoRes X scroll offset                          |
+| `$6B`    | `$00`  | LoRes Y scroll offset                          |
+| `$1C`    | `$02`  | Reset ULA/LoRes clip index (bit 1)             |
+| `$1A`    | (4×)   | ULA/LoRes clip window (X1, X2, Y1, Y2)        |
+
+The clip window register `$1A` uses **ULA-equivalent coordinates** (0-255 for X, 0-191 for Y), not LoRes pixel coordinates. For full visibility: X1=0, X2=255, Y1=0, Y2=191. Each LoRes pixel maps to a 2x2 area in ULA coordinates.
+
+Layer 2 must be explicitly disabled (port `$123B` = 0) when using LoRes mode, as the NEX loader or emulator may have it active by default.
+
+#### Default RGB332 Palette
+
+LoRes uses the same default identity palette as SL2. Each pixel byte directly encodes its color via the RRRGGGBB bit layout:
+
+```
+Pixel byte:
+  Bit 7-5: Red   (3 bits, 0-7)
+  Bit 4-2: Green (3 bits, 0-7)
+  Bit 1-0: Blue  (2 bits, 0-3)
+```
+
+Conversion to 8-bit RGB is identical to SL2 (see the SL2 section above).
+
+#### Size Ambiguity with MLT
+
+The SLR file size (12288 bytes) is identical to the MLT (8x1 multicolor) format. These two formats cannot be distinguished by size alone — file extension (`.slr` vs `.mlt`/`.mc`) must be used. Without an extension, 12288 bytes defaults to MLT for backwards compatibility with the older classic Spectrum format.
+
+---
+
+### RAD (ZX Spectrum Next LoRes Radastan) -- 6144 bytes
+
+A low-resolution 16-color mode for the ZX Spectrum Next, also known as **Radastan mode**. Uses the same 128 x 96 pixel resolution as standard LoRes but packs **two pixels per byte** (4 bits per pixel), reducing the data to 6144 bytes and using only the first 16 entries of the ULA palette.
+
+```
+Offset  Size    Content
+0       6144    Pixel data (128 x 96, 4bpp packed nibbles, row-major)
+```
+
+- Primary file extension: `.rad`
+- `.slr` files of exactly 6144 bytes are also auto-detected as Radastan
+- Hardware: ZX Spectrum Next (not compatible with classic ZX Spectrum 48/128)
+- No embedded palette; uses the first 16 entries of the default RGB332 identity palette
+
+#### Pixel Packing
+
+Each byte contains two horizontally adjacent pixels:
+
+```
+Bit:    7  6  5  4  3  2  1  0
+        |  Left   |  |  Right  |
+        High nibble  Low nibble
+```
+
+- **High nibble** (bits 7-4): left pixel (even x)
+- **Low nibble** (bits 3-0): right pixel (odd x)
+- Palette index range: 0-15
+
+The byte at offset `y * 64 + (x >> 1)` contains the pixel at (x, y). For even x, the color is `(byte >> 4) & 0x0F`; for odd x, it is `byte & 0x0F`.
+
+#### Hardware Memory Layout
+
+The hardware LoRes engine reads 128 bytes per row even in 4bpp Radastan mode, using the same split layout as 8bpp LoRes. In 4bpp mode each byte represents 2 pixels, giving 256 pixels per row (filling the 256-pixel ULA width directly without horizontal pixel doubling).
+
+For a 128×96 source image (64 bytes/row in the `.rad` file), each source pixel must be **doubled horizontally** for hardware display: source nibble N becomes output byte `(N<<4)|N`, expanding 64 source bytes to 128 hardware bytes per row.
+
+```
+$4000-$57FF  Top 48 lines     (6144 bytes, 128 bytes/row pixel-doubled) — page 10
+$5800-$5FFF  Gap               (2048 bytes, unused)
+$6000-$77FF  Bottom 48 lines  (6144 bytes, 128 bytes/row pixel-doubled) — page 11
+```
+
+The `.rad` file stores data contiguously at 64 bytes/row (6144 bytes total). The ASM export performs the pixel doubling and split placement automatically. Both pages 10 and 11 must be mapped via MMU.
+
+The display file base can be $4000 or $6000, determined by the XOR of `$6A` bit 4 and IO `$xxFF` bit 0.
+
+#### Next Registers
+
+| Register | Value  | Description                                    |
+|----------|--------|------------------------------------------------|
+| `$15`    | `$80`  | Bit 7 = 1: enable LoRes mode                  |
+| `$69`    | `$00`  | ULA palette offset = 0                         |
+| `$6A`    | `$20`  | Bit 5 = 1: Radastan 4bpp mode; bits 3-0 = palette offset |
+| `$6B`    | `$00`  | LoRes Y scroll offset                          |
+| `$1C`    | `$02`  | Reset ULA/LoRes clip index (bit 1)             |
+| `$1A`    | (4×)   | ULA/LoRes clip window (X1, X2, Y1, Y2)        |
+
+Register `$6A` bit layout:
+- Bits 7-6: Reserved (must be 0)
+- Bit 5: Radastan mode enable (0 = 256-color 8bpp, 1 = 16-color 4bpp)
+- Bit 4: Timex display file XOR (determines $4000 vs $6000 base)
+- Bits 3-0: Radastan palette offset (combined with nibble value to index ULA palette)
+
+#### Size Detection
+
+The Radastan file size (6144 bytes) does **not** conflict with standard LoRes (12288 bytes) or MLT (12288 bytes). A `.slr` file of exactly 6144 bytes is detected as Radastan rather than standard LoRes.
+
+---
+
 ### Monochrome Formats
 
 Bitmap-only formats with no attribute data. Rendered as black-on-white (or user-selected ink/paper).
@@ -1508,13 +1750,14 @@ Quick-reference table for identifying formats by file size when no file extensio
 | 2048         | Mono 1/3     | Monochrome, 1 third               |
 | 3072         | STL          | Stellar 64 x 48 gigascreen        |
 | 4096         | Mono 2/3     | Monochrome, 2 thirds              |
-| 6144         | Mono Full    | Monochrome, full screen            |
+| 6144         | Mono / RAD   | Monochrome full screen / Next LoRes Radastan 128×96 (ambiguous) |
 | 6912         | SCR          | Standard screen                    |
 | 6976         | ULA+         | SCR + 64-byte palette              |
+| 6945–7426    | ULANext      | SCR + ink mask + palette (variable) |
 | 9216         | IFL          | 8 x 2 multicolor                  |
 | 11136        | BSC          | Border screen (384 x 304)         |
 | 11904        | BMC4         | 8 x 4 multicolor + border         |
-| 12288        | MLT          | 8 x 1 multicolor                  |
+| 12288        | MLT / SLR    | 8 x 1 multicolor / Next LoRes 128×96 (ambiguous) |
 | 13824        | Gigascreen   | Dual-frame 50 Hz                   |
 | 14080        | MGH (mg8)    | Multiartist gigascreen 8 x 8       |
 | 15616        | MGH (mg4)    | Multiartist gigascreen 8 x 4       |
@@ -1528,11 +1771,11 @@ Quick-reference table for identifying formats by file size when no file extensio
 | 81952        | NXI          | Next Layer 2 640×256 + palette     |
 | 82432        | NXI          | Next Layer 2 320×256 + palette     |
 
-**Note**: SCA, SPECSCII, ZXP, and chr$ files are variable-size, text-based, or extension-only and cannot be reliably detected by size alone. SCA files are identified by the `"SCA"` signature at offset 0. chr$ files are identified by the `chr$` signature (bytes `63 68 72 24`) at offset 0. ZXP files are text-based and identified by the `"ZX-Paintbrush extended image"` header line. MGH files are identified by the `"MGH"` signature at offset 0. NXI sizes (49664, 82432, 81952) are unique and don't collide with classic formats. SL2 256×192 sizes (49152, 49280) are also unique. SL2 extended size (81920) is ambiguous between 320×256 8bpp and 640×256 4bpp modes.
+**Note**: ULANext files overlap in size range with ULA+ (6976 bytes). ULA+ is detected first by exact size match; ULANext is then checked for the broader range (6945–7426) with mask byte validation. SCA, SPECSCII, ZXP, and chr$ files are variable-size, text-based, or extension-only and cannot be reliably detected by size alone. SCA files are identified by the `"SCA"` signature at offset 0. chr$ files are identified by the `chr$` signature (bytes `63 68 72 24`) at offset 0. ZXP files are text-based and identified by the `"ZX-Paintbrush extended image"` header line. MGH files are identified by the `"MGH"` signature at offset 0. NXI sizes (49664, 82432, 81952) are unique and don't collide with classic formats. SL2 256×192 sizes (49152, 49280) are also unique. SL2 extended size (81920) is ambiguous between 320×256 8bpp and 640×256 4bpp modes. SLR (Next LoRes) at 12288 bytes collides with MLT — the `.slr` extension is required to distinguish them. RAD (Radastan) at 6144 bytes collides with monochrome full-screen — the `.rad` extension or `.slr` extension with 6144-byte size is required to distinguish them.
 
 ### Detection Priority
 
-1. Check file extension first (`.53c`, `.atr`, `.bsc`, `.ifl`, `.bmc4`, `.mlt`, `.mc`, `.3`, `.img`, `.mg1`, `.mg2`, `.mg4`, `.mg8`, `.hlr`, `.stl`, `.nxi`, `.sl2`, `.ch$`, `.chr$`, `.ch-`, `.specscii`, `.sca`, `.zxp`)
+1. Check file extension first (`.53c`, `.atr`, `.bsc`, `.ifl`, `.bmc4`, `.mlt`, `.mc`, `.3`, `.img`, `.mg1`, `.mg2`, `.mg4`, `.mg8`, `.hlr`, `.stl`, `.nxi`, `.sl2`, `.slr`, `.rad`, `.ch$`, `.chr$`, `.ch-`, `.specscii`, `.sca`, `.zxp`)
 2. For `.zxp` files, read as text and parse (see ZXP section)
 3. For `.img` files, verify size is exactly 13824 bytes
 4. For `.mg1`/`.mg2`/`.mg4`/`.mg8` files, verify `"MGH"` signature at offset 0
@@ -1540,8 +1783,10 @@ Quick-reference table for identifying formats by file size when no file extensio
 6. For `.stl` files, verify size is exactly 3072 bytes
 7. For `.nxi` files, verify size is 49664 (256×192), 82432 (320×256), or 81952 (640×256) bytes
 8. For `.sl2` files, verify size is 49152, 49280, or 81920 bytes
-9. For `.ch$`/`.chr$`/`.ch-` files, verify `chr$` signature at offset 0
-10. Fall back to file size lookup from the table above
+9. For `.slr` files: if size is 6144 bytes → Radastan (4bpp); if 12288 bytes → standard LoRes (8bpp)
+10. For `.rad` files, detect as Radastan LoRes (extension-only; 6144 bytes expected)
+11. For `.ch$`/`.chr$`/`.ch-` files, verify `chr$` signature at offset 0
+12. Fall back to file size lookup from the table above
 
 ---
 
@@ -1550,6 +1795,7 @@ Quick-reference table for identifying formats by file size when no file extensio
 - [World of Spectrum](https://worldofspectrum.org/) -- Archive of ZX Spectrum software and documentation
 - [ZX Spectrum Screen Memory](http://www.breakintoprogram.co.uk/hardware/computers/zx-spectrum/screen-memory-layout) -- Screen layout technical reference
 - [ULA+ Specification](https://sinclair.wiki.zxnet.co.uk/wiki/ULAplus) -- Extended palette hardware specification
+- [ULANext (SpecNext Wiki)](https://wiki.specnext.dev/ULANext) -- ZX Spectrum Next ULANext mode reference
 - [Nirvana Engine](https://github.com/einar-saukas/NIRVANA-ENGINE) -- Multicolor rendering engine for ZX Spectrum
 - [SCA Format](https://github.com/moroz1999/sca) -- SCA animation format specification
 - [ZX Spectrum Character Set](https://en.wikipedia.org/wiki/ZX_Spectrum_character_set) -- Character set overview (Wikipedia)
@@ -1558,6 +1804,7 @@ Quick-reference table for identifying formats by file size when no file extensio
 - [ZX Spectrum Bitmap Fonts](https://github.com/ZXSpectrumVault/zx-fonts) -- Collection of fonts extracted from games
 - [Multiartist](https://multiartist.untergrund.net/) -- Multicolor gigascreen editor for ZX Spectrum
 - [SpecNext Wiki — Layer 2](https://wiki.specnext.dev/Layer_2) -- ZX Spectrum Next Layer 2 hardware reference
+- [SpecNext Wiki — LoRes](https://wiki.specnext.dev/LoRes) -- ZX Spectrum Next LoRes mode hardware reference
 - [SpecNext Wiki — File Formats](https://wiki.specnext.dev/File_Formats) -- ZX Spectrum Next file format reference
 - [SpecNext Wiki — Palettes](https://wiki.specnext.dev/Palettes) -- ZX Spectrum Next palette registers and formats
 - [zxnext_bmp_tools](https://github.com/stefanbylund/zxnext_bmp_tools) -- BMP to NXI/SL2 conversion tools

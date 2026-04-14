@@ -268,6 +268,17 @@ Shown when editing ULA+ format pictures. Features 64 colors organized in 4 CLUTs
 
 Ink and paper must be from the same CLUT.
 
+### ULANext Mode
+
+Shown when viewing/editing ULANext format pictures (ZX Spectrum Next extended palette). ULANext uses a configurable ink mask to split each attribute byte between ink and paper palette indices, allowing up to 256 ink or 256 paper colors.
+
+- **Auto-detected** from file size (6945–7426 bytes) and ink mask validation
+- **Ink mask** — determines the ink/paper split (8 valid values: $01–$FF)
+- **Palette** — 8-bit (1-byte RRRGGGBB) or 9-bit (2-byte RGB333) entries, auto-detected
+- **Flash disabled** — attribute bits 6-7 are repurposed for palette indexing
+- **Format info** — displays mask value, ink/paper color counts, and palette bit depth
+- Colors are rendered automatically; standard drawing tools work normally on the bitmap and attributes
+
 ### Gigascreen Palette
 
 Shown for Gigascreen, HLR, and STL formats. A 16-column grid displays all virtual colors created by two-frame alternation.
@@ -443,10 +454,11 @@ Save/load project files with layers using the **Save/Load** buttons (`.slp` form
 
 ## 14. Edit Tab — SPECSCII Editor
 
-For SPECSCII format pictures, a character palette appears:
+For SPECSCII format pictures, a character palette appears (collapsible):
 
 - **Character grid** — ROM font characters (0x20-0x7F) and block graphics (0x80-0x8F)
 - Click a tile to select a character for drawing
+- **Sort by weight** (Sort button) — toggles between Code order (sequential) and Weight order (sorted by pixel popcount, lightest→heaviest; default). Block graphics appear in a 5×3 symmetric grid in weight mode. Setting persists via localStorage
 - **Character preview** — shows the selected character enlarged with its code
 - Right-click on canvas to pick character + attributes from screen
 
@@ -482,6 +494,7 @@ Use the **Convert to...** dropdown to convert the current picture to a different
 Available conversions include:
 - **Lossless**: SCR ↔ ATTR, SCR ↔ BSC ↔ BSP, SCR ↔ ULA+, NXI ↔ SL2 (all modes: 256×192, 320×256, 640×256)
 - **Lossy (render + re-quantize)**: SCR/ULA+ → NXI 320×256/640×256, NXI/SL2 cross-mode (256↔320↔640), NXI/SL2 → SCR
+- **Character match**: SCR → SPECSCII — matches each 8×8 cell bitmap to the best ROM font character or block graphic, preserving brightness and flash; tries both normal and inverted (ink/paper swap) matching; handles hidden pixels (ink == paper) as solid color cells
 
 ### Export
 
@@ -491,6 +504,7 @@ Available conversions include:
 - **PNG/GIF** button — export the current screen to PNG or animated GIF image
   - Uses all current View tab settings: zoom, border size/color, grid/subgrid, palette, filters
   - For gigascreen-family formats (Gigascreen, MGH, HLR, STL, BSP-gigascreen, chr$-gigascreen): a dialog lets you choose **Blended** (averaged colors → PNG) or **Flicker** (two alternating frames → animated GIF at ~50fps)
+  - For pictures with flash attributes: a dialog lets you choose **Animated GIF** (two-frame flash animation at 320ms per phase) or **Static PNG** (normal phase only)
   - For all other formats: exports directly as PNG
 
 ### Format ASM Export
@@ -731,13 +745,13 @@ Crop the source image:
 
 #### Output
 
-- **Format:** SCR, ULA+, 53c (attr), IFL (8×2), BMC4 (8×4), MLT (8×1), BSC, BSP, RGB3, Gigascreen, HLR, STL, NXI (256×192, 320×256, 640×256), SL2 (256×192, 320×256, 640×256), SPECSCII, Mono, Mono 2/3, Mono 1/3
+- **Format:** SCR, ULA+, 53c (attr), IFL (8×2), BMC4 (8×4), MLT (8×1), BSC, BSP, RGB3, Gigascreen, HLR, STL, NXI (256×192, 320×256, 640×256), SL2 (256×192, 320×256, 640×256), SPECSCII, Mono, Mono 2/3, Mono 1/3, LoRes, Radastan, ZXP, chr$, btile (Nirvana 16×16), wtile (Nirvana 24×16)
 - **Palette** selector
 - **53c Pattern** (for 53c format): Checker, Stripes, DD/77
 - **SPECSCII Charset** (for SPECSCII format): Full (ROM font + block graphics, 112 glyphs), ASCII (ROM font only, 96 glyphs), UDG (block graphics only, 16 glyphs + space)
 - **ULA+ Palette:** Auto, Load .pal, From picture
 - **Position:** X, Y offset
-- **Size:** W, H (with lock aspect ratio)
+- **Size:** W, H (with lock aspect ratio). For btile/wtile, values snap to tile-aligned multiples on Enter/blur (16px for btile, 24px width / 16px height for wtile)
 - **Tile to screens** — split the cropped source into a grid of pictures:
   - Each tile is one full output format (e.g. 256×192 for SCR)
   - Grid size is calculated automatically (cols × rows = total pictures)
@@ -998,6 +1012,7 @@ The floating palette includes all drawing tools, selection/clipboard tools, colo
 |-----------|------|-------------|
 | .scr | 6912 bytes | Standard screen (bitmap + attributes) |
 | .scr | 6976 bytes | ULA+ (64-color palette) |
+| .scr | 6945–7426 bytes | ULANext (Next extended palette, up to 256 colors) |
 | .scr | 6144 bytes | Monochrome full |
 | .scr | 4096 bytes | Monochrome 2/3 |
 | .scr | 2048 bytes | Monochrome 1/3 |

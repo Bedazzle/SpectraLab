@@ -4,8 +4,8 @@ A pure JavaScript viewer and editor for ZX Spectrum graphics formats. No server 
 
 ## Features
 
-- **View** a wide range of ZX Spectrum screen formats (standard, multicolor, ULA+, Gigascreen, tricolor RGB, SPECSCII, chr$, Nirvana tiles, MGH, HLR, STL, BSP, NXI, SL2, etc.)
-- **Edit** SCR, ULA+, 53c/127c, BSC, BSP, BMC4, IFL, MLT, Gigascreen, RGB3, SPECSCII, chr$, ZXP, MGH (mg1/mg2/mg4/mg8), HLR, STL, NXI and SL2 pictures with pixel-accurate tools
+- **View** a wide range of ZX Spectrum screen formats (standard, multicolor, ULA+, ULANext, Gigascreen, tricolor RGB, SPECSCII, chr$, Nirvana tiles, MGH, HLR, STL, BSP, NXI, SL2, etc.)
+- **Edit** SCR, ULA+, ULANext, 53c/127c, BSC, BSP, BMC4, IFL, MLT, Gigascreen, RGB3, SPECSCII, chr$, ZXP, MGH (mg1/mg2/mg4/mg8), HLR, STL, NXI and SL2 pictures with pixel-accurate tools
 - **Multi-picture editing**: open and edit up to 15 pictures simultaneously with tab switching, per-picture undo, layers and zoom
 - **Workspace files**: save/load all open pictures as a single .slw file (palette, filters, grid, reference image, sprite sheet, etc.)
 - **Project files**: save a single picture with full layers/attributes/border/mask data as .slp
@@ -29,7 +29,7 @@ A pure JavaScript viewer and editor for ZX Spectrum graphics formats. No server 
 
 ## Screen Editor
 
-Edit SCR, ULA+, BSC, BSP, BMC4, IFL, MLT, Gigascreen, RGB3, 53c/127c, SPECSCII, ZXP, chr$, MGH, HLR, STL, NXI and SL2 pictures with authentic ZX Spectrum color handling:
+Edit SCR, ULA+, ULANext, BSC, BSP, BMC4, IFL, MLT, Gigascreen, RGB3, 53c/127c, SPECSCII, ZXP, chr$, MGH, HLR, STL, NXI and SL2 pictures with authentic ZX Spectrum color handling:
 
 - **Tools**: Pixel (P), Line (L), Rectangle (R), Circle/Ellipse (O), Airbrush (G), Gradient (D), Flood Fill (I), Fill Cell (C), Recolor (A), Eraser (E), Text (T), Select (S), Color Picker (K)
 - **Eraser (E)**: makes pixels transparent on upper layers; paints paper on background
@@ -105,6 +105,16 @@ Full support for the ULA+ 64-color extension:
 - **Palette files**: save/load 64-byte .pal GRB332 files (12 bundled palettes in `palettes/`)
 - **ASM export**: sjasmplus-compatible source for Pentagon 128K / ZX Spectrum 48K with I/O palette programming
 - **Format conversion**: SCR ↔ ULA+ (add or strip palette)
+
+## ULANext Support (ZX Spectrum Next extended palette)
+
+View and edit SCR files with ULANext extended palettes:
+
+- **Format detection**: files in the range 6945–7426 bytes auto-detected as ULANext (SCR + ink mask + palette)
+- **Configurable ink mask**: 8 valid masks ($01–$FF) split the attribute byte between ink and paper indices, from 2/128 to 256/1
+- **Dual palette sizes**: 9-bit RGB333 (2-byte entries, same as NXI) and 8-bit RRRGGGBB (1-byte entries), auto-detected by file size
+- **Round-trip save**: preserves ink mask and palette in original format
+- **Format info**: displays mask value, ink/paper color counts, and palette bit depth
 
 ## Image Import
 
@@ -291,6 +301,7 @@ Collapsible section in the View tab with CRT/retro post-processing effects:
 |-----------|------|-------------|
 | `.scr` | 6912 bytes | Standard screen (bitmap + attributes) — **editable** |
 | `.scr` | 6976 bytes | SCR + ULA+ 64-color palette — **editable** |
+| `.scr` | 6945–7426 bytes | SCR + ULANext palette (ZX Next, up to 256 colors) — **editable** |
 | `.scr` | 6144 bytes | Monochrome (bitmap only) — **editable** |
 | `.scr` | 4096 bytes | Monochrome 2/3 screen — **editable** |
 | `.scr` | 2048 bytes | Monochrome 1/3 screen — **editable** |

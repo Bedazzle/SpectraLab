@@ -1720,6 +1720,7 @@ function importPicture(format, fileBytes, fileName, opts) {
   switch (format) {
     case 'scr':       return importScr(fileBytes, fileName);
     case 'scr+':      return importScrUlaPlus(fileBytes, fileName);
+    case 'scr_ulanext': return importScr(fileBytes, fileName);
     case 'ifl':       return importIfl(fileBytes, fileName);
     case 'mlt':       return importMlt(fileBytes, fileName);
     case 'mono_full': return importMono(fileBytes, fileName, 192);

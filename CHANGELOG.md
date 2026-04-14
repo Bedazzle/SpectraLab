@@ -1,5 +1,76 @@
 # SpectraLab Version History
 
+## v1.76
+- SPECSCII character palette: sort by visual weight mode
+  - Toggle button (Sort) switches between Code order and Weight order (default)
+  - Weight mode sorts ROM characters by pixel popcount (lightest→heaviest)
+  - Block graphics displayed in 5×3 symmetric grid
+  - Character palette is collapsible (state persists via localStorage)
+  - Sort preference persists via localStorage
+- SCR → SPECSCII conversion (Transform tab)
+  - Matches each 8×8 cell bitmap to best ROM character or block graphic
+  - Preserves brightness and flash attributes
+  - Handles hidden pixels (ink == paper) as solid color cells
+  - Tries both normal and inverted (ink/paper swap) matching
+- PNG/GIF export: flash attribute support
+  - Pictures with flash attributes export as two-frame animated GIF
+  - Frame timing matches ZX Spectrum flash interval (320ms per phase)
+  - Export dialog shows mode selector when flash is detected (animated GIF or static PNG)
+  - Works for all formats that support flash (SCR, SPECSCII, BSC, etc.)
+- Image import: Nirvana btile/wtile target formats
+  - btile: 16×16 pixel tiles (2×2 cells), variable canvas size divisible by 16
+  - wtile: 24×16 pixel tiles (3×2 cells), variable canvas width divisible by 24
+  - 8×2 multicolor attribute cells (Nirvana engine format)
+  - Supports all dithering modes, brightness/contrast/saturation adjustments
+  - Width and height snap to tile-aligned values automatically
+- Image import: improved size input controls
+  - Tile-aligned snapping deferred to Enter/blur (no longer fights user while typing)
+  - Preview updates debounced (300ms) to avoid slow re-renders on every keystroke
+- Fix: SPECSCII rendering with attributes off now shows black ink on white paper (matching SCR behavior)
+
+## v1.75
+- ULANext SCR support (ZX Spectrum Next extended palette mode)
+  - View and edit `.scr` files with ULANext palette (6912 SCR + ink mask + RGB333 palette)
+  - Configurable ink mask ($01–$FF) splits attribute byte between ink/paper indices
+  - Supports all 8 valid masks: 2/128, 4/64, 8/32, 16/16, 32/8, 64/4, 128/2, 256/1 ink/paper
+  - Dual palette sizes: 9-bit RGB333 (2-byte, same as NXI) and 8-bit RRRGGGBB (1-byte)
+  - Auto-detects palette bit depth from file size; displays 8-bit/9-bit in format info
+  - Special $FF mask: 256 ink colors + 1 paper color (257 entries)
+  - Flash disabled (attribute bits fully used for palette indexing)
+  - Round-trip save preserves ink mask and palette
+  - Format info displays mask value and ink/paper color counts
+- ZX Spectrum Next LoRes Radastan mode support (128×96, 16-color, 4bpp)
+  - New format: `.rad` — 6144-byte packed pixel dump (2 pixels/byte, high nibble = left)
+  - `.slr` files of exactly 6144 bytes auto-detected as Radastan (vs 12288 for standard LoRes)
+  - View, edit, create new, save, and image import with dithering/quantization to 16 colors
+  - Uses first 16 entries of default Next RGB332→RGB333 ULA palette with 16-color palette picker
+  - Layer support (per-pixel indexed-color layers, unpacked internally, repacked on flatten)
+  - Conversions: RAD↔SLR (expand/quantize), RAD→NXI/SL2/SCR (upscale), any→RAD (downscale+quantize)
+  - ASM export: generates sjasmplus source building a `.nex` via SAVENEX
+    - Enables Radastan mode via NEXTREG $6A,$20 (bit 5)
+    - 16-entry palette programmed via NEXTREG $43/$40/$44 before enabling display
+    - Pixel-doubled layout (nibble N → byte (N<<4)|N), split memory ($4000-$57FF + $6000-$77FF)
+- Embedded palette support for multiple formats
+  - `.rad`/`.slr` Radastan: 6176 bytes (6144 + 32-byte RGB333 16-entry palette)
+  - `.slr` LoRes 8bpp: 12800 bytes (12288 + 512-byte RGB333 256-entry palette)
+  - `.sl2` Layer 2 256×192: 49664 bytes (49152 + 512-byte palette)
+  - `.sl2` Layer 2 320×256: 82432 bytes (81920 + 512-byte palette)
+  - `.sl2` Layer 2 640×256: 81952 bytes (81920 + 32-byte 16-entry palette, auto-detected as 4bpp)
+  - `.mlt` multicolor with ULA+: 12352 bytes (12288 + 64-byte GRB332 ULA+ palette)
+  - Palette from file used in viewer, editor preview, ASM export, and SL2 disambiguation dialog
+
+## v1.74
+- ZX Spectrum Next LoRes mode support (128×96, 256-color, 8bpp)
+  - New format: `.slr` — raw 12288-byte pixel dump (128×96 row-major)
+  - View, edit, create new, save, and image import with dithering/quantization
+  - Uses default Next RGB332→RGB333 ULA palette with full 256-color palette picker
+  - Layer support (per-pixel indexed-color layers, same as NXI/SL2)
+  - ASM export: generates sjasmplus source building a `.nex` via SAVENEX
+    - Programs ULA palette via NEXTREG $43/$40/$44
+    - Enables LoRes via NEXTREG $15, disables Layer 2 via port $123B
+    - Pixel data placed into bank 5 (pages 10-11) respecting hardware memory split ($4000-$57FF + $6000-$77FF)
+    - Clip window set via register $1A in ULA-equivalent coordinates
+
 ## v1.73
 - ASM export for ZX Spectrum Next Layer 2 (NXI/SL2) — generates sjasmplus source that builds a .nex file via SAVENEX
   - Supports all three Layer 2 modes: 256×192 8bpp, 320×256 8bpp, 640×256 4bpp
@@ -9,6 +80,7 @@
   - Embed data as DB lines or reference original file via INCBIN
   - For NXI: uses embedded palette from file; for SL2: generates default RGB332→RGB333 identity palette
 - UI: moved PNG/GIF export button to separate row so ASM export dropdown has full width
+- Documentation: added Format ASM Export section to help and tutorial (EN/RU) covering all format-level ASM exports
 
 ## v1.72
 - Gigascreen and RGB3 display mode dropdown with three options:

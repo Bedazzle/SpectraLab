@@ -685,7 +685,7 @@ function toggle53cColorPicker(show) {
  */
 function updateEditorColorPickers() {
   if (!editorActive) return;
-  const isNext = currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2;
+  const isNext = currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 || currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD;
   toggle53cColorPicker(currentFormat === FORMAT.ATTR_53C);
   toggleGigascreenColorPicker(isGigascreenEditable());
   toggleRgb3ColorPicker(currentFormat === FORMAT.RGB3);
@@ -734,7 +734,7 @@ function buildNxiPalette() {
   const grid = document.getElementById('nxiPaletteGrid');
   if (!grid || !nxiResolvedPalette) return;
   grid.innerHTML = '';
-  const palCount = nxiLayer2Mode === '640x256' ? 16 : 256;
+  const palCount = (nxiLayer2Mode === '640x256' || currentFormat === FORMAT.LORES_RAD) ? 16 : 256;
   for (let i = 0; i < palCount; i++) {
     const cell = document.createElement('div');
     cell.className = 'nxi-palette-cell';
@@ -1446,10 +1446,15 @@ function showExportImageDialog() {
   if (!dialog) return;
 
   const isGiga = isGigascreenExportFormat();
+  const hasFlash = !isGiga && typeof hasFlashingAttributes === 'function' && hasFlashingAttributes();
 
   // Show/hide gigascreen row
   const gigaRow = document.getElementById('exportImageGigaRow');
   if (gigaRow) gigaRow.style.display = isGiga ? '' : 'none';
+
+  // Show/hide flash row (only for non-gigascreen formats with flash attributes)
+  const flashRow = document.getElementById('exportImageFlashRow');
+  if (flashRow) flashRow.style.display = hasFlash ? '' : 'none';
 
   updateExportImageDims();
   dialog.style.display = '';
@@ -1482,23 +1487,32 @@ function updateExportImageDims() {
 
   const gigaModeSel = /** @type {HTMLSelectElement|null} */ (document.getElementById('exportImageGigaMode'));
   const isFlickerGif = isGigascreenExportFormat() && gigaModeSel && gigaModeSel.value === 'flicker';
-  info.textContent = w + ' \u00D7 ' + h + (isFlickerGif ? ' (animated GIF)' : ' (PNG)');
+
+  const flashModeSel = /** @type {HTMLSelectElement|null} */ (document.getElementById('exportImageFlashMode'));
+  const isFlashGif = !isGigascreenExportFormat() &&
+    typeof hasFlashingAttributes === 'function' && hasFlashingAttributes() &&
+    flashModeSel && flashModeSel.value === 'animated';
+
+  const isAnimated = isFlickerGif || isFlashGif;
+  info.textContent = w + ' \u00D7 ' + h + (isAnimated ? ' (animated GIF)' : ' (PNG)');
 }
 
 /**
  * Render current screen to an offscreen canvas for export.
  * Uses all current view settings (zoom, border, grid, palette, filters).
- * Only overrides: screenCanvas (offscreen), showReference (off), flashPhase (off),
+ * Only overrides: screenCanvas (offscreen), showReference (off), flashPhase,
  * and gigascreen mode when rendering individual flicker frames.
  * @param {number} [gigaFrameIndex] - For gigascreen flicker: 0 or 1; undefined = use current mode
+ * @param {boolean} [flashPhaseOverride] - Flash phase to use (false = normal, true = swapped); default false
  * @returns {HTMLCanvasElement} - The rendered offscreen canvas
  */
-function renderToExportCanvas(gigaFrameIndex) {
+function renderToExportCanvas(gigaFrameIndex, flashPhaseOverride) {
   // Save globals that we must override
   const savedScreenCanvas = screenCanvas;
   const savedScreenCanvasCtx = screenCanvasCtx;
   const savedShowReference = showReference;
   const savedFlashPhase = flashPhase;
+  const savedFlashEnabled = flashEnabled;
   const savedGigascreenMode = gigascreenMode;
   const savedGigascreenFlickerPhase = gigascreenFlickerPhase;
   const savedGigascreenFlickerFrameId = gigascreenFlickerFrameId;
@@ -1513,7 +1527,8 @@ function renderToExportCanvas(gigaFrameIndex) {
   screenCanvas = tempCanvas;
   screenCanvasCtx = tempCtx;
   showReference = false;
-  flashPhase = false;
+  flashPhase = flashPhaseOverride || false;
+  if (flashPhaseOverride) flashEnabled = true; // Ensure flash renders even if disabled in View
 
   // Configure gigascreen mode for this render
   if (gigaFrameIndex !== undefined) {
@@ -1543,6 +1558,7 @@ function renderToExportCanvas(gigaFrameIndex) {
   screenCanvasCtx = savedScreenCanvasCtx;
   showReference = savedShowReference;
   flashPhase = savedFlashPhase;
+  flashEnabled = savedFlashEnabled;
   gigascreenMode = savedGigascreenMode;
   gigascreenFlickerPhase = savedGigascreenFlickerPhase;
   gigascreenFlickerFrameId = savedGigascreenFlickerFrameId;
@@ -1562,8 +1578,13 @@ async function exportImageToFile() {
   const gigaModeSel = /** @type {HTMLSelectElement|null} */ (document.getElementById('exportImageGigaMode'));
   const wantFlicker = isGiga && gigaModeSel && gigaModeSel.value === 'flicker';
 
+  const flashModeSel = /** @type {HTMLSelectElement|null} */ (document.getElementById('exportImageFlashMode'));
+  const wantFlashGif = !isGiga &&
+    typeof hasFlashingAttributes === 'function' && hasFlashingAttributes() &&
+    flashModeSel && flashModeSel.value === 'animated';
+
   if (wantFlicker) {
-    // GIF path: two frames alternating at ~50fps
+    // GIF path: two frames alternating at ~50fps (gigascreen)
     const canvas0 = renderToExportCanvas(0);
     const canvas1 = renderToExportCanvas(1);
     const w = canvas0.width;
@@ -1577,6 +1598,25 @@ async function exportImageToFile() {
     const gif = new GifEncoder(w, h);
     gif.addFrame(frame0.data, 2); // 2 centiseconds = 20ms ≈ 50fps
     gif.addFrame(frame1.data, 2);
+    const gifData = gif.finish();
+
+    downloadFile(new Blob([gifData], { type: 'image/gif' }), baseName + '.gif');
+  } else if (wantFlashGif) {
+    // GIF path: two frames for flash animation (normal + swapped phase)
+    const flashDelay = Math.round((typeof FLASH_INTERVAL !== 'undefined' ? FLASH_INTERVAL : 320) / 10);
+    const canvas0 = renderToExportCanvas(undefined, false);
+    const canvas1 = renderToExportCanvas(undefined, true);
+    const w = canvas0.width;
+    const h = canvas0.height;
+    const ctx0 = canvas0.getContext('2d');
+    const ctx1 = canvas1.getContext('2d');
+    if (!ctx0 || !ctx1) return;
+    const frame0 = ctx0.getImageData(0, 0, w, h);
+    const frame1 = ctx1.getImageData(0, 0, w, h);
+
+    const gif = new GifEncoder(w, h);
+    gif.addFrame(frame0.data, flashDelay);
+    gif.addFrame(frame1.data, flashDelay);
     const gifData = gif.finish();
 
     downloadFile(new Blob([gifData], { type: 'image/gif' }), baseName + '.gif');
@@ -1849,6 +1889,7 @@ function isSnapActive() {
  * @returns {number}
  */
 function getFormatWidth() {
+  if (currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD) return LORES.WIDTH;
   if ((currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) && nxiLayer2Mode === '320x256') return 320;
   if ((currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) && nxiLayer2Mode === '640x256') return 640;
   if (currentPicture) return currentPicture.width;
@@ -1860,6 +1901,7 @@ function getFormatWidth() {
  * @returns {number}
  */
 function getFormatHeight() {
+  if (currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD) return LORES.HEIGHT;
   if ((currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) && nxiLayer2Mode !== '256x192') return 256;
   if (currentPicture) return currentPicture.height;
   if (currentFormat === FORMAT.MONO_1_3) return 64;
@@ -2119,6 +2161,14 @@ function saveCurrentPictureState() {
   }
   // Save ULA+ palette if active
   pic.ulaPlusPalette = ulaPlusPalette ? ulaPlusPalette.slice() : null;
+  // Save ULANext state if active
+  pic.ulaNextMode = isUlaNextMode;
+  pic.ulaNextInkMask = ulaNextInkMask;
+  pic.ulaNextInkBits = ulaNextInkBits;
+  pic.ulaNextInkCount = ulaNextInkCount;
+  pic.ulaNextPaperCount = ulaNextPaperCount;
+  pic.ulaNextIs9bit = ulaNextIs9bit;
+  pic.ulaNextPalette = ulaNextPalette ? ulaNextPalette.map(c => [...c]) : null;
   // Save NXI/SL2 palette and Layer 2 mode if present
   pic.nxiResolvedPalette = nxiResolvedPalette ? nxiResolvedPalette.map(c => [...c]) : null;
   pic.nxiLayer2Mode = nxiLayer2Mode;
@@ -2221,6 +2271,19 @@ function loadPictureState(index) {
     isUlaPlusMode = false;
   }
 
+  // Restore ULANext state
+  if (pic.ulaNextMode && pic.ulaNextPalette) {
+    isUlaNextMode = true;
+    ulaNextInkMask = pic.ulaNextInkMask;
+    ulaNextInkBits = pic.ulaNextInkBits;
+    ulaNextInkCount = pic.ulaNextInkCount;
+    ulaNextPaperCount = pic.ulaNextPaperCount;
+    ulaNextIs9bit = pic.ulaNextIs9bit || false;
+    ulaNextPalette = pic.ulaNextPalette.map(c => [...c]);
+  } else {
+    resetUlaNextMode();
+  }
+
   // Restore NXI/SL2 palette and Layer 2 mode
   if (pic.nxiResolvedPalette) {
     nxiResolvedPalette = pic.nxiResolvedPalette.map(c => [...c]);
@@ -2306,6 +2369,13 @@ function addPicture(fileName, format, data, internalPicture, skipSave) {
     scrollTop: 0,
     scrollLeft: 0,
     ulaPlusPalette: ulaPlusPalette ? ulaPlusPalette.slice() : null,
+    ulaNextMode: isUlaNextMode,
+    ulaNextInkMask: ulaNextInkMask,
+    ulaNextInkBits: ulaNextInkBits,
+    ulaNextInkCount: ulaNextInkCount,
+    ulaNextPaperCount: ulaNextPaperCount,
+    ulaNextIs9bit: ulaNextIs9bit,
+    ulaNextPalette: ulaNextPalette ? ulaNextPalette.map(c => [...c]) : null,
     nxiResolvedPalette: nxiResolvedPalette ? nxiResolvedPalette.map(c => [...c]) : null,
     nxiLayer2Mode: nxiLayer2Mode,
     // Internal picture format (deep clone to avoid shared references)
@@ -2649,6 +2719,48 @@ function setPixel(data, x, y, isInk) {
   // 53c attribute-only format: set cell attribute, no bitmap
   if (currentFormat === FORMAT.ATTR_53C) {
     recolorCell53c(x, y);
+    return;
+  }
+
+  // LoRes: write palette index directly (128×96, row-major)
+  if (currentFormat === FORMAT.LORES) {
+    const color = isInk ? editorInkColor : editorPaperColor;
+    const flatIdx = y * LORES.WIDTH + x;
+    if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
+      const layer = layers[activeLayerIndex];
+      if (layer) {
+        layer.bitmap[flatIdx] = color & 0xFF;
+        layer.mask[flatIdx] = 1;
+        flattenLayersToScreen();
+      }
+    } else {
+      data[flatIdx] = color & 0xFF;
+    }
+    return;
+  }
+
+  // LoRes Radastan: write 4bpp packed nibble (128×96, 16-color)
+  if (currentFormat === FORMAT.LORES_RAD) {
+    const color = (isInk ? editorInkColor : editorPaperColor) & 0x0F;
+    const flatIdx = y * LORES_RAD.WIDTH + x;
+    if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
+      const layer = layers[activeLayerIndex];
+      if (layer) {
+        layer.bitmap[flatIdx] = color;
+        layer.mask[flatIdx] = 1;
+        flattenLayersToScreen();
+      }
+    } else {
+      // Pack into nibble in screenData
+      const byteOffset = y * LORES_RAD.BYTES_PER_ROW + (x >> 1);
+      let byteVal = data[byteOffset] || 0;
+      if ((x & 1) === 0) {
+        byteVal = (color << 4) | (byteVal & 0x0F);
+      } else {
+        byteVal = (byteVal & 0xF0) | color;
+      }
+      data[byteOffset] = byteVal;
+    }
     return;
   }
 
@@ -3170,7 +3282,7 @@ function getLayerBitmapSize() {
   if (isGigascreenEditable()) return SCREEN.BITMAP_SIZE; // Per-frame bitmap size
   if (currentFormat === FORMAT.SPECSCII) return 768; // 32×24 character grid
   if (currentFormat === FORMAT.ATTR_53C) return 768; // 32×24 attribute grid (no bitmap)
-  if (currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) return getFormatWidth() * getFormatHeight(); // 1 entry per pixel (row-major layer bitmap)
+  if (currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 || currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD) return getFormatWidth() * getFormatHeight(); // 1 entry per pixel (row-major layer bitmap)
   if ((currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) && currentPicture) {
     return (currentPicture.width >> 3) * currentPicture.height;
   }
@@ -3203,7 +3315,7 @@ function getLayerBorderSize() {
  * @returns {number} Attribute size in bytes (0 for formats without attributes)
  */
 function getLayerAttributeSize() {
-  if (currentFormat === FORMAT.SCR || currentFormat === FORMAT.SCR_ULAPLUS || currentFormat === FORMAT.BSC || currentFormat === FORMAT.BSP) {
+  if (currentFormat === FORMAT.SCR || currentFormat === FORMAT.SCR_ULAPLUS || currentFormat === FORMAT.SCR_ULANEXT || currentFormat === FORMAT.BSC || currentFormat === FORMAT.BSP) {
     return SCREEN.ATTR_SIZE; // 768 bytes (8×8 cells)
   }
   if (currentFormat === FORMAT.BMC4) {
@@ -3263,7 +3375,7 @@ function initLayers() {
   // Create background layer from current bitmap
   const bgBitmap = new Uint8Array(bitmapSize);
   const isPerCell = currentFormat === FORMAT.SPECSCII || currentFormat === FORMAT.ATTR_53C;
-  const isPerPixelBitmap = currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2;
+  const isPerPixelBitmap = currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 || currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD;
   const maskSize = isPerCell ? bitmapSize : isPerPixelBitmap ? bitmapSize : bitmapSize * 8;
   const bgMask = new Uint8Array(maskSize); // SPECSCII/53c: 1 per cell; NXI/SL2: 1 per pixel (=bitmapSize); SCR: 1 per pixel (bitmap*8)
 
@@ -3280,6 +3392,21 @@ function initLayers() {
     bgMask.fill(1); // Background is fully opaque
     for (let i = 0; i < bitmapSize; i++) {
       bgBitmap[i] = screenData[i];
+    }
+  } else if (currentFormat === FORMAT.LORES) {
+    bgMask.fill(1);
+    for (let i = 0; i < bitmapSize; i++) {
+      bgBitmap[i] = screenData[i];
+    }
+  } else if (currentFormat === FORMAT.LORES_RAD) {
+    // Unpack 4bpp nibbles to 1-byte-per-pixel layer bitmap
+    bgMask.fill(1);
+    for (let y = 0; y < LORES_RAD.HEIGHT; y++) {
+      for (let x = 0; x < LORES_RAD.WIDTH; x++) {
+        const byteOffset = y * LORES_RAD.BYTES_PER_ROW + (x >> 1);
+        const byteVal = screenData[byteOffset] || 0;
+        bgBitmap[y * LORES_RAD.WIDTH + x] = (x & 1) === 0 ? (byteVal >> 4) & 0x0F : byteVal & 0x0F;
+      }
     }
   } else if (currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) {
     bgMask.fill(1);
@@ -3626,6 +3753,51 @@ function flattenLayersToScreen() {
         if (layer.mask[i]) {
           screenData[i] = layer.bitmap[i];
         }
+      }
+    }
+    return;
+  }
+
+  // LoRes: flatten indexed-color layers (row-major bitmap → screenData, direct copy)
+  if (currentFormat === FORMAT.LORES) {
+    const pixelCount = LORES.WIDTH * LORES.HEIGHT;
+    const composited = new Uint8Array(pixelCount);
+    if (layers[0].visible) {
+      composited.set(layers[0].bitmap.subarray(0, pixelCount));
+    }
+    for (let layerIdx = 1; layerIdx < layers.length; layerIdx++) {
+      const layer = layers[layerIdx];
+      if (!layer.visible) continue;
+      for (let i = 0; i < pixelCount; i++) {
+        if (layer.mask[i]) composited[i] = layer.bitmap[i];
+      }
+    }
+    for (let i = 0; i < pixelCount; i++) {
+      screenData[i] = composited[i];
+    }
+    return;
+  }
+
+  // LoRes Radastan: flatten indexed-color layers, repack to 4bpp nibbles
+  if (currentFormat === FORMAT.LORES_RAD) {
+    const pixelCount = LORES_RAD.WIDTH * LORES_RAD.HEIGHT;
+    const composited = new Uint8Array(pixelCount);
+    if (layers[0].visible) {
+      composited.set(layers[0].bitmap.subarray(0, pixelCount));
+    }
+    for (let layerIdx = 1; layerIdx < layers.length; layerIdx++) {
+      const layer = layers[layerIdx];
+      if (!layer.visible) continue;
+      for (let i = 0; i < pixelCount; i++) {
+        if (layer.mask[i]) composited[i] = layer.bitmap[i];
+      }
+    }
+    // Repack to 4bpp nibbles
+    for (let y = 0; y < LORES_RAD.HEIGHT; y++) {
+      for (let x = 0; x < LORES_RAD.WIDTH; x += 2) {
+        const left = composited[y * LORES_RAD.WIDTH + x] & 0x0F;
+        const right = composited[y * LORES_RAD.WIDTH + x + 1] & 0x0F;
+        screenData[y * LORES_RAD.BYTES_PER_ROW + (x >> 1)] = (left << 4) | right;
       }
     }
     return;
@@ -4482,9 +4654,10 @@ function loadProject(file) {
       // Create internal picture format for SCR/ULA+ projects
       let projectPicture = null;
       if (typeof makePicture === 'function') {
-        if (currentFormat === FORMAT.SCR || currentFormat === FORMAT.SCR_ULAPLUS) {
+        if (currentFormat === FORMAT.SCR || currentFormat === FORMAT.SCR_ULAPLUS || currentFormat === FORMAT.SCR_ULANEXT) {
+          const sf = currentFormat === FORMAT.SCR_ULAPLUS ? 'scr+' : currentFormat === FORMAT.SCR_ULANEXT ? 'scr_ulanext' : 'scr';
           projectPicture = makePicture({
-            sourceFormat: currentFormat === FORMAT.SCR_ULAPLUS ? 'scr+' : 'scr',
+            sourceFormat: sf,
             fileName: currentFileName,
             width: 256,
             height: 192,
@@ -4918,9 +5091,10 @@ function loadWorkspace(file) {
 
       // Create internal picture format for SCR/ULA+ workspace pictures
       if (typeof makePicture === 'function') {
-        if (currentFormat === FORMAT.SCR || currentFormat === FORMAT.SCR_ULAPLUS) {
+        if (currentFormat === FORMAT.SCR || currentFormat === FORMAT.SCR_ULAPLUS || currentFormat === FORMAT.SCR_ULANEXT) {
+          const sf = currentFormat === FORMAT.SCR_ULAPLUS ? 'scr+' : currentFormat === FORMAT.SCR_ULANEXT ? 'scr_ulanext' : 'scr';
           currentPicture = makePicture({
-            sourceFormat: currentFormat === FORMAT.SCR_ULAPLUS ? 'scr+' : 'scr',
+            sourceFormat: sf,
             fileName: currentFileName,
             width: 256,
             height: 192,
@@ -4935,7 +5109,7 @@ function loadWorkspace(file) {
       // Also set picture on all loaded PictureState objects
       for (const p of openPictures) {
         if (typeof importScr === 'function') {
-          if (p.format === FORMAT.SCR) {
+          if (p.format === FORMAT.SCR || p.format === FORMAT.SCR_ULANEXT) {
             p.picture = importScr(p.screenData, p.fileName);
           } else if (p.format === FORMAT.SCR_ULAPLUS) {
             p.picture = importScrUlaPlus(p.screenData, p.fileName);
@@ -6250,6 +6424,34 @@ function getPixelState(x, y) {
     return screenData[addr];
   }
 
+  // LoRes: return palette index (128×96, row-major)
+  if (currentFormat === FORMAT.LORES) {
+    const flatIdx = y * LORES.WIDTH + x;
+    if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
+      const layer = layers[activeLayerIndex];
+      if (layer) {
+        if (!layer.mask[flatIdx]) return -1;
+        return layer.bitmap[flatIdx];
+      }
+    }
+    return screenData[flatIdx];
+  }
+
+  // LoRes Radastan: return 4bpp palette index (128×96, packed nibbles)
+  if (currentFormat === FORMAT.LORES_RAD) {
+    const flatIdx = y * LORES_RAD.WIDTH + x;
+    if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
+      const layer = layers[activeLayerIndex];
+      if (layer) {
+        if (!layer.mask[flatIdx]) return -1;
+        return layer.bitmap[flatIdx];
+      }
+    }
+    const byteOffset = y * LORES_RAD.BYTES_PER_ROW + (x >> 1);
+    const byteVal = screenData[byteOffset] || 0;
+    return (x & 1) === 0 ? (byteVal >> 4) & 0x0F : byteVal & 0x0F;
+  }
+
   // NXI/SL2: return palette index
   if (currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) {
     const w = getFormatWidth();
@@ -6530,6 +6732,45 @@ function setPixelDirect(x, y, isInk) {
   // 53c attribute-only format: set cell attribute, no bitmap
   if (currentFormat === FORMAT.ATTR_53C) {
     recolorCell53c(x, y);
+    return;
+  }
+
+  // LoRes: write palette index directly (128×96, row-major)
+  if (currentFormat === FORMAT.LORES) {
+    const color = isInk ? editorInkColor : editorPaperColor;
+    const flatIdx = y * LORES.WIDTH + x;
+    if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
+      const layer = layers[activeLayerIndex];
+      if (layer) {
+        layer.bitmap[flatIdx] = color & 0xFF;
+        layer.mask[flatIdx] = 1;
+      }
+    } else {
+      screenData[flatIdx] = color & 0xFF;
+    }
+    return;
+  }
+
+  // LoRes Radastan: write 4bpp packed nibble (128×96, 16-color)
+  if (currentFormat === FORMAT.LORES_RAD) {
+    const color = (isInk ? editorInkColor : editorPaperColor) & 0x0F;
+    const flatIdx = y * LORES_RAD.WIDTH + x;
+    if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
+      const layer = layers[activeLayerIndex];
+      if (layer) {
+        layer.bitmap[flatIdx] = color;
+        layer.mask[flatIdx] = 1;
+      }
+    } else {
+      const byteOffset = y * LORES_RAD.BYTES_PER_ROW + (x >> 1);
+      let byteVal = screenData[byteOffset] || 0;
+      if ((x & 1) === 0) {
+        byteVal = (color << 4) | (byteVal & 0x0F);
+      } else {
+        byteVal = (byteVal & 0xF0) | color;
+      }
+      screenData[byteOffset] = byteVal;
+    }
     return;
   }
 
@@ -9444,18 +9685,17 @@ function renderPreview() {
             const attrOffset = MLT.BITMAP_SIZE + y * 32 + col;
             const attr = screenData[attrOffset];
 
-            let inkIndex = attr & 0x07;
-            let paperIndex = (attr >> 3) & 0x07;
-            const isBright = (attr & 0x40) !== 0;
+            // Use getColorsRgb to support ULA+ mode
+            const colors = getColorsRgb(attr);
+            let inkRgb = colors.inkRgb;
+            let paperRgb = colors.paperRgb;
+
             const isFlash = (attr & 0x80) !== 0;
-
             if (isFlash && flashPhase && flashEnabled) {
-              const tmp = inkIndex;
-              inkIndex = paperIndex;
-              paperIndex = tmp;
+              const tmp = inkRgb;
+              inkRgb = paperRgb;
+              paperRgb = tmp;
             }
-
-            const palette = isBright ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
 
             for (let bit = 0; bit < 8; bit++) {
               const px = x + bit;
@@ -9468,7 +9708,7 @@ function renderPreview() {
                 data[pixelIndex + 2] = checker[2];
               } else {
                 const isSet = (byte & (0x80 >> bit)) !== 0;
-                const rgb = isSet ? palette[inkIndex] : palette[paperIndex];
+                const rgb = isSet ? inkRgb : paperRgb;
                 data[pixelIndex] = rgb[0];
                 data[pixelIndex + 1] = rgb[1];
                 data[pixelIndex + 2] = rgb[2];
@@ -9759,6 +9999,34 @@ function renderPreview() {
         }
       }
     }
+  } else if (currentFormat === FORMAT.LORES && nxiResolvedPalette) {
+    // LoRes: render 128×96 indexed pixels using resolved palette
+    for (let y = 0; y < prevH; y++) {
+      for (let x = 0; x < prevW; x++) {
+        const colorIdx = screenData[y * LORES.WIDTH + x] || 0;
+        const rgb = nxiResolvedPalette[colorIdx] || [0, 0, 0];
+        const dstIdx = (y * prevW + x) * 4;
+        data[dstIdx] = rgb[0];
+        data[dstIdx + 1] = rgb[1];
+        data[dstIdx + 2] = rgb[2];
+        data[dstIdx + 3] = 255;
+      }
+    }
+  } else if (currentFormat === FORMAT.LORES_RAD && nxiResolvedPalette) {
+    // LoRes Radastan: render 128×96 4bpp packed nibbles using 16-entry palette
+    for (let y = 0; y < prevH; y++) {
+      for (let x = 0; x < prevW; x++) {
+        const byteOffset = y * LORES_RAD.BYTES_PER_ROW + (x >> 1);
+        const byteVal = screenData[byteOffset] || 0;
+        const colorIdx = (x & 1) === 0 ? (byteVal >> 4) & 0x0F : byteVal & 0x0F;
+        const rgb = nxiResolvedPalette[colorIdx] || [0, 0, 0];
+        const dstIdx = (y * prevW + x) * 4;
+        data[dstIdx] = rgb[0];
+        data[dstIdx + 1] = rgb[1];
+        data[dstIdx + 2] = rgb[2];
+        data[dstIdx + 3] = 255;
+      }
+    }
   } else if ((currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) && nxiResolvedPalette) {
     // NXI/SL2: render indexed pixels using resolved palette (handles all modes)
     const pixelOffset = getNxiPixelOffset();
@@ -9802,8 +10070,8 @@ function renderPreview() {
             let ink = colors.inkRgb;
             let paper = colors.paperRgb;
 
-            // Flash only applies in standard mode (in ULA+ bits 6-7 are CLUT selector)
-            if (!isUlaPlusMode) {
+            // Flash only applies in standard mode (in ULA+/ULANext all 8 attribute bits are palette indices)
+            if (!isUlaPlusMode && !isUlaNextMode) {
               const isFlash = (attr & 0x80) !== 0;
               if (isFlash && flashPhase && flashEnabled) {
                 const tmp = ink;
@@ -10651,11 +10919,13 @@ function saveScrFile(filename) {
     [FORMAT.MLT]: '.mlt', [FORMAT.BMC4]: '.bmc4', [FORMAT.RGB3]: '.3',
     [FORMAT.GIGASCREEN]: '.img', [FORMAT.MGH]: '.mg8', [FORMAT.HLR]: '.hlr', [FORMAT.STL]: '.stl', [FORMAT.BSP]: '.bsp', [FORMAT.SPECSCII]: '.specscii',
     [FORMAT.MONO_FULL]: '.scr', [FORMAT.MONO_2_3]: '.scr', [FORMAT.MONO_1_3]: '.scr',
-    [FORMAT.SCR_ULAPLUS]: '.scr', [FORMAT.SCR]: '.scr',
+    [FORMAT.SCR_ULAPLUS]: '.scr', [FORMAT.SCR_ULANEXT]: '.scr', [FORMAT.SCR]: '.scr',
     [FORMAT.ZXP]: '.zxp',
     [FORMAT.CHR]: '.ch$',
     [FORMAT.NXI]: '.nxi',
-    [FORMAT.SL2]: '.sl2'
+    [FORMAT.SL2]: '.sl2',
+    [FORMAT.LORES]: '.slr',
+    [FORMAT.LORES_RAD]: '.rad'
   };
   defaultExt = formatExtMap[currentFormat] || '.scr';
 
@@ -10857,6 +11127,12 @@ function saveScrFile(filename) {
   if (currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) {
     // NXI/SL2: save complete file (palette+pixels or raw pixels)
     saveData = new Uint8Array(screenData);
+  } else if (currentFormat === FORMAT.LORES) {
+    // LoRes: save first 12288 bytes (128×96 pixel data)
+    saveData = screenData.slice(0, LORES.PIXEL_DATA_SIZE);
+  } else if (currentFormat === FORMAT.LORES_RAD) {
+    // LoRes Radastan: save 6144 bytes (128×96 4bpp packed nibbles)
+    saveData = screenData.slice(0, LORES_RAD.PIXEL_DATA_SIZE);
   } else if (currentFormat === FORMAT.SPECSCII) {
     // SPECSCII: sync grids to stream and save (special case — stream format)
     if (specsciiCharGrid && specsciiAttrGrid) {
@@ -10868,6 +11144,54 @@ function saveScrFile(filename) {
     if (ulaPlusPalette) currentPicture.palette = ulaPlusPalette.slice();
     saveData = (typeof exportScrUlaPlus === 'function') ? exportScrUlaPlus(currentPicture)
       : screenData.slice(0, ULAPLUS.TOTAL_SIZE);
+  } else if (currentFormat === FORMAT.SCR_ULANEXT && isUlaNextMode && ulaNextPalette) {
+    // ULANext: 6912 SCR + 1 mask byte + palette entries
+    // Preserve original format (1-byte 8-bit or 2-byte 9-bit)
+    const scrData = screenData.slice(0, SCREEN.TOTAL_SIZE);
+    const totalEntries = ulaNextInkCount + ulaNextPaperCount;
+    let palBytes;
+    if (ulaNextInkMask === 0xFF && ulaNextIs9bit) {
+      // 9-bit: 256 ink × 2 bytes + 1 paper × 1 byte = 513
+      palBytes = new Uint8Array(513);
+      for (let i = 0; i < 256; i++) {
+        const [r, g, b] = ulaNextPalette[i] || [0, 0, 0];
+        const r3 = Math.round(r * 7 / 255);
+        const g3 = Math.round(g * 7 / 255);
+        const b3 = Math.round(b * 7 / 255);
+        palBytes[i * 2] = (r3 << 5) | (g3 << 2) | (b3 >> 1);
+        palBytes[i * 2 + 1] = b3 & 1;
+      }
+      const [r, g, b] = ulaNextPalette[256] || [0, 0, 0];
+      const r3 = Math.round(r * 7 / 255);
+      const g3 = Math.round(g * 7 / 255);
+      const b2 = Math.round(b * 3 / 255);
+      palBytes[512] = (r3 << 5) | (g3 << 2) | b2;
+    } else if (ulaNextIs9bit) {
+      // 9-bit: all entries × 2 bytes (RRRGGGBB + B_lsb)
+      palBytes = new Uint8Array(totalEntries * 2);
+      for (let i = 0; i < totalEntries; i++) {
+        const [r, g, b] = ulaNextPalette[i] || [0, 0, 0];
+        const r3 = Math.round(r * 7 / 255);
+        const g3 = Math.round(g * 7 / 255);
+        const b3 = Math.round(b * 7 / 255);
+        palBytes[i * 2] = (r3 << 5) | (g3 << 2) | (b3 >> 1);
+        palBytes[i * 2 + 1] = b3 & 1;
+      }
+    } else {
+      // 8-bit: all entries × 1 byte (RRRGGGBB)
+      palBytes = new Uint8Array(totalEntries);
+      for (let i = 0; i < totalEntries; i++) {
+        const [r, g, b] = ulaNextPalette[i] || [0, 0, 0];
+        const r3 = Math.round(r * 7 / 255);
+        const g3 = Math.round(g * 7 / 255);
+        const b2 = Math.round(b * 3 / 255);
+        palBytes[i] = (r3 << 5) | (g3 << 2) | b2;
+      }
+    }
+    saveData = new Uint8Array(SCREEN.TOTAL_SIZE + 1 + palBytes.length);
+    saveData.set(scrData, 0);
+    saveData[SCREEN.TOTAL_SIZE] = ulaNextInkMask;
+    saveData.set(palBytes, SCREEN.TOTAL_SIZE + 1);
   } else if (currentPicture && typeof exportPicture === 'function') {
     // Use internal picture format export for all formats with currentPicture
     const exported = exportPicture(currentPicture);
@@ -10904,6 +11228,8 @@ function saveScrFile(filename) {
                  currentFormat === FORMAT.ZXP ? 'screen.zxp' :
                  currentFormat === FORMAT.NXI ? 'screen.nxi' :
                  currentFormat === FORMAT.SL2 ? 'screen.sl2' :
+                 currentFormat === FORMAT.LORES ? 'screen.slr' :
+                 currentFormat === FORMAT.LORES_RAD ? 'screen.rad' :
                  currentFormat === FORMAT.CHR ? 'screen.ch$' : 'screen.scr';
     }
   }
@@ -11007,6 +11333,7 @@ function createNewPicture(format, params) {
         palette = generateDefaultUlaPlusPalette();
         ulaPlusPalette = palette.slice();
         isUlaPlusMode = true;
+        resetUlaNextMode();
         resetUlaPlusColors();
       }
 
@@ -11279,6 +11606,7 @@ function createNewPicture(format, params) {
       // Enable ULA+ mode
       ulaPlusPalette = defaultPalette.slice();
       isUlaPlusMode = true;
+      resetUlaNextMode();
       resetUlaPlusColors();
       break;
 
@@ -11534,6 +11862,25 @@ function createNewPicture(format, params) {
       nxiResolvedPalette = sl2Is640 ? generateDefaultNext4bppPalette() : generateDefaultNextPalette();
       newFormat = FORMAT.SL2;
       newFileName = 'new_screen.sl2';
+      break;
+    }
+
+    case 'lores': {
+      // LoRes: 128×96 256-color, raw pixel dump (12288 bytes)
+      newData = new Uint8Array(LORES.PIXEL_DATA_SIZE);
+      // Pixel data is all zeros (color 0 = black in default palette)
+      nxiResolvedPalette = generateDefaultNextPalette();
+      newFormat = FORMAT.LORES;
+      newFileName = 'new_screen.slr';
+      break;
+    }
+
+    case 'lores_rad': {
+      // LoRes Radastan: 128×96 16-color 4bpp, packed nibbles (6144 bytes)
+      newData = new Uint8Array(LORES_RAD.PIXEL_DATA_SIZE);
+      nxiResolvedPalette = generateDefaultNext4bppPalette();
+      newFormat = FORMAT.LORES_RAD;
+      newFileName = 'new_screen.rad';
       break;
     }
 
@@ -12177,7 +12524,7 @@ function setGradientReverse(reverse) {
 
 function updateColorPreview() {
   // NXI/SL2: update dedicated palette highlight instead of standard palette
-  if ((currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) && nxiResolvedPalette) {
+  if ((currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 || currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD) && nxiResolvedPalette) {
     updateNxiPaletteHighlight();
     updateAttrPreview();
     return;
@@ -13142,6 +13489,7 @@ function pickColorFromCanvas(x, y, isInk) {
 
   switch (currentFormat) {
     case FORMAT.SCR:
+    case FORMAT.SCR_ULANEXT:
     case FORMAT.BSC:
       return pickScrColorFromCanvas(x, y);
 
@@ -14716,6 +15064,43 @@ const SPECSCII_PAL_ROM_ROWS = 12;  // 96 ROM chars / 8 cols
 const SPECSCII_PAL_BLK_ROWS = 2;   // 16 block graphics / 8 cols
 const SPECSCII_PAL_ROWS = SPECSCII_PAL_ROM_ROWS + SPECSCII_PAL_BLK_ROWS; // 14
 
+/** Weight-sort mode state */
+let specsciiPaletteSortByWeight = true;
+/** @type {number[]|null} - Lazily built ROM char order sorted by pixel popcount */
+let specsciiRomWeightOrder = null;
+
+/** UDG block graphics in 5×3 symmetric grid (visually sorted, excludes full 0x8F) */
+const SPECSCII_UDG_WEIGHT_GRID = [
+  0x82, 0x8B, 0x83, 0x87, 0x81,
+  0x89, 0x8A, 0x80, 0x85, 0x86,
+  0x88, 0x8E, 0x8C, 0x8D, 0x84
+];
+const SPECSCII_PAL_WEIGHT_UDG_COLS = 5;
+const SPECSCII_PAL_WEIGHT_UDG_ROWS = 3;
+
+/**
+ * Builds ROM character order sorted by pixel popcount (lightest→heaviest).
+ * Ties broken by char code ascending. Requires fontData to be loaded.
+ * @returns {number[]} Array of 96 char codes (0x20-0x7F) sorted by weight
+ */
+function buildSpecsciiRomWeightOrder() {
+  const entries = [];
+  for (let ch = 0x20; ch <= 0x7F; ch++) {
+    let weight = 0;
+    const glyphOffset = (ch - SPECSCII.FIRST_CHAR) * 8;
+    if (typeof fontData !== 'undefined' && fontData && glyphOffset + 7 < fontData.length) {
+      for (let line = 0; line < 8; line++) {
+        let byte = fontData[glyphOffset + line];
+        // Brian Kernighan's popcount
+        while (byte) { byte &= byte - 1; weight++; }
+      }
+    }
+    entries.push({ ch, weight });
+  }
+  entries.sort((a, b) => a.weight - b.weight || a.ch - b.ch);
+  return entries.map(e => e.ch);
+}
+
 function renderSpecsciiPalette() {
   const canvas = /** @type {HTMLCanvasElement|null} */ (document.getElementById('specsciiPaletteCanvas'));
   if (!canvas) return;
@@ -14724,9 +15109,19 @@ function renderSpecsciiPalette() {
   const GAP = 1;
   const CELL = TILE + GAP; // 9px stride per character
 
+  const weightMode = specsciiPaletteSortByWeight;
+  const totalRows = weightMode
+    ? SPECSCII_PAL_ROM_ROWS + SPECSCII_PAL_WEIGHT_UDG_ROWS  // 12 + 3 = 15
+    : SPECSCII_PAL_ROWS;                                      // 14
+
+  // Build weight order lazily on first use
+  if (weightMode && !specsciiRomWeightOrder) {
+    specsciiRomWeightOrder = buildSpecsciiRomWeightOrder();
+  }
+
   // Canvas size: tiles + gaps (no trailing gap)
   canvas.width = SPECSCII_PAL_COLS * CELL - GAP;
-  canvas.height = SPECSCII_PAL_ROWS * CELL - GAP;
+  canvas.height = totalRows * CELL - GAP;
 
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -14735,21 +15130,47 @@ function renderSpecsciiPalette() {
   ctx.fillStyle = getCSSVar('--bg-tertiary', '#333333');
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // Render each tile into its own 8×8 ImageData and draw at offset position
-  for (let tileRow = 0; tileRow < SPECSCII_PAL_ROWS; tileRow++) {
+  // --- ROM characters section (rows 0-11) ---
+  for (let tileRow = 0; tileRow < SPECSCII_PAL_ROM_ROWS; tileRow++) {
     for (let tileCol = 0; tileCol < SPECSCII_PAL_COLS; tileCol++) {
+      const idx = tileRow * SPECSCII_PAL_COLS + tileCol;
       let charCode;
-      if (tileRow < SPECSCII_PAL_ROM_ROWS) {
-        charCode = 0x20 + tileRow * SPECSCII_PAL_COLS + tileCol;
-        if (charCode > 0x7F) continue;
+      if (weightMode) {
+        if (idx >= specsciiRomWeightOrder.length) continue;
+        charCode = specsciiRomWeightOrder[idx];
       } else {
-        charCode = 0x80 + (tileRow - SPECSCII_PAL_ROM_ROWS) * SPECSCII_PAL_COLS + tileCol;
+        charCode = 0x20 + idx;
+        if (charCode > 0x7F) continue;
       }
 
       const tileImg = ctx.createImageData(TILE, TILE);
       const attr = 0x07; // white ink, black paper
       specsciiRenderGlyph(tileImg.data, TILE, charCode, attr, 0, 0);
       ctx.putImageData(tileImg, tileCol * CELL, tileRow * CELL);
+    }
+  }
+
+  // --- UDG block graphics section ---
+  if (weightMode) {
+    // 5×3 grid centered in 8-col canvas (offset by 1 column)
+    const colOffset = 1;
+    for (let r = 0; r < SPECSCII_PAL_WEIGHT_UDG_ROWS; r++) {
+      for (let c = 0; c < SPECSCII_PAL_WEIGHT_UDG_COLS; c++) {
+        const charCode = SPECSCII_UDG_WEIGHT_GRID[r * SPECSCII_PAL_WEIGHT_UDG_COLS + c];
+        const tileImg = ctx.createImageData(TILE, TILE);
+        specsciiRenderGlyph(tileImg.data, TILE, charCode, 0x07, 0, 0);
+        ctx.putImageData(tileImg, (colOffset + c) * CELL, (SPECSCII_PAL_ROM_ROWS + r) * CELL);
+      }
+    }
+  } else {
+    // Code mode: 8×2 sequential grid
+    for (let tileRow = SPECSCII_PAL_ROM_ROWS; tileRow < SPECSCII_PAL_ROWS; tileRow++) {
+      for (let tileCol = 0; tileCol < SPECSCII_PAL_COLS; tileCol++) {
+        const charCode = 0x80 + (tileRow - SPECSCII_PAL_ROM_ROWS) * SPECSCII_PAL_COLS + tileCol;
+        const tileImg = ctx.createImageData(TILE, TILE);
+        specsciiRenderGlyph(tileImg.data, TILE, charCode, 0x07, 0, 0);
+        ctx.putImageData(tileImg, tileCol * CELL, tileRow * CELL);
+      }
     }
   }
 
@@ -14802,14 +15223,30 @@ function renderSpecsciiCharPreview() {
  */
 function specsciiHighlightSelected(ctx, cellSize, cols) {
   let tileCol, tileRow;
+  const weightMode = specsciiPaletteSortByWeight;
+
   if (specsciiSelectedChar >= 0x80 && specsciiSelectedChar <= 0x8F) {
-    const idx = specsciiSelectedChar - 0x80;
-    tileRow = SPECSCII_PAL_ROM_ROWS + Math.floor(idx / cols);
-    tileCol = idx % cols;
+    if (weightMode) {
+      const gridIdx = SPECSCII_UDG_WEIGHT_GRID.indexOf(specsciiSelectedChar);
+      if (gridIdx < 0) return;
+      tileRow = SPECSCII_PAL_ROM_ROWS + Math.floor(gridIdx / SPECSCII_PAL_WEIGHT_UDG_COLS);
+      tileCol = 1 + (gridIdx % SPECSCII_PAL_WEIGHT_UDG_COLS); // centered offset
+    } else {
+      const idx = specsciiSelectedChar - 0x80;
+      tileRow = SPECSCII_PAL_ROM_ROWS + Math.floor(idx / cols);
+      tileCol = idx % cols;
+    }
   } else if (specsciiSelectedChar >= 0x20 && specsciiSelectedChar <= 0x7F) {
-    const idx = specsciiSelectedChar - 0x20;
-    tileRow = Math.floor(idx / cols);
-    tileCol = idx % cols;
+    if (weightMode && specsciiRomWeightOrder) {
+      const idx = specsciiRomWeightOrder.indexOf(specsciiSelectedChar);
+      if (idx < 0) return;
+      tileRow = Math.floor(idx / cols);
+      tileCol = idx % cols;
+    } else {
+      const idx = specsciiSelectedChar - 0x20;
+      tileRow = Math.floor(idx / cols);
+      tileCol = idx % cols;
+    }
   } else {
     return;
   }
@@ -14828,19 +15265,39 @@ function handleSpecsciiPaletteClick(event) {
   if (!canvas) return;
 
   const rect = canvas.getBoundingClientRect();
+  const weightMode = specsciiPaletteSortByWeight;
+  const totalRows = weightMode
+    ? SPECSCII_PAL_ROM_ROWS + SPECSCII_PAL_WEIGHT_UDG_ROWS
+    : SPECSCII_PAL_ROWS;
 
   // Convert display coordinates to tile coordinates
   const tileCol = Math.floor((event.clientX - rect.left) / rect.width * SPECSCII_PAL_COLS);
-  const tileRow = Math.floor((event.clientY - rect.top) / rect.height * SPECSCII_PAL_ROWS);
+  const tileRow = Math.floor((event.clientY - rect.top) / rect.height * totalRows);
 
   if (tileCol < 0 || tileCol >= SPECSCII_PAL_COLS) return;
 
   let charCode;
   if (tileRow >= 0 && tileRow < SPECSCII_PAL_ROM_ROWS) {
-    charCode = 0x20 + tileRow * SPECSCII_PAL_COLS + tileCol;
-    if (charCode > 0x7F) return;
-  } else if (tileRow >= SPECSCII_PAL_ROM_ROWS && tileRow < SPECSCII_PAL_ROWS) {
-    charCode = 0x80 + (tileRow - SPECSCII_PAL_ROM_ROWS) * SPECSCII_PAL_COLS + tileCol;
+    // ROM characters section
+    if (weightMode && specsciiRomWeightOrder) {
+      const idx = tileRow * SPECSCII_PAL_COLS + tileCol;
+      if (idx >= specsciiRomWeightOrder.length) return;
+      charCode = specsciiRomWeightOrder[idx];
+    } else {
+      charCode = 0x20 + tileRow * SPECSCII_PAL_COLS + tileCol;
+      if (charCode > 0x7F) return;
+    }
+  } else if (tileRow >= SPECSCII_PAL_ROM_ROWS && tileRow < totalRows) {
+    // UDG block graphics section
+    if (weightMode) {
+      const gridCol = tileCol - 1; // centered offset
+      const gridRow = tileRow - SPECSCII_PAL_ROM_ROWS;
+      if (gridCol < 0 || gridCol >= SPECSCII_PAL_WEIGHT_UDG_COLS) return;
+      if (gridRow < 0 || gridRow >= SPECSCII_PAL_WEIGHT_UDG_ROWS) return;
+      charCode = SPECSCII_UDG_WEIGHT_GRID[gridRow * SPECSCII_PAL_WEIGHT_UDG_COLS + gridCol];
+    } else {
+      charCode = 0x80 + (tileRow - SPECSCII_PAL_ROM_ROWS) * SPECSCII_PAL_COLS + tileCol;
+    }
   } else {
     return;
   }
@@ -15220,6 +15677,7 @@ function exportSpecsciiToTap() {
 function isFormatEditable() {
   if (currentFormat === FORMAT.SCR && screenData && screenData.length >= SCREEN.TOTAL_SIZE) return true;
   if (currentFormat === FORMAT.SCR_ULAPLUS && screenData && screenData.length >= SCREEN.TOTAL_SIZE) return true;
+  if (currentFormat === FORMAT.SCR_ULANEXT && screenData && screenData.length >= SCREEN.TOTAL_SIZE) return true;
   if (currentFormat === FORMAT.ATTR_53C && screenData && screenData.length >= 768) return true;
   if (currentFormat === FORMAT.BSC && screenData && screenData.length >= BSC.TOTAL_SIZE) return true;
   if (currentFormat === FORMAT.IFL && screenData && screenData.length >= IFL.TOTAL_SIZE) return true;
@@ -15236,6 +15694,8 @@ function isFormatEditable() {
   if (currentFormat === FORMAT.SPECSCII && screenData) return true;
   if (currentFormat === FORMAT.NXI && screenData && screenData.length >= (nxiLayer2Mode === '640x256' ? NXI.TOTAL_SIZE_640 : nxiLayer2Mode === '320x256' ? NXI.TOTAL_SIZE_320 : NXI.TOTAL_SIZE)) return true;
   if (currentFormat === FORMAT.SL2 && screenData && screenData.length >= (nxiLayer2Mode !== '256x192' ? SL2.EXT_SIZE : SL2.RAW_SIZE)) return true;
+  if (currentFormat === FORMAT.LORES && screenData && screenData.length >= LORES.PIXEL_DATA_SIZE) return true;
+  if (currentFormat === FORMAT.LORES_RAD && screenData && screenData.length >= LORES_RAD.PIXEL_DATA_SIZE) return true;
   if ((currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) && screenData && currentPicture) return true;
   // BSP: non-giga (standard or with border) and giga variants
   if (currentFormat === FORMAT.BSP && screenData && currentPicture) {
@@ -16604,7 +17064,7 @@ function setEditorEnabled(active, force) {
   // Hide Generate/QR section for formats that don't support it
   const generateSection = document.getElementById('generateSection');
   if (generateSection) {
-    const hideGenerate = currentFormat === FORMAT.SPECSCII || currentFormat === FORMAT.ATTR_53C || currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2;
+    const hideGenerate = currentFormat === FORMAT.SPECSCII || currentFormat === FORMAT.ATTR_53C || currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 || currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD;
     generateSection.style.display = hideGenerate ? 'none' : '';
   }
 
@@ -16699,8 +17159,8 @@ function setEditorEnabled(active, force) {
       }
       renderSpecsciiPalette();
       updateSpecsciiCharInfo();
-    } else if (currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) {
-      // NXI/SL2 editor: show tools and brush section, hide inapplicable tools
+    } else if (currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 || currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD) {
+      // NXI/SL2/LoRes editor: show tools and brush section, hide inapplicable tools
       if (toolsSection) toolsSection.style.display = '';
       if (brushSection) brushSection.style.display = '';
       if (snapSelect) snapSelect.parentElement.style.display = 'none';
@@ -16776,8 +17236,8 @@ function setEditorEnabled(active, force) {
       const s = document.getElementById('editorColorSection');
       if (s) s.style.display = '';
     }
-    toggleNxiColorPicker(currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2);
-    if (currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) buildNxiPalette();
+    toggleNxiColorPicker(currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 || currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD);
+    if (currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 || currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD) buildNxiPalette();
 
     // Update convert dropdown options
     updateConvertOptions();
@@ -18874,12 +19334,15 @@ function updateConvertOptions() {
     convertSelect.innerHTML += '<option value="scr-to-nxi">→ NXI 256×192 (Next Layer 2)</option>';
     convertSelect.innerHTML += '<option value="scr-to-nxi320">→ NXI 320×256 (upscale)</option>';
     convertSelect.innerHTML += '<option value="scr-to-nxi640">→ NXI 640×256 (upscale)</option>';
+    convertSelect.innerHTML += '<option value="scr-to-lores">→ SLR LoRes 128×96 (downscale)</option>';
+    convertSelect.innerHTML += '<option value="scr-to-specscii">→ SPECSCII (character match)</option>';
   } else if (currentFormat === FORMAT.SCR_ULAPLUS) {
     // ULA+ can convert to SCR (strip palette) or NXI/SL2
     convertSelect.innerHTML += '<option value="ulaplus-to-scr">→ SCR (strip palette)</option>';
     convertSelect.innerHTML += '<option value="ulaplus-to-nxi">→ NXI 256×192 (Next Layer 2)</option>';
     convertSelect.innerHTML += '<option value="ulaplus-to-nxi320">→ NXI 320×256 (upscale)</option>';
     convertSelect.innerHTML += '<option value="ulaplus-to-nxi640">→ NXI 640×256 (upscale)</option>';
+    convertSelect.innerHTML += '<option value="ulaplus-to-lores">→ SLR LoRes 128×96 (downscale)</option>';
   } else if (currentFormat === FORMAT.ATTR_53C) {
     // ATTR can convert to SCR or BSC
     convertSelect.innerHTML += '<option value="attr-to-scr">→ SCR (add pattern)</option>';
@@ -18911,16 +19374,19 @@ function updateConvertOptions() {
       convertSelect.innerHTML += '<option value="nxi-to-nxi320">→ NXI 320×256 (upscale)</option>';
       convertSelect.innerHTML += '<option value="nxi-to-nxi640">→ NXI 640×256 (upscale)</option>';
       convertSelect.innerHTML += '<option value="nxi-to-scr">→ SCR (quantize to ZX)</option>';
+      convertSelect.innerHTML += '<option value="nxi-to-lores">→ SLR LoRes 128×96 (downscale)</option>';
     } else if (nxiLayer2Mode === '320x256') {
       convertSelect.innerHTML += '<option value="nxi320-to-sl2">→ SL2 320×256 (strip palette)</option>';
       convertSelect.innerHTML += '<option value="nxi-to-nxi256">→ NXI 256×192 (downscale)</option>';
       convertSelect.innerHTML += '<option value="nxi-to-nxi640">→ NXI 640×256 (rescale)</option>';
       convertSelect.innerHTML += '<option value="nxi-to-scr">→ SCR (quantize to ZX)</option>';
+      convertSelect.innerHTML += '<option value="nxi-to-lores">→ SLR LoRes 128×96 (downscale)</option>';
     } else if (nxiLayer2Mode === '640x256') {
       convertSelect.innerHTML += '<option value="nxi640-to-sl2">→ SL2 640×256 (strip palette)</option>';
       convertSelect.innerHTML += '<option value="nxi-to-nxi256">→ NXI 256×192 (downscale)</option>';
       convertSelect.innerHTML += '<option value="nxi-to-nxi320">→ NXI 320×256 (rescale)</option>';
       convertSelect.innerHTML += '<option value="nxi-to-scr">→ SCR (quantize to ZX)</option>';
+      convertSelect.innerHTML += '<option value="nxi-to-lores">→ SLR LoRes 128×96 (downscale)</option>';
     }
   } else if (currentFormat === FORMAT.SL2) {
     if (nxiLayer2Mode === '256x192') {
@@ -18928,17 +19394,32 @@ function updateConvertOptions() {
       convertSelect.innerHTML += '<option value="sl2-to-nxi320">→ NXI 320×256 (upscale)</option>';
       convertSelect.innerHTML += '<option value="sl2-to-nxi640">→ NXI 640×256 (upscale)</option>';
       convertSelect.innerHTML += '<option value="sl2-to-scr">→ SCR (quantize to ZX)</option>';
+      convertSelect.innerHTML += '<option value="sl2-to-lores">→ SLR LoRes 128×96 (downscale)</option>';
     } else if (nxiLayer2Mode === '320x256') {
       convertSelect.innerHTML += '<option value="sl2_320-to-nxi">→ NXI 320×256 (add palette)</option>';
       convertSelect.innerHTML += '<option value="sl2-to-sl2_256">→ SL2 256×192 (downscale)</option>';
       convertSelect.innerHTML += '<option value="sl2-to-nxi640">→ NXI 640×256 (rescale)</option>';
       convertSelect.innerHTML += '<option value="sl2-to-scr">→ SCR (quantize to ZX)</option>';
+      convertSelect.innerHTML += '<option value="sl2-to-lores">→ SLR LoRes 128×96 (downscale)</option>';
     } else if (nxiLayer2Mode === '640x256') {
       convertSelect.innerHTML += '<option value="sl2_640-to-nxi">→ NXI 640×256 (add palette)</option>';
       convertSelect.innerHTML += '<option value="sl2-to-sl2_256">→ SL2 256×192 (downscale)</option>';
       convertSelect.innerHTML += '<option value="sl2-to-nxi320">→ NXI 320×256 (rescale)</option>';
       convertSelect.innerHTML += '<option value="sl2-to-scr">→ SCR (quantize to ZX)</option>';
+      convertSelect.innerHTML += '<option value="sl2-to-lores">→ SLR LoRes 128×96 (downscale)</option>';
     }
+  } else if (currentFormat === FORMAT.LORES) {
+    convertSelect.innerHTML += '<option value="lores-to-lores_rad">→ RAD Radastan 128×96 (quantize 16c)</option>';
+    convertSelect.innerHTML += '<option value="lores-to-nxi">→ NXI 256×192 (upscale 2×)</option>';
+    convertSelect.innerHTML += '<option value="lores-to-sl2">→ SL2 256×192 (upscale 2×)</option>';
+    convertSelect.innerHTML += '<option value="lores-to-nxi320">→ NXI 320×256 (upscale)</option>';
+    convertSelect.innerHTML += '<option value="lores-to-nxi640">→ NXI 640×256 (upscale)</option>';
+    convertSelect.innerHTML += '<option value="lores-to-scr">→ SCR (quantize to ZX)</option>';
+  } else if (currentFormat === FORMAT.LORES_RAD) {
+    convertSelect.innerHTML += '<option value="lores_rad-to-lores">→ SLR LoRes 128×96 (expand 256c)</option>';
+    convertSelect.innerHTML += '<option value="lores_rad-to-nxi">→ NXI 256×192 (upscale 2×)</option>';
+    convertSelect.innerHTML += '<option value="lores_rad-to-sl2">→ SL2 256×192 (upscale 2×)</option>';
+    convertSelect.innerHTML += '<option value="lores_rad-to-scr">→ SCR (quantize to ZX)</option>';
   }
 }
 
@@ -18993,6 +19474,9 @@ function handleConversion(action) {
     case 'scr-to-nxi':
       convertScrToNxi();
       break;
+    case 'scr-to-specscii':
+      convertScrToSpecscii();
+      break;
     case 'ifl-to-mlt':
       convertIflToMlt();
       break;
@@ -19026,12 +19510,14 @@ function handleConversion(action) {
     case 'ulaplus-to-nxi320':
     case 'nxi-to-nxi320':
     case 'sl2-to-nxi320':
+    case 'lores-to-nxi320':
       convertXformToNxi320();
       break;
     case 'scr-to-nxi640':
     case 'ulaplus-to-nxi640':
     case 'nxi-to-nxi640':
     case 'sl2-to-nxi640':
+    case 'lores-to-nxi640':
       convertXformToNxi640();
       break;
     // Lossy conversions to NXI/SL2 256×192
@@ -19044,11 +19530,44 @@ function handleConversion(action) {
     // Lossy conversions to SCR
     case 'nxi-to-scr':
     case 'sl2-to-scr':
+    case 'lores-to-scr':
+    case 'lores_rad-to-scr':
       convertAnyToScr();
       break;
     // ULA+ to NXI 256×192 (lossy: render ULA+ colors, quantize to Next palette)
     case 'ulaplus-to-nxi':
       convertXformToNxi256();
+      break;
+    // LoRes-specific conversions
+    case 'lores-to-nxi':
+      convertLoresToNxi();
+      break;
+    case 'lores-to-sl2':
+      convertLoresToSl2();
+      break;
+    // Lossy conversions to LoRes (downscale + quantize to 256 RGB332 colors)
+    case 'scr-to-lores':
+    case 'ulaplus-to-lores':
+    case 'nxi-to-lores':
+    case 'sl2-to-lores':
+      convertAnyToLores();
+      break;
+    // LoRes Radastan conversions
+    case 'lores_rad-to-lores':
+      convertLoresRadToLores();
+      break;
+    case 'lores_rad-to-nxi':
+      convertLoresRadToNxi();
+      break;
+    case 'lores_rad-to-sl2':
+      convertLoresRadToSl2();
+      break;
+    case 'lores-to-lores_rad':
+    case 'scr-to-lores_rad':
+    case 'ulaplus-to-lores_rad':
+    case 'nxi-to-lores_rad':
+    case 'sl2-to-lores_rad':
+      convertAnyToLoresRad();
       break;
   }
 }
@@ -19091,6 +19610,151 @@ function convertScrToAttr() {
 }
 
 /**
+ * Convert SCR to SPECSCII (character match)
+ * Analyzes each 8x8 cell bitmap and finds the best matching ROM font
+ * character (0x20-0x7F) or block graphic (0x80-0x8F).
+ * Preserves brightness and flash attributes.
+ */
+function convertScrToSpecscii() {
+  if (!screenData || screenData.length < SCREEN.TOTAL_SIZE) {
+    alert('No valid SCR data to convert');
+    return;
+  }
+
+  saveUndoState();
+
+  // --- Build glyph table: 112 entries, each 8 bytes ---
+  // 96 ROM chars (0x20-0x7F) from fontData + 16 block graphics (0x80-0x8F)
+  const GLYPH_COUNT = 112;
+  const glyphs = new Uint8Array(GLYPH_COUNT * 8);
+
+  // Copy ROM font data (96 chars × 8 bytes)
+  if (typeof fontData !== 'undefined' && fontData.length >= 768) {
+    glyphs.set(fontData.subarray(0, 768), 0);
+  }
+
+  // Generate block graphics (0x80-0x8F)
+  // Encoding: bit0=top-right, bit1=top-left, bit2=bottom-right, bit3=bottom-left
+  for (let code = 0; code < 16; code++) {
+    const offset = 96 * 8 + code * 8;
+    const topLeft  = (code & 0x02) ? 0xF0 : 0x00;
+    const topRight = (code & 0x01) ? 0x0F : 0x00;
+    const botLeft  = (code & 0x08) ? 0xF0 : 0x00;
+    const botRight = (code & 0x04) ? 0x0F : 0x00;
+    const topByte = topLeft | topRight;
+    const botByte = botLeft | botRight;
+    for (let line = 0; line < 4; line++) glyphs[offset + line] = topByte;
+    for (let line = 4; line < 8; line++) glyphs[offset + line] = botByte;
+  }
+
+  // --- Popcount helper ---
+  function popcnt8(v) {
+    v = v - ((v >> 1) & 0x55);
+    v = (v & 0x33) + ((v >> 2) & 0x33);
+    return (v + (v >> 4)) & 0x0F;
+  }
+
+  // --- Initialize SPECSCII grids ---
+  specsciiInitGrids(0x20, 0x38);
+
+  // --- Process each 8x8 cell ---
+  for (let cy = 0; cy < 24; cy++) {
+    for (let cx = 0; cx < 32; cx++) {
+      // Extract 8 bitmap bytes from SCR interleaved layout
+      const cellBytes = new Uint8Array(8);
+      for (let line = 0; line < 8; line++) {
+        const y = cy * 8 + line;
+        const third = y >> 6;
+        const charRow = (y >> 3) & 7;
+        const pixelLine = y & 7;
+        const offset = third * 2048 + pixelLine * 256 + charRow * 32 + cx;
+        cellBytes[line] = screenData[offset];
+      }
+
+      // Read attribute
+      const attr = screenData[6144 + cy * 32 + cx];
+      const ink = attr & 0x07;
+      const paper = (attr >> 3) & 0x07;
+      const bright = (attr >> 6) & 0x01;
+      const flash = (attr >> 7) & 0x01;
+      const idx = cy * 32 + cx;
+
+      // Hidden pixels check: if ink == paper, bitmap is invisible
+      if (ink === paper) {
+        specsciiCharGrid[idx] = 0x20; // space
+        specsciiAttrGrid[idx] = attr;
+        specsciiMask[idx] = 1;
+        continue;
+      }
+
+      // Find best matching glyph
+      let bestDist = 65; // max possible = 64 (8 bytes × 8 bits)
+      let bestGlyph = 0;
+      let bestInverted = false;
+
+      for (let g = 0; g < GLYPH_COUNT; g++) {
+        const gOff = g * 8;
+        let normalDist = 0;
+        let invertDist = 0;
+        for (let line = 0; line < 8; line++) {
+          normalDist += popcnt8(cellBytes[line] ^ glyphs[gOff + line]);
+          invertDist += popcnt8(cellBytes[line] ^ (glyphs[gOff + line] ^ 0xFF));
+        }
+        // Prefer normal over inverted on tie (< not <=)
+        if (normalDist < bestDist) {
+          bestDist = normalDist;
+          bestGlyph = g;
+          bestInverted = false;
+        }
+        if (invertDist < bestDist) {
+          bestDist = invertDist;
+          bestGlyph = g;
+          bestInverted = true;
+        }
+      }
+
+      // Map glyph index to character code
+      const charCode = bestGlyph < 96 ? (bestGlyph + 0x20) : (0x80 + (bestGlyph - 96));
+
+      // Build output attribute
+      let outAttr;
+      if (bestInverted) {
+        // Swap ink and paper, preserve bright and flash
+        outAttr = (paper & 0x07) | ((ink & 0x07) << 3) | (bright << 6) | (flash << 7);
+      } else {
+        outAttr = attr;
+      }
+
+      specsciiCharGrid[idx] = charCode;
+      specsciiAttrGrid[idx] = outAttr;
+      specsciiMask[idx] = 1;
+    }
+  }
+
+  // Generate SPECSCII stream from grids
+  screenData = specsciiGridsToStream();
+
+  // Switch format
+  currentFormat = FORMAT.SPECSCII;
+  currentPicture = null;
+  currentFileName = currentFileName.replace(/\.[^.]+$/, '.specscii');
+
+  // Standard UI updates
+  markPictureModified();
+  saveCurrentPictureState();
+
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+  updateEditorColorPickers();
+  updateConvertOptions();
+  updateFileInfo();
+  updatePictureTabBar();
+  renderScreen();
+  editorRender();
+}
+
+/**
  * Convert SCR to ULA+ (add default palette)
  */
 function convertScrToUlaPlus() {
@@ -19114,6 +19778,7 @@ function convertScrToUlaPlus() {
   currentFormat = FORMAT.SCR_ULAPLUS;
   ulaPlusPalette = defaultPalette.slice();
   isUlaPlusMode = true;
+  resetUlaNextMode();
   resetUlaPlusColors();
 
   // Update internal picture format
@@ -19191,7 +19856,7 @@ function updateExportAsmButton() {
   const embedDataChk = document.getElementById('editorEmbedDataChk');
   if (!exportSelect || !exportBtn) return;
 
-  const supportsAsm = currentFormat === FORMAT.BSC || currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.MGH || currentFormat === FORMAT.RGB3 || currentFormat === FORMAT.IFL || currentFormat === FORMAT.SCR_ULAPLUS || currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2;
+  const supportsAsm = currentFormat === FORMAT.BSC || currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.MGH || currentFormat === FORMAT.RGB3 || currentFormat === FORMAT.IFL || currentFormat === FORMAT.SCR_ULAPLUS || currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 || currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD;
   const isSpecscii = currentFormat === FORMAT.SPECSCII;
 
   // Build export options based on current format
@@ -19209,6 +19874,10 @@ function updateExportAsmButton() {
       options.push({ value: 'asm', label: 'ASM (ULA+ palette)' });
     } else if (currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) {
       options.push({ value: 'asm', label: 'ASM (Next Layer 2 .nex)' });
+    } else if (currentFormat === FORMAT.LORES) {
+      options.push({ value: 'asm', label: 'ASM (Next LoRes .nex)' });
+    } else if (currentFormat === FORMAT.LORES_RAD) {
+      options.push({ value: 'asm', label: 'ASM (Next LoRes Radastan .nex)' });
     }
   }
   if (isSpecscii) {
@@ -20862,6 +21531,322 @@ function convertAnyToScr() {
 }
 
 // ============================================================================
+// LoRes Cross-Format Conversions
+// ============================================================================
+
+/**
+ * Convert any format → LoRes 128×96 (lossy: render to canvas, downscale, quantize to 256 RGB332 colors)
+ */
+function convertAnyToLores() {
+  saveUndoState();
+  const srcCanvas = renderCurrentToRgbaCanvas();
+  if (!srcCanvas) return;
+
+  // Downscale to 128×96
+  const scaledCanvas = document.createElement('canvas');
+  scaledCanvas.width = 128;
+  scaledCanvas.height = 96;
+  const sctx = scaledCanvas.getContext('2d');
+  sctx.imageSmoothingEnabled = true;
+  sctx.drawImage(srcCanvas, 0, 0, 128, 96);
+
+  const palette = typeof generateDefaultNextPalette === 'function' ? generateDefaultNextPalette() : null;
+  if (!palette) return;
+
+  // Quantize to nearest RGB332 palette entry (row-major, 128×96)
+  const ctx = scaledCanvas.getContext('2d');
+  const imgData = ctx.getImageData(0, 0, 128, 96);
+  const src = imgData.data;
+  const pixelData = new Uint8Array(LORES.PIXEL_DATA_SIZE);
+
+  for (let y = 0; y < 96; y++) {
+    for (let x = 0; x < 128; x++) {
+      const si = (y * 128 + x) * 4;
+      const r = src[si], g = src[si + 1], b = src[si + 2];
+      let bestIdx = 0, bestDist = Infinity;
+      for (let i = 0; i < 256; i++) {
+        const pr = palette[i][0], pg = palette[i][1], pb = palette[i][2];
+        const dr = r - pr, dg = g - pg, db = b - pb;
+        const dist = dr * dr + dg * dg + db * db;
+        if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+      }
+      pixelData[y * 128 + x] = bestIdx;
+    }
+  }
+
+  screenData = pixelData;
+  currentFormat = FORMAT.LORES;
+  currentFileName = currentFileName.replace(/\.[^.]+$/, '.slr');
+  currentPicture = null;
+  nxiResolvedPalette = palette;
+
+  markPictureModified();
+  saveCurrentPictureState();
+  if (typeof toggleFormatControlsVisibility === 'function') toggleFormatControlsVisibility();
+  updateEditorColorPickers();
+  updateExportAsmButton();
+  updateConvertOptions();
+  updateFileInfo();
+  updatePictureTabBar();
+  renderScreen();
+  editorRender();
+}
+
+/**
+ * Convert LoRes → NXI 256×192 (upscale 2×, build NXI with RGB332 palette)
+ */
+function convertLoresToNxi() {
+  if (!screenData || screenData.length < LORES.PIXEL_DATA_SIZE) {
+    alert('No valid LoRes data to convert');
+    return;
+  }
+
+  saveUndoState();
+
+  const palette = typeof generateDefaultNextPalette === 'function' ? generateDefaultNextPalette() : null;
+  if (!palette) return;
+
+  const nxiData = new Uint8Array(NXI.TOTAL_SIZE);
+
+  // Write 256-entry RGB333 palette (512 bytes)
+  for (let i = 0; i < 256; i++) {
+    const rgb = palette[i];
+    const r3 = Math.round(rgb[0] * 7 / 255);
+    const g3 = Math.round(rgb[1] * 7 / 255);
+    const b3 = Math.round(rgb[2] * 7 / 255);
+    nxiData[i * 2] = (r3 << 5) | (g3 << 2) | (b3 >> 1);
+    nxiData[i * 2 + 1] = b3 & 1;
+  }
+
+  // Upscale 128×96 → 256×192 (2× nearest-neighbor)
+  for (let y = 0; y < 96; y++) {
+    for (let x = 0; x < 128; x++) {
+      const palIdx = screenData[y * 128 + x];
+      const dx = x * 2;
+      const dy = y * 2;
+      nxiData[NXI.PIXEL_OFFSET + dy * 256 + dx] = palIdx;
+      nxiData[NXI.PIXEL_OFFSET + dy * 256 + dx + 1] = palIdx;
+      nxiData[NXI.PIXEL_OFFSET + (dy + 1) * 256 + dx] = palIdx;
+      nxiData[NXI.PIXEL_OFFSET + (dy + 1) * 256 + dx + 1] = palIdx;
+    }
+  }
+
+  finishLossyConversion(nxiData, FORMAT.NXI, '256x192', 'nxi');
+}
+
+/**
+ * Convert LoRes → SL2 256×192 (upscale 2×, quantize to default Next palette)
+ */
+function convertLoresToSl2() {
+  if (!screenData || screenData.length < LORES.PIXEL_DATA_SIZE) {
+    alert('No valid LoRes data to convert');
+    return;
+  }
+
+  saveUndoState();
+
+  const sl2Data = new Uint8Array(SL2.RAW_SIZE);
+
+  // Upscale 128×96 → 256×192 (2× nearest-neighbor)
+  for (let y = 0; y < 96; y++) {
+    for (let x = 0; x < 128; x++) {
+      const palIdx = screenData[y * 128 + x];
+      const dx = x * 2;
+      const dy = y * 2;
+      sl2Data[dy * 256 + dx] = palIdx;
+      sl2Data[dy * 256 + dx + 1] = palIdx;
+      sl2Data[(dy + 1) * 256 + dx] = palIdx;
+      sl2Data[(dy + 1) * 256 + dx + 1] = palIdx;
+    }
+  }
+
+  finishLossyConversion(sl2Data, FORMAT.SL2, '256x192', 'sl2');
+}
+
+/**
+ * Convert LoRes Radastan → LoRes 256-color (expand 4bpp→8bpp, preserve palette indices)
+ */
+function convertLoresRadToLores() {
+  if (!screenData || screenData.length < LORES_RAD.PIXEL_DATA_SIZE) {
+    alert('No valid Radastan data to convert');
+    return;
+  }
+
+  saveUndoState();
+
+  const pixelData = new Uint8Array(LORES.PIXEL_DATA_SIZE);
+
+  // Unpack 4bpp nibbles to 8bpp bytes (palette index preserved)
+  for (let y = 0; y < LORES_RAD.HEIGHT; y++) {
+    for (let x = 0; x < LORES_RAD.WIDTH; x++) {
+      const byteOffset = y * LORES_RAD.BYTES_PER_ROW + (x >> 1);
+      const byteVal = screenData[byteOffset] || 0;
+      const colorIdx = (x & 1) === 0 ? (byteVal >> 4) & 0x0F : byteVal & 0x0F;
+      pixelData[y * LORES.WIDTH + x] = colorIdx;
+    }
+  }
+
+  screenData = pixelData;
+  currentFormat = FORMAT.LORES;
+  currentFileName = currentFileName.replace(/\.[^.]+$/, '.slr');
+  currentPicture = null;
+  nxiResolvedPalette = generateDefaultNextPalette();
+
+  markPictureModified();
+  saveCurrentPictureState();
+  if (typeof toggleFormatControlsVisibility === 'function') toggleFormatControlsVisibility();
+  updateEditorColorPickers();
+  updateExportAsmButton();
+  updateConvertOptions();
+  updateFileInfo();
+  updatePictureTabBar();
+  renderScreen();
+  editorRender();
+}
+
+/**
+ * Convert LoRes Radastan → NXI 256×192 (render + upscale 2×)
+ */
+function convertLoresRadToNxi() {
+  if (!screenData || screenData.length < LORES_RAD.PIXEL_DATA_SIZE) {
+    alert('No valid Radastan data to convert');
+    return;
+  }
+
+  saveUndoState();
+
+  const palette = typeof generateDefaultNext4bppPalette === 'function' ? generateDefaultNext4bppPalette() : null;
+  if (!palette) return;
+
+  // Build full 256-entry RGB333 palette for NXI (first 16 from Radastan, rest default)
+  const fullPalette = typeof generateDefaultNextPalette === 'function' ? generateDefaultNextPalette() : null;
+  if (!fullPalette) return;
+
+  const nxiData = new Uint8Array(NXI.TOTAL_SIZE);
+
+  // Write 256-entry RGB333 palette (512 bytes)
+  for (let i = 0; i < 256; i++) {
+    const rgb = fullPalette[i];
+    const r3 = Math.round(rgb[0] * 7 / 255);
+    const g3 = Math.round(rgb[1] * 7 / 255);
+    const b3 = Math.round(rgb[2] * 7 / 255);
+    nxiData[i * 2] = (r3 << 5) | (g3 << 2) | (b3 >> 1);
+    nxiData[i * 2 + 1] = b3 & 1;
+  }
+
+  // Unpack and upscale 128×96 → 256×192 (2× nearest-neighbor)
+  for (let y = 0; y < 96; y++) {
+    for (let x = 0; x < 128; x++) {
+      const byteOffset = y * LORES_RAD.BYTES_PER_ROW + (x >> 1);
+      const byteVal = screenData[byteOffset] || 0;
+      const palIdx = (x & 1) === 0 ? (byteVal >> 4) & 0x0F : byteVal & 0x0F;
+      const dx = x * 2;
+      const dy = y * 2;
+      nxiData[NXI.PIXEL_OFFSET + dy * 256 + dx] = palIdx;
+      nxiData[NXI.PIXEL_OFFSET + dy * 256 + dx + 1] = palIdx;
+      nxiData[NXI.PIXEL_OFFSET + (dy + 1) * 256 + dx] = palIdx;
+      nxiData[NXI.PIXEL_OFFSET + (dy + 1) * 256 + dx + 1] = palIdx;
+    }
+  }
+
+  finishLossyConversion(nxiData, FORMAT.NXI, '256x192', 'nxi');
+}
+
+/**
+ * Convert LoRes Radastan → SL2 256×192 (render + upscale 2×)
+ */
+function convertLoresRadToSl2() {
+  if (!screenData || screenData.length < LORES_RAD.PIXEL_DATA_SIZE) {
+    alert('No valid Radastan data to convert');
+    return;
+  }
+
+  saveUndoState();
+
+  const sl2Data = new Uint8Array(SL2.RAW_SIZE);
+
+  // Unpack and upscale 128×96 → 256×192 (2× nearest-neighbor)
+  for (let y = 0; y < 96; y++) {
+    for (let x = 0; x < 128; x++) {
+      const byteOffset = y * LORES_RAD.BYTES_PER_ROW + (x >> 1);
+      const byteVal = screenData[byteOffset] || 0;
+      const palIdx = (x & 1) === 0 ? (byteVal >> 4) & 0x0F : byteVal & 0x0F;
+      const dx = x * 2;
+      const dy = y * 2;
+      sl2Data[dy * 256 + dx] = palIdx;
+      sl2Data[dy * 256 + dx + 1] = palIdx;
+      sl2Data[(dy + 1) * 256 + dx] = palIdx;
+      sl2Data[(dy + 1) * 256 + dx + 1] = palIdx;
+    }
+  }
+
+  finishLossyConversion(sl2Data, FORMAT.SL2, '256x192', 'sl2');
+}
+
+/**
+ * Convert any format → LoRes Radastan (render, downscale 128×96, quantize to 16 colors, pack nibbles)
+ */
+function convertAnyToLoresRad() {
+  saveUndoState();
+  const srcCanvas = renderCurrentToRgbaCanvas();
+  if (!srcCanvas) return;
+
+  // Downscale to 128×96
+  const scaledCanvas = document.createElement('canvas');
+  scaledCanvas.width = 128;
+  scaledCanvas.height = 96;
+  const sctx = scaledCanvas.getContext('2d');
+  sctx.imageSmoothingEnabled = true;
+  sctx.drawImage(srcCanvas, 0, 0, 128, 96);
+
+  const palette = typeof generateDefaultNext4bppPalette === 'function' ? generateDefaultNext4bppPalette() : null;
+  if (!palette) return;
+
+  // Quantize to nearest of 16 palette entries, then pack into 4bpp nibbles
+  const ctx = scaledCanvas.getContext('2d');
+  const imgData = ctx.getImageData(0, 0, 128, 96);
+  const src = imgData.data;
+  const pixelData = new Uint8Array(LORES_RAD.PIXEL_DATA_SIZE);
+
+  for (let y = 0; y < 96; y++) {
+    for (let x = 0; x < 128; x++) {
+      const si = (y * 128 + x) * 4;
+      const r = src[si], g = src[si + 1], b = src[si + 2];
+      let bestIdx = 0, bestDist = Infinity;
+      for (let i = 0; i < 16; i++) {
+        const pr = palette[i][0], pg = palette[i][1], pb = palette[i][2];
+        const dr = r - pr, dg = g - pg, db = b - pb;
+        const dist = dr * dr + dg * dg + db * db;
+        if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+      }
+      const byteOffset = y * LORES_RAD.BYTES_PER_ROW + (x >> 1);
+      if ((x & 1) === 0) {
+        pixelData[byteOffset] = (bestIdx << 4);
+      } else {
+        pixelData[byteOffset] |= bestIdx;
+      }
+    }
+  }
+
+  screenData = pixelData;
+  currentFormat = FORMAT.LORES_RAD;
+  currentFileName = currentFileName.replace(/\.[^.]+$/, '.rad');
+  currentPicture = null;
+  nxiResolvedPalette = palette;
+
+  markPictureModified();
+  saveCurrentPictureState();
+  if (typeof toggleFormatControlsVisibility === 'function') toggleFormatControlsVisibility();
+  updateEditorColorPickers();
+  updateExportAsmButton();
+  updateConvertOptions();
+  updateFileInfo();
+  updatePictureTabBar();
+  renderScreen();
+  editorRender();
+}
+
+// ============================================================================
 // Text Tool
 // ============================================================================
 
@@ -21604,6 +22589,7 @@ function initEditor() {
   setupCollapsible('refHeader', 'refControlsContent', 'refExpandIcon', 'spectralab_collapse_reference');
   setupCollapsible('viewSettingsHeader', 'viewSettingsContent', 'viewSettingsExpandIcon', 'spectralab_collapse_viewSettings');
   setupCollapsible('fileInfoHeader', 'fileInfoContent', 'fileInfoExpandIcon', 'spectralab_collapse_fileInfo');
+  setupCollapsible('specsciiPalHeader', 'specsciiPalContent', 'specsciiPalExpandIcon', 'spectralab_collapse_specsciiPal', true);
   setupCollapsible('layerHeader', 'layerControls', 'layerExpandIcon', 'spectralab_collapse_layers');
   setupCollapsible('customBrushHeader', 'customBrushControls', 'customBrushExpandIcon', 'spectralab_collapse_customBrush');
   setupCollapsible('displayFiltersHeader', 'displayFiltersContent', 'displayFiltersExpandIcon', 'spectralab_collapse_displayFilters');
@@ -21856,6 +22842,7 @@ function initEditor() {
   });
   document.getElementById('exportImageOkBtn')?.addEventListener('click', exportImageToFile);
   document.getElementById('exportImageGigaMode')?.addEventListener('change', updateExportImageDims);
+  document.getElementById('exportImageFlashMode')?.addEventListener('change', updateExportImageDims);
   document.getElementById('editorExportBtn')?.addEventListener('click', () => {
     const exportSelect = /** @type {HTMLSelectElement|null} */ (document.getElementById('editorExportSelect'));
     if (!exportSelect) return;
@@ -21868,6 +22855,8 @@ function initEditor() {
       else if (currentFormat === FORMAT.IFL) exportIflAsm();
       else if (currentFormat === FORMAT.SCR_ULAPLUS) exportUlaPlusAsm();
       else if (currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) exportNextL2Asm();
+      else if (currentFormat === FORMAT.LORES) exportLoresAsm();
+      else if (currentFormat === FORMAT.LORES_RAD) exportLoresRadAsm();
     } else if (value === 'scr') {
       if (currentFormat !== FORMAT.SPECSCII || !specsciiCharGrid) return;
       const scrData = exportSpecsciiToScr();
@@ -21899,6 +22888,18 @@ function initEditor() {
 
   // SPECSCII palette click handler
   document.getElementById('specsciiPaletteCanvas')?.addEventListener('click', handleSpecsciiPaletteClick);
+
+  // SPECSCII palette sort toggle
+  const savedSort = localStorage.getItem('spectraLabSpecsciiSortWeight');
+  specsciiPaletteSortByWeight = savedSort === null ? true : savedSort === '1';
+  if (specsciiPaletteSortByWeight) document.getElementById('specsciiPalSortBtn')?.classList.add('selected');
+  document.getElementById('specsciiPalSortBtn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    specsciiPaletteSortByWeight = !specsciiPaletteSortByWeight;
+    document.getElementById('specsciiPalSortBtn')?.classList.toggle('selected', specsciiPaletteSortByWeight);
+    localStorage.setItem('spectraLabSpecsciiSortWeight', specsciiPaletteSortByWeight ? '1' : '0');
+    renderSpecsciiPalette();
+  });
 
   // Reset to defaults button
   document.getElementById('resetSettingsBtn')?.addEventListener('click', () => {

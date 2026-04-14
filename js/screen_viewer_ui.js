@@ -135,6 +135,10 @@ function initScreenViewerUI() {
       loadNxiFile(file);
     } else if (typeof isSl2File === 'function' && isSl2File(file.name)) {
       loadSl2File(file);
+    } else if (typeof isLoresRadFile === 'function' && isLoresRadFile(file.name)) {
+      loadLoresRadFile(file);
+    } else if (typeof isLoresFile === 'function' && isLoresFile(file.name)) {
+      loadLoresFile(file);
     } else {
       loadScreenFile(file);
     }

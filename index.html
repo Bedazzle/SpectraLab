@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.73 -->
+<!-- SpectraLab v1.76 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -1471,7 +1471,7 @@
       <div class="panel-content">
         <!-- File input -->
         <div class="control-group">
-          <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.bsp,.bmc4,.ifl,.mlt,.mc,.3,.img,.mg1,.mg2,.mg4,.mg8,.hlr,.stl,.nxi,.sl2,.specscii,.sca,.zxp,.ch$,.chr$,.ch-,.slp,.slw,.sna,.z80,.btile,.wtile,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
+          <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.bsp,.bmc4,.ifl,.mlt,.mc,.3,.img,.mg1,.mg2,.mg4,.mg8,.hlr,.stl,.nxi,.sl2,.slr,.rad,.specscii,.sca,.zxp,.ch$,.chr$,.ch-,.slp,.slw,.sna,.z80,.btile,.wtile,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
         </div>
 
         <!-- New and Save buttons -->
@@ -2151,13 +2151,23 @@
               </div>
             </div>
             <div id="editorSpecsciiSection" style="display:none; margin-bottom: 8px;">
-              <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">CHARACTER</div>
-              <canvas id="specsciiPaletteCanvas" width="64" height="112"
-                      style="cursor:pointer; border:1px solid var(--border-color); display:block; width:100%; image-rendering: pixelated;"></canvas>
-              <div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
-                <canvas id="specsciiCharPreview" width="32" height="32"
-                        style="border:1px solid var(--border-color); image-rendering: pixelated; flex-shrink:0;"></canvas>
-                <div id="specsciiCharInfo" style="font-size: 10px; color: var(--text-secondary);">Char: 0x20 (Space)</div>
+              <div id="specsciiPalHeader" class="collapsible-header" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 4px 0;">
+                <div style="display: flex; align-items: center; gap: 4px;">
+                  <span id="specsciiPalExpandIcon" style="font-size: 10px; width: 12px;">▼</span>
+                  <span style="font-size: 10px; color: var(--text-tertiary);">CHARACTER</span>
+                </div>
+                <button id="specsciiPalSortBtn" class="editor-tool-btn"
+                        title="Sort by visual weight"
+                        style="padding: 1px 4px; font-size: 9px; margin:0;">Sort</button>
+              </div>
+              <div id="specsciiPalContent">
+                <canvas id="specsciiPaletteCanvas" width="64" height="112"
+                        style="cursor:pointer; border:1px solid var(--border-color); display:block; width:100%; image-rendering: pixelated;"></canvas>
+                <div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
+                  <canvas id="specsciiCharPreview" width="32" height="32"
+                          style="border:1px solid var(--border-color); image-rendering: pixelated; flex-shrink:0;"></canvas>
+                  <div id="specsciiCharInfo" style="font-size: 10px; color: var(--text-secondary);">Char: 0x20 (Space)</div>
+                </div>
               </div>
             </div>
             <div id="editorPositionInfo" class="editor-position-info">
@@ -2881,6 +2891,8 @@
             <option value="sl2">SL2 (.sl2) — 256&times;192, 256-color (default palette)</option>
             <option value="sl2_320">SL2 (.sl2) — 320&times;256, 256-color (default palette)</option>
             <option value="sl2_640">SL2 (.sl2) — 640&times;256, 16-color 4bpp (default palette)</option>
+            <option value="lores">SLR (.slr) — 128&times;96, 256-color LoRes</option>
+            <option value="lores_rad">RAD (.rad) — 128&times;96, 16-color LoRes Radastan</option>
           </optgroup>
         </select>
       </label>
@@ -3229,7 +3241,14 @@
           <tr><td style="color: var(--text-secondary);">Shift+click</td><td>Copy/swap: mark source, then click=copy or Shift+click=swap</td></tr>
           <tr><td style="color: var(--text-secondary);">Alt+click</td><td>Pick ink+paper from cell (eyedropper)</td></tr>
         </table>
-        <p style="font-size: 11px; margin: 4px 0 0;">Ink and paper must be from same CLUT. Convert SCR↔ULA+ via Transform tab.</p>
+        <p style="font-size: 11px; margin: 4px 0 0;">Ink and paper must be from same CLUT. Convert SCR&harr;ULA+ via Transform tab.</p>
+        <div style="font-weight: bold; margin: 12px 0 6px;">ULANext Mode (Next extended palette)</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td style="width: 70px; color: var(--text-secondary);">Ink mask</td><td>Configurable split: $01&ndash;$FF (2/128 to 256/1 ink/paper)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Palette</td><td>8-bit (1-byte) or 9-bit (2-byte RGB333), auto-detected</td></tr>
+          <tr><td style="color: var(--text-secondary);">Flash</td><td>Disabled (bits used for palette indexing)</td></tr>
+        </table>
+        <p style="font-size: 11px; margin: 4px 0 0;">Auto-detected from .scr files (6945&ndash;7426 bytes). Round-trip save preserves mask and palette.</p>
         <div style="font-weight: bold; margin: 12px 0 6px;">Barcodes (Border Patterns)</div>
         <table style="width: 100%; font-size: 11px;">
           <tr><td style="width: 80px; color: var(--text-secondary);">Shift+click</td><td>Start capture, then click border</td></tr>
@@ -3256,6 +3275,7 @@
         <table style="width: 100%; font-size: 11px;">
           <tr><td style="width: 70px; color: var(--text-secondary);">.scr</td><td>6912b</td><td>Standard screen</td></tr>
           <tr><td style="color: var(--text-secondary);">.scr</td><td>6976b</td><td>ULA+ (64-color palette)</td></tr>
+          <tr><td style="color: var(--text-secondary);">.scr</td><td>6945&ndash;7426b</td><td>ULANext (Next extended palette)</td></tr>
           <tr><td style="color: var(--text-secondary);">.scr</td><td>6144b</td><td>Monochrome full</td></tr>
           <tr><td style="color: var(--text-secondary);">.scr</td><td>4096b</td><td>Monochrome 2/3</td></tr>
           <tr><td style="color: var(--text-secondary);">.scr</td><td>2048b</td><td>Monochrome 1/3</td></tr>
@@ -3277,6 +3297,8 @@
           <tr><td style="color: var(--text-secondary);">.nxi</td><td>81952b</td><td>Next Layer 2 640&times;256 + palette</td></tr>
           <tr><td style="color: var(--text-secondary);">.sl2</td><td>49152b</td><td>Next Layer 2 256&times;192 (default palette)</td></tr>
           <tr><td style="color: var(--text-secondary);">.sl2</td><td>81920b</td><td>Next Layer 2 320&times;256 or 640&times;256</td></tr>
+          <tr><td style="color: var(--text-secondary);">.slr</td><td>12288b</td><td>Next LoRes 128&times;96 (256-color)</td></tr>
+          <tr><td style="color: var(--text-secondary);">.rad</td><td>6144b</td><td>Next LoRes Radastan 128&times;96 (16-color 4bpp)</td></tr>
         </table>
         <div style="font-weight: bold; margin: 12px 0 6px;">View-Only Formats</div>
         <table style="width: 100%; font-size: 11px;">
@@ -3294,7 +3316,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.73</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.76</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">
@@ -3477,6 +3499,8 @@
               <optgroup label="Variable size">
                 <option value="zxp">ZXP</option>
                 <option value="ch$">chr$</option>
+                <option value="btile">btile (Nirvana 16×16)</option>
+                <option value="wtile">wtile (Nirvana 24×16)</option>
               </optgroup>
               <optgroup label="ZX Next">
                 <option value="nxi">NXI 256×192</option>
@@ -3485,6 +3509,8 @@
                 <option value="sl2">SL2 256×192</option>
                 <option value="sl2_320">SL2 320×256</option>
                 <option value="sl2_640">SL2 640×256</option>
+                <option value="lores">SLR 128×96</option>
+                <option value="lores_rad">RAD 128×96 (16c)</option>
               </optgroup>
             </select>
           </label>
@@ -3728,6 +3754,14 @@
       </select>
     </div>
 
+    <div id="exportImageFlashRow" style="margin-bottom: 10px; display: none;">
+      <label style="font-size: 11px; display: block; margin-bottom: 4px;">Flash attributes detected:</label>
+      <select id="exportImageFlashMode" style="width: 100%; padding: 4px; font-size: 11px;">
+        <option value="animated">Animated GIF (two-frame flash)</option>
+        <option value="static">Static PNG (normal phase only)</option>
+      </select>
+    </div>
+
     <div style="margin-bottom: 12px; font-size: 11px; color: var(--text-secondary);">
       Output: <span id="exportImageDimsInfo">512 × 384</span>
     </div>
@@ -3754,6 +3788,7 @@
 <script src="js/ifl_asm_export.js"></script>
 <script src="js/ulaplus_asm_export.js"></script>
 <script src="js/next_l2_asm_export.js"></script>
+<script src="js/lores_asm_export.js"></script>
 <script src="js/snapshot_loader.js"></script>
 <script src="js/screen_viewer_ui.js"></script>
 <script src="js/sca_editor.js"></script>
