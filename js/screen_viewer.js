@@ -738,6 +738,70 @@ function loadPalettes() {
   }
 }
 
+/**
+ * Parses a text file with 16 color definitions and applies as a custom palette.
+ * Each line: #RRGGBB or R G B (0-255, space/comma separated).
+ * Lines starting with ; or // and blank lines are skipped.
+ * @param {string} text - Contents of the palette text file
+ */
+function loadPaletteFromText(text) {
+  const lines = text.split(/\r?\n/);
+  const colors = [];
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line || line.startsWith(';') || line.startsWith('//')) continue;
+    if (line.startsWith('#')) {
+      // Hex format: #RRGGBB
+      const m = /^#([0-9A-Fa-f]{6})$/.exec(line);
+      if (m) {
+        colors.push('#' + m[1].toUpperCase());
+      }
+    } else {
+      // Decimal R G B (space or comma separated)
+      const parts = line.split(/[\s,]+/).map(Number);
+      if (parts.length >= 3 && parts.slice(0, 3).every(v => !isNaN(v) && v >= 0 && v <= 255)) {
+        const hex = '#' + parts.slice(0, 3).map(v => v.toString(16).padStart(2, '0').toUpperCase()).join('');
+        colors.push(hex);
+      }
+    }
+    if (colors.length >= 16) break;
+  }
+  if (colors.length < 16) {
+    alert('Palette file must contain at least 16 valid color lines. Found: ' + colors.length);
+    return;
+  }
+  const customPalette = { id: 'custom', name: 'Custom (loaded)', colors };
+  // Remove previous custom entry if present
+  const idx = PALETTES.findIndex(p => p.id === 'custom');
+  if (idx !== -1) PALETTES.splice(idx, 1);
+  PALETTES.push(customPalette);
+  // Add/select option in dropdown
+  const paletteSelect = /** @type {HTMLSelectElement} */ (document.getElementById('paletteSelect'));
+  if (paletteSelect) {
+    let opt = paletteSelect.querySelector('option[value="custom"]');
+    if (!opt) {
+      opt = document.createElement('option');
+      opt.value = 'custom';
+      opt.textContent = 'Custom (loaded)';
+      paletteSelect.appendChild(opt);
+    }
+    paletteSelect.value = 'custom';
+  }
+  currentPaletteId = 'custom';
+  applyPalette(customPalette);
+  renderScreen();
+  // Update editor palettes if active
+  if (typeof editorActive !== 'undefined' && editorActive && typeof updateColorPreview === 'function') {
+    updateColorPreview();
+  }
+  if (typeof editorActive !== 'undefined' && editorActive && currentFormat === FORMAT.ATTR_53C && typeof build53cPalette === 'function') {
+    build53cPalette();
+  }
+  if (typeof editorActive !== 'undefined' && editorActive && currentFormat === FORMAT.RGB3 && typeof buildRgb3Palette === 'function') {
+    buildRgb3Palette();
+  }
+}
+
 // ============================================================================
 // State
 // ============================================================================

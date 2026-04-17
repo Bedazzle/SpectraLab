@@ -1,5 +1,8 @@
 # SpectraLab Version History
 
+## v1.81
+- Load external palette from text file: click the 📂 button next to the Palette dropdown to load a custom 16-color palette from a `.txt`, `.pal`, or `.csv` file. Supports `#RRGGBB` hex and `R G B` decimal formats (one color per line, comments with `;` or `//`). The custom palette appears as "Custom (loaded)" in the dropdown; reverts on page reload.
+
 ## v1.80
 - Next palette color editing: **Ctrl+click** on any cell in the NXI/SL2/LoRes/LoRes Radastan palette grid to open the RGB333 color editor dialog (R: 0-7, G: 0-7, B: 0-7 sliders, original/new color preview, palette index display). Supports undo/redo.
 

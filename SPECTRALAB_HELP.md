@@ -111,6 +111,8 @@ Appears at the top of View Settings when a 53c/atr picture is loaded:
 #### Palette
 Select display palette from the dropdown. Available palettes depend on the loaded palette definitions.
 
+Click the 📂 button next to the dropdown to load a custom 16-color palette from a text file (`.txt`, `.pal`, `.csv`). The file should contain 16 lines, one color per line (indices 0-7 = regular, 8-15 = bright). Each line can be either `#RRGGBB` hex or three space/comma-separated decimal `R G B` values (0-255). Lines starting with `;` or `//` and blank lines are treated as comments and skipped. The loaded palette appears as "Custom (loaded)" in the dropdown. It is not persisted — page reload reverts to the default palette.
+
 #### Toggles
 - **Flash** — enable/disable flash animation (also toggle with **F** key)
 - **Attrs** — show/hide attribute overlay. When attributes are off, the bitmap is displayed as black ink on white paper (1 bits = black, 0 bits = white)

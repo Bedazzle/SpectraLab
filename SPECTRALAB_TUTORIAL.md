@@ -58,6 +58,16 @@ If the grid is hard to see against dark or light artwork:
 
 Select a different display palette from the **Palette** dropdown in View Settings. Different palettes simulate different monitor characteristics and color profiles.
 
+### Load Custom Palette from File
+
+1. Click the 📂 button next to the **Palette** dropdown
+2. Select a text file (`.txt`, `.pal`, or `.csv`) containing 16 color definitions
+3. Each line defines one color: `#RRGGBB` hex or `R G B` decimal values (0-255)
+4. Lines 1-8 define regular colors, lines 9-16 define bright colors
+5. Comments (`;` or `//`) and blank lines are skipped
+6. The palette appears as "Custom (loaded)" in the dropdown
+7. To revert, select any built-in palette from the dropdown, or reload the page
+
 ### Change Border Color and Size
 
 1. Select a **Border** color: Black, Blue, Red, Magenta, Green, Cyan, Yellow, or White

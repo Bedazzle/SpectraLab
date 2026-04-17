@@ -371,6 +371,24 @@ function initScreenViewerUI() {
     saveSettings();
   });
 
+  // Load palette from text file
+  const paletteFileInput = /** @type {HTMLInputElement|null} */ (document.getElementById('paletteFileInput'));
+  document.getElementById('loadPaletteBtn')?.addEventListener('click', function() {
+    paletteFileInput?.click();
+  });
+  paletteFileInput?.addEventListener('change', function() {
+    const file = paletteFileInput.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function() {
+      if (typeof reader.result === 'string') {
+        loadPaletteFromText(reader.result);
+      }
+    };
+    reader.readAsText(file);
+    paletteFileInput.value = '';
+  });
+
   // Canvas click handler - focus canvas for keyboard shortcuts
   screenCanvas?.addEventListener('click', function() {
     screenCanvas.focus();
