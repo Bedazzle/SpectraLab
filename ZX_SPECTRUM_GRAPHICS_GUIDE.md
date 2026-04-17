@@ -94,6 +94,28 @@ Pixel at (72, 37):
                    = 6281  (0x1889)
 ```
 
+### Snow Effect
+
+The ULA fetches screen bytes from RAM continuously during the active 256 x 192 scan — two memory accesses every 8 T-states (one bitmap byte, one attribute byte). The Z80 and the ULA therefore share the lower 16 KB of RAM (`0x4000 - 0x7FFF` on a 48K machine, bank 5 on 128K). Most of the time the ULA wins the bus and the CPU is stalled by contention, but during the Z80's **memory-refresh** cycle the CPU actually drives the address bus with the current value of the `I` (interrupt vector) and `R` (refresh) registers — and if the high byte of that address lands in the ULA's display area, the two chips can end up driving the bus at the same time.
+
+The visible result is **snow**: random single-byte corruption of the bitmap or attribute stream, appearing as bright speckles that sparkle along the raster for as long as the conflict persists. The rules on original Sinclair hardware are roughly:
+
+- `I` < `0x40` → `I:R` points to ROM → no conflict, no snow
+- `0x40` <= `I` <= `0x7F` → `I:R` points into contended screen RAM → snow
+- `0x80` <= `I` <= `0xBF` on 48K → `I:R` points into uncontended RAM → no snow
+- `0xC0` <= `I` <= `0xFF` on 128K → points into banked RAM; snow depends on which bank is currently paged at `0xC000` (snow appears if the visible screen bank is paged there)
+
+The effect is tied to Sinclair's specific ULA arbitration. It varies noticeably between machines:
+
+- **ZX Spectrum 48K / 128K / +2 / +3 (Sinclair / Amstrad)** — classic snow behavior as described above.
+- **Pentagon 128K / Pentagon 1024** — uses a different memory-access scheme with no contention and no memory-refresh/ULA conflict. Snow does not occur; programs that *rely* on I pointing into contended RAM without causing snow (i.e. were only ever tested on a Pentagon) can ship with latent snow bugs on real Sinclair hardware.
+- **Scorpion ZS-256** — similar to Pentagon: no contention, no snow.
+- **Most Soviet/Eastern European clones** (Leningrad, Baltic, Krasnogorsk, Sintez, etc.) — clone-specific; many use discrete logic replacing the ULA and simply do not reproduce the bus-arbitration quirk, so no snow.
+- **ZX Spectrum Next** — contention is emulated in configurable modes; snow is *not* emulated by default and programs that depend on it behave as if on a Pentagon-style machine.
+- **Emulators** — many do not model snow at all; those that do (Fuse, ZXSpectrum4, CSpect in accurate modes, etc.) usually offer it as an option.
+
+Programs have used snow both as a bug to avoid (keep `I < 0x40`, the BASIC ROM convention) and occasionally as an intentional effect in demos, where setting `I` into the display file produces free animated noise without any CPU cost.
+
 ---
 
 ## 3. Attribute Byte Format
@@ -129,6 +151,41 @@ bright = (attr >> 6) & 0x01
 flash  = (attr >> 7) & 0x01
 ```
 
+### Flash Timing
+
+Setting the FLASH bit tells the ULA to periodically swap ink and paper for that cell. The toggle is driven by a free-running counter **inside the ULA itself**, not by any software timer: flash keeps alternating even with interrupts disabled (`DI:HALT` in assembly) and regardless of whether the ROM is maintaining the BASIC `FRAMES` system variable. The ULA increments its own frame counter on every video field and uses bit 4 of that counter as the flash-phase signal, so the phase flips once every 16 video frames whether or not the CPU is running.
+
+The *visual* flash speed therefore depends on the frame rate of the host, which varies between machines:
+
+| Machine                         | Frame rate  | Phase length | Full cycle |
+|---------------------------------|-------------|--------------|------------|
+| ZX Spectrum 48K (issue 2/3)     | ~50.08 Hz   | ~319 ms      | ~639 ms    |
+| ZX Spectrum 128K / +2 / +3      | ~50.02 Hz   | ~320 ms      | ~640 ms    |
+| Pentagon 128K                   | ~48.83 Hz   | ~328 ms      | ~655 ms    |
+| Scorpion ZS-256                 | ~48.83 Hz   | ~328 ms      | ~655 ms    |
+| Timex TS/TC 2068 (NTSC mode)    | ~59.0  Hz   | ~271 ms      | ~542 ms    |
+| ZX Spectrum Next (50/60 Hz)     | 50 / 60 Hz  | 320 / 267 ms | 640 / 533 ms |
+
+Because flash is tied to frame count, demos and intros that use FLASH as a *timing* aid (rather than just decoration) look noticeably different on Pentagon vs. original Sinclair hardware. A loader that blinks "PRESS ANY KEY" exactly two times per second on a 48K Speccy (~640 ms cycle ≈ 1.56 Hz, close enough) ends up slightly slower on Pentagon.
+
+When some software exports a flashing picture as animated GIF (or similar PC-side format), it usually approximates the stock Sinclair behavior with a 320 ms per-phase frame delay. This matches the 48K/128K/+2/+3 timing; Pentagon-authentic playback would need ~328 ms per phase.
+
+### Hidden Pixels (ink == paper)
+
+When a cell's `ink` and `paper` fields hold the same color index, every pixel in that 8 x 8 block renders as the same color on screen, regardless of the underlying bitmap bits. The bitmap data is still in memory -- it just isn't *visible* until the attribute byte is changed to use two different colors.
+
+ZX Spectrum authors exploited this as a side-channel for data that the player wasn't meant to see:
+
+- **Signatures and credits.** Artists drew their name or initials in `black ink on black paper` so it stayed invisible during loading / gameplay but became readable the instant someone POKEd a different ink or paper into the attribute file, or loaded the `.scr` into an editor. Many commercial loader screens carry such hidden tags.
+- **Cracker tags and re-release marks.** Scene crackers added their group name to pirated copies in the same way; competing groups would find each other's tags by cycling attributes.
+- **Easter eggs.** Extra artwork or messages hidden behind an apparently plain area (sky, border of a title screen, solid UI panels). Some programs revealed them by flipping the paper attribute at runtime.
+- **Copy-protection / fingerprinting.** A known hidden pattern can be used to verify that a file is the original, unmodified release. Tools that re-encode the screen (e.g. through PNG and back) destroy the watermark and so expose a tampered copy.
+- **Compression quirks.** Two cells that look identical on screen can still have wildly different bitmap bytes, which changes how well RLE / delta encoders compress the `.scr`. Loaders that de-dup "solid" cells by attribute alone will corrupt such data.
+
+**Loss during conversion to true-color formats.** Exporting a `.scr` to `.png`, `.jpg`, `.gif`, `.bmp`, etc. collapses each pixel to its rendered RGB value, so cells where `ink == paper` become uniform blocks of that single color. Round-tripping through any true-color format therefore **destroys the hidden bitmap data irreversibly**. The same happens when a screen is captured from an emulator/video signal or imported from a photo.
+
+To preserve hidden pixels you must either stay in a native attribute-aware format (`.scr`, `.bsc`, `.ifl`, `.mlt`, `.specscii`, etc.) or carry the raw attribute + bitmap bytes through a lossless binary container (ZIP, TAP, SNA, Z80, a custom asset blob). When some software converts between native attribute-based formats it usually keeps the bitmap bytes unchanged, so hidden patterns survive the round-trip and reappear if the cell is later recolored; when converting a `.scr` to a text-mode format such as `.specscii`, a careful converter matches each hidden cell to the best-fitting glyph so the bitmap still survives into the character representation.
+
 ---
 
 ## 4. Color Palette
@@ -162,6 +219,27 @@ There is no single "correct" set of RGB values for these colors. The actual appe
 | 5     | Cyan    | `#00FFFF` | 0   | 255 | 255 |
 | 6     | Yellow  | `#FFFF00` | 255 | 255 | 0   |
 | 7     | White   | `#FFFFFF` | 255 | 255 | 255 |
+
+### Dark Black vs Bright Black
+
+On genuine Sinclair hardware **bright black and normal black are the same color**. The ULA produces each primary on a one-bit line that is gated together with the BRIGHT bit into the video DAC, so when R = G = B = 0 the BRIGHT line has nothing to act on — all three outputs are held at ground regardless of its state. The Spectrum therefore exposes 15 visually distinct colors, not 16, and `BRIGHT 0, PAPER 0, INK 0` and `BRIGHT 1, PAPER 0, INK 0` are indistinguishable.
+
+On **several clones and third-party video mods** this equivalence did not survive. Typical causes:
+
+- A discrete-logic re-implementation of the ULA that mixes the BRIGHT line into the luminance path as a constant bias instead of as a true multiplier, so BRIGHT 1 lifts the output slightly even when all three RGB bits are 0.
+- After-market PAL/composite encoder boards added to a stock machine: some of them AC-couple the RGB lines but DC-couple BRIGHT, so a "bright black" cell sits at a different black level than a "normal black" cell.
+- Pentagon / Scorpion / Leningrad and similar Soviet clones using discrete TTL video: behavior varied between revisions and between factory/hobbyist builds. Some produced a clean black on both; others (especially early Leningrad-type schematics and various "kitchen-table" Baltic / Krasnogorsk / Sintez / Moscow clones) leaked a small amount of BRIGHT into the composite signal.
+- Didaktik models built with non-Ferranti logic have been reported to show a faint difference in some revisions.
+- Generic Eastern-European clones fed into a cheap PAL TV with an aggressive black-level clamp can amplify any small DC offset into a visible grey.
+
+When `bright black != normal black`, pictures and demos authored on real Sinclair hardware can look noticeably worse:
+
+- Cells that hide bitmap data as black-on-black (see [Hidden Pixels](#hidden-pixels-ink--paper)) show faint "ghost" shapes, because the hidden bits now map to two slightly different blacks rather than one.
+- Backgrounds that were deliberately painted with a mix of `BRIGHT 0` and `BRIGHT 1` cells on a black paper (a common trick to pre-set the BRIGHT attribute of a region before sprites arrive there) develop visible rectangular seams along the character grid.
+- `FLASH` on a `PAPER 0, INK 0` cell, which is completely stationary on real hardware, instead becomes a low-contrast flicker between the two blacks.
+- Dithered gradients that use black + bright-black as a "safe" anchor pair collapse to a visible band instead of a smooth fade.
+
+The effect is always a clone-side artifact: the byte on disk is correct, and the same `.scr` file will look clean on original Sinclair hardware (and on any accurate emulator) while looking ugly on an affected clone. There is no good way to "fix" a picture for such clones short of never using `BRIGHT 1` with a black paper or ink, which costs you half the attribute space.
 
 ---
 
@@ -673,7 +751,7 @@ The pattern is **not fixed** by the format — it is an arbitrary 8-byte bitmap 
 
 #### Common fill patterns
 
-SpectraLab's editor and importer offer ten named presets, but any 8-byte value is legal:
+HLR editors typically offer a set of named presets for convenience, but any 8-byte value is legal. Commonly seen presets:
 
 | Preset key   | Bytes (hex)                  | Visual                                  |
 |--------------|------------------------------|-----------------------------------------|
@@ -784,14 +862,14 @@ Each attribute byte has a single bright bit shared by its ink and paper nibbles.
 
 The ZX Spectrum attribute byte allows 16 (ink, bright) combinations, but bright-black and regular-black render as the same on-screen color (`#000000`), so the palette has only **15 visually distinct colors**. Each HLR region (ink or paper) is a gigascreen blend of two of those 15 colors with repetition allowed and order irrelevant (frame 1 vs frame 2 swap is invisible to the eye), which gives 15 x 16 / 2 = **120 visually distinct blended colors** per region.
 
-#### SpectraLab editor behavior
+#### Typical editor behavior
 
-- Drawing tools never touch the bitmap in HLR mode; they only modify the two attribute banks. The per-picture 8-byte fill pattern is preserved at all times.
-- Clicking on a pixel that the pattern marks as **ink** (bit = 1) updates the cell's ink blend; clicking on a **paper** pixel (bit = 0) updates the paper blend. With the default `top-bottom` pattern this means click top-half for ink, bottom-half for paper; with `left-right` it means click left-half for ink, right-half for paper; and so on for other patterns. Fill-cell and recolor-cell tools apply the current selection to both regions at once.
-- The fill pattern itself is editable through the **Edit HLR fill pattern** dialog, which offers all named presets plus a custom hex editor and a live preview of the resulting cell shape.
-- The Gigascreen 4-color picker is filtered in HLR mode: only the two physically displayable entries (Ink+Ink and Paper+Paper) are shown. The other two gigascreen quadrants (Ink+Paper / Paper+Ink) can't be drawn because the bitmap is fixed.
-- The **New Picture** dialog's HLR option lets the user pick the initial fill pattern, and seeds bank 1 and bank 2 from the currently selected gigascreen virtual ink/paper colors so a fresh HLR picture inherits the palette choices instead of a default blue/white.
-- Internally, HLR is stored as a 2-plane gigascreen `Picture` (`sourceFormat: 'hlr'`, `planeCount: 2`, `colorMode: 'gigascreen'`, `attrCellHeight: 8`) with the 8-byte fill pattern attached as `picture.pattern`; only `picture.pattern` and the attribute arrays of the two planes are written on export.
+- Drawing tools usually never touch the bitmap in HLR mode; they only modify the two attribute banks. The per-picture 8-byte fill pattern is preserved at all times.
+- Clicking on a pixel that the pattern marks as **ink** (bit = 1) updates the cell's ink blend; clicking on a **paper** pixel (bit = 0) updates the paper blend. With the `top-bottom` pattern this means click top-half for ink, bottom-half for paper; with `left-right` it means click left-half for ink, right-half for paper; and so on for other patterns. Fill-cell and recolor-cell tools typically apply the current selection to both regions at once.
+- The fill pattern itself is usually editable through a dedicated dialog offering the named presets plus a custom hex editor and a live preview of the resulting cell shape.
+- The Gigascreen 4-color picker is normally filtered in HLR mode: only the two physically displayable entries (Ink+Ink and Paper+Paper) are shown. The other two gigascreen quadrants (Ink+Paper / Paper+Ink) can't be drawn because the bitmap is fixed.
+- When creating a new HLR picture, editors typically let the user pick the initial fill pattern and seed bank 1 and bank 2 from the currently selected gigascreen virtual ink/paper colors so a fresh HLR picture inherits the palette choices instead of a default blue/white.
+- Internally, HLR is naturally represented as a 2-plane gigascreen picture (`planeCount: 2`, `colorMode: gigascreen`, `attrCellHeight: 8`) with the 8-byte fill pattern carried alongside; on export, only the fill pattern and the attribute arrays of the two planes are written.
 
 ---
 

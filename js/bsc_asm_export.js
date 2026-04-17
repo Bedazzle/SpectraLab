@@ -321,9 +321,5 @@ function exportBscAsm() {
     return;
   }
 
-  const baseName = getAsmBaseName(currentFileName, 'border');
-  const result = generateBscAsm(baseName, getAsmEmbedData());
-  if (!result) return;
-
-  downloadFile(result.asm, baseName + '.asm');
+  runAsmExport('border', (baseName, embed) => generateBscAsm(baseName, embed));
 }

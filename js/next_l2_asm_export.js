@@ -60,31 +60,11 @@ function generateNextL2Asm(data, baseName, embedData, format, mode) {
   } else {
     // SL2: no embedded palette — generate default RGB332->RGB333 identity
     if (mode === '640x256') {
-      // 4bpp: 16 entries, 2 bytes each (RGB333 9-bit, stored as 2 bytes per entry)
-      palette = [];
-      for (let i = 0; i < 16; i++) {
-        // Default 4bpp palette: evenly spaced grayscale ramp
-        // RGB333: R2R1R0 G2G1G0 B2B1B0, byte1=RRRGGGBB, byte2=0000000B
-        const r = Math.round(i * 7 / 15);
-        const g = Math.round(i * 7 / 15);
-        const b = Math.round(i * 7 / 15);
-        const byte1 = (r << 5) | (g << 2) | (b >> 1);
-        const byte2 = b & 1;
-        palette.push(byte1, byte2);
-      }
+      // 4bpp: first 16 entries of RGB332→RGB333 identity palette (matches viewer)
+      palette = generateRgb332PaletteBytes(16);
     } else {
-      // 8bpp: 256 entries, 2 bytes each — identity RGB332->RGB333
-      // NEXTREG palette format: byte1 = RRRGGGBB, byte2 = 0000000B (9th bit = blue LSB)
-      palette = [];
-      for (let i = 0; i < 256; i++) {
-        const r3 = (i >> 5) & 7;         // bits 7-5 -> R2R1R0
-        const g3 = (i >> 2) & 7;         // bits 4-2 -> G2G1G0
-        const b2 = i & 3;                // bits 1-0 -> B1B0
-        const b3 = (b2 << 1) | (b2 >> 1); // expand 2-bit blue to 3-bit
-        const byte1 = (r3 << 5) | (g3 << 2) | (b3 >> 1);
-        const byte2 = b3 & 1;
-        palette.push(byte1, byte2);
-      }
+      // 8bpp: 256 entries, 2 bytes each — identity RGB332→RGB333
+      palette = generateRgb332PaletteBytes(256);
     }
   }
 
@@ -236,9 +216,6 @@ function exportNextL2Asm() {
     return;
   }
 
-  const baseName = getAsmBaseName(currentFileName, 'layer2');
-  const result = generateNextL2Asm(screenData, baseName, getAsmEmbedData(), currentFormat, nxiLayer2Mode);
-  if (!result) return;
-
-  downloadFile(result.asm, baseName + '.asm');
+  runAsmExport('layer2', (baseName, embed) =>
+    generateNextL2Asm(screenData, baseName, embed, currentFormat, nxiLayer2Mode));
 }

@@ -41,10 +41,8 @@ var noiseFrameIndex = 0;
 var noiseFramesW = 0;
 /** @type {number} Noise frames height */
 var noiseFramesH = 0;
-/** @type {Float32Array|null} Barrel distortion LUT (x-offsets) */
-var curvatureLutX = null;
-/** @type {Float32Array|null} Barrel distortion LUT (y-offsets) */
-var curvatureLutY = null;
+/** @type {Float32Array|null} Barrel distortion LUT — interleaved [x0,y0, x1,y1, ...] */
+var curvatureLut = null;
 /** @type {number} LUT width */
 var curvatureLutW = 0;
 /** @type {number} LUT height */
@@ -278,7 +276,7 @@ function loadFilterSettings() {
     const settings = JSON.parse(stored);
     applyFilterSettings(settings);
   } catch (e) {
-    // Ignore
+    console.warn('Failed to load filter settings:', e);
   }
 }
 
@@ -555,6 +553,13 @@ function noiseAnimLoop(time) {
 
 // ----- Composite Video -----
 
+/** @type {Float32Array|null} */ let compositeBufCb = null;
+/** @type {Float32Array|null} */ let compositeBufCr = null;
+/** @type {Float32Array|null} */ let compositeBufY = null;
+/** @type {Float32Array|null} */ let compositeBufCbBlur = null;
+/** @type {Float32Array|null} */ let compositeBufCrBlur = null;
+/** @type {number} */ let compositeBufW = 0;
+
 /**
  * Apply composite video color bleed effect
  * Converts to YCbCr, horizontally blurs chroma, converts back
@@ -567,12 +572,20 @@ function applyCompositeFilter(ctx, w, h) {
   const data = imageData.data;
   const radius = filterComposite;
 
-  // Pre-allocate buffers (reused across rows to avoid GC pressure)
-  const cb = new Float32Array(w);
-  const cr = new Float32Array(w);
-  const yArr = new Float32Array(w);
-  const cbBlur = new Float32Array(w);
-  const crBlur = new Float32Array(w);
+  // Reuse row buffers across calls (reallocate only when width changes)
+  if (compositeBufW !== w) {
+    compositeBufCb = new Float32Array(w);
+    compositeBufCr = new Float32Array(w);
+    compositeBufY = new Float32Array(w);
+    compositeBufCbBlur = new Float32Array(w);
+    compositeBufCrBlur = new Float32Array(w);
+    compositeBufW = w;
+  }
+  const cb = /** @type {Float32Array} */ (compositeBufCb);
+  const cr = /** @type {Float32Array} */ (compositeBufCr);
+  const yArr = /** @type {Float32Array} */ (compositeBufY);
+  const cbBlur = /** @type {Float32Array} */ (compositeBufCbBlur);
+  const crBlur = /** @type {Float32Array} */ (compositeBufCrBlur);
 
   for (let y = 0; y < h; y++) {
     const rowStart = y * w * 4;
@@ -676,8 +689,7 @@ function drawVignette(ctx, w, h) {
 // ----- CRT Curvature -----
 
 function invalidateCurvatureLut() {
-  curvatureLutX = null;
-  curvatureLutY = null;
+  curvatureLut = null;
 }
 
 /**
@@ -688,8 +700,7 @@ function invalidateCurvatureLut() {
  */
 function buildCurvatureLut(w, h, strength) {
   const k = strength / 100 * 0.3; // Max distortion factor
-  curvatureLutX = new Float32Array(w * h);
-  curvatureLutY = new Float32Array(w * h);
+  curvatureLut = new Float32Array(w * h * 2);
   curvatureLutW = w;
   curvatureLutH = h;
   curvatureLutStrength = strength;
@@ -704,8 +715,9 @@ function buildCurvatureLut(w, h, strength) {
       const dy = (y - cy) / maxR;
       const r2 = dx * dx + dy * dy;
       const factor = 1 + k * r2;
-      curvatureLutX[y * w + x] = cx + dx * factor * maxR;
-      curvatureLutY[y * w + x] = cy + dy * factor * maxR;
+      const i2 = (y * w + x) * 2;
+      curvatureLut[i2] = cx + dx * factor * maxR;
+      curvatureLut[i2 + 1] = cy + dy * factor * maxR;
     }
   }
 }
@@ -718,21 +730,23 @@ function buildCurvatureLut(w, h, strength) {
  */
 function applyCurvatureFilter(ctx, w, h) {
   // Rebuild LUT if needed
-  if (!curvatureLutX || curvatureLutW !== w || curvatureLutH !== h || curvatureLutStrength !== filterCurvature) {
+  if (!curvatureLut || curvatureLutW !== w || curvatureLutH !== h || curvatureLutStrength !== filterCurvature) {
     buildCurvatureLut(w, h, filterCurvature);
   }
-  if (!curvatureLutX || !curvatureLutY) return;
+  if (!curvatureLut) return;
 
   const src = ctx.getImageData(0, 0, w, h);
   const dst = ctx.createImageData(w, h);
   const srcData = new Uint32Array(src.data.buffer);
   const dstData = new Uint32Array(dst.data.buffer);
+  const lut = curvatureLut;
 
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const idx = y * w + x;
-      const sx = curvatureLutX[idx] | 0;
-      const sy = curvatureLutY[idx] | 0;
+      const i2 = idx * 2;
+      const sx = lut[i2] | 0;
+      const sy = lut[i2 + 1] | 0;
       if (sx >= 0 && sx < w && sy >= 0 && sy < h) {
         dstData[idx] = srcData[sy * w + sx];
       }
@@ -743,13 +757,3 @@ function applyCurvatureFilter(ctx, w, h) {
   ctx.putImageData(dst, 0, 0);
 }
 
-// ========== Check if any filter is active ==========
-
-/**
- * Returns true if any display filter is currently active
- * @returns {boolean}
- */
-function hasActiveDisplayFilters() {
-  return filterScanlines > 0 || filterNoise > 0 || filterComposite > 0 ||
-         filterGlow > 0 || filterVignette > 0 || filterCurvature > 0 || filterSmoothing;
-}

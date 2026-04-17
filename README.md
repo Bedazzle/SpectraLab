@@ -123,7 +123,9 @@ Import PNG, GIF, JPG, WebP, BMP and convert to any editable format:
 - **Output formats**: SCR, ULA+, IFL, MLT, BMC4, BSC, BSP, 53c/127c (attribute-only), Gigascreen (.img), MGH (mg1/mg2/mg4/mg8), STL, RGB3, NXI (256×192, 320×256, 640×256), SL2 (256×192, 320×256, 640×256), Monochrome, SPECSCII, ZXP (variable dimensions)
 - **Automatic scaling** to the format's native dimensions (256×192, 320×256, 640×256, 384×304 for BSC/BMC4, 8–2048 custom for ZXP, etc.)
 - **Dithering**:
-  - Global: Floyd-Steinberg, Serpentine Floyd-Steinberg, Ordered (Bayer 4×4), Atkinson, Two-row Sierra, Riemersma (Hilbert curve), Blue noise, Pattern, None
+  - Global: Floyd-Steinberg, Jarvis-Judice-Ninke, Stucki, Burkes, Sierra / Sierra Lite / Sierra 2-Row, Serpentine Floyd-Steinberg, Dizzy (adaptive error diffusion), Riemersma (Hilbert curve), Atkinson, Ordered (Bayer 2×2 / 4×4 / 8×8), Blue noise, a-dither (arithmetic), Pattern (clustered dots), Noise, None
+  - **Strength slider (0-100%)** scales how much quantization error is diffused; for ordered / pattern / blue-noise methods, strength > 0 enables a hybrid ordered+diffusion mode
+  - **Serpentine scanning** checkbox alternates row direction during error diffusion to reduce horizontal banding
   - Cell-aware variants (Floyd/Atkinson/Ordered/None) that dither inside each cell using its chosen colors
   - Per-channel dithering for RGB3 (each R/G/B bitplane dithered independently as 1-bit mono)
 - **Brightness / Contrast / Saturation**: manual sliders with auto-detect

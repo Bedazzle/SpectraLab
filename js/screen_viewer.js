@@ -101,6 +101,27 @@ const SCREEN = {
   BORDER_SIZE: 24
 };
 
+// ZX Spectrum attribute-byte layout helpers.
+// Attribute byte layout: FBPPPIII
+//   III  (bits 0-2): ink color index 0-7
+//   PPP  (bits 3-5): paper color index 0-7
+//   B    (bit 6):    bright flag (0x40)
+//   F    (bit 7):    flash flag (0x80)
+const ATTR = {
+  INK_MASK:    0x07,
+  PAPER_SHIFT: 3,
+  PAPER_MASK:  0x07,
+  BRIGHT_BIT:  0x40,
+  FLASH_BIT:   0x80,
+  /** @param {number} b */ ink:    (b) => b & 0x07,
+  /** @param {number} b */ paper:  (b) => (b >> 3) & 0x07,
+  /** @param {number} b */ bright: (b) => (b & 0x40) !== 0,
+  /** @param {number} b */ flash:  (b) => (b & 0x80) !== 0,
+  /** @param {number} ink @param {number} paper @param {boolean|number} bright @param {boolean|number} [flash] */
+  make: (ink, paper, bright, flash) =>
+    (ink & 0x07) | ((paper & 0x07) << 3) | (bright ? 0x40 : 0) | (flash ? 0x80 : 0)
+};
+
 // File format types
 const FORMAT = {
   UNKNOWN: 'unknown',
@@ -557,31 +578,7 @@ function generateDefaultUlaPlusPalette() {
   return palette;
 }
 
-// ZX Spectrum color palettes (prefixed to avoid conflict with shared constants.js)
-const ZX_PALETTE = {
-  BRIGHT: [
-    'rgb(0,0,0)',         // 0 Black
-    'rgb(0,0,255)',       // 1 Blue
-    'rgb(255,0,0)',       // 2 Red
-    'rgb(255,0,255)',     // 3 Magenta
-    'rgb(0,255,0)',       // 4 Green
-    'rgb(0,255,255)',     // 5 Cyan
-    'rgb(255,255,0)',     // 6 Yellow
-    'rgb(255,255,255)'    // 7 White
-  ],
-  REGULAR: [
-    'rgb(0,0,0)',         // 0 Black
-    'rgb(0,0,215)',       // 1 Blue
-    'rgb(215,0,0)',       // 2 Red
-    'rgb(215,0,215)',     // 3 Magenta
-    'rgb(0,215,0)',       // 4 Green
-    'rgb(0,215,215)',     // 5 Cyan
-    'rgb(215,215,0)',     // 6 Yellow
-    'rgb(215,215,215)'    // 7 White
-  ]
-};
-
-// RGB values for ImageData rendering (optimized palette as arrays)
+// RGB values for ZX Spectrum colors — single source of truth
 // Format: [R, G, B] for each color index 0-7
 const ZX_PALETTE_RGB = {
   BRIGHT: [
@@ -604,6 +601,12 @@ const ZX_PALETTE_RGB = {
     [215, 215, 0],   // 6 Yellow
     [215, 215, 215]  // 7 White
   ]
+};
+
+// CSS rgb() strings derived from ZX_PALETTE_RGB (for canvas fillStyle usage)
+const ZX_PALETTE = {
+  BRIGHT: ZX_PALETTE_RGB.BRIGHT.map(c => `rgb(${c[0]},${c[1]},${c[2]})`),
+  REGULAR: ZX_PALETTE_RGB.REGULAR.map(c => `rgb(${c[0]},${c[1]},${c[2]})`)
 };
 
 // Flash timing (ZX Spectrum flashes at ~1.56 Hz, roughly 320ms per phase)
@@ -1146,6 +1149,7 @@ function loadFontFile(file) {
     }
   });
 
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   reader.readAsArrayBuffer(file);
 }
 
@@ -1191,6 +1195,9 @@ function getColorsRgb(attr) {
   return { inkRgb: palette[inkIndex], paperRgb: palette[paperIndex] };
 }
 
+/** @type {ImageData|null} Cached ImageData for renderScrFast (reused to avoid per-frame allocation) */
+let scrFastImageData = null;
+
 /**
  * Renders standard SCR format using ImageData for better performance
  * Creates a 256x192 image and scales it using the canvas
@@ -1198,9 +1205,25 @@ function getColorsRgb(attr) {
  * @param {number} borderOffset - Border offset in canvas pixels
  */
 function renderScrFast(ctx, borderOffset) {
-  // Create base image at 1:1 scale (256x192)
-  const imageData = ctx.createImageData(SCREEN.WIDTH, SCREEN.HEIGHT);
+  // Reuse cached ImageData (same size every frame)
+  if (!scrFastImageData || scrFastImageData.width !== SCREEN.WIDTH || scrFastImageData.height !== SCREEN.HEIGHT) {
+    scrFastImageData = ctx.createImageData(SCREEN.WIDTH, SCREEN.HEIGHT);
+  }
+  const imageData = scrFastImageData;
   const data = imageData.data;
+
+  // Pre-compute transparency state (avoid per-pixel typeof checks)
+  const hasMask = typeof layersEnabled !== 'undefined' && layersEnabled &&
+                  typeof screenTransparencyMask !== 'undefined' && screenTransparencyMask;
+  const mask = hasMask ? screenTransparencyMask : null;
+
+  // Pre-compute checkerboard config (avoid per-pixel APP_CONFIG lookups)
+  let checkerSize = 4, checkerLight = 68, checkerDark = 34;
+  if (mask) {
+    checkerSize = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.TRANSPARENCY_CELL_SIZE) || 4;
+    checkerLight = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.TRANSPARENCY_LIGHT_COLOR) || 68;
+    checkerDark = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.TRANSPARENCY_DARK_COLOR) || 34;
+  }
 
   // Process all three screen thirds
   const sections = [
@@ -1236,21 +1259,27 @@ function renderScrFast(ctx, borderOffset) {
           // Calculate Y position
           const x = col * 8;
           const y = yOffset + row * 8 + line;
+          const rowBase = y * SCREEN.WIDTH;
 
           // Draw 8 pixels directly to ImageData
           for (let bit = 0; bit < 8; bit++) {
             const px = x + bit;
-            const maskIdx = y * SCREEN.WIDTH + px;
+            const maskIdx = rowBase + px;
             const pixelIndex = maskIdx * 4;
 
-            // Check if this pixel is transparent
-            const rgb = isPixelTransparent(maskIdx)
-              ? getCheckerboardColor(px, y)
-              : (isBitSet(byte, bit) ? inkRgb : paperRgb);
-            data[pixelIndex] = rgb[0];     // R
-            data[pixelIndex + 1] = rgb[1]; // G
-            data[pixelIndex + 2] = rgb[2]; // B
-            data[pixelIndex + 3] = 255;    // A
+            let r, g, b;
+            if (mask && !mask[maskIdx]) {
+              // Transparent pixel — inline checkerboard
+              const gray = ((Math.floor(px / checkerSize) + Math.floor(y / checkerSize)) & 1) ? checkerDark : checkerLight;
+              r = gray; g = gray; b = gray;
+            } else {
+              const rgb = (byte & (0x80 >> bit)) ? inkRgb : paperRgb;
+              r = rgb[0]; g = rgb[1]; b = rgb[2];
+            }
+            data[pixelIndex] = r;
+            data[pixelIndex + 1] = g;
+            data[pixelIndex + 2] = b;
+            data[pixelIndex + 3] = 255;
           }
         }
       }
@@ -2575,6 +2604,7 @@ function renderSpecsciiScreen(ctx, borderOffset) {
 
             const ch = layer.bitmap[ci];
             const attr = layer.attributes ? layer.attributes[ci] : 0x38;
+            const cellInverse = layer.inverse ? layer.inverse[ci] : 0;
             // Top visible layer with content sets the attribute
             cellAttr[ci] = attr;
 
@@ -2592,6 +2622,8 @@ function renderSpecsciiScreen(ctx, borderOffset) {
                   else if (!inTop && inLeft) isSet = (pat & 0x08) !== 0;
                   else isSet = (pat & 0x04) !== 0;
                 }
+                // Apply per-cell inverse: flip the bit
+                if (cellInverse) isSet = !isSet;
                 if (isSet) {
                   const pi = (crow * 8 + line) * W + ccol * 8 + bit;
                   if (layerIdx === 0) {
@@ -2622,7 +2654,8 @@ function renderSpecsciiScreen(ctx, borderOffset) {
               ink = pal[aInk]; paper = pal[aPaper];
             }
           } else {
-            ink = ZX_PALETTE.REGULAR[0]; paper = ZX_PALETTE.REGULAR[7];
+            // Match SCR attrs-off: pure black ink, bright white paper
+            ink = ZX_PALETTE.BRIGHT[0]; paper = ZX_PALETTE.BRIGHT[7];
           }
           const x = ccol * 8, y = crow * 8;
           ctx.fillStyle = paper;
@@ -2650,6 +2683,7 @@ function renderSpecsciiScreen(ctx, borderOffset) {
         const idx = row * 32 + col;
         const charCode = specsciiCharGrid[idx];
         const attr = specsciiAttrGrid[idx];
+        const cellInverse = (typeof specsciiInverseGrid !== 'undefined' && specsciiInverseGrid) ? specsciiInverseGrid[idx] : 0;
 
         const inkIdx = attr & 0x07;
         const paperIdx = (attr >> 3) & 0x07;
@@ -2667,9 +2701,21 @@ function renderSpecsciiScreen(ctx, borderOffset) {
             ink = palBright[inkIdx];
             paper = palBright[paperIdx];
           }
+          // Apply per-cell inverse: swap ink and paper
+          if (cellInverse) {
+            const tmp = ink;
+            ink = paper;
+            paper = tmp;
+          }
         } else {
           ink = ZX_PALETTE.REGULAR[0];
           paper = ZX_PALETTE.REGULAR[7];
+          // Apply per-cell inverse: swap monochrome colors
+          if (cellInverse) {
+            const tmp = ink;
+            ink = paper;
+            paper = tmp;
+          }
         }
 
         const x = col * 8;
@@ -2824,8 +2870,9 @@ function renderSpecsciiScreen(ctx, borderOffset) {
         paper = palette[effectivePaper];
       }
     } else {
-      ink = ZX_PALETTE.REGULAR[0];
-      paper = ZX_PALETTE.REGULAR[7];
+      // Match SCR attrs-off: pure black ink, bright white paper
+      ink = ZX_PALETTE.BRIGHT[0];
+      paper = ZX_PALETTE.BRIGHT[7];
     }
 
     // Calculate screen position
@@ -2948,29 +2995,24 @@ function renderBmc4Screen(ctx) {
 }
 
 /**
- * Renders the border for BMC4 format (same structure as BSC)
- * @param {CanvasRenderingContext2D} ctx - Canvas context
+ * Creates the border-rendering helpers shared by BMC4 and BSC renderers.
+ * Both formats use identical per-byte segment painting (24 px per color),
+ * optional clipping to the border region (outside the 256×192 main bitmap)
+ * and a checkerboard pattern for transparent cells when a layer mask is active.
+ * @param {CanvasRenderingContext2D} ctx
+ * @returns {{
+ *   drawColorSegment: (color: string, startX: number, endX: number, screenY: number, clipToBorder: boolean, maskIdx: number) => void,
+ *   drawBorderLine:   (lineOffset: number, screenY: number, clipToBorder: boolean, byteCount: number, maskBaseIdx: number) => void,
+ *   drawSideBorderLine: (lineOffset: number, screenY: number, maskBaseIdx: number) => void
+ * }}
  */
-function renderBmc4Border(ctx) {
-  const borderDataStart = BMC4.BORDER_OFFSET;
+function createBorderRenderers(ctx) {
   const pxPerColor = BSC.PIXELS_PER_COLOR;
   const bitmapLeft = BSC.BORDER_LEFT_PX;
   const bitmapRight = bitmapLeft + SCREEN.WIDTH;
-  const bitmapTop = BSC.BORDER_TOP_PX;
-
-  // Check if we have border transparency mask
   const hasBorderMask = typeof borderTransparencyMask !== 'undefined' && borderTransparencyMask &&
                         typeof layersEnabled !== 'undefined' && layersEnabled;
 
-  /**
-   * Draws a color segment, optionally clipping to border area
-   * @param {string} color - CSS color string
-   * @param {number} startX - Start X in screen pixels
-   * @param {number} endX - End X in screen pixels
-   * @param {number} screenY - Y position on screen
-   * @param {boolean} clipToBorder - If true, only draw outside bitmap area
-   * @param {number} maskIdx - Index into borderTransparencyMask
-   */
   function drawColorSegment(color, startX, endX, screenY, clipToBorder, maskIdx) {
     let drawStartX = startX;
     let drawEndX = endX;
@@ -2985,11 +3027,11 @@ function renderBmc4Border(ctx) {
       } else if (startX < bitmapRight && endX > bitmapRight) {
         drawStartX = bitmapRight;
       } else {
+        // Entirely under bitmap - skip
         return;
       }
     }
 
-    // Check if this segment is transparent
     if (hasBorderMask && !borderTransparencyMask[maskIdx]) {
       drawBorderCheckerboard(ctx, drawStartX, screenY, drawEndX - drawStartX);
     } else {
@@ -2998,14 +3040,6 @@ function renderBmc4Border(ctx) {
     }
   }
 
-  /**
-   * Draws a full border line (top/bottom)
-   * @param {number} lineOffset - Offset in screenData
-   * @param {number} screenY - Y position on screen
-   * @param {boolean} clipToBorder - If true, only draw outside bitmap area
-   * @param {number} byteCount - Number of bytes in this line
-   * @param {number} maskBaseIdx - Base index into borderTransparencyMask
-   */
   function drawBorderLine(lineOffset, screenY, clipToBorder, byteCount, maskBaseIdx) {
     let x = 0;
     for (let byteIdx = 0; byteIdx < byteCount; byteIdx++) {
@@ -3020,13 +3054,8 @@ function renderBmc4Border(ctx) {
     }
   }
 
-  /**
-   * Draws side border line (4 bytes left + 4 bytes right)
-   * @param {number} lineOffset - Offset in screenData
-   * @param {number} screenY - Y position on screen
-   * @param {number} maskBaseIdx - Base index into borderTransparencyMask
-   */
   function drawSideBorderLine(lineOffset, screenY, maskBaseIdx) {
+    // Left border: 4 bytes = 64 pixels
     let x = 0;
     for (let byteIdx = 0; byteIdx < 4; byteIdx++) {
       const byte = screenData[lineOffset + byteIdx];
@@ -3038,7 +3067,8 @@ function renderBmc4Border(ctx) {
       drawColorSegment(color2, x, x + pxPerColor, screenY, false, maskIdx + 1);
       x += pxPerColor;
     }
-    x = bitmapLeft + SCREEN.WIDTH;
+    // Right border: 4 bytes = 64 pixels at x = bitmapRight
+    x = bitmapRight;
     for (let byteIdx = 4; byteIdx < 8; byteIdx++) {
       const byte = screenData[lineOffset + byteIdx];
       const { color1, color2 } = getBscColors(byte);
@@ -3050,6 +3080,18 @@ function renderBmc4Border(ctx) {
       x += pxPerColor;
     }
   }
+
+  return { drawColorSegment, drawBorderLine, drawSideBorderLine };
+}
+
+/**
+ * Renders the border for BMC4 format (same structure as BSC)
+ * @param {CanvasRenderingContext2D} ctx - Canvas context
+ */
+function renderBmc4Border(ctx) {
+  const borderDataStart = BMC4.BORDER_OFFSET;
+  const bitmapTop = BSC.BORDER_TOP_PX;
+  const { drawBorderLine, drawSideBorderLine } = createBorderRenderers(ctx);
 
   let dataOffset = 0;
   let maskOffset = 0;
@@ -3180,116 +3222,10 @@ function renderBscScreen(ctx) {
   ctx.fillRect(0, 0, frameWidth, frameHeight);
 
   const borderDataStart = BSC.BORDER_OFFSET;
-  const pxPerColor = BSC.PIXELS_PER_COLOR;  // 24 pixels per color
-
-  // Main screen position (bitmap covers px 64-319 horizontally, lines 64-255 vertically)
   const bitmapLeft = BSC.BORDER_LEFT_PX;   // 64 pixels
-  const bitmapRight = bitmapLeft + SCREEN.WIDTH; // 320 pixels
   const bitmapTop = BSC.BORDER_TOP_PX;     // 64 pixels
 
-  // Check if we have border transparency mask
-  const hasBorderMask = typeof borderTransparencyMask !== 'undefined' && borderTransparencyMask &&
-                        typeof layersEnabled !== 'undefined' && layersEnabled;
-
-  /**
-   * Draws a full border line (top/bottom) from data
-   * @param {number} lineOffset - Offset in screenData
-   * @param {number} screenY - Y position on screen
-   * @param {boolean} clipToBorder - If true, only draw outside bitmap area
-   * @param {number} byteCount - Number of bytes in this line
-   * @param {number} maskBaseIdx - Base index into borderTransparencyMask
-   */
-  function drawBorderLine(lineOffset, screenY, clipToBorder, byteCount, maskBaseIdx) {
-    let x = 0;
-    for (let byteIdx = 0; byteIdx < byteCount; byteIdx++) {
-      const byte = screenData[lineOffset + byteIdx];
-      const { color1, color2 } = getBscColors(byte);
-      const maskIdx = maskBaseIdx + byteIdx * 2;
-
-      // First color (bits 2-0): 24 pixels
-      drawColorSegment(color1, x, x + pxPerColor, screenY, clipToBorder, maskIdx);
-      x += pxPerColor;
-
-      // Second color (bits 5-3): 24 pixels
-      drawColorSegment(color2, x, x + pxPerColor, screenY, clipToBorder, maskIdx + 1);
-      x += pxPerColor;
-    }
-  }
-
-  /**
-   * Draws side border line (4 bytes left + 4 bytes right)
-   * @param {number} lineOffset - Offset in screenData
-   * @param {number} screenY - Y position on screen
-   * @param {number} maskBaseIdx - Base index into borderTransparencyMask
-   */
-  function drawSideBorderLine(lineOffset, screenY, maskBaseIdx) {
-    // Left border: 4 bytes = 64 pixels (at x = 0-63)
-    let x = 0;
-    for (let byteIdx = 0; byteIdx < 4; byteIdx++) {
-      const byte = screenData[lineOffset + byteIdx];
-      const { color1, color2 } = getBscColors(byte);
-      const maskIdx = maskBaseIdx + byteIdx * 2;
-
-      drawColorSegment(color1, x, x + pxPerColor, screenY, false, maskIdx);
-      x += pxPerColor;
-      drawColorSegment(color2, x, x + pxPerColor, screenY, false, maskIdx + 1);
-      x += pxPerColor;
-    }
-
-    // Right border: 4 bytes = 64 pixels (at x = 320-383)
-    x = bitmapLeft + SCREEN.WIDTH; // 64 + 256 = 320
-    for (let byteIdx = 4; byteIdx < 8; byteIdx++) {
-      const byte = screenData[lineOffset + byteIdx];
-      const { color1, color2 } = getBscColors(byte);
-      const maskIdx = maskBaseIdx + byteIdx * 2;
-
-      drawColorSegment(color1, x, x + pxPerColor, screenY, false, maskIdx);
-      x += pxPerColor;
-      drawColorSegment(color2, x, x + pxPerColor, screenY, false, maskIdx + 1);
-      x += pxPerColor;
-    }
-  }
-
-  /**
-   * Draws a color segment, optionally clipping to border area
-   * @param {string} color - CSS color string
-   * @param {number} startX - Start X in screen pixels
-   * @param {number} endX - End X in screen pixels
-   * @param {number} screenY - Y position on screen
-   * @param {boolean} clipToBorder - If true, only draw outside bitmap area
-   * @param {number} maskIdx - Index into borderTransparencyMask
-   */
-  function drawColorSegment(color, startX, endX, screenY, clipToBorder, maskIdx) {
-    let drawStartX = startX;
-    let drawEndX = endX;
-
-    if (clipToBorder) {
-      // Clip to visible border areas (outside bitmap)
-      if (endX <= bitmapLeft) {
-        // Fully in left border
-      } else if (startX >= bitmapRight) {
-        // Fully in right border
-      } else if (startX < bitmapLeft && endX > bitmapLeft) {
-        // Spans left edge - clip
-        drawEndX = bitmapLeft;
-      } else if (startX < bitmapRight && endX > bitmapRight) {
-        // Spans right edge - clip
-        drawStartX = bitmapRight;
-      } else {
-        // Entirely under bitmap - skip
-        return;
-      }
-    }
-
-    // Check if this segment is transparent
-    if (hasBorderMask && !borderTransparencyMask[maskIdx]) {
-      // Draw checkerboard pattern for transparent border
-      drawBorderCheckerboard(ctx, drawStartX, screenY, drawEndX - drawStartX);
-    } else {
-      ctx.fillStyle = color;
-      ctx.fillRect(drawStartX * zoom, screenY * zoom, (drawEndX - drawStartX) * zoom, zoom);
-    }
-  }
+  const { drawBorderLine, drawSideBorderLine } = createBorderRenderers(ctx);
 
   let dataOffset = 0;
   let maskOffset = 0;
@@ -4319,44 +4255,131 @@ function getSupportedFilesFromZip(zip) {
 }
 
 /**
- * Shows the ZIP file selection modal
+ * Shows the ZIP file selection modal with multi-select via ctrl/shift+click.
+ * Click selects a single row; Ctrl+click toggles; Shift+click extends range;
+ * double-click imports that row immediately. "Import" loads selected rows,
+ * "Add All" loads everything listed.
  * @param {string[]} files - Array of file names to display
- * @param {function(string): void} onSelect - Callback when a file is selected
+ * @param {function(string[]): void} onImportMany - Called with the list of file names to import
  */
-function showZipFileModal(files, onSelect) {
+function showZipFileModal(files, onImportMany) {
   const modal = document.getElementById('zipModal');
   const fileList = document.getElementById('zipFileList');
   const cancelBtn = document.getElementById('zipCancelBtn');
+  const importBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById('zipImportBtn'));
+  const addAllBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById('zipAddAllBtn'));
 
-  if (!modal || !fileList || !cancelBtn) return;
+  if (!modal || !fileList || !cancelBtn || !importBtn || !addAllBtn) return;
 
   // Clear previous list
   fileList.innerHTML = '';
 
-  // Create file buttons
-  files.forEach(fileName => {
-    const item = document.createElement('div');
-    item.style.cssText = 'padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--border-secondary);';
-    item.textContent = fileName;
-    item.addEventListener('mouseenter', () => {
-      item.style.background = 'var(--bg-secondary)';
+  /** @type {Set<number>} */
+  const selected = new Set();
+  /** @type {HTMLElement[]} */
+  const rows = [];
+  let lastClickedIndex = -1;
+
+  const SELECTED_BG = 'var(--accent-primary, #3a7bd5)';
+  const SELECTED_FG = '#fff';
+
+  const paintRow = (i) => {
+    const row = rows[i];
+    if (!row) return;
+    if (selected.has(i)) {
+      row.style.background = SELECTED_BG;
+      row.style.color = SELECTED_FG;
+    } else {
+      row.style.background = '';
+      row.style.color = '';
+    }
+  };
+  const paintAll = () => { for (let i = 0; i < rows.length; i++) paintRow(i); };
+
+  const updateImportButton = () => {
+    const count = selected.size;
+    importBtn.disabled = count === 0;
+    importBtn.textContent = count > 0 ? 'Import (' + count + ')' : 'Import';
+  };
+
+  files.forEach((fileName, idx) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'padding: 6px 12px; cursor: pointer; border-bottom: 1px solid var(--border-secondary); user-select: none;';
+    row.textContent = fileName;
+    row.addEventListener('mouseenter', () => {
+      if (!selected.has(idx)) row.style.background = 'var(--bg-secondary)';
     });
-    item.addEventListener('mouseleave', () => {
-      item.style.background = '';
+    row.addEventListener('mouseleave', () => {
+      if (!selected.has(idx)) row.style.background = '';
     });
-    item.addEventListener('click', () => {
-      modal.style.display = 'none';
-      onSelect(fileName);
+    row.addEventListener('click', (ev) => {
+      if (ev.shiftKey && lastClickedIndex >= 0) {
+        const lo = Math.min(lastClickedIndex, idx);
+        const hi = Math.max(lastClickedIndex, idx);
+        if (!ev.ctrlKey && !ev.metaKey) selected.clear();
+        for (let i = lo; i <= hi; i++) selected.add(i);
+      } else if (ev.ctrlKey || ev.metaKey) {
+        if (selected.has(idx)) selected.delete(idx);
+        else selected.add(idx);
+        lastClickedIndex = idx;
+      } else {
+        selected.clear();
+        selected.add(idx);
+        lastClickedIndex = idx;
+      }
+      paintAll();
+      updateImportButton();
     });
-    fileList.appendChild(item);
+    row.addEventListener('dblclick', () => {
+      cleanup();
+      if (typeof onImportMany === 'function') onImportMany([fileName]);
+    });
+    fileList.appendChild(row);
+    rows.push(row);
   });
 
-  // Cancel button handler
-  const handleCancel = () => {
+  updateImportButton();
+
+  let isOpen = true;
+  const cleanup = () => {
+    if (!isOpen) return;
+    isOpen = false;
     modal.style.display = 'none';
     cancelBtn.removeEventListener('click', handleCancel);
+    importBtn.removeEventListener('click', handleImport);
+    addAllBtn.removeEventListener('click', handleAddAll);
+    document.removeEventListener('keydown', handleKey);
   };
+  const handleCancel = () => cleanup();
+  const handleImport = () => {
+    const picks = Array.from(selected).sort((a, b) => a - b).map(i => files[i]);
+    cleanup();
+    if (picks.length > 0 && typeof onImportMany === 'function') onImportMany(picks);
+  };
+  const handleAddAll = () => {
+    cleanup();
+    if (files.length > 0 && typeof onImportMany === 'function') onImportMany(files);
+  };
+  const handleKey = (ev) => {
+    if (!isOpen) return;
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      cleanup();
+    } else if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'a' || ev.key === 'A')) {
+      ev.preventDefault();
+      for (let i = 0; i < files.length; i++) selected.add(i);
+      paintAll();
+      updateImportButton();
+    } else if (ev.key === 'Enter' && selected.size > 0) {
+      ev.preventDefault();
+      handleImport();
+    }
+  };
+
   cancelBtn.addEventListener('click', handleCancel);
+  importBtn.addEventListener('click', handleImport);
+  addAllBtn.addEventListener('click', handleAddAll);
+  document.addEventListener('keydown', handleKey);
 
   // Show modal
   modal.style.display = 'block';
@@ -4615,6 +4638,83 @@ async function loadFileFromZip(fileName) {
 }
 
 /**
+ * Loads a list of files from the current ZIP archive, respecting the
+ * MAX_PICTURES cap. Images are fed through the standard import dialog with
+ * the "Add All" batch queue; native formats are loaded sequentially.
+ * @param {string[]} fileNames
+ */
+async function loadSelectedFilesFromZip(fileNames) {
+  if (!currentZip || !fileNames || fileNames.length === 0) return;
+
+  // Cap by available picture slots.
+  let available = Infinity;
+  if (typeof MAX_PICTURES !== 'undefined' && typeof openPictures !== 'undefined') {
+    available = Math.max(0, MAX_PICTURES - openPictures.length);
+  }
+  if (available === 0) {
+    if (typeof MAX_PICTURES !== 'undefined') {
+      alert('Maximum ' + MAX_PICTURES + ' pictures already open. Close one to import more.');
+    }
+    return;
+  }
+  let selected = fileNames;
+  if (selected.length > available) {
+    if (!confirm('Only ' + available + ' of ' + selected.length + ' files fit (picture limit). Continue?')) return;
+    selected = selected.slice(0, available);
+  }
+
+  // Split into raster images (use the import dialog + "Add All" queue) and
+  // native formats (loaded directly through the existing routing).
+  const imageNames = [];
+  const nativeNames = [];
+  for (const name of selected) {
+    if (typeof isImageFileExt === 'function' && isImageFileExt(name)) {
+      imageNames.push(name);
+    } else {
+      nativeNames.push(name);
+    }
+  }
+
+  // Load native formats sequentially (each one falls through loadFileFromZip's
+  // format routing and calls addPicture via the appropriate loader).
+  for (const name of nativeNames) {
+    try {
+      await loadFileFromZip(name);
+    } catch (e) {
+      console.error('Failed to load ' + name + ' from ZIP:', e);
+    }
+  }
+
+  // Queue raster images and open the import dialog for the first.
+  if (imageNames.length > 0) {
+    const files = [];
+    for (const name of imageNames) {
+      const zipEntry = currentZip.file(name);
+      if (!zipEntry) continue;
+      try {
+        const blob = await zipEntry.async('blob');
+        const ext = name.toLowerCase().split('.').pop() || 'png';
+        const mimeType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' :
+                         ext === 'gif' ? 'image/gif' :
+                         ext === 'webp' ? 'image/webp' :
+                         ext === 'bmp' ? 'image/bmp' : 'image/png';
+        files.push(new File([blob], name, { type: mimeType }));
+      } catch (e) {
+        console.error('Failed to extract image ' + name + ' from ZIP:', e);
+      }
+    }
+    if (files.length > 0) {
+      if (typeof setImportQueue === 'function') {
+        setImportQueue(files.slice(1));
+      }
+      if (typeof openImportDialog === 'function') {
+        openImportDialog(files[0]);
+      }
+    }
+  }
+}
+
+/**
  * Handles a ZIP file - extracts and processes contents
  * @param {File} file - The ZIP file to process
  */
@@ -4639,8 +4739,8 @@ async function handleZipFile(file) {
       // Only one file - load it directly
       await loadFileFromZip(supportedFiles[0]);
     } else {
-      // Multiple files - show selection dialog
-      showZipFileModal(supportedFiles, loadFileFromZip);
+      // Multiple files - show selection dialog with multi-select support
+      showZipFileModal(supportedFiles, loadSelectedFilesFromZip);
     }
   } catch (error) {
     alert('Error reading archive: ' + error.message);
@@ -5563,6 +5663,8 @@ function saveSettings() {
     attr53cBlend: attr53cBlend,
     attr53cSort: typeof attr53cSortMode !== 'undefined' ? attr53cSortMode : 'hue',
     attr53cSortReverse: typeof attr53cSortReverse !== 'undefined' ? attr53cSortReverse : false,
+    nxiSort: typeof nxiSortMode !== 'undefined' ? nxiSortMode : 'index',
+    nxiSortReverse: typeof nxiSortReverse !== 'undefined' ? nxiSortReverse : false,
     palette: document.getElementById('paletteSelect')?.value || 'default',
     editPreviewTrimmedOnly: typeof editPreviewTrimmedOnly !== 'undefined' ? editPreviewTrimmedOnly : true,
     editZoom: typeof editZoom !== 'undefined' ? editZoom : 2,
@@ -5571,7 +5673,7 @@ function saveSettings() {
   try {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   } catch (e) {
-    // Ignore storage errors
+    console.warn('Failed to save settings:', e);
   }
 }
 
@@ -5670,6 +5772,20 @@ function loadSettings() {
       if (reverseCb) /** @type {HTMLInputElement} */ (reverseCb).checked = attr53cSortReverse;
     }
 
+    // Apply Next palette sort mode
+    if (settings.nxiSort !== undefined) {
+      nxiSortMode = settings.nxiSort;
+      const sortRadio = /** @type {HTMLInputElement|null} */ (document.querySelector(`input[name="nxiSort"][value="${settings.nxiSort}"]`));
+      if (sortRadio) sortRadio.checked = true;
+    }
+
+    // Apply Next palette sort reverse
+    if (settings.nxiSortReverse !== undefined) {
+      nxiSortReverse = settings.nxiSortReverse;
+      const reverseCb = document.getElementById('nxiSortReverse');
+      if (reverseCb) /** @type {HTMLInputElement} */ (reverseCb).checked = nxiSortReverse;
+    }
+
     // Apply palette
     if (settings.palette !== undefined) {
       const paletteSelect = document.getElementById('paletteSelect');
@@ -5697,7 +5813,7 @@ function loadSettings() {
       applyFilterSettings(settings);
     }
   } catch (e) {
-    // Ignore parse errors
+    console.warn('Failed to load settings:', e);
   }
 }
 
@@ -6340,6 +6456,7 @@ function loadZxpFile(file) {
     }
   });
 
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   reader.readAsText(file);
 }
 
@@ -6429,6 +6546,7 @@ function loadMghFile(file) {
     if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
   });
 
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   reader.readAsArrayBuffer(file);
 }
 
@@ -6668,6 +6786,7 @@ function loadHlrFile(file) {
     if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
   });
 
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   reader.readAsArrayBuffer(file);
 }
 
@@ -6771,6 +6890,7 @@ function loadStlFile(file) {
     if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
   });
 
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   reader.readAsArrayBuffer(file);
 }
 
@@ -7208,6 +7328,7 @@ function loadBspFile(file) {
     if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
   });
 
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   reader.readAsArrayBuffer(file);
 }
 
@@ -7529,6 +7650,7 @@ function loadNxiFile(file) {
     if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
   });
 
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   reader.readAsArrayBuffer(file);
 }
 
@@ -7620,6 +7742,7 @@ function loadSl2File(file) {
     if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
   });
 
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   reader.readAsArrayBuffer(file);
 }
 
@@ -7694,6 +7817,7 @@ function loadLoresFile(file) {
     if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
   });
 
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   reader.readAsArrayBuffer(file);
 }
 
@@ -7761,6 +7885,7 @@ function loadLoresRadFile(file) {
     if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
   });
 
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   reader.readAsArrayBuffer(file);
 }
 
@@ -8152,6 +8277,7 @@ function loadChrFile(file) {
     if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
   });
 
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   reader.readAsArrayBuffer(file);
 }
 
@@ -8348,6 +8474,7 @@ function loadScreenFile(file) {
     }
   });
 
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   reader.readAsArrayBuffer(file);
 }
 

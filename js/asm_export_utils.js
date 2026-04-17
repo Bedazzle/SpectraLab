@@ -73,6 +73,26 @@ function getAsmEmbedData() {
 }
 
 /**
+ * Generate default RGB332→RGB333 identity palette in NEXTREG format.
+ * Each entry is 2 bytes: byte1 = RRRGGGBB (high bit of blue), byte2 = 0000000B (low bit of blue).
+ * @param {number} [count=256] - Number of entries (256 for 8bpp, 16 for 4bpp)
+ * @returns {number[]} Flat array of palette bytes (count * 2 elements)
+ */
+function generateRgb332PaletteBytes(count = 256) {
+  const palette = [];
+  for (let i = 0; i < count; i++) {
+    const r3 = (i >> 5) & 7;
+    const g3 = (i >> 2) & 7;
+    const b2 = i & 3;
+    const b3 = (b2 << 1) | (b2 >> 1);
+    const byte1 = (r3 << 5) | (g3 << 2) | (b3 >> 1);
+    const byte2 = b3 & 1;
+    palette.push(byte1, byte2);
+  }
+  return palette;
+}
+
+/**
  * Download content as a file.
  * @param {string|Blob} content - File content (string or Blob)
  * @param {string} fileName - Download file name
@@ -88,4 +108,17 @@ function downloadFile(content, fileName, mimeType = 'text/plain') {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+/**
+ * Runs a standard ASM export: derive base name, call generator, download as .asm.
+ * Generator receives (baseName, embedData) and returns `{ asm }` or a falsy value to abort.
+ * @param {string} defaultName - Fallback base name used when no file is loaded
+ * @param {(baseName: string, embedData: boolean) => ({asm: string}|null|undefined)} generate
+ */
+function runAsmExport(defaultName, generate) {
+  const baseName = getAsmBaseName(currentFileName, defaultName);
+  const result = generate(baseName, getAsmEmbedData());
+  if (!result) return;
+  downloadFile(result.asm, baseName + '.asm');
 }

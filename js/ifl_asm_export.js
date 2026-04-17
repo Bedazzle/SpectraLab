@@ -214,9 +214,5 @@ function exportIflAsm() {
     return;
   }
 
-  const baseName = getAsmBaseName(currentFileName, 'ifl');
-  const result = generateIflAsm(screenData, baseName, getAsmEmbedData());
-  if (!result) return;
-
-  downloadFile(result.asm, baseName + '.asm');
+  runAsmExport('ifl', (baseName, embed) => generateIflAsm(screenData, baseName, embed));
 }

@@ -99,6 +99,11 @@ Select zoom level from the dropdown: **x1/8, x1/4, x1/2, x1, x2, x3, x4, x5, x6,
 
 Click the "View Settings" header to expand/collapse.
 
+#### 53c Pattern (shown only for `.53c` / `.atr` attribute-only formats)
+Appears at the top of View Settings when a 53c/atr picture is loaded:
+- **Pattern:** select the fill pattern — **Checker**, **Stripes**, or **Pattern** (DD/77)
+- **Blend colors** checkbox — when checked, each cell renders as a solid averaged color instead of a dither pattern
+
 #### Border
 - **Color:** Black, Blue, Red, Magenta, Green, Cyan, Yellow, White
 - **Size:** None, Small (16px), Medium (32px)
@@ -123,11 +128,6 @@ Select display palette from the dropdown. Available palettes depend on the loade
 Select a grid color preset from the dropdown: **Default**, **White**, **Gray**, **Black**, **Orange**, **Red**, **Green**. Useful for improving grid visibility on dark or light artwork.
 
 ### Format-Specific Controls
-
-#### 53c Pattern Selector
-For `.53c` / `.atr` attribute-only formats, select the fill pattern: **Checker**, **Stripes**, or **Pattern** (DD/77).
-
-- **Blend colors** checkbox — when checked, each cell renders as a solid averaged color instead of a dither pattern
 
 #### RGB3 Controls
 For `.3` tricolor format, select display mode:
@@ -481,6 +481,17 @@ SPECSCII supports OVER layers (XOR compositing) loaded from stream control codes
 
 Workspace buttons are always available, even without a loaded picture. The remaining transform tools require a picture to be loaded or created first.
 
+### Save all pictures
+
+Visible only when **two or more pictures are open**. All four bundles use the base file name `spectralab_pictures` (with `.zip` / `.gif` / `.sca` extension).
+
+- **ZIP (originals)** — bundles every open picture in its native binary format into one `.zip`. Each entry keeps its original file extension (e.g. `.scr`, `.bsc`, `.ifl`, `.img`); duplicate names are disambiguated with ` (2)`, ` (3)`, …
+- **ZIP (PNG / GIF)** — bundles every picture rendered with the current view settings (zoom, border, palette, display filters) as PNG. Pictures with flashing attributes are written as 2-frame animated GIFs at the standard FLASH cadence.
+- **Animated GIF** — combines all pictures into one animated GIF at 500 ms per frame. Pictures with flashing attributes contribute two frames (normal + swapped phase). Requires every picture to render to the same canvas size — mix formats with different output sizes and the export aborts with an error.
+- **SCA** — combines all pictures into one SCA animation file at 500 ms per frame. Requires every picture to be in plain SCR format (256×192, 6912 bytes); the border colour is taken from the current setting. Mixing in any non-SCR picture aborts the export with a list of offending names.
+
+The active picture is preserved — saving briefly cycles through every open picture to render it, then restores the original tab.
+
 ### History
 
 - **Undo** (Ctrl+Z) — undo last action (up to 32 levels)
@@ -494,7 +505,7 @@ Use the **Convert to...** dropdown to convert the current picture to a different
 Available conversions include:
 - **Lossless**: SCR ↔ ATTR, SCR ↔ BSC ↔ BSP, SCR ↔ ULA+, NXI ↔ SL2 (all modes: 256×192, 320×256, 640×256)
 - **Lossy (render + re-quantize)**: SCR/ULA+ → NXI 320×256/640×256, NXI/SL2 cross-mode (256↔320↔640), NXI/SL2 → SCR
-- **Character match**: SCR → SPECSCII — matches each 8×8 cell bitmap to the best ROM font character or block graphic, preserving brightness and flash; tries both normal and inverted (ink/paper swap) matching; handles hidden pixels (ink == paper) as solid color cells
+- **Character match**: SCR → SPECSCII — matches each 8×8 cell bitmap to the best ROM font character or block graphic, preserving brightness and flash; tries both normal and inverted (ink/paper swap) matching; hidden pixels (ink == paper) are matched to the best glyph so the bitmap pattern is preserved for editing
 
 ### Export
 
@@ -692,9 +703,12 @@ For Attributed and Multicolour mode sprites:
 
 ## 18. Image Import
 
-When loading a PNG, JPG, WebP, or BMP file (or a single-frame GIF), the Image Import dialog opens.
+When loading a PNG, JPG, WebP, BMP, or GIF file, the Image Import dialog opens.
 
-**Animated GIF → SCA**: When loading a multi-frame animated GIF, the frames are automatically decoded, each frame is converted to ZX Spectrum SCR format (Floyd-Steinberg dithering), and the result is loaded as an SCA animation. Per-frame delays from the GIF are preserved (converted to SCA 20ms units). After import, the full SCA editor is available (filmstrip, playback, trim, delay editing, optimize, export).
+For multi-frame animated GIFs, a **mode dropdown** appears next to the Import button with the following options:
+- **Picture** — import the first frame as a static picture using selected format/dithering/adjustments
+- **Flash** (2-frame GIFs only) — convert both frames into a single SCR with FLASH attributes. Cells that differ between frames use the FLASH bit (0x80) to alternate ink↔paper every 320ms; identical cells remain static
+- **Animation** — convert all frames to SCA animation. Each frame is converted to SCR format, per-frame delays from the GIF are preserved (converted to SCA 20ms units). After import, the full SCA editor is available (filmstrip, playback, trim, delay editing, optimize, export)
 
 ### Layout
 
@@ -730,9 +744,14 @@ Crop the source image:
   - Cell Floyd, Cell Atkinson, Cell Serpentine, Cell Sierra 2, Cell Riemersma, Cell Ordered, Cell Blue Noise, Cell Pattern, Cell None
 
   Global (classic):
-  - Floyd-Steinberg, Jarvis, Stucki, Burkes, Sierra, Sierra Lite, Sierra 2-Row, Serpentine, Riemersma, Atkinson, Ordered 4×4, Ordered 8×8, Blue Noise, Pattern, Noise, None
+  - Floyd-Steinberg, Jarvis, Stucki, Burkes, Sierra, Sierra Lite, Sierra 2-Row, Serpentine, Dizzy, Riemersma, Atkinson, Ordered 2×2, Ordered 4×4, Ordered 8×8, Blue Noise, a-dither, Pattern, Noise, None
 
   Default dithering is **None** (nearest color, no dithering applied).
+
+  - **Strength** slider (0–100%) — scales how much quantization error is propagated during error diffusion. 0 = pure quantization (no diffusion), 100 = classic full-strength diffusion. For ordered / pattern / blue-noise / a-dither methods, Strength > 0 engages a hybrid ordered+diffusion mode (the ordered threshold is used as a bias, and the residual error is then diffused with a Floyd-Steinberg kernel).
+  - **Serpentine scan** checkbox — alternates row direction during error diffusion (left-to-right on even rows, right-to-left on odd rows) to reduce horizontal banding artifacts. Applies to all global error-diffusion methods.
+  - **Dizzy** dither (Liam Appelbe, 2023) — error diffusion with a dynamic denominator: per pixel, the algorithm sums weights of in-bounds *unprocessed* neighbors (orthogonal = 1.0, diagonal = 0.1) and distributes `error × weight / denom` proportionally. No error is lost at image edges; produces blue-noise-like patterns.
+  - **a-dither** (arithmetic dither, FFmpeg formula `((x + y·236) · 119) & 0xff`) — hash-based per-pixel threshold. Spatially stable, blue-noise-like, no lookup table.
 
 - **Paper color rule** — controls how ink and paper colors are assigned in each cell (not applied to ULA+ format, which uses independent CLUT halves):
   - **Darker color** — default; the darker of the two cell colors becomes paper (per cell, using perceptual luminance). For single-color cells (both ink and paper are the same), the color is checked against a midpoint: dark colors become paper (0 bits), light colors become ink (1 bits)
@@ -774,10 +793,13 @@ Crop the source image:
 | Levels | Black point (0-127), White point (128-255) |
 | Color balance | R, G, B channels (-50 to +50 each) |
 
+**Reset** button — resets all adjustment controls to their default values.
+
 ### Bottom Controls
 
 - **Zoom:** x1, x2, x3
 - **Grid** — show 8×8 grid on output preview
+- **Mode dropdown** (animated GIFs only) — select Picture, Flash, or Animation import mode
 - **Cancel** / **Import** buttons
 
 ![Image import dialog](screenshots/image_import.png)
@@ -1046,7 +1068,7 @@ The floating palette includes all drawing tools, selection/clipboard tools, colo
 
 ### Import (Convert to ZX Spectrum)
 
-`.png`, `.gif`, `.jpg`, `.jpeg`, `.webp`, `.bmp` — via the Image Import dialog with dithering and adjustments. Animated GIFs (multi-frame) are imported directly as SCA animations with frame delay preservation.
+`.png`, `.gif`, `.jpg`, `.jpeg`, `.webp`, `.bmp` — via the Image Import dialog with dithering and adjustments. Multi-frame animated GIFs can be imported as static picture, flash SCR (2-frame), or SCA animation via the mode dropdown.
 
 ### Nirvana Tile Formats
 

@@ -326,6 +326,12 @@ In the **Transform** section, choose a dithering method. Default is **None** (ne
 - **Cell Atkinson** — lighter dithering, retains more detail
 - **Cell Ordered** — structured pattern dithering
 - **Floyd-Steinberg** — classic error diffusion
+- **Dizzy** — error diffusion with blue-noise-like output (no edge artifacts)
+- **a-dither** — fast hash-based threshold dither, spatially stable
+
+Below the dither dropdown:
+- **Strength** (0–100%) scales error diffusion intensity; on ordered / pattern / blue-noise / a-dither methods, Strength > 0 engages a hybrid ordered+diffusion mode
+- **Serpentine scan** alternates row direction during error diffusion to reduce horizontal banding
 
 ### Set Paper Color Rule
 
@@ -355,7 +361,7 @@ Click the **Adjustments** tab to access:
 - Levels (black/white point)
 - Color balance (R, G, B)
 
-All adjustments update the preview in real time.
+All adjustments update the preview in real time. Click the **Reset** button (bottom-right of the panel) to reset all adjustment controls to their default values.
 
 ### Tile to Screens
 
@@ -663,12 +669,17 @@ For game developers who need sprite/screen data as Z80 assembly:
 
 Load a `.sca` file. The animation controls appear below the main tabs.
 
-### Import Animated GIF as SCA
+### Import Animated GIF
 
-1. Open a multi-frame animated GIF file (via Open or drag-and-drop)
-2. The frames are automatically decoded and each frame is converted to ZX Spectrum SCR format
-3. The result loads as an SCA animation with per-frame delays preserved from the original GIF
-4. Use the SCA editor (Edit tab) to trim, adjust delays, optimize, and export
+When you open a multi-frame animated GIF, the standard Image Import dialog opens. A **mode dropdown** appears next to the Import button:
+
+1. Open an animated GIF file (via Open or drag-and-drop)
+2. The import dialog opens with dithering/format/adjustment controls as usual
+3. Select the import mode from the dropdown:
+   - **Picture** — import the first frame as a static picture using the selected format and settings
+   - **Flash** (2-frame GIFs only) — convert both frames into a single SCR with FLASH attributes. Cells that differ between the two frames use the FLASH bit to alternate ink↔paper every 320ms; identical cells remain static
+   - **Animation** — convert all frames to an SCA animation. Per-frame delays from the GIF are preserved. After import, the full SCA editor is available (filmstrip, playback, trim, delay editing, optimize, export)
+4. Click **Import** to apply
 
 ### Navigate Frames
 
@@ -732,6 +743,15 @@ Click **Clear** to remove the reference image.
 
 ### Workspace Save/Load
 Save all your open pictures at once with **Save Workspace** in the Xform tab. Load them back later — preserving layers, sprites, settings, and reference images. Workspace buttons are always available in the Xform tab, even without a loaded picture.
+
+### Save All Pictures (ZIP / GIF / SCA)
+When 2+ pictures are open, the Xform tab shows four extra buttons that bundle every open picture into one file:
+- **ZIP (originals)** — every picture in its native binary format (`.scr`, `.bsc`, `.ifl`, …) inside a single zip.
+- **ZIP (PNG / GIF)** — every picture rendered with current view settings (zoom, border, palette, filters); flashing pictures become animated GIFs.
+- **Animated GIF** — one combined GIF with all pictures as frames at 500 ms each (flashing pictures contribute two phase frames). All pictures must render to the same canvas size.
+- **SCA** — one SCA animation with all pictures as SCR frames at 500 ms each. Requires every picture to be plain SCR (256×192, 6912 bytes).
+
+The active picture is restored after each save, so editing isn't disturbed.
 
 ### Barcode Brushes
 For BSC/BSP/BMC4 border formats, use barcode slots to capture and stamp border stripe patterns. Shift+click a slot to capture from the border.

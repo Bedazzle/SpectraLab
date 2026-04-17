@@ -1,5 +1,129 @@
 # SpectraLab Version History
 
+## v1.79
+- Save all pictures (Xform tab, visible when 2+ pictures are open):
+  - **ZIP (originals)** — bundles every open picture in its native binary
+    format into one `spectralab_pictures.zip`. Existing file extensions are
+    preserved; duplicate names are disambiguated with " (2)", " (3)", …
+  - **ZIP (PNG / GIF)** — bundles every picture rendered with current view
+    settings (zoom, border, palette, filters) as PNG; flashing pictures
+    become 2-frame animated GIFs at the FLASH_INTERVAL cadence
+  - **Animated GIF** — combines all pictures into one animated GIF at
+    500 ms / frame; flashing pictures contribute two frames (normal + swapped
+    phase). Requires every picture to render to the same canvas size
+  - **SCA** — combines all pictures into one SCA animation file at
+    500 ms / frame; requires every picture to be in plain SCR format
+    (256×192, 6912 bytes), border colour taken from current setting
+- Image import: multi-select and "Add All" batch import
+  - File open dialog and drag-and-drop now accept multiple images at once
+  - First image opens in the standard import dialog; remaining images are queued
+  - New "Add All (N)" button imports every queued image with the current dialog
+    settings (dithering, format, levels, etc.), creating one Picture per file
+  - If the number of selected images exceeds free picture slots, extras are
+    skipped so the picture limit (15) is respected
+  - Tile-to-screens mode is incompatible with Add All; a prompt asks the user
+    to disable it first
+- Fix: thin black line below the picture in the viewer
+  - `#canvasWrapper` (inline-block) sat on the text baseline of its block
+    parent `.editor-canvas-container`, leaving a ~3–4 px descender gap below
+    it through which the container's `background: #000` showed as a black
+    line. Added `font-size: 0; line-height: 0` to `.editor-canvas-container`
+    to collapse the line-box descender.
+- ZIP archive picker: multi-select and "Add All"
+  - Click to select, Ctrl+click to toggle, Shift+click for range; double-click
+    imports a single file immediately
+  - Keyboard shortcuts: Escape cancels, Ctrl+A selects all, Enter imports
+    selected
+  - "Add All" button imports every file listed in the archive
+  - Native formats (SCR, BSC, SCA, etc.) are loaded directly; image files route
+    through the import dialog with the remaining files queued for "Add All"
+  - Selection count shown on the Import button ("Import (N)")
+  - MAX_PICTURES limit (15) is respected; a prompt warns if selection exceeds
+    free slots
+
+## v1.78
+- Image import:
+  - Error-diffusion Strength slider (0-100%) and Serpentine scanning checkbox
+    - Strength scales how much quantization error is propagated (0 = pure quantize, 100 = classic diffusion)
+    - Serpentine alternates row direction during error diffusion to reduce horizontal banding
+    - Applies to all global error-diffusion methods (Floyd-Steinberg, Atkinson, Jarvis, Stucki, Burkes, Sierra variants, Serpentine, Riemersma)
+    - For ordered/pattern/blue-noise methods: strength > 0 enables hybrid ordered+diffusion mode (GrafX2-style)
+  - "Ordered 2x2" dither option (coarsest Bayer pattern, 4 levels per axis)
+  - "Dizzy" dither option (Liam Appelbe, 2023)
+    - Error diffusion with a dynamic denominator normalized over in-bounds unprocessed neighbors (orthogonal weight 1.0, diagonal 0.1)
+    - Blue-noise-like patterns; no error lost at image edges; honors Strength / Serpentine
+  - "a-dither" option (arithmetic dither, FFmpeg libswscale formula: `((x + y*236) * 119) & 0xff`)
+    - Hash-based per-pixel threshold — spatially stable, blue-noise-like, no lookup table
+    - Works as an ordered method (Strength = 0); Strength > 0 engages hybrid ordered+diffusion
+  - Internal refactor unified 10+ dithering dispatch sites into a single `applyGlobalDither()` helper
+- Internal: readability and maintainability refactor
+  - BSC/BMC4 border renderers now share a single `createBorderRenderers(ctx)` factory
+    - Eliminates ~100 lines of duplicated nested helpers (`drawColorSegment`, `drawBorderLine`, `drawSideBorderLine`)
+  - New `ATTR` helper object centralizes ZX Spectrum attribute-byte bit layout
+    - `ATTR.ink(b)`, `ATTR.paper(b)`, `ATTR.bright(b)`, `ATTR.flash(b)`, `ATTR.make(...)` with named mask/bit constants
+    - Replaces scattered `& 0x07`, `>> 3`, `& 0x40`, `& 0x80` magic numbers
+  - BMC4 attribute bank interleave extracted to `bmc4AttrsFromBanks()` / `bmc4AttrsToBanks()`
+    - Deduplicates 3 identical inline loops (import, export, sync)
+  - `export53c()` ink/paper normalization extracted to `normalizeAttrForPaint()` helper
+  - ASM export download boilerplate unified into `runAsmExport(defaultName, generate)` helper
+    - 7 export entry points across 7 files (BSC, ULA+, IFL, Gigascreen, RGB3, LoRes/Radastan, Next L2) collapsed to one-liners
+  - Picture format dispatch replaced with `PICTURE_FORMAT_HANDLERS` registry table
+    - Single source of truth maps format → import/export handlers; eliminates two parallel switch statements
+  - `initEditor()` split: keyboard shortcuts (~183 lines) and attribute-preview flash loop (~27 lines) extracted to focused helpers
+- Fix: SPECSCII preview with attrs display off now matches SCR (bright white paper, not muted)
+  - Both paths (editor/multi-layer and stream-based) were using `ZX_PALETTE.REGULAR[7]` = rgb(215,215,215)
+  - Now use `ZX_PALETTE.BRIGHT[7]` = rgb(255,255,255), matching SCR's hardcoded attrs-off color
+- Fix: SPECSCII export no longer emits `INVERSE` control codes (0x14) unless the picture actually uses inverse
+  - Previously a leading `14 00` was always written; now all inverse emissions are skipped if no cell uses inverse mode
+  - If inverse is used anywhere, the stream emits codes as before
+- Fix: Transform → Convert now correctly refreshes tool palette for every format combination
+  - Tool/brush/snap visibility is re-applied after each conversion (was stale from previous format)
+  - 53c and SPECSCII blocks now reset all tool buttons instead of only hiding their own excluded set
+- Fix: snap control now visible (and adjustable) in Next modes (NXI/SL2/SLR/Radastan)
+  - Previously hidden while snap still applied during pixel drawing — set Snap to Off for pixel-perfect editing
+- Fix: Next/ULA+ palette swap and copy now preserve already drawn colors
+  - Next (NXI/SL2/LoRes/Radastan): swap remaps all pixel indices idx1↔idx2; copy remaps
+    pixels from the destination slot to any other slot holding the same color (so the
+    destination can be safely overwritten without changing the picture visually)
+  - ULA+: attribute cells are remapped within their existing CLUT to match the original
+    ink/paper RGB values using the new palette (bright/flash untouched)
+  - Picture appearance remains stable while reorganizing the palette
+- Next palette (NXI/SL2/SLR/Radastan):
+  - Sort controls for palette grid display (Index / Hue / RGB + Reverse)
+    - Display-only reorder; does not mutate palette bytes
+    - Preference persists via localStorage
+  - Shift+click copy/swap workflow (same as ULA+)
+    - Shift+click a cell to mark source; click another cell to copy, Shift+click to swap
+    - Escape cancels the operation
+    - Undoable; for NXI the embedded palette bytes are kept in sync
+
+## v1.77
+- GIF import:
+  - "Import as Flash" for 2-frame animated GIFs
+    - Converts two frames into a single SCR with FLASH attributes (bit 7)
+    - Brute-force per-cell optimization: tries all ink/paper/bright combinations across both frames
+    - Identical cells remain static (no flash); differing cells use FLASH to alternate ink↔paper
+    - Flash timer auto-starts on load
+  - "Import as Animation" for multi-frame animated GIFs
+    - Converts all frames to SCA animation format
+    - All GIFs now open through the import dialog with mode dropdown
+- Image import:
+  - Consolidated import buttons into single Import button with mode dropdown
+    - Dropdown shows Picture/Flash/Animation options based on GIF frame count
+  - Stable dialog size when switching Image/Adjustments tabs
+    - Tab panels use CSS grid overlap so both tabs contribute to container height
+  - Reset button on adjustment tab
+    - Resets all 11 controls (contrast, brightness, saturation, gamma, sharpness, smoothing, levels, color balance) to defaults
+- Fix: SCR → SPECSCII conversion preserves hidden-pixel bitmap patterns
+  - Cells with ink == paper now match the bitmap to the best glyph instead of forcing space
+  - Character data is preserved for later editing when colors are changed
+- Fix: image import as 53c/127c with asymmetric patterns (DD/77, stripes)
+  - Paper rule (darker/lighter) no longer swaps ink/paper without inverting the pattern
+  - Fixes wrong colors when using non-checker patterns
+- UI: 53c Pattern / Blend colors controls moved to the top of View Settings
+  - Previously shown as a separate section below Display Filters
+  - Now grouped with other view-related controls when a 53c/atr picture is loaded
+
 ## v1.76
 - SPECSCII character palette: sort by visual weight mode
   - Toggle button (Sort) switches between Code order and Weight order (default)

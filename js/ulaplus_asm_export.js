@@ -126,9 +126,5 @@ function exportUlaPlusAsm() {
     return;
   }
 
-  const baseName = getAsmBaseName(currentFileName, 'ulaplus');
-  const result = generateUlaPlusAsm(screenData, baseName, getAsmEmbedData());
-  if (!result) return;
-
-  downloadFile(result.asm, baseName + '.asm');
+  runAsmExport('ulaplus', (baseName, embed) => generateUlaPlusAsm(screenData, baseName, embed));
 }

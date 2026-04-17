@@ -28,17 +28,8 @@ function generateLoresAsm(data, baseName, embedData) {
   const HALF = 6144;   // 48 * 128 = 6144 bytes per half
   const GAP = 2048;    // $5800-$5FFF padding
 
-  // Generate default RGB332→RGB333 identity palette (256 entries, 2 bytes each)
-  const palette = [];
-  for (let i = 0; i < 256; i++) {
-    const r3 = (i >> 5) & 7;
-    const g3 = (i >> 2) & 7;
-    const b2 = i & 3;
-    const b3 = (b2 << 1) | (b2 >> 1);
-    const byte1 = (r3 << 5) | (g3 << 2) | (b3 >> 1);
-    const byte2 = b3 & 1;
-    palette.push(byte1, byte2);
-  }
+  // Default RGB332→RGB333 identity palette (256 entries, 2 bytes each)
+  const palette = generateRgb332PaletteBytes(256);
 
   const asm = [];
 
@@ -182,11 +173,7 @@ function exportLoresAsm() {
     return;
   }
 
-  const baseName = getAsmBaseName(currentFileName, 'lores');
-  const result = generateLoresAsm(screenData.slice(0, 12288), baseName, getAsmEmbedData());
-  if (!result) return;
-
-  downloadFile(result.asm, baseName + '.asm');
+  runAsmExport('lores', (baseName, embed) => generateLoresAsm(screenData.slice(0, 12288), baseName, embed));
 }
 
 /**
@@ -406,11 +393,7 @@ function exportLoresRadAsm() {
     return;
   }
 
-  const baseName = getAsmBaseName(currentFileName, 'radastan');
   const pal = (typeof nxiResolvedPalette !== 'undefined' && nxiResolvedPalette && nxiResolvedPalette.length >= 16)
     ? nxiResolvedPalette : null;
-  const result = generateLoresRadAsm(screenData.slice(0, 6144), baseName, getAsmEmbedData(), pal);
-  if (!result) return;
-
-  downloadFile(result.asm, baseName + '.asm');
+  runAsmExport('radastan', (baseName, embed) => generateLoresRadAsm(screenData.slice(0, 6144), baseName, embed, pal));
 }

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.76 -->
+<!-- SpectraLab v1.79 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -639,7 +639,8 @@
   }
 
   .ulaplus-grid-cell.copy-source,
-  .ulaplus-classic-cell.copy-source {
+  .ulaplus-classic-cell.copy-source,
+  .nxi-palette-cell.copy-source {
     border-color: #ff00ff;
     border-style: dashed;
     border-width: 2px;
@@ -858,6 +859,8 @@
     max-width: calc(100vw - 300px);
     max-height: calc(100vh - 80px);
     background: #000;
+    font-size: 0;
+    line-height: 0;
   }
 
   #filterOverlayCanvas {
@@ -1471,7 +1474,7 @@
       <div class="panel-content">
         <!-- File input -->
         <div class="control-group">
-          <input type="file" id="inputFile" accept=".scr,.53c,.atr,.bsc,.bsp,.bmc4,.ifl,.mlt,.mc,.3,.img,.mg1,.mg2,.mg4,.mg8,.hlr,.stl,.nxi,.sl2,.slr,.rad,.specscii,.sca,.zxp,.ch$,.chr$,.ch-,.slp,.slw,.sna,.z80,.btile,.wtile,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
+          <input type="file" id="inputFile" multiple accept=".scr,.53c,.atr,.bsc,.bsp,.bmc4,.ifl,.mlt,.mc,.3,.img,.mg1,.mg2,.mg4,.mg8,.hlr,.stl,.nxi,.sl2,.slr,.rad,.specscii,.sca,.zxp,.ch$,.chr$,.ch-,.slp,.slw,.sna,.z80,.btile,.wtile,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
         </div>
 
         <!-- New and Save buttons -->
@@ -1517,6 +1520,21 @@
               </div>
             </div>
             <div id="viewSettingsContent" style="display: none;">
+              <div id="pattern53cControls" style="display: none; align-items: center; gap: 8px; margin-top: 4px;">
+                <label style="margin-bottom: 0;">
+                  Pattern:
+                  <select id="pattern53cSelect" style="width: 90px;">
+                    <option value="file" style="display:none">File</option>
+                    <option value="checker" selected>Checker</option>
+                    <option value="stripes">Stripes</option>
+                    <option value="dd77">Pattern</option>
+                  </select>
+                </label>
+                <label style="font-size: 11px; margin-bottom: 0;">
+                  <input type="checkbox" id="attr53cBlendCheckbox">
+                  Blend colors
+                </label>
+              </div>
               <div style="display: flex; align-items: center; gap: 4px; margin-top: 4px;">
                 <label style="margin-bottom: 0;">
                   Border:
@@ -1673,21 +1691,6 @@
                 </select>
               </div>
             </div>
-          </div>
-          <div class="control-group" id="pattern53cControls">
-            <label>
-              Pattern:
-              <select id="pattern53cSelect">
-                <option value="file" style="display:none">File</option>
-                <option value="checker" selected>Checker</option>
-                <option value="stripes">Stripes</option>
-                <option value="dd77">Pattern</option>
-              </select>
-            </label>
-            <label>
-              <input type="checkbox" id="attr53cBlendCheckbox">
-              Blend colors
-            </label>
           </div>
           <div class="control-group" id="rgb3Controls" style="display: none;">
             <label>
@@ -1912,8 +1915,16 @@
                 <div id="nxiPaperPreview" style="width: 20px; height: 16px; border: 1px solid var(--border-color);"></div>
                 <span id="nxiColorIndex" style="font-size: 9px; color: var(--text-tertiary); margin-left: auto;"></span>
               </div>
+              <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 4px;">
+                <span style="font-size: 9px; color: var(--text-tertiary);">Sort:</span>
+                <label style="font-size: 10px;" title="Natural palette index order"><input type="radio" name="nxiSort" value="index" checked> Index</label>
+                <label style="font-size: 10px;" title="Sort by hue, then luminance"><input type="radio" name="nxiSort" value="hue"> Hue</label>
+                <label style="font-size: 10px;" title="Sort by RGB value (red, then green, then blue)"><input type="radio" name="nxiSort" value="rgb"> RGB</label>
+                <label style="font-size: 10px; margin-left: 4px;" title="Reverse sort order"><input type="checkbox" id="nxiSortReverse"> Reverse</label>
+              </div>
               <div id="nxiPaletteGrid" style="display: grid; grid-template-columns: repeat(16, 1fr); gap: 1px;"></div>
-              <div style="font-size: 9px; color: var(--text-tertiary); margin-top: 4px;">Left = ink, Right = paper</div>
+              <div style="font-size: 9px; color: var(--text-tertiary); margin-top: 4px;">Left = ink, Right = paper, Shift+click = copy/swap</div>
+              <div id="nxiCopyStatus" style="font-size: 9px; color: var(--text-tertiary); margin-top: 2px; min-height: 12px;"></div>
             </div>
             <div id="editorToolsSection" style="margin-bottom: 8px;">
               <button class="editor-tool-btn selected" data-tool="pixel" title="Pixel (P)">✎</button>
@@ -2156,9 +2167,14 @@
                   <span id="specsciiPalExpandIcon" style="font-size: 10px; width: 12px;">▼</span>
                   <span style="font-size: 10px; color: var(--text-tertiary);">CHARACTER</span>
                 </div>
-                <button id="specsciiPalSortBtn" class="editor-tool-btn"
-                        title="Sort by visual weight"
-                        style="padding: 1px 4px; font-size: 9px; margin:0;">Sort</button>
+                <div style="display:flex; gap:2px;">
+                  <button id="specsciiInvBtn" class="editor-tool-btn"
+                          title="Inverse mode — new cells drawn with swapped ink/paper glyph"
+                          style="padding: 1px 4px; font-size: 9px; margin:0;">Inv</button>
+                  <button id="specsciiPalSortBtn" class="editor-tool-btn"
+                          title="Sort by visual weight"
+                          style="padding: 1px 4px; font-size: 9px; margin:0;">Sort</button>
+                </div>
               </div>
               <div id="specsciiPalContent">
                 <canvas id="specsciiPaletteCanvas" width="64" height="112"
@@ -2208,6 +2224,17 @@
               <button id="saveWorkspaceBtn" title="Save all open pictures (.slw)" style="flex: 1;">Save Workspace</button>
               <button id="loadWorkspaceBtn" title="Load workspace file (.slw)" style="flex: 1;">Load Workspace</button>
               <input type="file" id="workspaceFileInput" accept=".slw" style="display: none;">
+            </div>
+          </div>
+          <div id="saveAllGroup" class="control-group" style="display: none;">
+            <div class="control-group-title">Save all pictures</div>
+            <div class="editor-actions" style="margin-top: 4px;">
+              <button id="saveAllZipOriginalsBtn" style="flex: 1;" title="Zip each picture in its native binary format">ZIP (originals)</button>
+              <button id="saveAllZipImagesBtn" style="flex: 1;" title="Zip each picture as PNG (or animated GIF if flashing)">ZIP (PNG / GIF)</button>
+            </div>
+            <div class="editor-actions" style="margin-top: 4px;">
+              <button id="saveAllGifBtn" style="flex: 1;" title="Combine all pictures into one animated GIF (500 ms / frame)">Animated GIF</button>
+              <button id="saveAllScaBtn" style="flex: 1;" title="Combine all SCR pictures into one SCA animation (500 ms / frame)">SCA</button>
             </div>
           </div>
           <div id="transformInactiveHint" style="color: var(--text-secondary); font-size: 11px; padding: 8px 0;">
@@ -2831,11 +2858,14 @@
 
 <!-- ZIP File Selection Modal -->
 <div id="zipModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000;">
-  <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: var(--bg-primary); border: 1px solid var(--border-primary); border-radius: 5px; padding: 15px; min-width: 300px; max-width: 500px; max-height: 80vh; overflow: hidden; display: flex; flex-direction: column;">
+  <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: var(--bg-primary); border: 1px solid var(--border-primary); border-radius: 5px; padding: 15px; min-width: 320px; max-width: 500px; max-height: 80vh; overflow: hidden; display: flex; flex-direction: column;">
     <div style="font-weight: bold; margin-bottom: 10px;">Select file from archive:</div>
     <div id="zipFileList" style="overflow-y: auto; max-height: 300px; border: 1px solid var(--border-secondary); border-radius: 3px;"></div>
-    <div style="margin-top: 10px; text-align: right;">
-      <button id="zipCancelBtn" style="padding: 5px 15px;">Cancel</button>
+    <div style="font-size: 10px; color: var(--text-secondary); margin-top: 6px;">Click to select, Ctrl+click to toggle, Shift+click for range, double-click to import.</div>
+    <div style="margin-top: 10px; display: flex; justify-content: flex-end; gap: 8px;">
+      <button id="zipCancelBtn" type="button" style="padding: 5px 15px;">Cancel</button>
+      <button id="zipAddAllBtn" type="button" style="padding: 5px 15px;" title="Import every file in the list">Add All</button>
+      <button id="zipImportBtn" type="button" style="padding: 5px 15px;" disabled title="Import selected files">Import</button>
     </div>
   </div>
 </div>
@@ -3316,7 +3346,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.76</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.79</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">
@@ -3358,8 +3388,10 @@
       <button id="importTabImage" class="import-tab active" style="padding: 4px 16px; font-size: 11px; border: 1px solid var(--border-secondary); border-bottom: none; background: var(--bg-primary); cursor: pointer; margin-bottom: -1px;">Image</button>
       <button id="importTabAdjust" class="import-tab" style="padding: 4px 16px; font-size: 11px; border: 1px solid var(--border-secondary); border-bottom: none; background: var(--bg-secondary); cursor: pointer; margin-bottom: -1px; margin-left: -1px;">Adjustments</button>
     </div>
+    <!-- Tab panels wrapper: both panels overlap in same grid cell so height stays constant -->
+    <div style="display: grid; margin-bottom: 12px; flex-shrink: 0;">
     <!-- Image tab content -->
-    <div id="importPanelImage" style="display: flex; gap: 12px; margin-bottom: 12px; flex-shrink: 0;">
+    <div id="importPanelImage" style="grid-area: 1/1; display: flex; gap: 12px;">
       <!-- SOURCE group -->
       <div style="flex: 0 0 auto; padding: 8px; border: 1px solid var(--border-secondary); border-radius: 4px;">
         <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 6px; font-weight: 500;">SOURCE</div>
@@ -3381,7 +3413,7 @@
         <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 6px; font-weight: 500;">TRANSFORM</div>
         <div style="display: flex; flex-direction: column; gap: 6px;">
           <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;">
-            <span style="width: 36px;">Fit:</span>
+            <span style="width: 52px;">Fit:</span>
             <select id="importFitMode" style="width: 100px; padding: 2px; font-size: 11px;">
               <option value="stretch" selected>Stretch</option>
               <option value="fit">Letterbox</option>
@@ -3391,7 +3423,7 @@
             </select>
           </label>
           <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;">
-            <span style="width: 36px;">Align:</span>
+            <span style="width: 52px;">Align:</span>
             <select id="importAlign" style="width: 100px; padding: 2px; font-size: 11px;">
               <option value="top-left">Top-Left</option>
               <option value="top">Top</option>
@@ -3405,7 +3437,7 @@
             </select>
           </label>
           <label id="importDitheringRow" style="font-size: 11px; display: flex; align-items: center; gap: 4px;">
-            <span style="width: 36px;">Dither:</span>
+            <span style="width: 52px;">Dither:</span>
             <select id="importDithering" style="width: 100px; padding: 2px; font-size: 11px;">
               <optgroup id="importDitherCellGroup" label="Cell-Aware">
                 <option value="cell-floyd">Cell Floyd</option>
@@ -3427,19 +3459,30 @@
                 <option value="sierra-lite">Sierra Lite</option>
                 <option value="sierra2">Sierra 2-Row</option>
                 <option value="serpentine">Serpentine</option>
+                <option value="dizzy">Dizzy</option>
                 <option value="riemersma">Riemersma</option>
                 <option value="atkinson">Atkinson</option>
+                <option value="ordered2">Ordered 2x2</option>
                 <option value="ordered">Ordered 4x4</option>
                 <option value="ordered8">Ordered 8x8</option>
                 <option value="blue-noise">Blue Noise</option>
+                <option value="a-dither">a-dither</option>
                 <option value="pattern">Pattern</option>
                 <option value="noise">Noise</option>
                 <option value="none" selected>None</option>
               </optgroup>
             </select>
           </label>
+          <label id="importDitherStrengthRow" style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Error diffusion strength. 0% = pure ordered/threshold; 100% = full classic error diffusion. For ordered methods, >0 enables hybrid ordered+diffusion mode.">
+            <span style="width: 52px;">Strength:</span>
+            <input type="range" id="importDitherStrength" min="0" max="100" value="100" style="flex: 1; min-width: 60px;">
+            <span id="importDitherStrengthVal" style="width: 28px; text-align: right;">100</span>
+          </label>
+          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Alternate row direction during error diffusion to reduce horizontal banding.">
+            <input type="checkbox" id="importDitherSerpentine" style="margin: 0;">Serpentine scan
+          </label>
           <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="How to assign ink and paper colors in each cell">
-            <span style="width: 36px;">Paper:</span>
+            <span style="width: 52px;">Paper:</span>
             <select id="importPaperRule" style="width: 100px; padding: 2px; font-size: 11px;">
               <option value="darker" selected>Darker color</option>
               <option value="lighter">Lighter color</option>
@@ -3612,7 +3655,7 @@
       </div>
     </div>
     <!-- Adjustments tab content -->
-    <div id="importPanelAdjust" style="display: none; gap: 16px; margin-bottom: 12px; height: 150px; flex-shrink: 0;">
+    <div id="importPanelAdjust" style="grid-area: 1/1; visibility: hidden; gap: 16px;">
       <div style="display: flex; gap: 16px;">
         <div style="flex: 1;">
           <div style="font-size: 10px; margin-bottom: 2px;">Contrast: <span id="importContrastValue">0</span></div>
@@ -3639,7 +3682,9 @@
           <div style="display: flex; align-items: center; gap: 2px;"><span style="font-size: 10px; width: 14px;">B:</span><input type="range" id="importBalanceB" min="-50" max="50" value="0" style="flex: 1;" title="Blue"></div>
         </div>
       </div>
+      <div style="text-align: right;"><button id="importAdjustReset" style="padding: 2px 10px; font-size: 10px;" title="Reset all adjustments to defaults">Reset</button></div>
     </div>
+    </div><!-- end tab panels wrapper -->
     <div style="display: flex; gap: 8px; justify-content: space-between; align-items: center; flex-shrink: 0;">
       <div style="display: flex; align-items: center; gap: 12px;">
         <div style="display: flex; align-items: center; gap: 4px;">
@@ -3654,8 +3699,14 @@
           <input type="checkbox" id="importShowGrid" style="margin: 0;">Grid
         </label>
       </div>
-      <div style="display: flex; gap: 8px;">
+      <div style="display: flex; gap: 8px; align-items: center;">
         <button id="importCancelBtn" style="padding: 5px 16px; font-size: 12px;">Cancel</button>
+        <select id="importModeSelect" style="padding: 4px 6px; font-size: 12px; display: none;">
+          <option value="picture">Picture</option>
+          <option value="flash">Flash</option>
+          <option value="animation">Animation</option>
+        </select>
+        <button id="importAddAllBtn" style="padding: 5px 16px; font-size: 12px; display: none;" title="Import all queued images using current settings">Add All</button>
         <button id="importOkBtn" style="padding: 5px 16px; font-size: 12px;">Import</button>
       </div>
     </div>

@@ -108,11 +108,7 @@ function initScreenViewerUI() {
         loadProject(file);
       }
     } else if (typeof isImageFileExt === 'function' && isImageFileExt(file.name)) {
-      if (lowerName.endsWith('.gif') && typeof importAnimatedGifOrFallback === 'function') {
-        importAnimatedGifOrFallback(file);
-      } else {
-        openImportDialog(file);
-      }
+      openImportDialog(file);
     } else if (typeof isSnapshotFile === 'function' && isSnapshotFile(file.name)) {
       loadSnapshotFile(file);
     } else if (typeof isNirvanaTileFile === 'function' && isNirvanaTileFile(file.name)) {
@@ -144,13 +140,57 @@ function initScreenViewerUI() {
     }
   }
 
+  // Shared multi-file routing: batches image imports via the import dialog
+  // and opens non-image files one at a time.
+  function handleOpenFiles(fileList) {
+    if (!fileList || fileList.length === 0) return;
+    const files = Array.from(fileList);
+    const images = [];
+    const others = [];
+    for (const f of files) {
+      if (typeof isImageFileExt === 'function' && isImageFileExt(f.name)) {
+        images.push(f);
+      } else {
+        others.push(f);
+      }
+    }
+
+    // Non-image files: route each through the single-file handler.
+    for (const f of others) {
+      handleOpenFile(f);
+    }
+
+    // Image files: cap by available picture slots, queue the rest for "Add All".
+    if (images.length > 0) {
+      let available = Infinity;
+      if (typeof MAX_PICTURES !== 'undefined' && typeof openPictures !== 'undefined') {
+        available = Math.max(0, MAX_PICTURES - openPictures.length);
+      }
+      const accepted = images.slice(0, available);
+      const dropped = images.length - accepted.length;
+      if (accepted.length === 0) {
+        if (typeof MAX_PICTURES !== 'undefined') {
+          alert('Maximum ' + MAX_PICTURES + ' pictures already open. Close one to import more.');
+        }
+        return;
+      }
+      const queue = accepted.slice(1);
+      if (typeof setImportQueue === 'function') {
+        setImportQueue(queue);
+      }
+      if (dropped > 0) {
+        console.warn('Dropped ' + dropped + ' image(s): picture limit reached');
+      }
+      openImportDialog(accepted[0]);
+    }
+  }
+
   // File input handler
   inputFile?.addEventListener('change', function(event) {
     const target = /** @type {HTMLInputElement} */ (event.target);
-    const file = target.files?.[0];
-    if (file) {
-      handleOpenFile(file);
-    }
+    handleOpenFiles(target.files);
+    // Reset so selecting the same files again re-triggers change.
+    target.value = '';
     // Remove focus so keyboard shortcuts work immediately
     /** @type {HTMLElement} */ (document.activeElement)?.blur();
     screenCanvas?.focus();
@@ -162,10 +202,7 @@ function initScreenViewerUI() {
   });
   document.body.addEventListener('drop', function(e) {
     e.preventDefault();
-    const file = e.dataTransfer?.files[0];
-    if (file) {
-      handleOpenFile(file);
-    }
+    handleOpenFiles(e.dataTransfer?.files);
   });
 
   // Zoom select handler
@@ -293,6 +330,24 @@ function initScreenViewerUI() {
   document.getElementById('attr53cSortReverse')?.addEventListener('change', function() {
     attr53cSortReverse = /** @type {HTMLInputElement} */ (this).checked;
     if (typeof build53cPalette === 'function') build53cPalette();
+    saveSettings();
+  });
+
+  // Next palette sort mode radio buttons
+  document.querySelectorAll('input[name="nxiSort"]').forEach(radio => {
+    radio.addEventListener('change', function() {
+      nxiSortMode = /** @type {'index'|'hue'|'rgb'} */ (/** @type {HTMLInputElement} */ (this).value);
+      if (typeof nxiPaletteClearCopySource === 'function') nxiPaletteClearCopySource();
+      if (typeof buildNxiPalette === 'function') buildNxiPalette();
+      saveSettings();
+    });
+  });
+
+  // Next palette sort reverse checkbox
+  document.getElementById('nxiSortReverse')?.addEventListener('change', function() {
+    nxiSortReverse = /** @type {HTMLInputElement} */ (this).checked;
+    if (typeof nxiPaletteClearCopySource === 'function') nxiPaletteClearCopySource();
+    if (typeof buildNxiPalette === 'function') buildNxiPalette();
     saveSettings();
   });
 

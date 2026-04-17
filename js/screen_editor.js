@@ -403,6 +403,15 @@ let attr53cSortMode = 'hue';
 /** @type {boolean} */
 let attr53cSortReverse = false;
 
+/** @type {'index'|'hue'|'rgb'} - Next palette display sort mode */
+let nxiSortMode = 'index';
+
+/** @type {boolean} - Next palette display sort reverse */
+let nxiSortReverse = false;
+
+/** @type {number} - Next palette copy/swap source index (-1 = none) */
+let nxiCopySource = -1;
+
 /**
  * Returns the current 53c pattern array from APP_CONFIG based on the select dropdown.
  * @returns {number[]}
@@ -702,6 +711,9 @@ function updateEditorColorPickers() {
   }
   if (currentFormat === FORMAT.RGB3) buildRgb3Palette();
   if (isNext) buildNxiPalette();
+  // Refresh tool/brush/snap section visibility so format-specific tool sets
+  // are re-applied after conversions (e.g. when converting NXI→SCR or 53c→SCR).
+  if (typeof updateEditorState === 'function') updateEditorState();
 }
 
 /**
@@ -728,6 +740,220 @@ function toggleNxiColorPicker(show) {
 }
 
 /**
+ * Returns palette indices [0..count-1] ordered per nxiSortMode / nxiSortReverse.
+ * Display-only reorder; does not mutate nxiResolvedPalette.
+ * @param {number} count - Number of palette entries (16 or 256)
+ * @returns {number[]} Sorted array of indices into nxiResolvedPalette
+ */
+function sortNxiIndices(count) {
+  const indices = [];
+  for (let i = 0; i < count; i++) indices.push(i);
+  if (!nxiResolvedPalette) return indices;
+
+  if (nxiSortMode === 'rgb') {
+    indices.sort((a, b) => {
+      const ca = nxiResolvedPalette[a] || [0, 0, 0];
+      const cb = nxiResolvedPalette[b] || [0, 0, 0];
+      const va = ca[0] * 65536 + ca[1] * 256 + ca[2];
+      const vb = cb[0] * 65536 + cb[1] * 256 + cb[2];
+      return va - vb;
+    });
+  } else if (nxiSortMode === 'hue') {
+    indices.sort((a, b) => {
+      const ca = nxiResolvedPalette[a] || [0, 0, 0];
+      const cb = nxiResolvedPalette[b] || [0, 0, 0];
+      const hslA = rgb2hsl53c(ca[0], ca[1], ca[2]);
+      const hslB = rgb2hsl53c(cb[0], cb[1], cb[2]);
+      const aGray = hslA[1] < 0.05;
+      const bGray = hslB[1] < 0.05;
+      if (aGray && !bGray) return -1;
+      if (!aGray && bGray) return 1;
+      if (aGray && bGray) return hslA[2] - hslB[2];
+      const hueBucketA = Math.floor(hslA[0] / 30);
+      const hueBucketB = Math.floor(hslB[0] / 30);
+      if (hueBucketA !== hueBucketB) return hueBucketA - hueBucketB;
+      return hslA[2] - hslB[2];
+    });
+  }
+  // 'index' mode keeps natural order
+
+  if (nxiSortReverse) indices.reverse();
+  return indices;
+}
+
+/**
+ * Clears the Next palette copy source selection
+ */
+function nxiPaletteClearCopySource() {
+  nxiCopySource = -1;
+  document.querySelectorAll('.nxi-palette-cell.copy-source')
+    .forEach((el) => el.classList.remove('copy-source'));
+  const status = document.getElementById('nxiCopyStatus');
+  if (status) status.textContent = '';
+}
+
+/**
+ * Re-encodes nxiResolvedPalette[idx] into screenData RGB333 bytes for NXI format.
+ * No-op for SL2/LORES/LORES_RAD (palette lives only in nxiResolvedPalette).
+ * @param {number} idx - Palette index to sync
+ */
+function writeNxiPaletteToScreenData(idx) {
+  if (currentFormat !== FORMAT.NXI) return;
+  if (!screenData || screenData.length < NXI.PALETTE_SIZE) return;
+  if (!nxiResolvedPalette || !nxiResolvedPalette[idx]) return;
+  const rgb = nxiResolvedPalette[idx];
+  const r3 = Math.round(rgb[0] * 7 / 255);
+  const g3 = Math.round(rgb[1] * 7 / 255);
+  const b3 = Math.round(rgb[2] * 7 / 255);
+  screenData[idx * 2] = (r3 << 5) | (g3 << 2) | (b3 >> 1);
+  screenData[idx * 2 + 1] = b3 & 1;
+}
+
+/**
+ * Returns the palette slot count for the current Next format/mode (16 or 256).
+ */
+function getNxiPaletteEntryCount() {
+  return (nxiLayer2Mode === '640x256' || currentFormat === FORMAT.LORES_RAD) ? 16 : 256;
+}
+
+/**
+ * Rewrites every pixel index in the current Next screen data using map[i] → new index.
+ * Handles 8bpp (NXI/SL2 256x192 or 320x256, LoRes) and 4bpp packed (NXI/SL2 640x256, LoRes Radastan).
+ * Used to preserve drawn colors when reordering palette entries.
+ * @param {number[]} map - Lookup map of length 16 or 256 (identity except for remapped slots)
+ */
+function remapNxiPixelIndices(map) {
+  if (!screenData || !map) return;
+  const fmt = currentFormat;
+  if (fmt === FORMAT.NXI || fmt === FORMAT.SL2) {
+    const is4bpp = nxiLayer2Mode === '640x256';
+    const pixelOffset = getNxiPixelOffset();
+    let pixelSize;
+    if (nxiLayer2Mode === '320x256' || nxiLayer2Mode === '640x256') pixelSize = NXI.PIXEL_DATA_SIZE_EXT;
+    else pixelSize = NXI.WIDTH * NXI.HEIGHT;
+    const end = Math.min(pixelOffset + pixelSize, screenData.length);
+    if (is4bpp) {
+      for (let i = pixelOffset; i < end; i++) {
+        const b = screenData[i];
+        screenData[i] = ((map[(b >> 4) & 0x0F] & 0x0F) << 4) | (map[b & 0x0F] & 0x0F);
+      }
+    } else {
+      for (let i = pixelOffset; i < end; i++) {
+        screenData[i] = map[screenData[i]] & 0xFF;
+      }
+    }
+  } else if (fmt === FORMAT.LORES) {
+    const end = Math.min(LORES.PIXEL_DATA_SIZE, screenData.length);
+    for (let i = 0; i < end; i++) {
+      screenData[i] = map[screenData[i]] & 0xFF;
+    }
+  } else if (fmt === FORMAT.LORES_RAD) {
+    const end = Math.min(LORES_RAD.PIXEL_DATA_SIZE, screenData.length);
+    for (let i = 0; i < end; i++) {
+      const b = screenData[i];
+      screenData[i] = ((map[(b >> 4) & 0x0F] & 0x0F) << 4) | (map[b & 0x0F] & 0x0F);
+    }
+  }
+}
+
+/**
+ * Copies Next palette color from source to destination (in-place).
+ * To preserve already drawn colors: if dst's old color exists in another slot,
+ * first remap pixels from dst to that slot so dst becomes free to overwrite.
+ * @param {number} srcIdx - Source palette index
+ * @param {number} dstIdx - Destination palette index
+ */
+function nxiPaletteCopyColor(srcIdx, dstIdx) {
+  if (!nxiResolvedPalette) return;
+  saveUndoState();
+  const palCount = getNxiPaletteEntryCount();
+  const dstColor = nxiResolvedPalette[dstIdx];
+  if (dstColor) {
+    // Find another slot holding the same color as dst; remap pixels there first.
+    let replacement = -1;
+    for (let i = 0; i < palCount; i++) {
+      if (i === dstIdx) continue;
+      const c = nxiResolvedPalette[i];
+      if (c && c[0] === dstColor[0] && c[1] === dstColor[1] && c[2] === dstColor[2]) {
+        replacement = i;
+        break;
+      }
+    }
+    if (replacement >= 0) {
+      const map = new Array(palCount);
+      for (let i = 0; i < palCount; i++) map[i] = i;
+      map[dstIdx] = replacement;
+      remapNxiPixelIndices(map);
+    }
+    // If no replacement exists, dst's color is unique and will be lost by the copy.
+  }
+  const src = nxiResolvedPalette[srcIdx];
+  nxiResolvedPalette[dstIdx] = [src[0], src[1], src[2]];
+  writeNxiPaletteToScreenData(dstIdx);
+  nxiPaletteClearCopySource();
+  buildNxiPalette();
+  editorRender();
+  if (typeof renderPreview === 'function') renderPreview();
+}
+
+/**
+ * Swaps two Next palette entries in-place.
+ * Pixel indices are remapped idx1↔idx2 so already drawn colors are preserved.
+ * @param {number} idx1
+ * @param {number} idx2
+ */
+function nxiPaletteSwapColors(idx1, idx2) {
+  if (!nxiResolvedPalette) return;
+  if (idx1 === idx2) return;
+  saveUndoState();
+  // Remap pixel indices so existing pixels "follow" their color to its new slot.
+  const palCount = getNxiPaletteEntryCount();
+  const map = new Array(palCount);
+  for (let i = 0; i < palCount; i++) map[i] = i;
+  map[idx1] = idx2;
+  map[idx2] = idx1;
+  remapNxiPixelIndices(map);
+  // Swap palette entries.
+  const tmp = nxiResolvedPalette[idx1];
+  nxiResolvedPalette[idx1] = nxiResolvedPalette[idx2];
+  nxiResolvedPalette[idx2] = tmp;
+  writeNxiPaletteToScreenData(idx1);
+  writeNxiPaletteToScreenData(idx2);
+  nxiPaletteClearCopySource();
+  buildNxiPalette();
+  editorRender();
+  if (typeof renderPreview === 'function') renderPreview();
+}
+
+/**
+ * Handles Shift+click on a Next palette cell for copy/swap workflow.
+ * @param {number} idx - Palette index clicked
+ * @param {boolean} isSwap - True for swap (Shift+click on target), false for copy (plain click)
+ */
+function nxiPaletteHandleCopySwapClick(idx, isSwap) {
+  if (nxiCopySource < 0) {
+    nxiCopySource = idx;
+    document.querySelectorAll('.nxi-palette-cell').forEach((el) => {
+      if (parseInt(/** @type {HTMLElement} */ (el).dataset.index || '-1', 10) === idx) {
+        el.classList.add('copy-source');
+      }
+    });
+    const status = document.getElementById('nxiCopyStatus');
+    if (status) status.textContent = `Source: #${idx} — click to copy, Shift+click to swap, Esc to cancel`;
+    return;
+  }
+  if (idx === nxiCopySource) {
+    nxiPaletteClearCopySource();
+    return;
+  }
+  if (isSwap) {
+    nxiPaletteSwapColors(nxiCopySource, idx);
+  } else {
+    nxiPaletteCopyColor(nxiCopySource, idx);
+  }
+}
+
+/**
  * Build the 16×16 NXI/SL2 palette grid from nxiResolvedPalette.
  */
 function buildNxiPalette() {
@@ -735,15 +961,29 @@ function buildNxiPalette() {
   if (!grid || !nxiResolvedPalette) return;
   grid.innerHTML = '';
   const palCount = (nxiLayer2Mode === '640x256' || currentFormat === FORMAT.LORES_RAD) ? 16 : 256;
-  for (let i = 0; i < palCount; i++) {
+  const order = sortNxiIndices(palCount);
+  for (let k = 0; k < order.length; k++) {
+    const i = order[k];
     const cell = document.createElement('div');
     cell.className = 'nxi-palette-cell';
     const rgb = nxiResolvedPalette[i];
     cell.style.backgroundColor = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
     cell.dataset.index = String(i);
     cell.title = `#${i} (${rgb[0]},${rgb[1]},${rgb[2]})`;
+    if (i === nxiCopySource) cell.classList.add('copy-source');
     cell.addEventListener('mousedown', (e) => {
       e.preventDefault();
+      // Copy/swap workflow (matches ULA+):
+      //  - First Shift+click: sets source
+      //  - While source active, plain click = copy, Shift+click = swap
+      if (nxiCopySource >= 0) {
+        nxiPaletteHandleCopySwapClick(i, e.shiftKey);
+        return;
+      }
+      if (e.shiftKey) {
+        nxiPaletteHandleCopySwapClick(i, false);
+        return;
+      }
       if (e.button === 0) {
         editorInkColor = i;
       } else if (e.button === 2) {
@@ -1638,6 +1878,296 @@ async function exportImageToFile() {
 }
 
 // ============================================================================
+// Save All Pictures (Xform tab) — bundle multiple open pictures
+// ============================================================================
+
+/**
+ * Picture format → native file extension lookup for ZIP (originals).
+ * For formats not listed here, the original file's extension is preferred.
+ */
+const PICTURE_FORMAT_EXTENSIONS = {
+  'scr':         'scr',
+  'scr+':        'scr',
+  'scr_ulanext': 'scr',
+  '53c':         '53c',
+  'bsc':         'bsc',
+  'ifl':         'ifl',
+  'bmc4':        'bmc4',
+  'mlt':         'mlt',
+  'rgb3':        '3',
+  'img':         'img',
+  'mono_full':   'scr',
+  'mono_2_3':    'scr',
+  'mono_1_3':    'scr',
+  'specscii':    'specscii',
+  'sca':         'sca',
+  'zxp':         'zxp',
+  'ch$':         'ch8',
+  'mgh':         'mgh',
+  'hlr':         'hlr',
+  'stl':         'stl',
+  'bsp':         'bsp',
+  'nxi':         'nxi',
+  'sl2':         'sl2',
+  'lores':       'slr',
+  'lores_rad':   'rad'
+};
+
+/**
+ * Returns the file extension (without dot) appropriate for the given format,
+ * preferring the existing extension on the original file name when present.
+ * @param {string} format - FORMAT.* value
+ * @param {string} [fileName] - Original file name (extension is reused if present)
+ * @returns {string}
+ */
+function pictureExtFor(format, fileName) {
+  if (fileName) {
+    const m = /\.([^.]+)$/.exec(fileName);
+    if (m) return m[1].toLowerCase();
+  }
+  return PICTURE_FORMAT_EXTENSIONS[format] || 'bin';
+}
+
+/**
+ * Returns `base.ext`, suffixing " (2)", " (3)" if name already used.
+ * Records the chosen name in `used`.
+ * @param {Set<string>} used
+ * @param {string} base
+ * @param {string} ext
+ * @returns {string}
+ */
+function uniqueFileName(used, base, ext) {
+  const safeBase = base || 'picture';
+  let candidate = safeBase + '.' + ext;
+  if (!used.has(candidate)) {
+    used.add(candidate);
+    return candidate;
+  }
+  let n = 2;
+  while (used.has(safeBase + ' (' + n + ').' + ext)) n++;
+  candidate = safeBase + ' (' + n + ').' + ext;
+  used.add(candidate);
+  return candidate;
+}
+
+/**
+ * Switches to picture at `index`, awaits `fn`, then restores the original
+ * active picture. Used by save-all helpers that must render or query each
+ * picture in turn.
+ * @param {number} index
+ * @param {() => (void|Promise<void>)} fn
+ */
+async function withTemporaryPicture(index, fn) {
+  const originalIndex = activePictureIndex;
+  if (index !== originalIndex) {
+    switchToPicture(index);
+  }
+  try {
+    await fn();
+  } finally {
+    if (index !== originalIndex && originalIndex >= 0 && originalIndex < openPictures.length) {
+      switchToPicture(originalIndex);
+    }
+  }
+}
+
+/**
+ * Save all open pictures into a single ZIP, each in its native binary format.
+ */
+async function saveAllPicturesAsZipOriginals() {
+  if (openPictures.length < 2) return;
+  if (typeof JSZip === 'undefined') {
+    alert('JSZip library not loaded.');
+    return;
+  }
+  saveCurrentPictureState();
+  const zip = new JSZip();
+  const used = new Set();
+  let skipped = 0;
+  for (let i = 0; i < openPictures.length; i++) {
+    const pic = openPictures[i];
+    let bytes = null;
+    await withTemporaryPicture(i, () => {
+      if (currentPicture) {
+        bytes = exportPicture(currentPicture);
+      }
+      if (!bytes && pic.screenData && pic.screenData.length > 0) {
+        bytes = pic.screenData.slice();
+      }
+    });
+    if (!bytes) { skipped++; continue; }
+    const ext = pictureExtFor(pic.format, pic.fileName);
+    const base = (pic.fileName || 'picture').replace(/\.[^.]+$/, '');
+    const fname = uniqueFileName(used, base, ext);
+    zip.file(fname, bytes);
+  }
+  const blob = await zip.generateAsync({ type: 'blob' });
+  downloadFile(blob, 'spectralab_pictures.zip', 'application/zip');
+  if (skipped > 0) alert(skipped + ' picture(s) skipped (no binary export available).');
+}
+
+/**
+ * Save all open pictures into a single ZIP, each as PNG (or animated GIF when
+ * the picture has flashing attributes).
+ */
+async function saveAllPicturesAsZipImages() {
+  if (openPictures.length < 2) return;
+  if (typeof JSZip === 'undefined') {
+    alert('JSZip library not loaded.');
+    return;
+  }
+  saveCurrentPictureState();
+  const zip = new JSZip();
+  const used = new Set();
+  const flashDelay = Math.round((typeof FLASH_INTERVAL !== 'undefined' ? FLASH_INTERVAL : 320) / 10);
+  for (let i = 0; i < openPictures.length; i++) {
+    const pic = openPictures[i];
+    const base = (pic.fileName || 'picture').replace(/\.[^.]+$/, '');
+    let entryBlob = null;
+    let entryExt = 'png';
+    await withTemporaryPicture(i, async () => {
+      const flashing = (typeof hasFlashingAttributes === 'function') && hasFlashingAttributes();
+      if (flashing) {
+        const c0 = renderToExportCanvas(undefined, false);
+        const c1 = renderToExportCanvas(undefined, true);
+        const ctx0 = c0.getContext('2d');
+        const ctx1 = c1.getContext('2d');
+        if (!ctx0 || !ctx1) return;
+        const w = c0.width, h = c0.height;
+        const f0 = ctx0.getImageData(0, 0, w, h);
+        const f1 = ctx1.getImageData(0, 0, w, h);
+        const gif = new GifEncoder(w, h);
+        gif.addFrame(f0.data, flashDelay);
+        gif.addFrame(f1.data, flashDelay);
+        entryBlob = new Blob([gif.finish()], { type: 'image/gif' });
+        entryExt = 'gif';
+      } else {
+        const c = renderToExportCanvas();
+        entryBlob = await new Promise(resolve => c.toBlob(resolve, 'image/png'));
+      }
+    });
+    if (!entryBlob) continue;
+    const fname = uniqueFileName(used, base, entryExt);
+    zip.file(fname, entryBlob);
+  }
+  const blob = await zip.generateAsync({ type: 'blob' });
+  downloadFile(blob, 'spectralab_pictures.zip', 'application/zip');
+}
+
+/**
+ * Combine all open pictures into one animated GIF (500 ms / frame). Pictures
+ * with flashing attributes contribute two frames (normal + swapped phase).
+ * All pictures must render to the same canvas size.
+ */
+async function saveAllPicturesAsCombinedGif() {
+  if (openPictures.length < 2) return;
+  saveCurrentPictureState();
+  // Pass 1: validate that all rendered canvases share the same size.
+  const sizes = [];
+  for (let i = 0; i < openPictures.length; i++) {
+    await withTemporaryPicture(i, () => {
+      const c = renderToExportCanvas();
+      sizes.push({ w: c.width, h: c.height });
+    });
+  }
+  const w = sizes[0].w, h = sizes[0].h;
+  const mismatched = sizes.some(s => s.w !== w || s.h !== h);
+  if (mismatched) {
+    alert('Cannot build combined GIF — pictures have different rendered sizes.\n' +
+          'All pictures must share the same zoom, border, and format-dependent canvas size.');
+    return;
+  }
+  // Pass 2: render frames.
+  const gif = new GifEncoder(w, h);
+  const delayCs = 50;                                 // 500 ms = 50 cs
+  for (let i = 0; i < openPictures.length; i++) {
+    await withTemporaryPicture(i, () => {
+      const flashing = (typeof hasFlashingAttributes === 'function') && hasFlashingAttributes();
+      if (flashing) {
+        const c0 = renderToExportCanvas(undefined, false);
+        const c1 = renderToExportCanvas(undefined, true);
+        const ctx0 = c0.getContext('2d');
+        const ctx1 = c1.getContext('2d');
+        if (!ctx0 || !ctx1) return;
+        gif.addFrame(ctx0.getImageData(0, 0, w, h).data, delayCs);
+        gif.addFrame(ctx1.getImageData(0, 0, w, h).data, delayCs);
+      } else {
+        const c = renderToExportCanvas();
+        const ctx = c.getContext('2d');
+        if (!ctx) return;
+        gif.addFrame(ctx.getImageData(0, 0, w, h).data, delayCs);
+      }
+    });
+  }
+  downloadFile(new Blob([gif.finish()], { type: 'image/gif' }), 'spectralab_pictures.gif');
+}
+
+/**
+ * Combine all open pictures into one SCA animation file (500 ms / frame).
+ * Requires every picture to be FORMAT.SCR (256×192, 6912 bytes).
+ */
+async function saveAllPicturesAsCombinedSca() {
+  if (openPictures.length < 2) return;
+  saveCurrentPictureState();
+  // Preflight: every picture must be FORMAT.SCR.
+  const offending = [];
+  for (let i = 0; i < openPictures.length; i++) {
+    if (openPictures[i].format !== FORMAT.SCR) {
+      offending.push(openPictures[i].fileName || ('picture ' + (i + 1)));
+    }
+  }
+  if (offending.length > 0) {
+    alert('Cannot build combined SCA — every picture must be in SCR format.\n' +
+          'Convert these first:\n  \u2022 ' + offending.join('\n  \u2022 '));
+    return;
+  }
+  const frameCount = openPictures.length;
+  const header = SCA.HEADER_SIZE;
+  const totalSize = header + frameCount + frameCount * SCA.FRAME_SIZE;
+  const out = new Uint8Array(totalSize);
+  // Header (matches sca_editor.js layout)
+  out[0] = 0x53; out[1] = 0x43; out[2] = 0x41;        // 'SCA'
+  out[3] = 1;                                          // version
+  out[4] = 256 & 0xFF; out[5] = (256 >> 8) & 0xFF;    // width = 256
+  out[6] = 192 & 0xFF; out[7] = (192 >> 8) & 0xFF;    // height = 192
+  out[8] = (typeof borderColor !== 'undefined') ? (borderColor & 0xFF) : 0;
+  out[9] = frameCount & 0xFF;
+  out[10] = (frameCount >> 8) & 0xFF;
+  out[11] = 0;                                         // payloadType 0 = full SCR per frame
+  out[12] = header & 0xFF;
+  out[13] = (header >> 8) & 0xFF;
+  // Delays (one byte per frame, in units of SCA.DELAY_UNIT_MS = 20 ms)
+  const delayUnits = Math.round(500 / SCA.DELAY_UNIT_MS); // 25
+  for (let i = 0; i < frameCount; i++) {
+    out[header + i] = delayUnits & 0xFF;
+  }
+  // Frames — for SCR pictures, screenData IS the 6912-byte file representation.
+  let offset = header + frameCount;
+  for (let i = 0; i < frameCount; i++) {
+    const pic = openPictures[i];
+    if (!pic.screenData || pic.screenData.length < SCA.FRAME_SIZE) {
+      alert('Cannot build combined SCA — picture "' + (pic.fileName || ('#' + (i + 1))) +
+            '" did not yield a 6912-byte SCR frame.');
+      return;
+    }
+    out.set(pic.screenData.subarray(0, SCA.FRAME_SIZE), offset);
+    offset += SCA.FRAME_SIZE;
+  }
+  downloadFile(new Blob([out], { type: 'application/octet-stream' }), 'spectralab_pictures.sca');
+}
+
+/**
+ * Show/hide the "Save all pictures" group based on number of open pictures.
+ * Called from `updatePictureTabBar()` so it stays in sync with all multi-
+ * picture mutations.
+ */
+function updateSaveAllVisibility() {
+  const group = document.getElementById('saveAllGroup');
+  if (!group) return;
+  group.style.display = (openPictures.length >= 2) ? '' : 'none';
+}
+
+// ============================================================================
 // Text Tool State
 // ============================================================================
 
@@ -1756,6 +2286,7 @@ let referenceHeight = null;
  * @property {Uint8Array} [borderMask] - Border transparency mask (for BSC/BMC4 formats)
  * @property {Uint8Array} [bitmap2] - Second frame bitmap (Gigascreen only)
  * @property {Uint8Array} [attributesFrame2] - Second frame attributes (Gigascreen only)
+ * @property {Uint8Array} [inverse] - Per-cell inverse flag (SPECSCII only, 768 bytes, 0=normal 1=inverse)
  */
 
 /** @type {Layer[]} - Array of layers (index 0 = background) */
@@ -1788,6 +2319,9 @@ let specsciiAttrGrid = null;
 
 /** @type {Uint8Array|null} - SPECSCII mask grid (768 = 32×24, 1=user-placed content, 0=empty/transparent) */
 let specsciiMask = null;
+
+/** @type {Uint8Array|null} - SPECSCII inverse grid (768 = 32×24, 0=normal, 1=inverse per cell) */
+let specsciiInverseGrid = null;
 
 /** @type {number} - Currently selected SPECSCII character for drawing (0x20-0x8F) */
 let specsciiSelectedChar = 0x20;
@@ -2105,6 +2639,9 @@ function deepCloneLayers(layerArray) {
     if (layer.attributesFrame2) {
       cloned.attributesFrame2 = layer.attributesFrame2.slice();
     }
+    if (layer.inverse) {
+      cloned.inverse = layer.inverse.slice();
+    }
     return cloned;
   });
 }
@@ -2121,12 +2658,13 @@ function saveCurrentPictureState() {
 
   const pic = openPictures[activePictureIndex];
   pic.screenData = screenData.slice();
-  // Clone undo/redo stacks (each entry is {screenData, layers, activeLayerIndex, specsciiCharGrid?, specsciiAttrGrid?, specsciiMask?})
+  // Clone undo/redo stacks (each entry is {screenData, layers, activeLayerIndex, specsciiCharGrid?, specsciiAttrGrid?, specsciiMask?, specsciiInverseGrid?})
   pic.undoStack = undoStack.map(s => {
     const clone = { screenData: s.screenData.slice(), layers: deepCloneLayers(s.layers), activeLayerIndex: s.activeLayerIndex };
     if (s.specsciiCharGrid) clone.specsciiCharGrid = new Uint8Array(s.specsciiCharGrid);
     if (s.specsciiAttrGrid) clone.specsciiAttrGrid = new Uint8Array(s.specsciiAttrGrid);
     if (s.specsciiMask) clone.specsciiMask = new Uint8Array(s.specsciiMask);
+    if (s.specsciiInverseGrid) clone.specsciiInverseGrid = new Uint8Array(s.specsciiInverseGrid);
     return clone;
   });
   pic.redoStack = redoStack.map(s => {
@@ -2134,6 +2672,7 @@ function saveCurrentPictureState() {
     if (s.specsciiCharGrid) clone.specsciiCharGrid = new Uint8Array(s.specsciiCharGrid);
     if (s.specsciiAttrGrid) clone.specsciiAttrGrid = new Uint8Array(s.specsciiAttrGrid);
     if (s.specsciiMask) clone.specsciiMask = new Uint8Array(s.specsciiMask);
+    if (s.specsciiInverseGrid) clone.specsciiInverseGrid = new Uint8Array(s.specsciiInverseGrid);
     return clone;
   });
   pic.layers = deepCloneLayers(layers);
@@ -2178,6 +2717,7 @@ function saveCurrentPictureState() {
   pic.specsciiCharGrid = specsciiCharGrid ? new Uint8Array(specsciiCharGrid) : null;
   pic.specsciiAttrGrid = specsciiAttrGrid ? new Uint8Array(specsciiAttrGrid) : null;
   pic.specsciiMask = specsciiMask ? new Uint8Array(specsciiMask) : null;
+  pic.specsciiInverseGrid = specsciiInverseGrid ? new Uint8Array(specsciiInverseGrid) : null;
 }
 
 /**
@@ -2191,12 +2731,13 @@ function loadPictureState(index) {
   screenData = pic.screenData.slice();
   currentFileName = pic.fileName;
   currentFormat = pic.format;
-  // Clone undo/redo stacks (each entry is {screenData, layers, activeLayerIndex, specsciiCharGrid?, specsciiAttrGrid?, specsciiMask?})
+  // Clone undo/redo stacks (each entry is {screenData, layers, activeLayerIndex, specsciiCharGrid?, specsciiAttrGrid?, specsciiMask?, specsciiInverseGrid?})
   undoStack = pic.undoStack.map(s => {
     const clone = { screenData: s.screenData.slice(), layers: deepCloneLayers(s.layers), activeLayerIndex: s.activeLayerIndex };
     if (s.specsciiCharGrid) clone.specsciiCharGrid = new Uint8Array(s.specsciiCharGrid);
     if (s.specsciiAttrGrid) clone.specsciiAttrGrid = new Uint8Array(s.specsciiAttrGrid);
     if (s.specsciiMask) clone.specsciiMask = new Uint8Array(s.specsciiMask);
+    if (s.specsciiInverseGrid) clone.specsciiInverseGrid = new Uint8Array(s.specsciiInverseGrid);
     return clone;
   });
   redoStack = pic.redoStack.map(s => {
@@ -2204,6 +2745,7 @@ function loadPictureState(index) {
     if (s.specsciiCharGrid) clone.specsciiCharGrid = new Uint8Array(s.specsciiCharGrid);
     if (s.specsciiAttrGrid) clone.specsciiAttrGrid = new Uint8Array(s.specsciiAttrGrid);
     if (s.specsciiMask) clone.specsciiMask = new Uint8Array(s.specsciiMask);
+    if (s.specsciiInverseGrid) clone.specsciiInverseGrid = new Uint8Array(s.specsciiInverseGrid);
     return clone;
   });
   layers = deepCloneLayers(pic.layers);
@@ -2300,10 +2842,12 @@ function loadPictureState(index) {
     specsciiCharGrid = new Uint8Array(pic.specsciiCharGrid);
     specsciiAttrGrid = pic.specsciiAttrGrid ? new Uint8Array(pic.specsciiAttrGrid) : null;
     specsciiMask = pic.specsciiMask ? new Uint8Array(pic.specsciiMask) : null;
+    specsciiInverseGrid = pic.specsciiInverseGrid ? new Uint8Array(pic.specsciiInverseGrid) : null;
   } else {
     specsciiCharGrid = null;
     specsciiAttrGrid = null;
     specsciiMask = null;
+    specsciiInverseGrid = null;
   }
 }
 
@@ -2383,7 +2927,8 @@ function addPicture(fileName, format, data, internalPicture, skipSave) {
     // Grids will be parsed from screenData when editor is activated
     specsciiCharGrid: null,
     specsciiAttrGrid: null,
-    specsciiMask: null
+    specsciiMask: null,
+    specsciiInverseGrid: null
   };
 
   openPictures.push(newPicture);
@@ -2431,6 +2976,7 @@ function closePicture(index) {
     specsciiCharGrid = null;
     specsciiAttrGrid = null;
     specsciiMask = null;
+    specsciiInverseGrid = null;
     renderScreen();
     updateFileInfo();
   } else {
@@ -2538,6 +3084,9 @@ function switchToPicture(index, skipSave) {
  * Shows the tab bar only when 2+ pictures are open.
  */
 function updatePictureTabBar() {
+  // Keep "Save all pictures" group visibility in sync with picture count.
+  if (typeof updateSaveAllVisibility === 'function') updateSaveAllVisibility();
+
   const tabBar = document.getElementById('pictureTabBar');
   const tabList = document.getElementById('pictureTabList');
 
@@ -3657,7 +4206,7 @@ function setActiveLayer(index) {
   if (!layersEnabled || index < 0 || index >= layers.length) return;
   activeLayerIndex = index;
 
-  // SPECSCII: sync charGrid/attrGrid/mask from newly active layer so pick/info works correctly
+  // SPECSCII: sync charGrid/attrGrid/mask/inverse from newly active layer so pick/info works correctly
   if (currentFormat === FORMAT.SPECSCII && specsciiCharGrid && specsciiAttrGrid) {
     const layer = layers[index];
     if (layer && layer.bitmap) {
@@ -3666,6 +4215,7 @@ function setActiveLayer(index) {
         specsciiCharGrid[i] = layer.bitmap[i];
         specsciiAttrGrid[i] = layer.attributes ? layer.attributes[i] : 0x38;
         if (specsciiMask && layer.mask) specsciiMask[i] = layer.mask[i];
+        if (specsciiInverseGrid && layer.inverse) specsciiInverseGrid[i] = layer.inverse[i];
       }
     }
   }
@@ -3726,6 +4276,7 @@ function flattenLayersToScreen() {
         specsciiCharGrid[i] = activeLayer.bitmap[i];
         specsciiAttrGrid[i] = activeLayer.attributes ? activeLayer.attributes[i] : 0x38;
         if (specsciiMask && activeLayer.mask) specsciiMask[i] = activeLayer.mask[i];
+        if (specsciiInverseGrid && activeLayer.inverse) specsciiInverseGrid[i] = activeLayer.inverse[i];
       }
     }
     // Sync to stream: encode all layers with OVER control codes
@@ -4726,6 +5277,7 @@ function loadProject(file) {
     }
   });
 
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   reader.readAsText(file);
 }
 
@@ -5148,6 +5700,7 @@ function loadWorkspace(file) {
     }
   });
 
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   reader.readAsText(file);
 }
 
@@ -7159,6 +7712,7 @@ function copySelection() {
     const chars = new Uint8Array(cellCols * cellRows);
     const attrs = new Uint8Array(cellCols * cellRows);
     const mask = new Uint8Array(cellCols * cellRows);
+    const inv = new Uint8Array(cellCols * cellRows);
 
     for (let cr = 0; cr < cellRows; cr++) {
       for (let cc = 0; cc < cellCols; cc++) {
@@ -7167,10 +7721,11 @@ function copySelection() {
         chars[dstIdx] = specsciiCharGrid[srcIdx];
         attrs[dstIdx] = specsciiAttrGrid[srcIdx];
         mask[dstIdx] = specsciiMask ? specsciiMask[srcIdx] : 1;
+        inv[dstIdx] = specsciiInverseGrid ? specsciiInverseGrid[srcIdx] : 0;
       }
     }
 
-    clipboardData = { format: 'specscii', cellCols, cellRows, chars, attrs, mask };
+    clipboardData = { format: 'specscii', cellCols, cellRows, chars, attrs, mask, inverse: inv };
   } else if (currentFormat === FORMAT.ATTR_53C) {
     // .53c: copy attributes only
     const cellLeft = Math.floor(rect.left / 8);
@@ -7379,12 +7934,14 @@ function cutSelection() {
         specsciiCharGrid[idx] = 0x20;
         specsciiAttrGrid[idx] = 0x38;
         if (specsciiMask) specsciiMask[idx] = 0;
+        if (specsciiInverseGrid) specsciiInverseGrid[idx] = 0;
         if (layersEnabled && layers.length > 0) {
           const layer = layers[activeLayerIndex];
           if (layer) {
             if (layer.bitmap) layer.bitmap[idx] = 0x20;
             if (layer.attributes) layer.attributes[idx] = 0x38;
             if (layer.mask) layer.mask[idx] = 0;
+            if (layer.inverse) layer.inverse[idx] = 0;
           }
         }
       }
@@ -7811,18 +8368,20 @@ function executePaste(x, y) {
         const srcIdx = cr * clipboardData.cellCols + cc;
 
         if (brushPaintMode === 'invert') {
-          // Swap ink/paper of destination cell
+          // Swap ink/paper of destination cell and toggle inverse
           const old = specsciiAttrGrid[destIdx];
           const oldInk = old & 0x07;
           const oldPaper = (old >> 3) & 0x07;
           specsciiAttrGrid[destIdx] = (oldPaper & 0x07) | ((oldInk & 0x07) << 3) | (old & 0xC0);
+          if (specsciiInverseGrid) specsciiInverseGrid[destIdx] ^= 1;
         } else if (brushPaintMode === 'recolor') {
-          // Change attribute only, keep existing character
+          // Change attribute only, keep existing character and inverse
           specsciiAttrGrid[destIdx] = clipboardData.attrs[srcIdx];
         } else {
-          // Replace: write both character and attribute
+          // Replace: write both character, attribute, and inverse
           specsciiCharGrid[destIdx] = clipboardData.chars[srcIdx];
           specsciiAttrGrid[destIdx] = clipboardData.attrs[srcIdx];
+          if (specsciiInverseGrid) specsciiInverseGrid[destIdx] = clipboardData.inverse ? clipboardData.inverse[srcIdx] : 0;
         }
         if (specsciiMask) specsciiMask[destIdx] = clipboardData.mask ? clipboardData.mask[srcIdx] : 1;
 
@@ -7833,6 +8392,7 @@ function executePaste(x, y) {
             if (layer.bitmap) layer.bitmap[destIdx] = specsciiCharGrid[destIdx];
             if (layer.attributes) layer.attributes[destIdx] = specsciiAttrGrid[destIdx];
             if (layer.mask) layer.mask[destIdx] = specsciiMask ? specsciiMask[destIdx] : 1;
+            if (layer.inverse) layer.inverse[destIdx] = specsciiInverseGrid ? specsciiInverseGrid[destIdx] : 0;
           }
         }
       }
@@ -8249,9 +8809,15 @@ function _handleEditorMouseDownCoords(event, coords) {
               attr = getCurrentDrawingAttribute();
               ch = charCode;
             }
+            const inv = brushPaintMode === 'invert'
+              ? (specsciiInverseGrid ? specsciiInverseGrid[idx] ^ 1 : 0)
+              : (brushPaintMode === 'recolor'
+                ? (specsciiInverseGrid ? specsciiInverseGrid[idx] : 0)
+                : (specsciiInverse ? 1 : 0));
             specsciiCharGrid[idx] = ch;
             specsciiAttrGrid[idx] = attr;
             if (specsciiMask) specsciiMask[idx] = 1;
+            if (specsciiInverseGrid) specsciiInverseGrid[idx] = inv;
             // Update layer data when layers are enabled
             if (layersEnabled && layers.length > 0) {
               const layer = layers[activeLayerIndex];
@@ -8259,6 +8825,7 @@ function _handleEditorMouseDownCoords(event, coords) {
                 if (layer.bitmap) layer.bitmap[idx] = ch;
                 if (layer.attributes) layer.attributes[idx] = attr;
                 if (layer.mask) layer.mask[idx] = 1;
+                if (layer.inverse) layer.inverse[idx] = inv;
               }
             }
             col++;
@@ -9034,6 +9601,7 @@ function saveUndoState() {
     if (specsciiCharGrid) state.specsciiCharGrid = new Uint8Array(specsciiCharGrid);
     if (specsciiAttrGrid) state.specsciiAttrGrid = new Uint8Array(specsciiAttrGrid);
     if (specsciiMask) state.specsciiMask = new Uint8Array(specsciiMask);
+    if (specsciiInverseGrid) state.specsciiInverseGrid = new Uint8Array(specsciiInverseGrid);
     // Include HLR fill pattern if present (so "Change HLR pattern..." is undoable)
     if (currentPicture && currentPicture.pattern && currentPicture.pattern.length === 8) {
       state.hlrPattern = new Uint8Array(currentPicture.pattern);
@@ -9072,6 +9640,7 @@ function undo() {
   if (specsciiCharGrid) state.specsciiCharGrid = new Uint8Array(specsciiCharGrid);
   if (specsciiAttrGrid) state.specsciiAttrGrid = new Uint8Array(specsciiAttrGrid);
   if (specsciiMask) state.specsciiMask = new Uint8Array(specsciiMask);
+  if (specsciiInverseGrid) state.specsciiInverseGrid = new Uint8Array(specsciiInverseGrid);
   if (currentPicture && currentPicture.pattern && currentPicture.pattern.length === 8) {
     state.hlrPattern = new Uint8Array(currentPicture.pattern);
   }
@@ -9122,6 +9691,7 @@ function undo() {
     if (previousState.specsciiCharGrid) specsciiCharGrid = previousState.specsciiCharGrid;
     if (previousState.specsciiAttrGrid) specsciiAttrGrid = previousState.specsciiAttrGrid;
     if (previousState.specsciiMask) specsciiMask = previousState.specsciiMask;
+    if (previousState.specsciiInverseGrid) specsciiInverseGrid = previousState.specsciiInverseGrid;
 
     // Restore NXI/SL2 palette if present
     if (previousState.nxiResolvedPalette) {
@@ -9177,6 +9747,7 @@ function redo() {
   if (specsciiCharGrid) state.specsciiCharGrid = new Uint8Array(specsciiCharGrid);
   if (specsciiAttrGrid) state.specsciiAttrGrid = new Uint8Array(specsciiAttrGrid);
   if (specsciiMask) state.specsciiMask = new Uint8Array(specsciiMask);
+  if (specsciiInverseGrid) state.specsciiInverseGrid = new Uint8Array(specsciiInverseGrid);
   if (currentPicture && currentPicture.pattern && currentPicture.pattern.length === 8) {
     state.hlrPattern = new Uint8Array(currentPicture.pattern);
   }
@@ -9226,6 +9797,7 @@ function redo() {
     if (redoState.specsciiCharGrid) specsciiCharGrid = redoState.specsciiCharGrid;
     if (redoState.specsciiAttrGrid) specsciiAttrGrid = redoState.specsciiAttrGrid;
     if (redoState.specsciiMask) specsciiMask = redoState.specsciiMask;
+    if (redoState.specsciiInverseGrid) specsciiInverseGrid = redoState.specsciiInverseGrid;
 
     // Restore NXI/SL2 palette if present
     if (redoState.nxiResolvedPalette) {
@@ -9550,10 +10122,12 @@ function renderPreview() {
 
             const ch = layer.bitmap[ci];
             const attr = layer.attributes ? layer.attributes[ci] : 0x38;
+            const cellInverse = layer.inverse ? layer.inverse[ci] : 0;
             cellAttr[ci] = attr;
 
             for (let line = 0; line < 8; line++) {
-              const glyphByte = specsciiGetGlyphByte(ch, line);
+              let glyphByte = specsciiGetGlyphByte(ch, line);
+              if (cellInverse) glyphByte ^= 0xFF;
               for (let bit = 0; bit < 8; bit++) {
                 if (glyphByte & (0x80 >> bit)) {
                   const pi = (crow * 8 + line) * W + ccol * 8 + bit;
@@ -9601,7 +10175,8 @@ function renderPreview() {
       for (let row = 0; row < SPECSCII.CHAR_ROWS; row++) {
         for (let col = 0; col < SPECSCII.CHAR_COLS; col++) {
           const idx = row * 32 + col;
-          specsciiRenderGlyph(data, prevW, specsciiCharGrid[idx], specsciiAttrGrid[idx], col * 8, row * 8);
+          const cellInv = specsciiInverseGrid ? specsciiInverseGrid[idx] : 0;
+          specsciiRenderGlyph(data, prevW, specsciiCharGrid[idx], specsciiAttrGrid[idx], col * 8, row * 8, cellInv);
         }
       }
     }
@@ -10821,6 +11396,7 @@ function loadReferenceImage(file) {
     };
     img.src = /** @type {string} */ (e.target?.result);
   };
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   reader.readAsDataURL(file);
 }
 
@@ -13067,17 +13643,57 @@ function ulaPlusClearCopySource() {
 }
 
 /**
- * Copies ULA+ palette color from source to destination
+ * Remaps ULA+ attribute cells after a palette mutation to preserve rendered colors.
+ * For each cell, tries to find ink/paper positions within the cell's CURRENT CLUT that
+ * reproduce the old ink/paper RGB values using the new palette. If both can be satisfied,
+ * the attribute is rewritten in place (bright/flash preserved). If not, the attribute is
+ * left unchanged — the only alternative would be changing bright/flash to jump to another
+ * CLUT, which is itself a visible change.
+ * @param {Uint8Array} oldPalette - Snapshot of ulaPlusPalette before the mutation
+ */
+function ulaPlusRemapAttrsWithinClut(oldPalette) {
+  if (!screenData || !ulaPlusPalette) return;
+  const attrStart = SCREEN.BITMAP_SIZE;
+  const attrEnd = attrStart + SCREEN.ATTR_SIZE;
+  if (screenData.length < attrEnd) return;
+  for (let pos = attrStart; pos < attrEnd; pos++) {
+    const oldAttr = screenData[pos];
+    const oldInk = oldAttr & 0x07;
+    const oldPaper = (oldAttr >> 3) & 0x07;
+    const flagBits = oldAttr & 0xC0;
+    const clutBase = (((oldAttr & 0x80) >> 6) | ((oldAttr & 0x40) >> 6)) * ULAPLUS.CLUT_SIZE;
+    const oldInkColor = oldPalette[clutBase + oldInk];
+    const oldPaperColor = oldPalette[clutBase + 8 + oldPaper];
+    let newInk = -1;
+    for (let k = 0; k < 8; k++) {
+      if (ulaPlusPalette[clutBase + k] === oldInkColor) { newInk = k; break; }
+    }
+    let newPaper = -1;
+    for (let k = 0; k < 8; k++) {
+      if (ulaPlusPalette[clutBase + 8 + k] === oldPaperColor) { newPaper = k; break; }
+    }
+    if (newInk >= 0 && newPaper >= 0) {
+      screenData[pos] = flagBits | (newPaper << 3) | newInk;
+    }
+  }
+}
+
+/**
+ * Copies ULA+ palette color from source to destination.
+ * Attributes are remapped within their CLUT so already drawn colors are preserved
+ * wherever possible (if dst's old color still exists in the same CLUT).
  * @param {number} srcIdx - Source palette index (0-63)
  * @param {number} dstIdx - Destination palette index (0-63)
  */
 function ulaPlusCopyColor(srcIdx, dstIdx) {
   if (!ulaPlusPalette || !screenData) return;
   saveUndoState();
+  const oldPalette = new Uint8Array(ulaPlusPalette);
   ulaPlusPalette[dstIdx] = ulaPlusPalette[srcIdx];
   if (screenData.length >= ULAPLUS.TOTAL_SIZE) {
     screenData[ULAPLUS.PALETTE_OFFSET + dstIdx] = ulaPlusPalette[dstIdx];
   }
+  ulaPlusRemapAttrsWithinClut(oldPalette);
   ulaPlusClearCopySource();
   buildUlaPlusGrid();
   buildUlaPlusClassic();
@@ -13087,13 +13703,17 @@ function ulaPlusCopyColor(srcIdx, dstIdx) {
 }
 
 /**
- * Swaps two ULA+ palette colors
+ * Swaps two ULA+ palette colors.
+ * Attributes are remapped within their CLUT so already drawn colors are preserved.
+ * Cells whose CLUT doesn't contain the matching color pair are left untouched.
  * @param {number} idx1 - First palette index (0-63)
  * @param {number} idx2 - Second palette index (0-63)
  */
 function ulaPlusSwapColors(idx1, idx2) {
   if (!ulaPlusPalette || !screenData) return;
+  if (idx1 === idx2) return;
   saveUndoState();
+  const oldPalette = new Uint8Array(ulaPlusPalette);
   const tmp = ulaPlusPalette[idx1];
   ulaPlusPalette[idx1] = ulaPlusPalette[idx2];
   ulaPlusPalette[idx2] = tmp;
@@ -13101,6 +13721,7 @@ function ulaPlusSwapColors(idx1, idx2) {
     screenData[ULAPLUS.PALETTE_OFFSET + idx1] = ulaPlusPalette[idx1];
     screenData[ULAPLUS.PALETTE_OFFSET + idx2] = ulaPlusPalette[idx2];
   }
+  ulaPlusRemapAttrsWithinClut(oldPalette);
   ulaPlusClearCopySource();
   buildUlaPlusGrid();
   buildUlaPlusClassic();
@@ -14464,9 +15085,10 @@ function specsciiInitGrids(fillChar = 0x20, fillAttr = 0x38) {
   specsciiCharGrid = new Uint8Array(768);
   specsciiAttrGrid = new Uint8Array(768);
   specsciiMask = new Uint8Array(768);
+  specsciiInverseGrid = new Uint8Array(768);
   specsciiCharGrid.fill(fillChar);
   specsciiAttrGrid.fill(fillAttr);
-  // mask starts at 0 — cells are empty/transparent until user places content
+  // mask and inverseGrid start at 0 — cells are empty/transparent and non-inverse
 }
 
 /**
@@ -14481,8 +15103,8 @@ function specsciiStreamToGrids() {
   // Initialize grids: space (0x20), white ink (7) on black paper (0) = attr 0x07
   specsciiInitGrids(0x20, 0x38);
 
-  // Collect OVER layers: each entry is {charGrid, attrGrid, mask}
-  /** @type {Array<{charGrid: Uint8Array, attrGrid: Uint8Array, mask: Uint8Array}>} */
+  // Collect OVER layers: each entry is {charGrid, attrGrid, mask, inverseGrid}
+  /** @type {Array<{charGrid: Uint8Array, attrGrid: Uint8Array, mask: Uint8Array, inverseGrid: Uint8Array}>} */
   const overLayers = [];
   let overMode = 0;
   /** @type {Uint8Array|null} */
@@ -14491,8 +15113,10 @@ function specsciiStreamToGrids() {
   let curAttrGrid = specsciiAttrGrid;
   /** @type {Uint8Array|null} */
   let curMask = specsciiMask; // track which cells have user-placed content
+  /** @type {Uint8Array|null} */
+  let curInverseGrid = specsciiInverseGrid;
 
-  let ink = 7, paper = 0, bright = 0, flash = 0;
+  let ink = 7, paper = 0, bright = 0, flash = 0, inverse = 0;
   let col = 0, row = 0;
   let i = 0;
 
@@ -14528,7 +15152,8 @@ function specsciiStreamToGrids() {
       continue;
     }
     if (byte === SPECSCII.CC_INVERSE && i + 1 < screenData.length) {
-      i += 2; // Parse but don't track for grid (applied at render time in viewer)
+      inverse = screenData[i + 1] & 0x01;
+      i += 2;
       continue;
     }
     if (byte === SPECSCII.CC_OVER && i + 1 < screenData.length) {
@@ -14540,10 +15165,12 @@ function specsciiStreamToGrids() {
         const layerAttrs = new Uint8Array(768);
         layerAttrs.fill(0x38);
         const layerMask = new Uint8Array(768);
-        overLayers.push({ charGrid: layerChars, attrGrid: layerAttrs, mask: layerMask });
+        const layerInverse = new Uint8Array(768);
+        overLayers.push({ charGrid: layerChars, attrGrid: layerAttrs, mask: layerMask, inverseGrid: layerInverse });
         curCharGrid = layerChars;
         curAttrGrid = layerAttrs;
         curMask = layerMask;
+        curInverseGrid = layerInverse;
         // Reset position for new layer section
         col = 0;
         row = 0;
@@ -14552,6 +15179,7 @@ function specsciiStreamToGrids() {
         curCharGrid = specsciiCharGrid;
         curAttrGrid = specsciiAttrGrid;
         curMask = specsciiMask;
+        curInverseGrid = specsciiInverseGrid;
         col = 0;
         row = 0;
       }
@@ -14587,6 +15215,7 @@ function specsciiStreamToGrids() {
       curCharGrid[idx] = byte;
       curAttrGrid[idx] = (ink & 0x07) | ((paper & 0x07) << 3) | (bright ? 0x40 : 0) | (flash ? 0x80 : 0);
       if (curMask) curMask[idx] = 1;
+      if (curInverseGrid) curInverseGrid[idx] = inverse;
     }
 
     col++;
@@ -14627,16 +15256,19 @@ function specsciiInitLayersFromStream(overLayers) {
   const bgBitmap = new Uint8Array(cellCount);
   const bgAttrs = new Uint8Array(cellCount);
   const bgMask = new Uint8Array(cellCount);
+  const bgInverse = new Uint8Array(cellCount);
   for (let i = 0; i < cellCount; i++) {
     bgBitmap[i] = specsciiCharGrid[i];
     bgAttrs[i] = specsciiAttrGrid[i];
     bgMask[i] = specsciiMask ? specsciiMask[i] : 1;
+    bgInverse[i] = specsciiInverseGrid ? specsciiInverseGrid[i] : 0;
   }
   layers.push({
     name: 'Background',
     bitmap: bgBitmap,
     attributes: bgAttrs,
     mask: bgMask,
+    inverse: bgInverse,
     visible: true
   });
 
@@ -14646,16 +15278,19 @@ function specsciiInitLayersFromStream(overLayers) {
     const layerBitmap = new Uint8Array(cellCount);
     const layerAttrs = new Uint8Array(cellCount);
     const layerMask = new Uint8Array(cellCount);
+    const layerInverse = new Uint8Array(cellCount);
     for (let i = 0; i < cellCount; i++) {
       layerBitmap[i] = ol.charGrid[i];
       layerAttrs[i] = ol.attrGrid[i];
       layerMask[i] = ol.mask[i];
+      layerInverse[i] = ol.inverseGrid ? ol.inverseGrid[i] : 0;
     }
     layers.push({
       name: `OVER ${li + 1}`,
       bitmap: layerBitmap,
       attributes: layerAttrs,
       mask: layerMask,
+      inverse: layerInverse,
       visible: true
     });
   }
@@ -14674,8 +15309,17 @@ function specsciiGridsToStream() {
   if (!specsciiCharGrid || !specsciiAttrGrid) return new Uint8Array(0);
 
   const buf = [];
-  let curInk = -1, curPaper = -1, curBright = -1, curFlash = -1;
+  // INVERSE defaults to 0 after CLS/PRINT start per ROM, so skip emitting "14 00" at start
+  let curInk = -1, curPaper = -1, curBright = -1, curFlash = -1, curInverse = 0;
   const hasMask = specsciiMask !== null;
+  // Only emit INVERSE control codes if the user actually used inverse on any cell.
+  // Avoids polluting streams for pictures drawn entirely without inverse mode.
+  let hasAnyInverse = false;
+  if (specsciiInverseGrid) {
+    for (let i = 0; i < specsciiInverseGrid.length; i++) {
+      if (specsciiInverseGrid[i]) { hasAnyInverse = true; break; }
+    }
+  }
 
   for (let row = 0; row < SPECSCII.CHAR_ROWS; row++) {
     // Find last masked column in this row
@@ -14700,7 +15344,7 @@ function specsciiGridsToStream() {
       if (col !== prevCol + 1) {
         buf.push(SPECSCII.CC_AT, row, col);
         // Reset attribute tracking after repositioning
-        curInk = -1; curPaper = -1; curBright = -1; curFlash = -1;
+        curInk = -1; curPaper = -1; curBright = -1; curFlash = -1; curInverse = -1;
       }
 
       const attr = specsciiAttrGrid[idx];
@@ -14729,6 +15373,15 @@ function specsciiGridsToStream() {
         curFlash = flash;
       }
 
+      // Emit inverse change (sticky) only if the picture actually uses inverse anywhere
+      if (hasAnyInverse) {
+        const inv = specsciiInverseGrid ? specsciiInverseGrid[idx] : 0;
+        if (inv !== curInverse) {
+          buf.push(SPECSCII.CC_INVERSE, inv);
+          curInverse = inv;
+        }
+      }
+
       buf.push(ch);
       prevCol = col;
     }
@@ -14749,27 +15402,31 @@ function specsciiPlotCell(col, row) {
 
   const idx = row * 32 + col;
 
-  let ch, attr;
+  let ch, attr, inv;
   if (brushPaintMode === 'invert') {
-    // Invert: swap ink and paper of existing cell, keep character
+    // Invert: toggle per-cell inverse flag, keep character and attribute
     const old = specsciiAttrGrid[idx];
     const ink = old & 0x07;
     const paper = (old >> 3) & 0x07;
     attr = (paper & 0x07) | ((ink & 0x07) << 3) | (old & 0xC0); // swap ink<->paper, keep bright+flash
     ch = specsciiCharGrid[idx];
+    inv = specsciiInverseGrid ? specsciiInverseGrid[idx] ^ 1 : 0;
   } else if (brushPaintMode === 'recolor') {
-    // Recolor: change attribute only, keep character
+    // Recolor: change attribute only, keep character and inverse
     attr = getCurrentDrawingAttribute();
     ch = specsciiCharGrid[idx];
+    inv = specsciiInverseGrid ? specsciiInverseGrid[idx] : 0;
   } else {
-    // Set: place selected char with current attribute
+    // Set: place selected char with current attribute and inverse mode
     attr = getCurrentDrawingAttribute();
     ch = specsciiSelectedChar;
+    inv = specsciiInverse ? 1 : 0;
   }
 
   specsciiCharGrid[idx] = ch;
   specsciiAttrGrid[idx] = attr;
   if (specsciiMask) specsciiMask[idx] = 1;
+  if (specsciiInverseGrid) specsciiInverseGrid[idx] = inv;
 
   // Update active layer if layers are enabled
   if (layersEnabled && layers.length > 0) {
@@ -14778,21 +15435,22 @@ function specsciiPlotCell(col, row) {
       if (layer.bitmap) layer.bitmap[idx] = ch;
       if (layer.attributes) layer.attributes[idx] = attr;
       if (layer.mask) layer.mask[idx] = 1;
+      if (layer.inverse) layer.inverse[idx] = inv;
     }
   }
 }
 
 /**
- * Gets the character and attribute at a grid position.
+ * Gets the character, attribute, and inverse flag at a grid position.
  * @param {number} col
  * @param {number} row
- * @returns {{char: number, attr: number}|null}
+ * @returns {{char: number, attr: number, inverse: number}|null}
  */
 function specsciiGetCell(col, row) {
   if (!specsciiCharGrid || !specsciiAttrGrid) return null;
   if (col < 0 || col >= SPECSCII.CHAR_COLS || row < 0 || row >= SPECSCII.CHAR_ROWS) return null;
   const idx = row * 32 + col;
-  return { char: specsciiCharGrid[idx], attr: specsciiAttrGrid[idx] };
+  return { char: specsciiCharGrid[idx], attr: specsciiAttrGrid[idx], inverse: specsciiInverseGrid ? specsciiInverseGrid[idx] : 0 };
 }
 
 /**
@@ -14918,6 +15576,8 @@ function specsciiFloodFill(startCol, startRow) {
     specsciiCharGrid[idx] = specsciiSelectedChar;
     specsciiAttrGrid[idx] = newAttr;
     if (specsciiMask) specsciiMask[idx] = 1;
+    const fillInv = specsciiInverse ? 1 : 0;
+    if (specsciiInverseGrid) specsciiInverseGrid[idx] = fillInv;
 
     if (layersEnabled && layers.length > 0) {
       const layer = layers[activeLayerIndex];
@@ -14925,6 +15585,7 @@ function specsciiFloodFill(startCol, startRow) {
         if (layer.bitmap) layer.bitmap[idx] = specsciiSelectedChar;
         if (layer.attributes) layer.attributes[idx] = newAttr;
         if (layer.mask) layer.mask[idx] = 1;
+        if (layer.inverse) layer.inverse[idx] = fillInv;
       }
     }
 
@@ -14960,10 +15621,11 @@ function specsciiEraseCell(col, row) {
   if (col < 0 || col >= SPECSCII.CHAR_COLS || row < 0 || row >= SPECSCII.CHAR_ROWS) return;
   const idx = row * 32 + col;
 
-  // Reset cell to space with default attribute and clear mask
+  // Reset cell to space with default attribute and clear mask and inverse
   specsciiCharGrid[idx] = 0x20;
   specsciiAttrGrid[idx] = 0x38; // default: ink 0, paper 7
   if (specsciiMask) specsciiMask[idx] = 0;
+  if (specsciiInverseGrid) specsciiInverseGrid[idx] = 0;
 
   if (layersEnabled && layers.length > 0) {
     const layer = layers[activeLayerIndex];
@@ -14971,6 +15633,7 @@ function specsciiEraseCell(col, row) {
       if (layer.bitmap) layer.bitmap[idx] = 0x20;
       if (layer.attributes) layer.attributes[idx] = 0x38;
       if (layer.mask) layer.mask[idx] = 0;
+      if (layer.inverse) layer.inverse[idx] = 0;
     }
   }
 }
@@ -14984,8 +15647,9 @@ function specsciiEraseCell(col, row) {
  * @param {number} attr - Attribute byte
  * @param {number} px - Pixel X position
  * @param {number} py - Pixel Y position
+ * @param {number} [inverse=0] - Inverse flag (1=swap ink/paper before rendering)
  */
-function specsciiRenderGlyph(imgData, imgWidth, charCode, attr, px, py) {
+function specsciiRenderGlyph(imgData, imgWidth, charCode, attr, px, py, inverse = 0) {
   const inkIdx = attr & 0x07;
   const paperIdx = (attr >> 3) & 0x07;
   const isBright = (attr & 0x40) !== 0;
@@ -15000,6 +15664,13 @@ function specsciiRenderGlyph(imgData, imgWidth, charCode, attr, px, py) {
   } else {
     inkRgb = palette[inkIdx];
     paperRgb = palette[paperIdx];
+  }
+
+  // Apply inverse: swap ink and paper
+  if (inverse) {
+    const tmp = inkRgb;
+    inkRgb = paperRgb;
+    paperRgb = tmp;
   }
 
   if (charCode >= 0x20 && charCode <= 0x7F) {
@@ -15066,6 +15737,8 @@ const SPECSCII_PAL_ROWS = SPECSCII_PAL_ROM_ROWS + SPECSCII_PAL_BLK_ROWS; // 14
 
 /** Weight-sort mode state */
 let specsciiPaletteSortByWeight = true;
+/** @type {boolean} - Current SPECSCII inverse drawing mode (true = new cells stored as inverse) */
+let specsciiInverse = false;
 /** @type {number[]|null} - Lazily built ROM char order sorted by pixel popcount */
 let specsciiRomWeightOrder = null;
 
@@ -15144,13 +15817,15 @@ function renderSpecsciiPalette() {
       }
 
       const tileImg = ctx.createImageData(TILE, TILE);
-      const attr = 0x07; // white ink, black paper
-      specsciiRenderGlyph(tileImg.data, TILE, charCode, attr, 0, 0);
+      const attr = 0x38; // black ink, white paper (hardware default)
+      specsciiRenderGlyph(tileImg.data, TILE, charCode, attr, 0, 0, specsciiInverse ? 1 : 0);
       ctx.putImageData(tileImg, tileCol * CELL, tileRow * CELL);
     }
   }
 
   // --- UDG block graphics section ---
+  const palAttr = 0x38; // black ink, white paper (hardware default)
+  const palInv = specsciiInverse ? 1 : 0;
   if (weightMode) {
     // 5×3 grid centered in 8-col canvas (offset by 1 column)
     const colOffset = 1;
@@ -15158,7 +15833,7 @@ function renderSpecsciiPalette() {
       for (let c = 0; c < SPECSCII_PAL_WEIGHT_UDG_COLS; c++) {
         const charCode = SPECSCII_UDG_WEIGHT_GRID[r * SPECSCII_PAL_WEIGHT_UDG_COLS + c];
         const tileImg = ctx.createImageData(TILE, TILE);
-        specsciiRenderGlyph(tileImg.data, TILE, charCode, 0x07, 0, 0);
+        specsciiRenderGlyph(tileImg.data, TILE, charCode, palAttr, 0, 0, palInv);
         ctx.putImageData(tileImg, (colOffset + c) * CELL, (SPECSCII_PAL_ROM_ROWS + r) * CELL);
       }
     }
@@ -15168,7 +15843,7 @@ function renderSpecsciiPalette() {
       for (let tileCol = 0; tileCol < SPECSCII_PAL_COLS; tileCol++) {
         const charCode = 0x80 + (tileRow - SPECSCII_PAL_ROM_ROWS) * SPECSCII_PAL_COLS + tileCol;
         const tileImg = ctx.createImageData(TILE, TILE);
-        specsciiRenderGlyph(tileImg.data, TILE, charCode, 0x07, 0, 0);
+        specsciiRenderGlyph(tileImg.data, TILE, charCode, palAttr, 0, 0, palInv);
         ctx.putImageData(tileImg, tileCol * CELL, tileRow * CELL);
       }
     }
@@ -15203,8 +15878,8 @@ function renderSpecsciiCharPreview() {
 
   // Render glyph at 1:1 into a tiny ImageData
   const imgData = ctx.createImageData(8, 8);
-  const attr = 0x07; // white on black
-  specsciiRenderGlyph(imgData.data, 8, specsciiSelectedChar, attr, 0, 0);
+  const attr = 0x38; // black on white (hardware default)
+  specsciiRenderGlyph(imgData.data, 8, specsciiSelectedChar, attr, 0, 0, specsciiInverse ? 1 : 0);
 
   // Scale up to preview size inside the border
   const tmp = document.createElement('canvas');
@@ -15378,7 +16053,15 @@ function specsciiLayersToStream() {
       buf.push(SPECSCII.CC_OVER, 1);
     }
 
-    let curInk = -1, curPaper = -1, curBright = -1, curFlash = -1;
+    // INVERSE defaults to 0 after CLS/PRINT start per ROM, so skip emitting "14 00" at start
+    let curInk = -1, curPaper = -1, curBright = -1, curFlash = -1, curInverse = 0;
+    // Only emit INVERSE control codes if this layer actually uses inverse on any cell
+    let layerHasAnyInverse = false;
+    if (layer.inverse) {
+      for (let i = 0; i < layer.inverse.length; i++) {
+        if (layer.inverse[i]) { layerHasAnyInverse = true; break; }
+      }
+    }
 
     for (let row = 0; row < SPECSCII.CHAR_ROWS; row++) {
       // Find last masked column in this row
@@ -15401,7 +16084,7 @@ function specsciiLayersToStream() {
         if (col !== prevCol + 1) {
           buf.push(SPECSCII.CC_AT, row, col);
           // Reset attribute tracking after repositioning
-          curInk = -1; curPaper = -1; curBright = -1; curFlash = -1;
+          curInk = -1; curPaper = -1; curBright = -1; curFlash = -1; curInverse = -1;
         }
 
         const attr = layer.attributes ? layer.attributes[ci] : 0x38;
@@ -15414,6 +16097,15 @@ function specsciiLayersToStream() {
         if (paper !== curPaper) { buf.push(SPECSCII.CC_PAPER, paper); curPaper = paper; }
         if (bright !== curBright) { buf.push(SPECSCII.CC_BRIGHT, bright); curBright = bright; }
         if (flash !== curFlash) { buf.push(SPECSCII.CC_FLASH, flash); curFlash = flash; }
+
+        // Emit inverse change (sticky) only if this layer actually uses inverse anywhere
+        if (layerHasAnyInverse) {
+          const inv = layer.inverse ? layer.inverse[ci] : 0;
+          if (inv !== curInverse) {
+            buf.push(SPECSCII.CC_INVERSE, inv);
+            curInverse = inv;
+          }
+        }
 
         buf.push(layer.bitmap[ci]);
         prevCol = col;
@@ -15487,12 +16179,14 @@ function exportSpecsciiToScr() {
 
           const ch = layer.bitmap[ci];
           const attr = layer.attributes ? layer.attributes[ci] : 0x38;
+          const cellInverse = layer.inverse ? layer.inverse[ci] : 0;
           cellAttr[ci] = attr;
 
           const px = col * 8;
           const py = row * 8;
           for (let line = 0; line < 8; line++) {
-            const glyphByte = specsciiGetGlyphByte(ch, line);
+            let glyphByte = specsciiGetGlyphByte(ch, line);
+            if (cellInverse) glyphByte ^= 0xFF;
             const addr = getBitmapAddress(px, py + line);
             if (layerIdx === 0) {
               scrData[addr] = glyphByte;
@@ -15516,6 +16210,7 @@ function exportSpecsciiToScr() {
         const idx = row * 32 + col;
         const charCode = specsciiCharGrid[idx];
         const attr = specsciiAttrGrid[idx];
+        const cellInverse = specsciiInverseGrid ? specsciiInverseGrid[idx] : 0;
 
         scrData[SCREEN.BITMAP_SIZE + idx] = attr;
 
@@ -15523,7 +16218,9 @@ function exportSpecsciiToScr() {
         const py = row * 8;
         for (let line = 0; line < 8; line++) {
           const addr = getBitmapAddress(px, py + line);
-          scrData[addr] = specsciiGetGlyphByte(charCode, line);
+          let glyphByte = specsciiGetGlyphByte(charCode, line);
+          if (cellInverse) glyphByte ^= 0xFF;
+          scrData[addr] = glyphByte;
         }
       }
     }
@@ -16961,6 +17658,7 @@ function loadBarcodesFromFile(file) {
       alert('Failed to load barcodes: ' + err.message);
     }
   };
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   reader.readAsText(file);
 }
 
@@ -16975,7 +17673,7 @@ function loadBarcodes() {
       const arr = JSON.parse(raw);
       parseBarcodeArray(arr);
     } catch (e) {
-      // Ignore corrupt data
+      console.warn('Failed to parse barcode data:', e);
     }
     renderAllBarcodeSlots();
   } else {
@@ -17112,9 +17810,7 @@ function setEditorEnabled(active, force) {
       const attr53cHiddenTools = ['airbrush', 'gradient', 'text', 'fillcell'];
       (editorToolButtons || document.querySelectorAll('.editor-tool-btn[data-tool]')).forEach(btn => {
         const tool = /** @type {HTMLElement} */ (btn).dataset.tool;
-        if (attr53cHiddenTools.includes(tool)) {
-          /** @type {HTMLElement} */ (btn).style.display = 'none';
-        }
+        /** @type {HTMLElement} */ (btn).style.display = attr53cHiddenTools.includes(tool) ? 'none' : '';
       });
       if (attr53cHiddenTools.includes(currentTool)) {
         setEditorTool(EDITOR.TOOL_PIXEL);
@@ -17130,9 +17826,7 @@ function setEditorEnabled(active, force) {
       const specsciiHiddenTools = ['airbrush', 'gradient', 'fillcell'];
       (editorToolButtons || document.querySelectorAll('.editor-tool-btn[data-tool]')).forEach(btn => {
         const tool = /** @type {HTMLElement} */ (btn).dataset.tool;
-        if (specsciiHiddenTools.includes(tool)) {
-          /** @type {HTMLElement} */ (btn).style.display = 'none';
-        }
+        /** @type {HTMLElement} */ (btn).style.display = specsciiHiddenTools.includes(tool) ? 'none' : '';
       });
       // If current tool is unavailable, switch to pixel
       if (specsciiHiddenTools.includes(currentTool)) {
@@ -17160,10 +17854,10 @@ function setEditorEnabled(active, force) {
       renderSpecsciiPalette();
       updateSpecsciiCharInfo();
     } else if (currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 || currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD) {
-      // NXI/SL2/LoRes editor: show tools and brush section, hide inapplicable tools
+      // NXI/SL2/LoRes editor: show tools, brush, and snap control
       if (toolsSection) toolsSection.style.display = '';
       if (brushSection) brushSection.style.display = '';
-      if (snapSelect) snapSelect.parentElement.style.display = 'none';
+      if (snapSelect) snapSelect.parentElement.style.display = '';
       if (specsciiSection) specsciiSection.style.display = 'none';
 
       // Hide tools not applicable to indexed-color: fillcell, recolor, text, select
@@ -18346,9 +19040,10 @@ function copySelectionAsmToClipboard() {
     return;
   }
 
-  navigator.clipboard.writeText(asmText).then(() => {
+  const showCopyResult = (success) => {
     const infoEl = document.getElementById('transformSelectionInfo');
-    if (infoEl) {
+    if (!infoEl) return;
+    if (success) {
       const origText = infoEl.textContent;
       infoEl.textContent = 'Copied to clipboard!';
       setTimeout(() => {
@@ -18356,12 +19051,31 @@ function copySelectionAsmToClipboard() {
           infoEl.textContent = origText || '';
         }
       }, 1500);
+    } else {
+      infoEl.textContent = 'Copy failed - try Save file';
     }
-  }).catch(err => {
-    console.error('Failed to copy ASM to clipboard:', err);
-    const infoEl = document.getElementById('transformSelectionInfo');
-    if (infoEl) infoEl.textContent = 'Copy failed - try Save file';
-  });
+  };
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(asmText)
+      .then(() => showCopyResult(true))
+      .catch(() => showCopyResult(false));
+  } else {
+    // Fallback for older browsers without Clipboard API
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = asmText;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      showCopyResult(true);
+    } catch (e) {
+      showCopyResult(false);
+    }
+  }
 }
 
 /**
@@ -18712,7 +19426,7 @@ async function autoLoadUdgTileset() {
     updateBrushTabBar();
     console.log('Auto-loaded UDG tileset (' + parsed.tileCount + ' tiles)');
   } catch (e) {
-    // Silently ignore - file probably doesn't exist
+    console.warn('Failed to auto-load UDG tileset:', e);
   }
 }
 
@@ -18773,6 +19487,7 @@ function loadBrushTabFile(file) {
     }
   };
 
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   if (ext === 'slb') {
     reader.readAsText(file);
   } else {
@@ -19211,7 +19926,7 @@ function loadCustomBrushes() {
       const arr = JSON.parse(raw);
       parseBrushArray(arr);
     } catch (e) {
-      // Ignore corrupt data
+      console.warn('Failed to parse brush data:', e);
     }
     updateCustomBrushIndicator();
   } else {
@@ -19279,6 +19994,7 @@ function importBrushesFromFile(file) {
       alert('Failed to load brushes file.');
     }
   };
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   reader.readAsText(file);
 }
 
@@ -19675,17 +20391,9 @@ function convertScrToSpecscii() {
       const attr = screenData[6144 + cy * 32 + cx];
       const ink = attr & 0x07;
       const paper = (attr >> 3) & 0x07;
+      const idx = cy * 32 + cx;
       const bright = (attr >> 6) & 0x01;
       const flash = (attr >> 7) & 0x01;
-      const idx = cy * 32 + cx;
-
-      // Hidden pixels check: if ink == paper, bitmap is invisible
-      if (ink === paper) {
-        specsciiCharGrid[idx] = 0x20; // space
-        specsciiAttrGrid[idx] = attr;
-        specsciiMask[idx] = 1;
-        continue;
-      }
 
       // Find best matching glyph
       let bestDist = 65; // max possible = 64 (8 bytes × 8 bits)
@@ -21951,6 +22659,7 @@ function loadFont768File(file) {
       }
     }
   };
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   reader.readAsArrayBuffer(file);
 }
 
@@ -22901,6 +23610,19 @@ function initEditor() {
     renderSpecsciiPalette();
   });
 
+  // SPECSCII inverse mode toggle
+  const savedInv = localStorage.getItem('spectraLabSpecsciiInverse');
+  specsciiInverse = savedInv === '1';
+  if (specsciiInverse) document.getElementById('specsciiInvBtn')?.classList.add('selected');
+  document.getElementById('specsciiInvBtn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    specsciiInverse = !specsciiInverse;
+    document.getElementById('specsciiInvBtn')?.classList.toggle('selected', specsciiInverse);
+    localStorage.setItem('spectraLabSpecsciiInverse', specsciiInverse ? '1' : '0');
+    renderSpecsciiPalette();
+    editorRender();
+  });
+
   // Reset to defaults button
   document.getElementById('resetSettingsBtn')?.addEventListener('click', () => {
     if (confirm('Reset all settings to defaults?\n\nThis will clear saved settings, brushes, and reload the page.')) {
@@ -23098,6 +23820,14 @@ function initEditor() {
     if (workspaceFileInput) workspaceFileInput.value = '';
   });
 
+  // Save all pictures (only visible when 2+ pictures are open)
+  document.getElementById('saveAllZipOriginalsBtn')?.addEventListener('click', saveAllPicturesAsZipOriginals);
+  document.getElementById('saveAllZipImagesBtn')?.addEventListener('click', saveAllPicturesAsZipImages);
+  document.getElementById('saveAllGifBtn')?.addEventListener('click', saveAllPicturesAsCombinedGif);
+  document.getElementById('saveAllScaBtn')?.addEventListener('click', saveAllPicturesAsCombinedSca);
+  // Initialize visibility based on current picture count.
+  if (typeof updateSaveAllVisibility === 'function') updateSaveAllVisibility();
+
   // Brushes save/load buttons (stopPropagation to prevent collapsing header)
   document.getElementById('saveBrushesBtn')?.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -23125,7 +23855,112 @@ function initEditor() {
     if (brushesFileInput) brushesFileInput.value = '';
   });
 
-  // Keyboard shortcuts
+  initEditorKeyboardShortcuts();
+
+  // HLR fill pattern dialog wiring
+  (function initHlrPatternDialog() {
+    const editBtn = document.getElementById('hlrPatternEditBtn');
+    const dialog = document.getElementById('hlrPatternDialog');
+    const presetSel = /** @type {HTMLSelectElement|null} */ (document.getElementById('hlrPatternPreset'));
+    const hexInput = /** @type {HTMLInputElement|null} */ (document.getElementById('hlrPatternHex'));
+    const previewCv = /** @type {HTMLCanvasElement|null} */ (document.getElementById('hlrPatternPreview'));
+    const okBtn = document.getElementById('hlrPatternOkBtn');
+    const cancelBtn = document.getElementById('hlrPatternCancelBtn');
+    if (!editBtn || !dialog || !presetSel || !hexInput || !previewCv || !okBtn || !cancelBtn) return;
+
+    function renderPreview(bytes) {
+      if (typeof renderHlrPatternPreview === 'function') {
+        renderHlrPatternPreview(previewCv, bytes);
+      }
+    }
+
+    function syncFromPreset() {
+      const key = presetSel.value;
+      if (key === 'custom') {
+        hexInput.disabled = false;
+        const bytes = (typeof hlrPatternFromHex === 'function') ? hlrPatternFromHex(hexInput.value) : null;
+        renderPreview(bytes);
+        return;
+      }
+      hexInput.disabled = true;
+      if (typeof hlrPatternFromPresetKey === 'function') {
+        const bytes = hlrPatternFromPresetKey(key);
+        if (bytes) {
+          if (typeof hlrPatternToHex === 'function') hexInput.value = hlrPatternToHex(bytes);
+          renderPreview(bytes);
+        }
+      }
+    }
+
+    presetSel.addEventListener('change', syncFromPreset);
+    hexInput.addEventListener('input', function() {
+      if (typeof hlrPatternFromHex !== 'function') return;
+      const bytes = hlrPatternFromHex(hexInput.value);
+      if (bytes) renderPreview(bytes);
+    });
+
+    function openDialog() {
+      if (currentFormat !== FORMAT.HLR) return;
+      // Pre-fill dialog with current picture's pattern
+      let current = null;
+      if (currentPicture && currentPicture.pattern && currentPicture.pattern.length === 8) {
+        current = new Uint8Array(currentPicture.pattern);
+      } else if (typeof hlrPatternFromPresetKey === 'function') {
+        current = hlrPatternFromPresetKey('top-bottom');
+      }
+      if (!current) current = new Uint8Array([0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00]);
+      const key = (typeof hlrPatternToPresetKey === 'function') ? hlrPatternToPresetKey(current) : 'custom';
+      presetSel.value = key;
+      if (typeof hlrPatternToHex === 'function') hexInput.value = hlrPatternToHex(current);
+      hexInput.disabled = (key !== 'custom');
+      renderPreview(current);
+      dialog.style.display = '';
+    }
+
+    function closeDialog() {
+      dialog.style.display = 'none';
+    }
+
+    editBtn.addEventListener('click', openDialog);
+    cancelBtn.addEventListener('click', closeDialog);
+
+    // Close on ESC when the dialog is open
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape' && dialog.style.display !== 'none') {
+        closeDialog();
+      }
+    });
+
+    okBtn.addEventListener('click', function() {
+      // Resolve final pattern (preset > hex > fallback)
+      const key = presetSel.value;
+      let bytes = null;
+      if (key !== 'custom' && typeof hlrPatternFromPresetKey === 'function') {
+        bytes = hlrPatternFromPresetKey(key);
+      }
+      if (!bytes && typeof hlrPatternFromHex === 'function') {
+        bytes = hlrPatternFromHex(hexInput.value);
+      }
+      if (!bytes) {
+        // Invalid hex — leave dialog open so the user can correct it
+        return;
+      }
+      closeDialog();
+      applyHlrPatternChange(bytes);
+    });
+  })();
+
+  updateColorSelectors();
+
+  initAttrPreviewFlashLoop();
+}
+
+/**
+ * Registers the global keydown listener for editor keyboard shortcuts
+ * (tools, clipboard, undo/redo, fullscreen, brush size, etc.).
+ * Extracted from initEditor() for readability.
+ */
+function initEditorKeyboardShortcuts() {
   document.addEventListener('keydown', (e) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
 
@@ -23272,6 +24107,11 @@ function initEditor() {
         e.preventDefault();
         return;
       }
+      if (nxiCopySource >= 0) {
+        nxiPaletteClearCopySource();
+        e.preventDefault();
+        return;
+      }
       if (isPasting || selectionStartPoint || selectionEndPoint || isSelecting) {
         e.preventDefault();
         cancelSelection();
@@ -23303,128 +24143,36 @@ function initEditor() {
       }
     }
   });
+}
 
-  // HLR fill pattern dialog wiring
-  (function initHlrPatternDialog() {
-    const editBtn = document.getElementById('hlrPatternEditBtn');
-    const dialog = document.getElementById('hlrPatternDialog');
-    const presetSel = /** @type {HTMLSelectElement|null} */ (document.getElementById('hlrPatternPreset'));
-    const hexInput = /** @type {HTMLInputElement|null} */ (document.getElementById('hlrPatternHex'));
-    const previewCv = /** @type {HTMLCanvasElement|null} */ (document.getElementById('hlrPatternPreview'));
-    const okBtn = document.getElementById('hlrPatternOkBtn');
-    const cancelBtn = document.getElementById('hlrPatternCancelBtn');
-    if (!editBtn || !dialog || !presetSel || !hexInput || !previewCv || !okBtn || !cancelBtn) return;
-
-    function renderPreview(bytes) {
-      if (typeof renderHlrPatternPreview === 'function') {
-        renderHlrPatternPreview(previewCv, bytes);
-      }
-    }
-
-    function syncFromPreset() {
-      const key = presetSel.value;
-      if (key === 'custom') {
-        hexInput.disabled = false;
-        const bytes = (typeof hlrPatternFromHex === 'function') ? hlrPatternFromHex(hexInput.value) : null;
-        renderPreview(bytes);
-        return;
-      }
-      hexInput.disabled = true;
-      if (typeof hlrPatternFromPresetKey === 'function') {
-        const bytes = hlrPatternFromPresetKey(key);
-        if (bytes) {
-          if (typeof hlrPatternToHex === 'function') hexInput.value = hlrPatternToHex(bytes);
-          renderPreview(bytes);
-        }
-      }
-    }
-
-    presetSel.addEventListener('change', syncFromPreset);
-    hexInput.addEventListener('input', function() {
-      if (typeof hlrPatternFromHex !== 'function') return;
-      const bytes = hlrPatternFromHex(hexInput.value);
-      if (bytes) renderPreview(bytes);
-    });
-
-    function openDialog() {
-      if (currentFormat !== FORMAT.HLR) return;
-      // Pre-fill dialog with current picture's pattern
-      let current = null;
-      if (currentPicture && currentPicture.pattern && currentPicture.pattern.length === 8) {
-        current = new Uint8Array(currentPicture.pattern);
-      } else if (typeof hlrPatternFromPresetKey === 'function') {
-        current = hlrPatternFromPresetKey('top-bottom');
-      }
-      if (!current) current = new Uint8Array([0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00]);
-      const key = (typeof hlrPatternToPresetKey === 'function') ? hlrPatternToPresetKey(current) : 'custom';
-      presetSel.value = key;
-      if (typeof hlrPatternToHex === 'function') hexInput.value = hlrPatternToHex(current);
-      hexInput.disabled = (key !== 'custom');
-      renderPreview(current);
-      dialog.style.display = '';
-    }
-
-    function closeDialog() {
-      dialog.style.display = 'none';
-    }
-
-    editBtn.addEventListener('click', openDialog);
-    cancelBtn.addEventListener('click', closeDialog);
-
-    // Close on ESC when the dialog is open
-    document.addEventListener('keydown', function(e) {
-      if (e.key === 'Escape' && dialog.style.display !== 'none') {
-        closeDialog();
-      }
-    });
-
-    okBtn.addEventListener('click', function() {
-      // Resolve final pattern (preset > hex > fallback)
-      const key = presetSel.value;
-      let bytes = null;
-      if (key !== 'custom' && typeof hlrPatternFromPresetKey === 'function') {
-        bytes = hlrPatternFromPresetKey(key);
-      }
-      if (!bytes && typeof hlrPatternFromHex === 'function') {
-        bytes = hlrPatternFromHex(hexInput.value);
-      }
-      if (!bytes) {
-        // Invalid hex — leave dialog open so the user can correct it
-        return;
-      }
-      closeDialog();
-      applyHlrPatternChange(bytes);
-    });
-  })();
-
-  updateColorSelectors();
-
-  // Attr preview flash animation via CSS transform (compositor-level).
-  // The canvas has both normal and swapped states side by side.
-  // Every 320ms, slide between halves using translateX — this bypasses
-  // the main-thread paint pipeline that gets blocked by the flash timer's renderScreen().
-  var _apLastSwapTime = 0;
-  (function _apFlashLoop(timestamp) {
+/**
+ * Starts the .53c attribute-preview flash animation (CSS-transform-based,
+ * compositor-level to bypass main-thread paint contention).
+ * Extracted from initEditor() for readability.
+ */
+function initAttrPreviewFlashLoop() {
+  // Canvas has both normal and swapped states side by side;
+  // every 320ms we slide between halves using translateX.
+  let lastSwapTime = 0;
+  (function flashLoop(timestamp) {
     if (currentFormat === FORMAT.ATTR_53C && editorFlash) {
-      if (timestamp - _apLastSwapTime >= 320) {
-        _apLastSwapTime = timestamp;
+      if (timestamp - lastSwapTime >= 320) {
+        lastSwapTime = timestamp;
         attrPreviewFlashSwap = !attrPreviewFlashSwap;
-        // Slide canvas via CSS transform (compositor-level, always repaints).
-        // Left half = normal, right half = swapped.
-        var apCanvas = document.getElementById('attrPreviewCanvas');
+        const apCanvas = document.getElementById('attrPreviewCanvas');
         if (apCanvas) {
           apCanvas.style.transform = attrPreviewFlashSwap ? 'translateX(-50%)' : 'translateX(0)';
         }
       }
     } else {
       // Reset position when flash is off
-      var apCanvas2 = document.getElementById('attrPreviewCanvas');
-      if (apCanvas2 && apCanvas2.style.transform) {
-        apCanvas2.style.transform = '';
+      const apCanvas = document.getElementById('attrPreviewCanvas');
+      if (apCanvas && apCanvas.style.transform) {
+        apCanvas.style.transform = '';
         attrPreviewFlashSwap = false;
       }
     }
-    requestAnimationFrame(_apFlashLoop);
+    requestAnimationFrame(flashLoop);
   })(performance.now());
 }
 
@@ -23585,6 +24333,7 @@ function importNirvanaTileFile(file) {
     }
   };
 
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   reader.readAsArrayBuffer(file);
 }
 

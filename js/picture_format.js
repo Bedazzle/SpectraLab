@@ -214,6 +214,41 @@ function writeBorder(border, target, offset) {
   target.set(border.bottom, offset + 1536 + 1536);
 }
 
+/**
+ * BMC4 stores attributes as two 768-byte banks (lines 0-3, lines 4-7) and
+ * internally expands to a 48x32 interleaved attrs grid.
+ * This helper reads the two banks from a source buffer into the attrs grid.
+ * @param {Uint8Array} attrs - Target 1536-byte interleaved attrs (48 rows x 32 cols)
+ * @param {Uint8Array} source - Source buffer containing the two banks
+ * @param {number} bank1Offset - Offset of bank1 in source (even rows)
+ * @param {number} bank2Offset - Offset of bank2 in source (odd rows)
+ */
+function bmc4AttrsFromBanks(attrs, source, bank1Offset, bank2Offset) {
+  for (let r = 0; r < 24; r++) {
+    for (let c = 0; c < 32; c++) {
+      attrs[(r * 2) * 32 + c]     = source[bank1Offset + r * 32 + c]; // bank1 -> even rows
+      attrs[(r * 2 + 1) * 32 + c] = source[bank2Offset + r * 32 + c]; // bank2 -> odd rows
+    }
+  }
+}
+
+/**
+ * Inverse of bmc4AttrsFromBanks: splits the 48x32 interleaved attrs grid
+ * back into two 768-byte banks in a target buffer.
+ * @param {Uint8Array} target - Target buffer to receive the two banks
+ * @param {Uint8Array} attrs - Source 1536-byte interleaved attrs (48 rows x 32 cols)
+ * @param {number} bank1Offset - Offset of bank1 in target (from even rows)
+ * @param {number} bank2Offset - Offset of bank2 in target (from odd rows)
+ */
+function bmc4AttrsToBanks(target, attrs, bank1Offset, bank2Offset) {
+  for (let r = 0; r < 24; r++) {
+    for (let c = 0; c < 32; c++) {
+      target[bank1Offset + r * 32 + c] = attrs[(r * 2) * 32 + c];     // even rows -> bank1
+      target[bank2Offset + r * 32 + c] = attrs[(r * 2 + 1) * 32 + c]; // odd rows -> bank2
+    }
+  }
+}
+
 // ============================================================================
 // SCR Import / Export
 // ============================================================================
@@ -222,9 +257,10 @@ function writeBorder(border, target, offset) {
  * Imports a standard 6912-byte SCR file into a Picture.
  * @param {Uint8Array} fileBytes - File data (6912 bytes)
  * @param {string} fileName - Original file name
- * @returns {Picture}
+ * @returns {Picture|null}
  */
 function importScr(fileBytes, fileName) {
+  if (fileBytes.length < 6912) return null;
   const pic = makePicture({
     sourceFormat: 'scr',
     fileName: fileName,
@@ -250,9 +286,10 @@ function importScr(fileBytes, fileName) {
  * Imports a 6976-byte SCR+ULA+ file into a Picture.
  * @param {Uint8Array} fileBytes - File data (6976 bytes)
  * @param {string} fileName - Original file name
- * @returns {Picture}
+ * @returns {Picture|null}
  */
 function importScrUlaPlus(fileBytes, fileName) {
+  if (fileBytes.length < 6976) return null;
   const palette = new Uint8Array(64);
   for (let i = 0; i < 64; i++) {
     palette[i] = fileBytes[6912 + i];
@@ -326,9 +363,10 @@ function exportScrUlaPlus(picture) {
  * Layout: 6144 bytes interleaved bitmap + 3072 bytes attributes (96 rows x 32 cols).
  * @param {Uint8Array} fileBytes - File data (9216 bytes)
  * @param {string} fileName - Original file name
- * @returns {Picture}
+ * @returns {Picture|null}
  */
 function importIfl(fileBytes, fileName) {
+  if (fileBytes.length < 9216) return null;
   const pic = makePicture({
     sourceFormat: 'ifl',
     fileName: fileName,
@@ -379,9 +417,10 @@ function exportIfl(picture) {
  * Layout: 6144 bytes interleaved bitmap + 6144 bytes attributes (192 rows x 32 cols).
  * @param {Uint8Array} fileBytes - File data (12288 bytes)
  * @param {string} fileName - Original file name
- * @returns {Picture}
+ * @returns {Picture|null}
  */
 function importMlt(fileBytes, fileName) {
+  if (fileBytes.length < 12288) return null;
   const pic = makePicture({
     sourceFormat: 'mlt',
     fileName: fileName,
@@ -477,9 +516,10 @@ function exportMono(picture) {
  * Layout: standard SCR (6912 bytes) + border data (4224 bytes).
  * @param {Uint8Array} fileBytes - File data (11136 bytes)
  * @param {string} fileName - Original file name
- * @returns {Picture}
+ * @returns {Picture|null}
  */
 function importBsc(fileBytes, fileName) {
+  if (fileBytes.length < 11136) return null;
   const pic = makePicture({
     sourceFormat: 'bsc',
     fileName: fileName,
@@ -535,9 +575,10 @@ function exportBsc(picture) {
  * bank1[r*32+c] -> attrs[(r*2)*32+c], bank2[r*32+c] -> attrs[(r*2+1)*32+c].
  * @param {Uint8Array} fileBytes - File data (11904 bytes)
  * @param {string} fileName - Original file name
- * @returns {Picture}
+ * @returns {Picture|null}
  */
 function importBmc4(fileBytes, fileName) {
+  if (fileBytes.length < 7681) return null;
   const pic = makePicture({
     sourceFormat: 'bmc4',
     fileName: fileName,
@@ -551,15 +592,8 @@ function importBmc4(fileBytes, fileName) {
 
   pic.planes[0].bitmap = deinterleaveBitmap(fileBytes, 0, 256, 192);
 
-  // Interleave two 768-byte attr banks into 1536-byte attrs (48 rows x 32 cols)
-  // bank1 at offset 6144, bank2 at offset 6912
-  const attrs = pic.planes[0].attrs; // 48 rows x 32 cols = 1536 bytes
-  for (let r = 0; r < 24; r++) {
-    for (let c = 0; c < 32; c++) {
-      attrs[(r * 2) * 32 + c] = fileBytes[6144 + r * 32 + c];      // bank1 -> even rows
-      attrs[(r * 2 + 1) * 32 + c] = fileBytes[6912 + r * 32 + c];  // bank2 -> odd rows
-    }
-  }
+  // Interleave two 768-byte attr banks (at 6144 and 6912) into 1536-byte attrs (48x32)
+  bmc4AttrsFromBanks(pic.planes[0].attrs, fileBytes, 6144, 6912);
 
   // Border at offset 7680
   pic.border = extractBorder(fileBytes, 7680);
@@ -579,14 +613,8 @@ function exportBmc4(picture) {
   const scrBitmap = interleaveBitmap(picture.planes[0].bitmap, picture.width, picture.height);
   result.set(scrBitmap, 0);
 
-  // De-interleave attrs back into two 768-byte banks
-  const attrs = picture.planes[0].attrs;
-  for (let r = 0; r < 24; r++) {
-    for (let c = 0; c < 32; c++) {
-      result[6144 + r * 32 + c] = attrs[(r * 2) * 32 + c];      // even rows -> bank1
-      result[6912 + r * 32 + c] = attrs[(r * 2 + 1) * 32 + c];  // odd rows -> bank2
-    }
-  }
+  // De-interleave 1536-byte attrs (48x32) back into two 768-byte banks (at 6144, 6912)
+  bmc4AttrsToBanks(result, picture.planes[0].attrs, 6144, 6912);
 
   // Border at offset 7680
   if (picture.border) {
@@ -605,9 +633,10 @@ function exportBmc4(picture) {
  * Two complete SCR frames (6912 bytes each) at offsets 0 and 6912.
  * @param {Uint8Array} fileBytes - File data (13824 bytes)
  * @param {string} fileName - Original file name
- * @returns {Picture}
+ * @returns {Picture|null}
  */
 function importGigascreen(fileBytes, fileName) {
+  if (fileBytes.length < 13824) return null;
   const pic = makePicture({
     sourceFormat: 'img',
     fileName: fileName,
@@ -1227,9 +1256,10 @@ function exportBsp(picture) {
  * Three separate interleaved bitmaps: R (0), G (6144), B (12288). No attributes.
  * @param {Uint8Array} fileBytes - File data (18432 bytes)
  * @param {string} fileName - Original file name
- * @returns {Picture}
+ * @returns {Picture|null}
  */
 function importRgb3(fileBytes, fileName) {
+  if (fileBytes.length < 18432) return null;
   const pic = makePicture({
     sourceFormat: 'rgb3',
     fileName: fileName,
@@ -1281,9 +1311,10 @@ function exportRgb3(picture) {
  * @param {Uint8Array} fileBytes - File data (768 bytes)
  * @param {string} fileName - Original file name
  * @param {Uint8Array|number[]} pattern - 8-byte pattern tile
- * @returns {Picture}
+ * @returns {Picture|null}
  */
 function import53c(fileBytes, fileName, pattern) {
+  if (fileBytes.length < 768) return null;
   const pic = makePicture({
     sourceFormat: '53c',
     fileName: fileName,
@@ -1321,6 +1352,21 @@ function import53c(fileBytes, fileName, pattern) {
 }
 
 /**
+ * Normalizes a 53c attribute byte so ink >= paper (ChunkyPaint compatibility).
+ * The 53c checkerboard pattern is symmetric, so swapping ink/paper produces
+ * the same visual result. Bright/flash bits (0xC0) are preserved.
+ * @param {number} attr - Input attribute byte
+ * @returns {number} Normalized attribute byte
+ */
+function normalizeAttrForPaint(attr) {
+  const ink = attr & 0x07;
+  const paper = (attr >> 3) & 0x07;
+  return paper > ink
+    ? (attr & 0xC0) | (ink << 3) | paper
+    : attr;
+}
+
+/**
  * Exports a Picture to a 768-byte 53c attribute file.
  * Only attributes are stored; bitmap is generated from pattern at load time.
  * @param {Picture} picture
@@ -1330,16 +1376,7 @@ function export53c(picture) {
   const result = new Uint8Array(768);
   const attrs = picture.planes[0].attrs;
   for (let i = 0; i < 768; i++) {
-    const a = attrs[i];
-    const ink = a & 0x07;
-    const paper = (a >> 3) & 0x07;
-    if (paper > ink) {
-      // Normalize: swap ink/paper so ink >= paper (ChunkyPaint compatibility).
-      // Checkerboard pattern is symmetric, so visual result is identical.
-      result[i] = (a & 0xC0) | (ink << 3) | paper;
-    } else {
-      result[i] = a;
-    }
+    result[i] = normalizeAttrForPaint(attrs[i]);
   }
   return result;
 }
@@ -1528,31 +1565,6 @@ function clonePicture(picture) {
 }
 
 // ============================================================================
-// Format descriptor table
-// ============================================================================
-// Maps sourceFormat string -> layout parameters for the sync bridge.
-
-/** @type {Object<string, Object>} */
-const FORMAT_DESCRIPTORS = {
-  'scr':       { bitmapOffset: 0, attrOffset: 6144, attrSize: 768 },
-  'scr+':      { bitmapOffset: 0, attrOffset: 6144, attrSize: 768 },
-  'ifl':       { bitmapOffset: 0, attrOffset: 6144, attrSize: 3072 },
-  'mlt':       { bitmapOffset: 0, attrOffset: 6144, attrSize: 6144 },
-  'bsc':       { bitmapOffset: 0, attrOffset: 6144, attrSize: 768, borderOffset: 6912 },
-  'bmc4':      { bitmapOffset: 0, attrBank1Offset: 6144, attrBank2Offset: 6912, borderOffset: 7680 },
-  'img':       { frame1Offset: 0, frame2Offset: 6912 },
-  'rgb3':      { redOffset: 0, greenOffset: 6144, blueOffset: 12288 },
-  'mono_full': { bitmapOffset: 0, height: 192 },
-  'mono_2_3':  { bitmapOffset: 0, height: 128 },
-  'mono_1_3':  { bitmapOffset: 0, height: 64 },
-  '53c':       { attrOffset: 0, attrSize: 768, isPattern: true },
-  'specscii':  { isText: true },
-  'zxp':       { isLinear: true },
-  'ch$':       { isLinear: true },
-  'mgh':       { isLinear: true }
-};
-
-// ============================================================================
 // Generalized sync bridge (screenData <-> Picture)
 // ============================================================================
 
@@ -1649,13 +1661,7 @@ function syncPictureFromScreenData(scrData, picture) {
   if (fmt === 'bmc4') {
     // BMC4: bitmap + two attr banks + border
     picture.planes[0].bitmap = deinterleaveBitmap(scrData, 0, 256, 192);
-    const attrs = picture.planes[0].attrs;
-    for (let r = 0; r < 24; r++) {
-      for (let c = 0; c < 32; c++) {
-        attrs[(r * 2) * 32 + c] = scrData[6144 + r * 32 + c];
-        attrs[(r * 2 + 1) * 32 + c] = scrData[6912 + r * 32 + c];
-      }
-    }
+    bmc4AttrsFromBanks(picture.planes[0].attrs, scrData, 6144, 6912);
     if (picture.border) {
       picture.border = extractBorder(scrData, 7680);
     }
@@ -1703,44 +1709,56 @@ function syncPictureFromScreenData(scrData, picture) {
 }
 
 // ============================================================================
-// Import dispatcher (format string -> import function)
+// Import / export dispatcher (format string -> handlers)
 // ============================================================================
+
+// Default 53c checkerboard pattern used when no pattern is supplied.
+const DEFAULT_53C_PATTERN = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
+
+/**
+ * Registry of Picture import/export handlers keyed by FORMAT constant value.
+ * - `import`: (fileBytes, fileName, opts?) => Picture | null   (null = not supported)
+ * - `export`: (picture) => Uint8Array                          (null = not supported)
+ *
+ * Adding a new format means adding one row here (and implementing the functions);
+ * no caller needs to be updated.
+ */
+const PICTURE_FORMAT_HANDLERS = {
+  'scr':          { import: (b, fn) => importScr(b, fn),        export: exportScr },
+  'scr+':         { import: (b, fn) => importScrUlaPlus(b, fn), export: exportScrUlaPlus },
+  'scr_ulanext':  { import: (b, fn) => importScr(b, fn),        export: null },
+  'ifl':          { import: (b, fn) => importIfl(b, fn),        export: exportIfl },
+  'mlt':          { import: (b, fn) => importMlt(b, fn),        export: exportMlt },
+  'mono_full':    { import: (b, fn) => importMono(b, fn, 192),  export: exportMono },
+  'mono_2_3':     { import: (b, fn) => importMono(b, fn, 128),  export: exportMono },
+  'mono_1_3':     { import: (b, fn) => importMono(b, fn,  64),  export: exportMono },
+  'bsc':          { import: (b, fn) => importBsc(b, fn),        export: exportBsc },
+  'bmc4':         { import: (b, fn) => importBmc4(b, fn),       export: exportBmc4 },
+  'img':          { import: (b, fn) => importGigascreen(b, fn), export: exportGigascreen },
+  'hlr':          { import: (b, fn) => importHlr(b, fn),        export: exportHlr },
+  'stl':          { import: (b, fn) => importStl(b, fn),        export: exportStl },
+  'bsp':          { import: (b, fn) => importBsp(b, fn),        export: exportBsp },
+  'rgb3':         { import: (b, fn) => importRgb3(b, fn),       export: exportRgb3 },
+  '53c':          { import: (b, fn, opts) => import53c(b, fn, (opts && opts.pattern) || DEFAULT_53C_PATTERN), export: export53c },
+  'specscii':     { import: (b, fn) => importSpecscii(b, fn),   export: exportSpecscii },
+  'mgh':          { import: null,                               export: exportMgh },
+  // zxp import uses importZxp() directly with parsed dimensions;
+  // zxp export uses exportZxp() which returns string, not Uint8Array.
+  'zxp':          { import: null,                               export: null }
+};
 
 /**
  * Imports file bytes into a Picture based on format string.
- * Returns null for formats that don't support Picture import (SCA, UNKNOWN).
+ * Returns null for formats that don't support Picture import.
  * @param {string} format - FORMAT constant value (e.g. 'scr', 'ifl', '53c')
  * @param {Uint8Array} fileBytes - File data
  * @param {string} fileName - Original file name
- * @param {Object} [opts] - Extra options
- * @param {Uint8Array|number[]} [opts.pattern] - Pattern for 53c format
+ * @param {Object} [opts] - Extra options (e.g. { pattern } for 53c)
  * @returns {Picture|null}
  */
 function importPicture(format, fileBytes, fileName, opts) {
-  switch (format) {
-    case 'scr':       return importScr(fileBytes, fileName);
-    case 'scr+':      return importScrUlaPlus(fileBytes, fileName);
-    case 'scr_ulanext': return importScr(fileBytes, fileName);
-    case 'ifl':       return importIfl(fileBytes, fileName);
-    case 'mlt':       return importMlt(fileBytes, fileName);
-    case 'mono_full': return importMono(fileBytes, fileName, 192);
-    case 'mono_2_3':  return importMono(fileBytes, fileName, 128);
-    case 'mono_1_3':  return importMono(fileBytes, fileName, 64);
-    case 'bsc':       return importBsc(fileBytes, fileName);
-    case 'bmc4':      return importBmc4(fileBytes, fileName);
-    case 'img':       return importGigascreen(fileBytes, fileName);
-    case 'hlr':       return importHlr(fileBytes, fileName);
-    case 'stl':       return importStl(fileBytes, fileName);
-    case 'bsp':       return importBsp(fileBytes, fileName);
-    case 'rgb3':      return importRgb3(fileBytes, fileName);
-    case '53c': {
-      const pat = (opts && opts.pattern) || [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
-      return import53c(fileBytes, fileName, pat);
-    }
-    case 'specscii':  return importSpecscii(fileBytes, fileName);
-    case 'zxp':       return null; // ZXP import uses importZxp() directly with parsed dimensions
-    default:          return null;
-  }
+  const h = PICTURE_FORMAT_HANDLERS[format];
+  return (h && h.import) ? h.import(fileBytes, fileName, opts) : null;
 }
 
 /**
@@ -1750,25 +1768,6 @@ function importPicture(format, fileBytes, fileName, opts) {
  * @returns {Uint8Array|null}
  */
 function exportPicture(picture) {
-  switch (picture.sourceFormat) {
-    case 'scr':       return exportScr(picture);
-    case 'scr+':      return exportScrUlaPlus(picture);
-    case 'ifl':       return exportIfl(picture);
-    case 'mlt':       return exportMlt(picture);
-    case 'mono_full':
-    case 'mono_2_3':
-    case 'mono_1_3':  return exportMono(picture);
-    case 'bsc':       return exportBsc(picture);
-    case 'bmc4':      return exportBmc4(picture);
-    case 'img':       return exportGigascreen(picture);
-    case 'mgh':       return exportMgh(picture);
-    case 'hlr':       return exportHlr(picture);
-    case 'stl':       return exportStl(picture);
-    case 'bsp':       return exportBsp(picture);
-    case 'rgb3':      return exportRgb3(picture);
-    case '53c':       return export53c(picture);
-    case 'specscii':  return exportSpecscii(picture);
-    case 'zxp':       return null; // ZXP export uses exportZxp() which returns string, not Uint8Array
-    default:          return null;
-  }
+  const h = PICTURE_FORMAT_HANDLERS[picture.sourceFormat];
+  return (h && h.export) ? h.export(picture) : null;
 }

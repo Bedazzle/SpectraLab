@@ -493,6 +493,32 @@ function applyBilateralFilter(pixels, width, height, amount) {
   }
 }
 
+// ============================================================================
+// Dithering strength + scan controls (set by UI before conversion runs)
+// ditherStrength: 0.0..1.0 - fraction of error diffused (100% = classic)
+//                 For ordered methods, >0 enables ordered+FS hybrid mode
+// ditherSerpentine: when true, error-diffusion methods scan rows bidirectionally
+// ============================================================================
+let ditherStrength = 1.0;
+let ditherSerpentine = false;
+
+/**
+ * Floyd-Steinberg kernel (shared with serpentine + hybrid)
+ */
+const FS_KERNEL = [
+  [1, 0, 7/16],
+  [-1, 1, 3/16], [0, 1, 5/16], [1, 1, 1/16]
+];
+
+/**
+ * Atkinson kernel (1/8 to each of 6 neighbors; sum = 6/8, rest is "lost")
+ */
+const ATKINSON_KERNEL = [
+  [1, 0, 1/8], [2, 0, 1/8],
+  [-1, 1, 1/8], [0, 1, 1/8], [1, 1, 1/8],
+  [0, 2, 1/8]
+];
+
 /**
  * Floyd-Steinberg dithering
  * @param {Float32Array} pixels - Floating point RGB pixels (width * height * 3)
@@ -501,53 +527,7 @@ function applyBilateralFilter(pixels, width, height, amount) {
  * @param {number[][]} palette - Target palette colors
  */
 function floydSteinbergDither(pixels, width, height, palette) {
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * 3;
-      const oldR = pixels[idx];
-      const oldG = pixels[idx + 1];
-      const oldB = pixels[idx + 2];
-
-      const nearest = findNearestColor([oldR, oldG, oldB], palette);
-      const newColor = palette[nearest];
-
-      pixels[idx] = newColor[0];
-      pixels[idx + 1] = newColor[1];
-      pixels[idx + 2] = newColor[2];
-
-      const errR = oldR - newColor[0];
-      const errG = oldG - newColor[1];
-      const errB = oldB - newColor[2];
-
-      // Distribute error to neighbors
-      if (x + 1 < width) {
-        const i = idx + 3;
-        pixels[i] += errR * 7 / 16;
-        pixels[i + 1] += errG * 7 / 16;
-        pixels[i + 2] += errB * 7 / 16;
-      }
-      if (y + 1 < height) {
-        if (x > 0) {
-          const i = ((y + 1) * width + (x - 1)) * 3;
-          pixels[i] += errR * 3 / 16;
-          pixels[i + 1] += errG * 3 / 16;
-          pixels[i + 2] += errB * 3 / 16;
-        }
-        {
-          const i = ((y + 1) * width + x) * 3;
-          pixels[i] += errR * 5 / 16;
-          pixels[i + 1] += errG * 5 / 16;
-          pixels[i + 2] += errB * 5 / 16;
-        }
-        if (x + 1 < width) {
-          const i = ((y + 1) * width + (x + 1)) * 3;
-          pixels[i] += errR * 1 / 16;
-          pixels[i + 1] += errG * 1 / 16;
-          pixels[i + 2] += errB * 1 / 16;
-        }
-      }
-    }
-  }
+  errorDiffusionDither(pixels, width, height, palette, FS_KERNEL, ditherStrength, ditherSerpentine);
 }
 
 /**
@@ -558,42 +538,16 @@ function floydSteinbergDither(pixels, width, height, palette) {
  * @param {number[][]} palette - Target palette colors
  */
 function atkinsonDither(pixels, width, height, palette) {
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * 3;
-      const oldR = pixels[idx];
-      const oldG = pixels[idx + 1];
-      const oldB = pixels[idx + 2];
-
-      const nearest = findNearestColor([oldR, oldG, oldB], palette);
-      const newColor = palette[nearest];
-
-      pixels[idx] = newColor[0];
-      pixels[idx + 1] = newColor[1];
-      pixels[idx + 2] = newColor[2];
-
-      const errR = (oldR - newColor[0]) / 8;
-      const errG = (oldG - newColor[1]) / 8;
-      const errB = (oldB - newColor[2]) / 8;
-
-      // Atkinson: 1/8 to each of 6 neighbors
-      const neighbors = [
-        [x + 1, y], [x + 2, y],
-        [x - 1, y + 1], [x, y + 1], [x + 1, y + 1],
-        [x, y + 2]
-      ];
-
-      for (const [nx, ny] of neighbors) {
-        if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
-          const i = (ny * width + nx) * 3;
-          pixels[i] += errR;
-          pixels[i + 1] += errG;
-          pixels[i + 2] += errB;
-        }
-      }
-    }
-  }
+  errorDiffusionDither(pixels, width, height, palette, ATKINSON_KERNEL, ditherStrength, ditherSerpentine);
 }
+
+/**
+ * Bayer 2x2 ordered dithering matrix (coarsest, most visible pattern)
+ */
+const BAYER_2X2 = [
+  [0, 2],
+  [3, 1]
+];
 
 /**
  * Bayer 4x4 ordered dithering matrix
@@ -620,16 +574,24 @@ const BAYER_8X8 = [
 ];
 
 /**
- * Generic error diffusion dithering
+ * Generic error diffusion dithering with strength + optional serpentine scan
  * @param {Float32Array} pixels - Floating point RGB pixels
  * @param {number} width - Image width
  * @param {number} height - Image height
  * @param {number[][]} palette - Target palette colors
  * @param {Array<[number, number, number]>} kernel - Error diffusion kernel [[dx, dy, weight], ...]
+ * @param {number} [strength=1] - 0..1, scales how much error is diffused
+ * @param {boolean} [serpentine=false] - alternate row direction
  */
-function errorDiffusionDither(pixels, width, height, palette, kernel) {
+function errorDiffusionDither(pixels, width, height, palette, kernel, strength = 1, serpentine = false) {
   for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
+    const reverse = serpentine && (y % 2 === 1);
+    const startX = reverse ? width - 1 : 0;
+    const endX = reverse ? -1 : width;
+    const stepX = reverse ? -1 : 1;
+    const dir = reverse ? -1 : 1;
+
+    for (let x = startX; x !== endX; x += stepX) {
       const idx = (y * width + x) * 3;
       const oldR = pixels[idx];
       const oldG = pixels[idx + 1];
@@ -642,12 +604,14 @@ function errorDiffusionDither(pixels, width, height, palette, kernel) {
       pixels[idx + 1] = newColor[1];
       pixels[idx + 2] = newColor[2];
 
-      const errR = oldR - newColor[0];
-      const errG = oldG - newColor[1];
-      const errB = oldB - newColor[2];
+      const errR = (oldR - newColor[0]) * strength;
+      const errG = (oldG - newColor[1]) * strength;
+      const errB = (oldB - newColor[2]) * strength;
+
+      if (strength === 0) continue;
 
       for (const [dx, dy, weight] of kernel) {
-        const nx = x + dx;
+        const nx = x + dx * dir;
         const ny = y + dy;
         if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
           const nIdx = (ny * width + nx) * 3;
@@ -669,7 +633,7 @@ function jarvisDither(pixels, width, height, palette) {
     [-2, 1, 3/48], [-1, 1, 5/48], [0, 1, 7/48], [1, 1, 5/48], [2, 1, 3/48],
     [-2, 2, 1/48], [-1, 2, 3/48], [0, 2, 5/48], [1, 2, 3/48], [2, 2, 1/48]
   ];
-  errorDiffusionDither(pixels, width, height, palette, kernel);
+  errorDiffusionDither(pixels, width, height, palette, kernel, ditherStrength, ditherSerpentine);
 }
 
 /**
@@ -681,7 +645,7 @@ function stuckiDither(pixels, width, height, palette) {
     [-2, 1, 2/42], [-1, 1, 4/42], [0, 1, 8/42], [1, 1, 4/42], [2, 1, 2/42],
     [-2, 2, 1/42], [-1, 2, 2/42], [0, 2, 4/42], [1, 2, 2/42], [2, 2, 1/42]
   ];
-  errorDiffusionDither(pixels, width, height, palette, kernel);
+  errorDiffusionDither(pixels, width, height, palette, kernel, ditherStrength, ditherSerpentine);
 }
 
 /**
@@ -692,7 +656,7 @@ function burkesDither(pixels, width, height, palette) {
     [1, 0, 8/32], [2, 0, 4/32],
     [-2, 1, 2/32], [-1, 1, 4/32], [0, 1, 8/32], [1, 1, 4/32], [2, 1, 2/32]
   ];
-  errorDiffusionDither(pixels, width, height, palette, kernel);
+  errorDiffusionDither(pixels, width, height, palette, kernel, ditherStrength, ditherSerpentine);
 }
 
 /**
@@ -704,7 +668,7 @@ function sierraDither(pixels, width, height, palette) {
     [-2, 1, 2/32], [-1, 1, 4/32], [0, 1, 5/32], [1, 1, 4/32], [2, 1, 2/32],
     [-1, 2, 2/32], [0, 2, 3/32], [1, 2, 2/32]
   ];
-  errorDiffusionDither(pixels, width, height, palette, kernel);
+  errorDiffusionDither(pixels, width, height, palette, kernel, ditherStrength, ditherSerpentine);
 }
 
 /**
@@ -715,53 +679,95 @@ function sierraLiteDither(pixels, width, height, palette) {
     [1, 0, 2/4],
     [-1, 1, 1/4], [0, 1, 1/4]
   ];
-  errorDiffusionDither(pixels, width, height, palette, kernel);
+  errorDiffusionDither(pixels, width, height, palette, kernel, ditherStrength, ditherSerpentine);
+}
+
+/**
+ * Apply a bias+error-diffusion hybrid pass: pick nearest to (pixel + threshold),
+ * but diffuse the residual error (pixel - picked) to neighbors scaled by strength.
+ * When strength === 0 this degrades to pure ordered dithering.
+ * @param {Float32Array} pixels
+ * @param {number} width
+ * @param {number} height
+ * @param {number[][]} palette
+ * @param {(x: number, y: number) => number} thresholdFn - returns bias for (x,y) in same units as pixel channels
+ * @param {number} strength - 0..1
+ * @param {boolean} serpentine
+ */
+function orderedHybridDither(pixels, width, height, palette, thresholdFn, strength, serpentine) {
+  const kernel = FS_KERNEL;
+  for (let y = 0; y < height; y++) {
+    const reverse = serpentine && (y % 2 === 1);
+    const startX = reverse ? width - 1 : 0;
+    const endX = reverse ? -1 : width;
+    const stepX = reverse ? -1 : 1;
+    const dir = reverse ? -1 : 1;
+
+    for (let x = startX; x !== endX; x += stepX) {
+      const idx = (y * width + x) * 3;
+      const threshold = thresholdFn(x, y);
+
+      const oldR = pixels[idx];
+      const oldG = pixels[idx + 1];
+      const oldB = pixels[idx + 2];
+
+      const r = clamp(oldR + threshold);
+      const g = clamp(oldG + threshold);
+      const b = clamp(oldB + threshold);
+
+      const nearest = findNearestColor([r, g, b], palette);
+      const newColor = palette[nearest];
+
+      pixels[idx] = newColor[0];
+      pixels[idx + 1] = newColor[1];
+      pixels[idx + 2] = newColor[2];
+
+      if (strength === 0) continue;
+
+      // Diffuse the residual (original - quantized) scaled by strength
+      const errR = (oldR - newColor[0]) * strength;
+      const errG = (oldG - newColor[1]) * strength;
+      const errB = (oldB - newColor[2]) * strength;
+
+      for (const [dx, dy, weight] of kernel) {
+        const nx = x + dx * dir;
+        const ny = y + dy;
+        if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+          const nIdx = (ny * width + nx) * 3;
+          pixels[nIdx] += errR * weight;
+          pixels[nIdx + 1] += errG * weight;
+          pixels[nIdx + 2] += errB * weight;
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Ordered (Bayer 2x2) dithering - coarsest pattern
+ */
+function ordered2Dither(pixels, width, height, palette) {
+  orderedHybridDither(pixels, width, height, palette,
+    (x, y) => (BAYER_2X2[y % 2][x % 2] / 4 - 0.5) * 64,
+    ditherStrength, ditherSerpentine);
 }
 
 /**
  * Ordered (Bayer 4x4) dithering
  */
 function orderedDither(pixels, width, height, palette) {
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * 3;
-      const threshold = (BAYER_4X4[y % 4][x % 4] / 16 - 0.5) * 64;
-
-      const r = clamp(pixels[idx] + threshold);
-      const g = clamp(pixels[idx + 1] + threshold);
-      const b = clamp(pixels[idx + 2] + threshold);
-
-      const nearest = findNearestColor([r, g, b], palette);
-      const newColor = palette[nearest];
-
-      pixels[idx] = newColor[0];
-      pixels[idx + 1] = newColor[1];
-      pixels[idx + 2] = newColor[2];
-    }
-  }
+  orderedHybridDither(pixels, width, height, palette,
+    (x, y) => (BAYER_4X4[y % 4][x % 4] / 16 - 0.5) * 64,
+    ditherStrength, ditherSerpentine);
 }
 
 /**
  * Ordered (Bayer 8x8) dithering - finer pattern
  */
 function ordered8Dither(pixels, width, height, palette) {
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * 3;
-      const threshold = (BAYER_8X8[y % 8][x % 8] / 64 - 0.5) * 64;
-
-      const r = clamp(pixels[idx] + threshold);
-      const g = clamp(pixels[idx + 1] + threshold);
-      const b = clamp(pixels[idx + 2] + threshold);
-
-      const nearest = findNearestColor([r, g, b], palette);
-      const newColor = palette[nearest];
-
-      pixels[idx] = newColor[0];
-      pixels[idx + 1] = newColor[1];
-      pixels[idx + 2] = newColor[2];
-    }
-  }
+  orderedHybridDither(pixels, width, height, palette,
+    (x, y) => (BAYER_8X8[y % 8][x % 8] / 64 - 0.5) * 64,
+    ditherStrength, ditherSerpentine);
 }
 
 /**
@@ -795,19 +801,42 @@ function sierra2Dither(pixels, width, height, palette) {
     [1, 0, 4/16], [2, 0, 3/16],
     [-2, 1, 1/16], [-1, 1, 2/16], [0, 1, 3/16], [1, 1, 2/16], [2, 1, 1/16]
   ];
-  errorDiffusionDither(pixels, width, height, palette, kernel);
+  errorDiffusionDither(pixels, width, height, palette, kernel, ditherStrength, ditherSerpentine);
 }
 
 /**
  * Serpentine error diffusion (alternating row direction, reduces banding)
  * Uses Floyd-Steinberg weights with bidirectional scanning
+ * Note: always enables serpentine regardless of global flag; respects strength.
  */
 function serpentineDither(pixels, width, height, palette) {
+  errorDiffusionDither(pixels, width, height, palette, FS_KERNEL, ditherStrength, true);
+}
+
+/**
+ * Dizzy dither (Liam Appelbe, 2023: https://liamappelbe.medium.com/dizzy-dithering-2ae76dbceba1)
+ * Error diffusion with a dynamic denominator. For each pixel the algorithm
+ * sums weights of in-bounds unprocessed neighbors (orthogonal = 1.0,
+ * diagonal = 0.1) into `denom`, then distributes `error * weight / denom`
+ * to each of those neighbors. No error is lost at image edges and the
+ * resulting noise has a blue-noise-like character.
+ * Honors ditherStrength and ditherSerpentine.
+ */
+function dizzyDither(pixels, width, height, palette) {
+  // [dx, dy, weight] - unprocessed neighbors in forward raster order
+  const kernel = [
+    [1, 0, 1.0],   // right       (orthogonal)
+    [-1, 1, 0.1],  // down-left   (diagonal)
+    [0, 1, 1.0],   // down        (orthogonal)
+    [1, 1, 0.1]    // down-right  (diagonal)
+  ];
+
   for (let y = 0; y < height; y++) {
-    const reverse = y % 2 === 1;
+    const reverse = ditherSerpentine && (y % 2 === 1);
     const startX = reverse ? width - 1 : 0;
     const endX = reverse ? -1 : width;
     const stepX = reverse ? -1 : 1;
+    const dir = reverse ? -1 : 1;
 
     for (let x = startX; x !== endX; x += stepX) {
       const idx = (y * width + x) * 3;
@@ -822,38 +851,31 @@ function serpentineDither(pixels, width, height, palette) {
       pixels[idx + 1] = newColor[1];
       pixels[idx + 2] = newColor[2];
 
-      const errR = oldR - newColor[0];
-      const errG = oldG - newColor[1];
-      const errB = oldB - newColor[2];
+      const errR = (oldR - newColor[0]) * ditherStrength;
+      const errG = (oldG - newColor[1]) * ditherStrength;
+      const errB = (oldB - newColor[2]) * ditherStrength;
 
-      // Floyd-Steinberg weights, direction-aware
-      const right = reverse ? -1 : 1;
-      const left = reverse ? 1 : -1;
+      if (ditherStrength === 0) continue;
 
-      if (x + right >= 0 && x + right < width) {
-        const i = idx + right * 3;
-        pixels[i] += errR * 7 / 16;
-        pixels[i + 1] += errG * 7 / 16;
-        pixels[i + 2] += errB * 7 / 16;
+      // Sum weights of in-bounds unprocessed neighbors
+      let denom = 0;
+      for (const [dx, dy, w] of kernel) {
+        const nx = x + dx * dir;
+        const ny = y + dy;
+        if (nx >= 0 && nx < width && ny >= 0 && ny < height) denom += w;
       }
-      if (y + 1 < height) {
-        if (x + left >= 0 && x + left < width) {
-          const i = ((y + 1) * width + (x + left)) * 3;
-          pixels[i] += errR * 3 / 16;
-          pixels[i + 1] += errG * 3 / 16;
-          pixels[i + 2] += errB * 3 / 16;
-        }
-        {
-          const i = ((y + 1) * width + x) * 3;
-          pixels[i] += errR * 5 / 16;
-          pixels[i + 1] += errG * 5 / 16;
-          pixels[i + 2] += errB * 5 / 16;
-        }
-        if (x + right >= 0 && x + right < width) {
-          const i = ((y + 1) * width + (x + right)) * 3;
-          pixels[i] += errR * 1 / 16;
-          pixels[i + 1] += errG * 1 / 16;
-          pixels[i + 2] += errB * 1 / 16;
+      if (denom === 0) continue;
+
+      // Distribute error proportionally
+      for (const [dx, dy, w] of kernel) {
+        const nx = x + dx * dir;
+        const ny = y + dy;
+        if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+          const nIdx = (ny * width + nx) * 3;
+          const f = w / denom;
+          pixels[nIdx] += errR * f;
+          pixels[nIdx + 1] += errG * f;
+          pixels[nIdx + 2] += errB * f;
         }
       }
     }
@@ -947,10 +969,10 @@ function riemersmaDither(pixels, width, height, palette) {
     pixels[idx + 1] = newColor[1];
     pixels[idx + 2] = newColor[2];
 
-    // Calculate error and push to queue
-    const errR = oldR - newColor[0];
-    const errG = oldG - newColor[1];
-    const errB = oldB - newColor[2];
+    // Calculate error and push to queue (scaled by global dither strength)
+    const errR = (oldR - newColor[0]) * ditherStrength;
+    const errG = (oldG - newColor[1]) * ditherStrength;
+    const errB = (oldB - newColor[2]) * ditherStrength;
 
     // Shift queue and add new error
     errQueueR.shift(); errQueueR.push(errR);
@@ -983,26 +1005,12 @@ const BLUE_NOISE_16 = [
 
 /**
  * Blue noise dithering (visually pleasing, organic-looking pattern)
+ * Supports hybrid ordered+error-diffusion mode when ditherStrength > 0.
  */
 function blueNoiseDither(pixels, width, height, palette) {
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * 3;
-      const threshold = BLUE_NOISE_16[y % 16][x % 16] - 128;
-      const scale = 0.5; // Adjust strength
-
-      const r = clamp(pixels[idx] + threshold * scale);
-      const g = clamp(pixels[idx + 1] + threshold * scale);
-      const b = clamp(pixels[idx + 2] + threshold * scale);
-
-      const nearest = findNearestColor([r, g, b], palette);
-      const newColor = palette[nearest];
-
-      pixels[idx] = newColor[0];
-      pixels[idx + 1] = newColor[1];
-      pixels[idx + 2] = newColor[2];
-    }
-  }
+  orderedHybridDither(pixels, width, height, palette,
+    (x, y) => (BLUE_NOISE_16[y % 16][x % 16] - 128) * 0.5,
+    ditherStrength, ditherSerpentine);
 }
 
 /**
@@ -1020,23 +1028,56 @@ const CLUSTER_8X8 = [
 ];
 
 function patternDither(pixels, width, height, palette) {
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * 3;
-      // Threshold scaled to -32..+31 range
-      const threshold = (CLUSTER_8X8[y % 8][x % 8] - 32) * 4;
+  orderedHybridDither(pixels, width, height, palette,
+    (x, y) => (CLUSTER_8X8[y % 8][x % 8] - 32) * 4,
+    ditherStrength, ditherSerpentine);
+}
 
-      const r = clamp(pixels[idx] + threshold);
-      const g = clamp(pixels[idx + 1] + threshold);
-      const b = clamp(pixels[idx + 2] + threshold);
+/**
+ * a-dither (arithmetic dither) - FFmpeg libswscale
+ * A_DITHER(u,v) = ((u + v*236) * 119) & 0xff
+ * Spatially stable, blue-noise-like, computed with pure bit arithmetic.
+ * Behaves as an ordered threshold method; honors Strength / Serpentine
+ * through the shared hybrid helper (strength > 0 enables ordered+diffusion).
+ */
+function aDither(pixels, width, height, palette) {
+  orderedHybridDither(pixels, width, height, palette,
+    (x, y) => (((((x + y * 236) >>> 0) * 119) & 0xff) - 128) * 0.5,
+    ditherStrength, ditherSerpentine);
+}
 
-      const nearest = findNearestColor([r, g, b], palette);
-      const newColor = palette[nearest];
-
-      pixels[idx] = newColor[0];
-      pixels[idx + 1] = newColor[1];
-      pixels[idx + 2] = newColor[2];
-    }
+/**
+ * Unified global dithering dispatcher.
+ * Looks up the dithering method name and runs the matching algorithm.
+ * All wrappers honor the module-level `ditherStrength` and `ditherSerpentine`.
+ * Unknown/'none' methods are no-ops (raw quantization happens later per-cell).
+ * @param {string} method - Method name (e.g. 'floyd-steinberg')
+ * @param {Float32Array} pixels
+ * @param {number} width
+ * @param {number} height
+ * @param {number[][]} palette
+ */
+function applyGlobalDither(method, pixels, width, height, palette) {
+  switch (method) {
+    case 'floyd-steinberg': floydSteinbergDither(pixels, width, height, palette); break;
+    case 'jarvis':          jarvisDither(pixels, width, height, palette); break;
+    case 'stucki':          stuckiDither(pixels, width, height, palette); break;
+    case 'burkes':          burkesDither(pixels, width, height, palette); break;
+    case 'sierra':          sierraDither(pixels, width, height, palette); break;
+    case 'sierra-lite':     sierraLiteDither(pixels, width, height, palette); break;
+    case 'sierra2':         sierra2Dither(pixels, width, height, palette); break;
+    case 'serpentine':      serpentineDither(pixels, width, height, palette); break;
+    case 'dizzy':           dizzyDither(pixels, width, height, palette); break;
+    case 'riemersma':       riemersmaDither(pixels, width, height, palette); break;
+    case 'blue-noise':      blueNoiseDither(pixels, width, height, palette); break;
+    case 'a-dither':        aDither(pixels, width, height, palette); break;
+    case 'pattern':         patternDither(pixels, width, height, palette); break;
+    case 'atkinson':        atkinsonDither(pixels, width, height, palette); break;
+    case 'ordered2':        ordered2Dither(pixels, width, height, palette); break;
+    case 'ordered':         orderedDither(pixels, width, height, palette); break;
+    case 'ordered8':        ordered8Dither(pixels, width, height, palette); break;
+    case 'noise':           noiseDither(pixels, width, height, palette); break;
+    // 'none' - no dithering applied
   }
 }
 
@@ -2005,54 +2046,7 @@ function convertToScr(sourceCanvas, dithering, brightness, contrast, saturation 
     // For mono output, use only black and white
     const ditherPalette = monoOutput ? [palette.bright[0], palette.bright[7]] : fullPalette;
 
-    switch (dithering) {
-      case 'floyd-steinberg':
-        floydSteinbergDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'jarvis':
-        jarvisDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'stucki':
-        stuckiDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'burkes':
-        burkesDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'sierra':
-        sierraDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'sierra-lite':
-        sierraLiteDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'sierra2':
-        sierra2Dither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'serpentine':
-        serpentineDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'riemersma':
-        riemersmaDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'blue-noise':
-        blueNoiseDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'pattern':
-        patternDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'atkinson':
-        atkinsonDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'ordered':
-        orderedDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'ordered8':
-        ordered8Dither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'noise':
-        noiseDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      // 'none' - no dithering applied
-    }
+    applyGlobalDither(dithering, floatPixels, 256, 192, ditherPalette);
 
     // Process each 8x8 cell
     for (let cellY = 0; cellY < 24; cellY++) {
@@ -2230,23 +2224,7 @@ function convertToZxp(sourceCanvas, dithering, brightness, contrast, saturation 
     // Global dithering
     const ditherPalette = monoOutput ? [palette.bright[0], palette.bright[7]] : fullPalette;
 
-    switch (dithering) {
-      case 'floyd-steinberg': floydSteinbergDither(floatPixels, w, h, ditherPalette); break;
-      case 'jarvis': jarvisDither(floatPixels, w, h, ditherPalette); break;
-      case 'stucki': stuckiDither(floatPixels, w, h, ditherPalette); break;
-      case 'burkes': burkesDither(floatPixels, w, h, ditherPalette); break;
-      case 'sierra': sierraDither(floatPixels, w, h, ditherPalette); break;
-      case 'sierra-lite': sierraLiteDither(floatPixels, w, h, ditherPalette); break;
-      case 'sierra2': sierra2Dither(floatPixels, w, h, ditherPalette); break;
-      case 'serpentine': serpentineDither(floatPixels, w, h, ditherPalette); break;
-      case 'riemersma': riemersmaDither(floatPixels, w, h, ditherPalette); break;
-      case 'blue-noise': blueNoiseDither(floatPixels, w, h, ditherPalette); break;
-      case 'pattern': patternDither(floatPixels, w, h, ditherPalette); break;
-      case 'atkinson': atkinsonDither(floatPixels, w, h, ditherPalette); break;
-      case 'ordered': orderedDither(floatPixels, w, h, ditherPalette); break;
-      case 'ordered8': ordered8Dither(floatPixels, w, h, ditherPalette); break;
-      case 'noise': noiseDither(floatPixels, w, h, ditherPalette); break;
-    }
+    applyGlobalDither(dithering, floatPixels, w, h, ditherPalette);
 
     for (let cellY = 0; cellY < attrRows; cellY++) {
       for (let cellX = 0; cellX < cols; cellX++) {
@@ -2387,23 +2365,7 @@ function convertToNirvanaTile(sourceCanvas, dithering, brightness, contrast, sat
     // Global dithering
     const ditherPalette = monoOutput ? [palette.bright[0], palette.bright[7]] : fullPalette;
 
-    switch (dithering) {
-      case 'floyd-steinberg': floydSteinbergDither(floatPixels, w, h, ditherPalette); break;
-      case 'jarvis': jarvisDither(floatPixels, w, h, ditherPalette); break;
-      case 'stucki': stuckiDither(floatPixels, w, h, ditherPalette); break;
-      case 'burkes': burkesDither(floatPixels, w, h, ditherPalette); break;
-      case 'sierra': sierraDither(floatPixels, w, h, ditherPalette); break;
-      case 'sierra-lite': sierraLiteDither(floatPixels, w, h, ditherPalette); break;
-      case 'sierra2': sierra2Dither(floatPixels, w, h, ditherPalette); break;
-      case 'serpentine': serpentineDither(floatPixels, w, h, ditherPalette); break;
-      case 'riemersma': riemersmaDither(floatPixels, w, h, ditherPalette); break;
-      case 'blue-noise': blueNoiseDither(floatPixels, w, h, ditherPalette); break;
-      case 'pattern': patternDither(floatPixels, w, h, ditherPalette); break;
-      case 'atkinson': atkinsonDither(floatPixels, w, h, ditherPalette); break;
-      case 'ordered': orderedDither(floatPixels, w, h, ditherPalette); break;
-      case 'ordered8': ordered8Dither(floatPixels, w, h, ditherPalette); break;
-      case 'noise': noiseDither(floatPixels, w, h, ditherPalette); break;
-    }
+    applyGlobalDither(dithering, floatPixels, w, h, ditherPalette);
 
     for (let blockY = 0; blockY < attrRows; blockY++) {
       for (let blockX = 0; blockX < cols; blockX++) {
@@ -3337,53 +3299,7 @@ function convertToIfl(sourceCanvas, dithering, brightness, contrast, saturation 
     // Global dithering
     const ditherPalette = monoOutput ? [palette.bright[0], palette.bright[7]] : fullPalette;
 
-    switch (dithering) {
-      case 'floyd-steinberg':
-        floydSteinbergDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'jarvis':
-        jarvisDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'stucki':
-        stuckiDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'burkes':
-        burkesDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'sierra':
-        sierraDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'sierra-lite':
-        sierraLiteDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'sierra2':
-        sierra2Dither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'serpentine':
-        serpentineDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'riemersma':
-        riemersmaDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'blue-noise':
-        blueNoiseDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'pattern':
-        patternDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'atkinson':
-        atkinsonDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'ordered':
-        orderedDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'ordered8':
-        ordered8Dither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'noise':
-        noiseDither(floatPixels, 256, 192, ditherPalette);
-        break;
-    }
+    applyGlobalDither(dithering, floatPixels, 256, 192, ditherPalette);
 
     // Process 96 attribute rows (8×2 blocks)
     for (let blockY = 0; blockY < 96; blockY++) {
@@ -3677,53 +3593,7 @@ function convertToMlt(sourceCanvas, dithering, brightness, contrast, saturation 
     // Global dithering
     const ditherPalette = monoOutput ? [palette.bright[0], palette.bright[7]] : fullPalette;
 
-    switch (dithering) {
-      case 'floyd-steinberg':
-        floydSteinbergDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'jarvis':
-        jarvisDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'stucki':
-        stuckiDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'burkes':
-        burkesDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'sierra':
-        sierraDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'sierra-lite':
-        sierraLiteDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'sierra2':
-        sierra2Dither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'serpentine':
-        serpentineDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'riemersma':
-        riemersmaDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'blue-noise':
-        blueNoiseDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'pattern':
-        patternDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'atkinson':
-        atkinsonDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'ordered':
-        orderedDither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'ordered8':
-        ordered8Dither(floatPixels, 256, 192, ditherPalette);
-        break;
-      case 'noise':
-        noiseDither(floatPixels, 256, 192, ditherPalette);
-        break;
-    }
+    applyGlobalDither(dithering, floatPixels, 256, 192, ditherPalette);
 
     // Process 192 attribute rows (8×1 blocks)
     for (let y = 0; y < 192; y++) {
@@ -3979,23 +3849,7 @@ function convertToBmc4(sourceCanvas, dithering, brightness, contrast, saturation
   if (!isCellAware) {
     // Apply global dithering first
     const ditherPalette = monoOutput ? [palette.bright[0], palette.bright[7]] : fullPalette;
-    switch (dithering) {
-      case 'floyd-steinberg': floydSteinbergDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'jarvis': jarvisDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'stucki': stuckiDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'burkes': burkesDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'sierra': sierraDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'sierra-lite': sierraLiteDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'sierra2': sierra2Dither(floatPixels, 256, 192, ditherPalette); break;
-      case 'serpentine': serpentineDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'riemersma': riemersmaDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'blue-noise': blueNoiseDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'pattern': patternDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'atkinson': atkinsonDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'ordered': orderedDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'ordered8': ordered8Dither(floatPixels, 256, 192, ditherPalette); break;
-      case 'noise': noiseDither(floatPixels, 256, 192, ditherPalette); break;
-    }
+    applyGlobalDither(dithering, floatPixels, 256, 192, ditherPalette);
   }
 
   // Process 48 attribute blocks (8×4 each, 24 char rows × 2 blocks per char)
@@ -4187,23 +4041,7 @@ function convertToMono(sourceCanvas, dithering, brightness, contrast, saturation
   // Apply dithering
   // Map cell-aware names to global equivalents (mono has no attribute cells)
   const monoDithering = mapCellDithering(dithering);
-  switch (monoDithering) {
-    case 'floyd-steinberg': floydSteinbergDither(floatPixels, 256, height, monoPalette); break;
-    case 'jarvis': jarvisDither(floatPixels, 256, height, monoPalette); break;
-    case 'stucki': stuckiDither(floatPixels, 256, height, monoPalette); break;
-    case 'burkes': burkesDither(floatPixels, 256, height, monoPalette); break;
-    case 'sierra': sierraDither(floatPixels, 256, height, monoPalette); break;
-    case 'sierra-lite': sierraLiteDither(floatPixels, 256, height, monoPalette); break;
-    case 'sierra2': sierra2Dither(floatPixels, 256, height, monoPalette); break;
-    case 'serpentine': serpentineDither(floatPixels, 256, height, monoPalette); break;
-    case 'riemersma': riemersmaDither(floatPixels, 256, height, monoPalette); break;
-    case 'blue-noise': blueNoiseDither(floatPixels, 256, height, monoPalette); break;
-    case 'pattern': patternDither(floatPixels, 256, height, monoPalette); break;
-    case 'atkinson': atkinsonDither(floatPixels, 256, height, monoPalette); break;
-    case 'ordered': orderedDither(floatPixels, 256, height, monoPalette); break;
-    case 'ordered8': ordered8Dither(floatPixels, 256, height, monoPalette); break;
-    case 'noise': noiseDither(floatPixels, 256, height, monoPalette); break;
-  }
+  applyGlobalDither(monoDithering, floatPixels, 256, height, monoPalette);
 
   // Create output buffer
   const bufferSize = thirds * 2048;
@@ -4285,10 +4123,13 @@ function convertToRgb3(sourceCanvas, dithering, brightness, contrast, saturation
     case 'sierra-lite': ditherRgb3PerChannel(floatPixels, 256, 192, sierraLiteDither); break;
     case 'sierra2': ditherRgb3PerChannel(floatPixels, 256, 192, sierra2Dither); break;
     case 'serpentine': ditherRgb3PerChannel(floatPixels, 256, 192, serpentineDither); break;
+    case 'dizzy': ditherRgb3PerChannel(floatPixels, 256, 192, dizzyDither); break;
     case 'riemersma': ditherRgb3PerChannel(floatPixels, 256, 192, riemersmaDither); break;
     case 'blue-noise': ditherRgb3PerChannel(floatPixels, 256, 192, blueNoiseDither); break;
+    case 'a-dither': ditherRgb3PerChannel(floatPixels, 256, 192, aDither); break;
     case 'pattern': ditherRgb3PerChannel(floatPixels, 256, 192, patternDither); break;
     case 'atkinson': ditherRgb3PerChannel(floatPixels, 256, 192, atkinsonDither); break;
+    case 'ordered2': ditherRgb3PerChannel(floatPixels, 256, 192, ordered2Dither); break;
     case 'ordered': ditherRgb3PerChannel(floatPixels, 256, 192, orderedDither); break;
     case 'ordered8': ditherRgb3PerChannel(floatPixels, 256, 192, ordered8Dither); break;
     case 'noise': ditherRgb3PerChannel(floatPixels, 256, 192, noiseDither); break;
@@ -4776,24 +4617,7 @@ function convertToGigascreen(sourceCanvas, dithering, brightness, contrast, satu
   if (!isCellAware) {
     // Global dithering against the 136-color blended palette
     const gigaDithering = mapCellDithering(dithering);
-    switch (gigaDithering) {
-      case 'floyd-steinberg': floydSteinbergDither(floatPixels, 256, 192, blendedPalette); break;
-      case 'jarvis': jarvisDither(floatPixels, 256, 192, blendedPalette); break;
-      case 'stucki': stuckiDither(floatPixels, 256, 192, blendedPalette); break;
-      case 'burkes': burkesDither(floatPixels, 256, 192, blendedPalette); break;
-      case 'sierra': sierraDither(floatPixels, 256, 192, blendedPalette); break;
-      case 'sierra-lite': sierraLiteDither(floatPixels, 256, 192, blendedPalette); break;
-      case 'sierra2': sierra2Dither(floatPixels, 256, 192, blendedPalette); break;
-      case 'serpentine': serpentineDither(floatPixels, 256, 192, blendedPalette); break;
-      case 'riemersma': riemersmaDither(floatPixels, 256, 192, blendedPalette); break;
-      case 'blue-noise': blueNoiseDither(floatPixels, 256, 192, blendedPalette); break;
-      case 'pattern': patternDither(floatPixels, 256, 192, blendedPalette); break;
-      case 'atkinson': atkinsonDither(floatPixels, 256, 192, blendedPalette); break;
-      case 'ordered': orderedDither(floatPixels, 256, 192, blendedPalette); break;
-      case 'ordered8': ordered8Dither(floatPixels, 256, 192, blendedPalette); break;
-      case 'noise': noiseDither(floatPixels, 256, 192, blendedPalette); break;
-      // 'none' — no dithering
-    }
+    applyGlobalDither(gigaDithering, floatPixels, 256, 192, blendedPalette);
   }
 
   const cellDitherMethod = isCellAware ? dithering.replace('cell-', '') : null;
@@ -4884,24 +4708,7 @@ function convertToZxpGigascreen(sourceCanvas, dithering, brightness, contrast, s
   if (!isCellAware) {
     // Global dithering against the blended gigascreen palette
     const gigaDithering = mapCellDithering(dithering);
-    switch (gigaDithering) {
-      case 'floyd-steinberg': floydSteinbergDither(floatPixels, w, h, blendedPalette); break;
-      case 'jarvis': jarvisDither(floatPixels, w, h, blendedPalette); break;
-      case 'stucki': stuckiDither(floatPixels, w, h, blendedPalette); break;
-      case 'burkes': burkesDither(floatPixels, w, h, blendedPalette); break;
-      case 'sierra': sierraDither(floatPixels, w, h, blendedPalette); break;
-      case 'sierra-lite': sierraLiteDither(floatPixels, w, h, blendedPalette); break;
-      case 'sierra2': sierra2Dither(floatPixels, w, h, blendedPalette); break;
-      case 'serpentine': serpentineDither(floatPixels, w, h, blendedPalette); break;
-      case 'riemersma': riemersmaDither(floatPixels, w, h, blendedPalette); break;
-      case 'blue-noise': blueNoiseDither(floatPixels, w, h, blendedPalette); break;
-      case 'pattern': patternDither(floatPixels, w, h, blendedPalette); break;
-      case 'atkinson': atkinsonDither(floatPixels, w, h, blendedPalette); break;
-      case 'ordered': orderedDither(floatPixels, w, h, blendedPalette); break;
-      case 'ordered8': ordered8Dither(floatPixels, w, h, blendedPalette); break;
-      case 'noise': noiseDither(floatPixels, w, h, blendedPalette); break;
-      // 'none' — no dithering
-    }
+    applyGlobalDither(gigaDithering, floatPixels, w, h, blendedPalette);
   }
 
   const cellDitherMethod = isCellAware ? dithering.replace('cell-', '') : null;
@@ -5695,6 +5502,8 @@ function convertTo53c(sourceCanvas, brightness, contrast, saturation = 0, gamma 
       const cellAvg = [totalR / 64, totalG / 64, totalB / 64];
 
       // Find best ink/paper pair whose pattern-blended color is closest to cell average
+      // Paper rule is NOT applied for 53c: this format has no per-cell bitmap to invert,
+      // so swapping ink/paper without inverting the pattern would change the visual output.
       let bestInkIdx = 0, bestPaperIdx = 0, bestBright = 0;
       let bestTotalDist = Infinity;
 
@@ -5720,15 +5529,8 @@ function convertTo53c(sourceCanvas, brightness, contrast, saturation = 0, gamma 
         }
       }
 
-      // Apply paper color rule
-      const pal53c = bestBright ? combinedPalette.bright : combinedPalette.regular;
-      const ruled53c = applyPaperRule(
-        { ink: bestInkIdx, paper: bestPaperIdx, bright: bestBright === 1, inkRgb: pal53c[bestInkIdx], paperRgb: pal53c[bestPaperIdx] },
-        null
-      );
-
       // Build attribute byte: flash(0) | bright | paper(3) | ink(3)
-      const attr = (bestBright << 6) | (ruled53c.colors.paper << 3) | ruled53c.colors.ink;
+      const attr = (bestBright << 6) | (bestPaperIdx << 3) | bestInkIdx;
       attrData[row * 32 + col] = attr;
     }
   }
@@ -6250,23 +6052,7 @@ function convertMainAreaToScr(sourceCanvas, dithering, monoOutput = false) {
     // For mono output, use only black and white
     const ditherPalette = monoOutput ? [palette.bright[0], palette.bright[7]] : fullPalette;
 
-    switch (dithering) {
-      case 'floyd-steinberg': floydSteinbergDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'jarvis': jarvisDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'stucki': stuckiDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'burkes': burkesDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'sierra': sierraDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'sierra-lite': sierraLiteDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'sierra2': sierra2Dither(floatPixels, 256, 192, ditherPalette); break;
-      case 'serpentine': serpentineDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'riemersma': riemersmaDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'blue-noise': blueNoiseDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'pattern': patternDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'atkinson': atkinsonDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'ordered': orderedDither(floatPixels, 256, 192, ditherPalette); break;
-      case 'ordered8': ordered8Dither(floatPixels, 256, 192, ditherPalette); break;
-      case 'noise': noiseDither(floatPixels, 256, 192, ditherPalette); break;
-    }
+    applyGlobalDither(dithering, floatPixels, 256, 192, ditherPalette);
 
     for (let cellY = 0; cellY < 24; cellY++) {
       for (let cellX = 0; cellX < 32; cellX++) {
@@ -8419,18 +8205,6 @@ async function importAnimatedGif(data, fileName) {
     }
   }
 
-  // Reusable canvases
-  const tempCanvas = document.createElement('canvas');
-  tempCanvas.width = 256;
-  tempCanvas.height = 192;
-  const tempCtx = tempCanvas.getContext('2d');
-  if (!tempCtx) {
-    alert('Cannot create canvas context for GIF conversion.');
-    return;
-  }
-
-  const srcCanvas = document.createElement('canvas');
-  const srcCtx = srcCanvas.getContext('2d');
   const nativeSize = (gif.width === 256 && gif.height === 192);
 
   const frameDataStart = headerSize + frameCount;
@@ -8444,22 +8218,27 @@ async function importAnimatedGif(data, fileName) {
     if (nativeSize) {
       rgba = frame.imageData.data;
     } else {
-      if (srcCanvas.width !== frame.imageData.width || srcCanvas.height !== frame.imageData.height) {
-        srcCanvas.width = frame.imageData.width;
-        srcCanvas.height = frame.imageData.height;
-      }
-      if (srcCtx) {
-        srcCtx.putImageData(frame.imageData, 0, 0);
-        tempCtx.clearRect(0, 0, 256, 192);
-        tempCtx.drawImage(srcCanvas, 0, 0, 256, 192);
-        rgba = tempCtx.getImageData(0, 0, 256, 192).data;
-      } else {
-        rgba = frame.imageData.data;
+      const srcData = frame.imageData.data;
+      const srcW = frame.imageData.width;
+      const srcH = frame.imageData.height;
+      rgba = new Uint8ClampedArray(256 * 192 * 4);
+      for (let dy = 0; dy < 192; dy++) {
+        const sy = Math.floor(dy * srcH / 192);
+        for (let dx = 0; dx < 256; dx++) {
+          const sx = Math.floor(dx * srcW / 256);
+          const si = (sy * srcW + sx) * 4;
+          const di = (dy * 256 + dx) * 4;
+          rgba[di]     = srcData[si];
+          rgba[di + 1] = srcData[si + 1];
+          rgba[di + 2] = srcData[si + 2];
+          rgba[di + 3] = srcData[si + 3];
+        }
       }
     }
 
     // Fast SCR conversion: for each 8×8 cell, find best ink/paper and build bitmap
-    const scr = new Uint8Array(6912);
+    const linearBmp = new Uint8Array(6144);
+    const frameAttrs = new Uint8Array(768);
 
     for (let cellY = 0; cellY < 24; cellY++) {
       for (let cellX = 0; cellX < 32; cellX++) {
@@ -8528,18 +8307,20 @@ async function importAnimatedGif(data, fileName) {
             const dPaper = (r - paperColor[0]) ** 2 + (g - paperColor[1]) ** 2 + (b - paperColor[2]) ** 2;
             if (dInk < dPaper) byte |= (0x80 >> dx);
           }
-          // Write to SCR bitmap area (interleaved ZX Spectrum layout)
-          const y = cellY * 8 + dy;
-          const scrOffset = ((y & 0xC0) << 5) | ((y & 0x07) << 8) | ((y & 0x38) << 2) | cellX;
-          scr[scrOffset] = byte;
+          // Write to linear bitmap (row-major)
+          linearBmp[py * 32 + cellX] = byte;
         }
 
         // Write attribute
-        const attrOffset = 6144 + cellY * 32 + cellX;
-        scr[attrOffset] = (paperIdx << 3) | inkIdx | (bright ? 0x40 : 0);
+        frameAttrs[cellY * 32 + cellX] = (paperIdx << 3) | inkIdx | (bright ? 0x40 : 0);
       }
     }
 
+    // Interleave linear bitmap into SCR format and combine with attributes
+    const scrInterleaved = interleaveBitmap(linearBmp, 256, 192);
+    const scr = new Uint8Array(6912);
+    scr.set(scrInterleaved);
+    scr.set(frameAttrs, 6144);
     scaBinary.set(scr, frameDataStart + i * frameSize);
 
     // Yield every frame for UI responsiveness and progress
@@ -8590,6 +8371,302 @@ async function importAnimatedGif(data, fileName) {
   }
 }
 
+/**
+ * Import a 2-frame animated GIF as a single SCR with FLASH attributes.
+ * Identical cells get standard ink/paper; differing cells use FLASH bit (0x80)
+ * so the ZX Spectrum alternates ink↔paper to simulate two frames.
+ * @param {Uint8Array} data - Raw GIF file bytes
+ * @param {string} fileName - Original file name
+ */
+async function importGifAsFlash(data, fileName) {
+  let gif;
+  try {
+    gif = new GifDecoder(data).decode();
+  } catch (e) {
+    console.error('GIF decode error:', e);
+    alert('Failed to decode GIF: ' + (e instanceof Error ? e.message : String(e)));
+    return;
+  }
+
+  if (gif.frames.length < 2) {
+    alert('GIF must have exactly 2 frames for flash import.');
+    return;
+  }
+
+  // Build palette (regular 0-7, bright 8-15)
+  const palette = getCombinedPalette();
+  const fullPalette = [...palette.regular, ...palette.bright];
+
+  // Resize helper: get 256×192 RGBA from a frame
+  const nativeSize = (gif.width === 256 && gif.height === 192);
+
+  /**
+   * @param {number} frameIdx
+   * @returns {Uint8ClampedArray}
+   */
+  function getFrameRgba(frameIdx) {
+    const frame = gif.frames[frameIdx];
+    if (nativeSize) return frame.imageData.data;
+    const srcData = frame.imageData.data;
+    const srcW = frame.imageData.width;
+    const srcH = frame.imageData.height;
+    const result = new Uint8ClampedArray(256 * 192 * 4);
+    for (let dy = 0; dy < 192; dy++) {
+      const sy = Math.floor(dy * srcH / 192);
+      for (let dx = 0; dx < 256; dx++) {
+        const sx = Math.floor(dx * srcW / 256);
+        const si = (sy * srcW + sx) * 4;
+        const di = (dy * 256 + dx) * 4;
+        result[di]     = srcData[si];
+        result[di + 1] = srcData[si + 1];
+        result[di + 2] = srcData[si + 2];
+        result[di + 3] = srcData[si + 3];
+      }
+    }
+    return result;
+  }
+
+  const rgba1 = getFrameRgba(0);
+  const rgba2Raw = getFrameRgba(1);
+
+  // GIF disposal method 2 (restore to background) can clear areas not redrawn
+  // by frame 2 to transparent (alpha=0). For flash comparison, those pixels
+  // should inherit from frame 1 — they represent unchanged content.
+  const rgba2 = new Uint8ClampedArray(rgba2Raw.length);
+  for (let i = 0; i < rgba2Raw.length; i += 4) {
+    if (rgba2Raw[i + 3] === 0) {
+      // Transparent pixel in frame 2 → copy from frame 1
+      rgba2[i]     = rgba1[i];
+      rgba2[i + 1] = rgba1[i + 1];
+      rgba2[i + 2] = rgba1[i + 2];
+      rgba2[i + 3] = 255;
+    } else {
+      rgba2[i]     = rgba2Raw[i];
+      rgba2[i + 1] = rgba2Raw[i + 1];
+      rgba2[i + 2] = rgba2Raw[i + 2];
+      rgba2[i + 3] = rgba2Raw[i + 3];
+    }
+  }
+
+  // Build linear bitmap (row-major: y * 32 + col) and attributes, then interleave
+  const linearBitmap = new Uint8Array(6144);
+  const attrs = new Uint8Array(768);
+
+  for (let cellY = 0; cellY < 24; cellY++) {
+    for (let cellX = 0; cellX < 32; cellX++) {
+      const baseY = cellY * 8;
+      const baseX = cellX * 8;
+
+      // --- Step 1: Always compute the best static (no-flash) result ---
+      // Brute-force all (ink, paper, bright) using frame 1 only
+      let staticError = Infinity;
+      let staticInk = 0, staticPaper = 0, staticBright = false;
+      let staticBitmap = new Uint8Array(8);
+
+      for (let br = 0; br < 2; br++) {
+        const brightFlag = br === 1;
+        for (let ink = 0; ink < 8; ink++) {
+          for (let paper = 0; paper < 8; paper++) {
+            if (ink === paper) continue;
+            const inkPIdx = brightFlag ? 8 + ink : ink;
+            const paperPIdx = brightFlag ? 8 + paper : paper;
+            const ic = fullPalette[inkPIdx];
+            const pc = fullPalette[paperPIdx];
+
+            let totalError = 0;
+            const tmpBitmap = new Uint8Array(8);
+
+            for (let dy = 0; dy < 8; dy++) {
+              let byte = 0;
+              const py = baseY + dy;
+              for (let dx = 0; dx < 8; dx++) {
+                const si = (py * 256 + (baseX + dx)) * 4;
+                const r = rgba1[si], g = rgba1[si + 1], b = rgba1[si + 2];
+                const dInk = (r - ic[0]) ** 2 + (g - ic[1]) ** 2 + (b - ic[2]) ** 2;
+                const dPaper = (r - pc[0]) ** 2 + (g - pc[1]) ** 2 + (b - pc[2]) ** 2;
+                if (dInk < dPaper) {
+                  byte |= (0x80 >> dx);
+                  totalError += dInk;
+                } else {
+                  totalError += dPaper;
+                }
+              }
+              tmpBitmap[dy] = byte;
+            }
+
+            if (totalError < staticError) {
+              staticError = totalError;
+              staticInk = ink;
+              staticPaper = paper;
+              staticBright = brightFlag;
+              staticBitmap.set(tmpBitmap);
+            }
+          }
+        }
+      }
+
+      // --- Step 2: Check if cell genuinely differs between frames ---
+      // Use per-channel threshold to ignore GIF encoding artifacts
+      let diffPixelCount = 0;
+      for (let dy = 0; dy < 8; dy++) {
+        for (let dx = 0; dx < 8; dx++) {
+          const si = ((baseY + dy) * 256 + (baseX + dx)) * 4;
+          if (Math.abs(rgba1[si] - rgba2[si]) > 24 ||
+              Math.abs(rgba1[si + 1] - rgba2[si + 1]) > 24 ||
+              Math.abs(rgba1[si + 2] - rgba2[si + 2]) > 24) {
+            diffPixelCount++;
+          }
+        }
+      }
+
+      let useFlash = false;
+      let flashInk = 0, flashPaper = 0, flashBright = false;
+      let flashBitmap = new Uint8Array(8);
+
+      if (diffPixelCount >= 4) {
+        // --- Step 3: Compute the best flash result ---
+        // Normal phase: bit=1 → ink, bit=0 → paper
+        // Flash phase:  bit=1 → paper, bit=0 → ink  (colors swap)
+        let bestFlashError = Infinity;
+
+        for (let br = 0; br < 2; br++) {
+          const brightFlag = br === 1;
+          for (let ink = 0; ink < 8; ink++) {
+            for (let paper = 0; paper < 8; paper++) {
+              if (ink === paper) continue;
+              const inkPIdx = brightFlag ? 8 + ink : ink;
+              const paperPIdx = brightFlag ? 8 + paper : paper;
+              const ic = fullPalette[inkPIdx];
+              const pc = fullPalette[paperPIdx];
+
+              let totalError = 0;
+              const tmpBitmap = new Uint8Array(8);
+
+              for (let dy = 0; dy < 8; dy++) {
+                let byte = 0;
+                const py = baseY + dy;
+                for (let dx = 0; dx < 8; dx++) {
+                  const si = (py * 256 + (baseX + dx)) * 4;
+                  const r1 = rgba1[si], g1 = rgba1[si + 1], b1 = rgba1[si + 2];
+                  const r2 = rgba2[si], g2 = rgba2[si + 1], b2 = rgba2[si + 2];
+
+                  // bit=1: normal=ink, flash=paper
+                  const err1 = ((r1 - ic[0]) ** 2 + (g1 - ic[1]) ** 2 + (b1 - ic[2]) ** 2) +
+                               ((r2 - pc[0]) ** 2 + (g2 - pc[1]) ** 2 + (b2 - pc[2]) ** 2);
+                  // bit=0: normal=paper, flash=ink
+                  const err0 = ((r1 - pc[0]) ** 2 + (g1 - pc[1]) ** 2 + (b1 - pc[2]) ** 2) +
+                               ((r2 - ic[0]) ** 2 + (g2 - ic[1]) ** 2 + (b2 - ic[2]) ** 2);
+
+                  if (err1 < err0) {
+                    byte |= (0x80 >> dx);
+                    totalError += err1;
+                  } else {
+                    totalError += err0;
+                  }
+                }
+                tmpBitmap[dy] = byte;
+              }
+
+              if (totalError < bestFlashError) {
+                bestFlashError = totalError;
+                flashInk = ink;
+                flashPaper = paper;
+                flashBright = brightFlag;
+                flashBitmap.set(tmpBitmap);
+              }
+            }
+          }
+        }
+
+        // --- Step 4: Compare flash vs static across BOTH frames ---
+        // Static error on both frames: same bitmap shown in both phases
+        let staticBothError = 0;
+        const sInkPIdx = staticBright ? 8 + staticInk : staticInk;
+        const sPaperPIdx = staticBright ? 8 + staticPaper : staticPaper;
+        const sic = fullPalette[sInkPIdx];
+        const spc = fullPalette[sPaperPIdx];
+        for (let dy = 0; dy < 8; dy++) {
+          const py = baseY + dy;
+          const bit = staticBitmap[dy];
+          for (let dx = 0; dx < 8; dx++) {
+            const si = (py * 256 + (baseX + dx)) * 4;
+            const isInk = (bit & (0x80 >> dx)) !== 0;
+            const color = isInk ? sic : spc;
+            // Same rendering in both frames (no flash)
+            const r1 = rgba1[si], g1 = rgba1[si + 1], b1 = rgba1[si + 2];
+            const r2 = rgba2[si], g2 = rgba2[si + 1], b2 = rgba2[si + 2];
+            staticBothError += (r1 - color[0]) ** 2 + (g1 - color[1]) ** 2 + (b1 - color[2]) ** 2;
+            staticBothError += (r2 - color[0]) ** 2 + (g2 - color[1]) ** 2 + (b2 - color[2]) ** 2;
+          }
+        }
+
+        // Use flash only if it produces lower combined error
+        useFlash = bestFlashError < staticBothError;
+      }
+
+      // --- Step 5: Write the chosen result to linear bitmap + attrs ---
+      const chosenBitmap = useFlash ? flashBitmap : staticBitmap;
+      const chosenInk = useFlash ? flashInk : staticInk;
+      const chosenPaper = useFlash ? flashPaper : staticPaper;
+      const chosenBright = useFlash ? flashBright : staticBright;
+
+      for (let dy = 0; dy < 8; dy++) {
+        linearBitmap[(baseY + dy) * 32 + cellX] = chosenBitmap[dy];
+      }
+      attrs[cellY * 32 + cellX] = (chosenPaper << 3) | chosenInk | (chosenBright ? 0x40 : 0) | (useFlash ? 0x80 : 0);
+    }
+
+    // Yield every row for UI responsiveness
+    if (cellY % 4 === 0) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+  }
+
+  // Interleave linear bitmap into SCR format and combine with attributes
+  const interleavedBitmap = interleaveBitmap(linearBitmap, 256, 192);
+  const scr = new Uint8Array(6912);
+  scr.set(interleavedBitmap);
+  scr.set(attrs, 6144);
+
+  // Load result as SCR
+  const newFileName = fileName.replace(/\.gif$/i, '') + '.scr';
+  const picture = (typeof importScr === 'function') ? importScr(scr, newFileName) : null;
+
+  let needsManualRender = false;
+  if (typeof addPicture === 'function') {
+    const result = addPicture(newFileName, FORMAT.SCR, scr, picture, true);
+    if (result < 0) {
+      // Max pictures reached — set globals directly
+      screenData = scr;
+      currentFormat = FORMAT.SCR;
+      currentFileName = newFileName;
+      currentPicture = picture;
+      needsManualRender = true;
+    }
+  } else {
+    screenData = scr;
+    currentFormat = FORMAT.SCR;
+    currentFileName = newFileName;
+    currentPicture = picture;
+    needsManualRender = true;
+  }
+
+  if (needsManualRender) {
+    // Fallback: addPicture wasn't called or failed, so do UI updates manually
+    toggleScaControlsVisibility();
+    toggleFormatControlsVisibility();
+    updateFileInfo();
+    renderScreen();
+  }
+
+  if (typeof updateExportAsmButton === 'function') {
+    updateExportAsmButton();
+  }
+  if (typeof updateFlashTimer === 'function') {
+    updateFlashTimer();
+  }
+}
+
 // ============================================================================
 // Import Dialog Management
 // ============================================================================
@@ -8611,6 +8688,24 @@ let importOriginalCanvas = null;
 
 /** @type {File|null} */
 let importFile = null;
+
+/** @type {File[]} - Remaining images queued for batch "Add All" import */
+let importQueue = [];
+
+/** @type {boolean} - True while a batch "Add All" import is in progress */
+let importBatchActive = false;
+
+/** @type {Function|null} - Resolves when the current single import completes */
+let importBatchResolve = null;
+
+/**
+ * Set the queue of additional files to import via "Add All".
+ * Called by the file-routing layer before opening the import dialog.
+ * @param {File[]} files
+ */
+function setImportQueue(files) {
+  importQueue = Array.isArray(files) ? files.slice() : [];
+}
 
 /** @type {{width: number, height: number}} - Original image dimensions before scaling */
 let importOriginalSize = { width: 0, height: 0 };
@@ -8741,7 +8836,11 @@ const importElements = {
   /** @type {HTMLElement|null} */ tileCount: null,
   /** @type {HTMLButtonElement|null} */ tilePrev: null,
   /** @type {HTMLButtonElement|null} */ tileNext: null,
-  /** @type {HTMLElement|null} */ tileLabel: null
+  /** @type {HTMLElement|null} */ tileLabel: null,
+  // Import mode dropdown (picture / flash / animation)
+  /** @type {HTMLSelectElement|null} */ modeSelect: null,
+  // "Add All" button — imports queued files with current settings
+  /** @type {HTMLButtonElement|null} */ addAllBtn: null
 };
 
 /**
@@ -9667,6 +9766,7 @@ function initImageImport() {
   importElements.tilePrev = /** @type {HTMLButtonElement} */ (document.getElementById('importTilePrev'));
   importElements.tileNext = /** @type {HTMLButtonElement} */ (document.getElementById('importTileNext'));
   importElements.tileLabel = document.getElementById('importTileLabel');
+  importElements.adjustReset = /** @type {HTMLButtonElement|null} */ (document.getElementById('importAdjustReset'));
 
   // Tab switching
   const tabImage = document.getElementById('importTabImage');
@@ -9678,13 +9778,13 @@ function initImageImport() {
     if (tab === 'image') {
       tabImage.style.background = 'var(--bg-primary)';
       tabAdjust.style.background = 'var(--bg-secondary)';
-      panelImage.style.display = 'flex';
-      panelAdjust.style.display = 'none';
+      panelImage.style.visibility = 'visible';
+      panelAdjust.style.visibility = 'hidden';
     } else {
       tabImage.style.background = 'var(--bg-secondary)';
       tabAdjust.style.background = 'var(--bg-primary)';
-      panelImage.style.display = 'none';
-      panelAdjust.style.display = 'block';
+      panelImage.style.visibility = 'hidden';
+      panelAdjust.style.visibility = 'visible';
     }
   };
 
@@ -9700,6 +9800,8 @@ function initImageImport() {
   const formatSelect = importElements.format;
   const cancelBtn = document.getElementById('importCancelBtn');
   const importBtn = document.getElementById('importOkBtn');
+  importElements.modeSelect = /** @type {HTMLSelectElement|null} */ (document.getElementById('importModeSelect'));
+  importElements.addAllBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById('importAddAllBtn'));
 
   // Populate palette dropdown
   if (paletteSelect) {
@@ -10078,6 +10180,28 @@ function initImageImport() {
   });
 
   ditheringSelect?.addEventListener('change', updatePreview);
+
+  // Error-diffusion strength slider and serpentine checkbox (global dither controls)
+  const ditherStrengthSlider = /** @type {HTMLInputElement|null} */ (document.getElementById('importDitherStrength'));
+  const ditherStrengthVal = document.getElementById('importDitherStrengthVal');
+  const ditherSerpentineCheckbox = /** @type {HTMLInputElement|null} */ (document.getElementById('importDitherSerpentine'));
+  const syncDitherControls = () => {
+    const pct = ditherStrengthSlider ? Math.max(0, Math.min(100, parseInt(ditherStrengthSlider.value, 10) || 0)) : 100;
+    ditherStrength = pct / 100;
+    ditherSerpentine = !!(ditherSerpentineCheckbox && ditherSerpentineCheckbox.checked);
+    if (ditherStrengthVal) ditherStrengthVal.textContent = String(pct);
+  };
+  // Sync globals with UI defaults on dialog init
+  syncDitherControls();
+  ditherStrengthSlider?.addEventListener('input', () => {
+    syncDitherControls();
+    updatePreview();
+  });
+  ditherSerpentineCheckbox?.addEventListener('change', () => {
+    syncDitherControls();
+    updatePreview();
+  });
+
   importElements.paperRule?.addEventListener('change', function() {
     importPaperRule = this.value;
     updatePreview();
@@ -10280,6 +10404,34 @@ function initImageImport() {
   });
 
   grayscaleCheckbox?.addEventListener('change', updatePreview);
+
+  // Reset adjustments button
+  importElements.adjustReset?.addEventListener('click', () => {
+    // Reset all adjustment sliders to defaults
+    if (importElements.contrast) importElements.contrast.value = '0';
+    if (importElements.brightness) importElements.brightness.value = '0';
+    if (importElements.saturation) importElements.saturation.value = '0';
+    if (importElements.gamma) importElements.gamma.value = '100';
+    if (importElements.sharpness) importElements.sharpness.value = '0';
+    if (importElements.smoothing) importElements.smoothing.value = '0';
+    if (importElements.blackPoint) importElements.blackPoint.value = '0';
+    if (importElements.whitePoint) importElements.whitePoint.value = '255';
+    if (importElements.balanceR) importElements.balanceR.value = '0';
+    if (importElements.balanceG) importElements.balanceG.value = '0';
+    if (importElements.balanceB) importElements.balanceB.value = '0';
+    // Update value labels
+    const contrastLabel = document.getElementById('importContrastValue');
+    const brightnessLabel = document.getElementById('importBrightnessValue');
+    if (contrastLabel) contrastLabel.textContent = '0';
+    if (brightnessLabel) brightnessLabel.textContent = '0';
+    if (importElements.saturationValue) importElements.saturationValue.textContent = '0';
+    if (importElements.gammaValue) importElements.gammaValue.textContent = '1.0';
+    if (importElements.sharpnessValue) importElements.sharpnessValue.textContent = '0';
+    if (importElements.smoothingValue) importElements.smoothingValue.textContent = '0';
+    if (importElements.levelsValue) importElements.levelsValue.textContent = '0-255';
+    if (importElements.colorBalanceValue) importElements.colorBalanceValue.textContent = '0/0/0';
+    updatePreview();
+  });
 
   // Function to update LAB checkbox state based on mono output
   const updateLabVisibility = () => {
@@ -10624,8 +10776,32 @@ function initImageImport() {
     }
   });
 
-  // Import button
-  importBtn?.addEventListener('click', () => {
+  // Import button — dispatches based on mode dropdown
+  importBtn?.addEventListener('click', async () => {
+    const mode = importElements.modeSelect?.value || 'picture';
+
+    // Flash / Animation modes: read GIF file and import directly
+    if (mode === 'flash' || mode === 'animation') {
+      if (!importFile) return;
+      const file = importFile;
+      closeImportDialog();
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const data = new Uint8Array(arrayBuffer);
+        if (mode === 'flash') {
+          await importGifAsFlash(data, file.name);
+        } else {
+          await importAnimatedGif(data, file.name);
+        }
+      } catch (e) {
+        const label = mode === 'flash' ? 'Flash' : 'Animated';
+        console.error(label + ' GIF import failed:', e);
+        alert('Failed to import ' + label + ' GIF: ' + (e instanceof Error ? e.message : String(e)));
+      }
+      return;
+    }
+
+    // Picture mode: standard import via canvas conversion
     if (!importSourceCanvas) return;
 
     // --- Tile to screens path ---
@@ -11420,6 +11596,70 @@ function initImageImport() {
     if (typeof initLayers === 'function') {
       initLayers();
     }
+
+    // Signal completion to any in-progress batch "Add All" loop.
+    if (importBatchResolve) {
+      const resolve = importBatchResolve;
+      importBatchResolve = null;
+      resolve(true);
+    }
+  });
+
+  // "Add All" button — imports the current image plus every queued image
+  // using the current dialog settings (one Picture per file).
+  importElements.addAllBtn?.addEventListener('click', async () => {
+    if (importBatchActive) return;
+    if (!importFile || !importSourceCanvas) return;
+    // Flash/animation modes are per-file choices; not applicable to batch import.
+    const mode = importElements.modeSelect?.value || 'picture';
+    if (mode !== 'picture') return;
+    // Tile-to-screens already produces multiple pictures from a single file;
+    // combining it with batch import would multiply picture output unexpectedly.
+    if (importTileEnabled) {
+      alert('Disable "Tile to screens" to use Add All.');
+      return;
+    }
+
+    const runOne = () => new Promise((resolve) => {
+      let resolved = false;
+      const done = (ok) => {
+        if (resolved) return;
+        resolved = true;
+        if (importBatchResolve === done) importBatchResolve = null;
+        resolve(ok);
+      };
+      importBatchResolve = done;
+      importBtn?.click();
+      // Safety net: if the Import handler bails silently, unblock the batch.
+      setTimeout(() => done(false), 30000);
+    });
+
+    importBatchActive = true;
+    try {
+      // Import the currently-displayed image first.
+      await runOne();
+
+      // Drain the queue, stopping if we run out of picture slots.
+      while (importQueue.length > 0) {
+        if (typeof MAX_PICTURES !== 'undefined' && typeof openPictures !== 'undefined'
+            && openPictures.length >= MAX_PICTURES) {
+          break;
+        }
+        const nextFile = importQueue.shift();
+        if (!nextFile) break;
+        try {
+          await loadImageIntoDialog(nextFile);
+        } catch (e) {
+          console.error('Batch import: failed to load ' + nextFile.name + ':', e);
+          continue;
+        }
+        await runOne();
+      }
+    } finally {
+      importBatchActive = false;
+      importBatchResolve = null;
+      closeImportDialog();
+    }
   });
 
   // Prevent accidental close on overlay click
@@ -11467,6 +11707,49 @@ function autoDetectBrightness() {
 function openImportDialog(file) {
   importFile = file;
   if (!importElements.dialog) return;
+
+  // Configure "Add All" button — visible only when there are queued images
+  // and at least one picture slot remains after adding the current one.
+  if (importElements.addAllBtn) {
+    let remainingSlots = Infinity;
+    if (typeof MAX_PICTURES !== 'undefined' && typeof openPictures !== 'undefined') {
+      // -1 accounts for the current image that will use a slot on "Import".
+      remainingSlots = Math.max(0, MAX_PICTURES - openPictures.length - 1);
+    }
+    const queued = importQueue.length;
+    const batchCount = Math.min(queued, remainingSlots);
+    if (batchCount > 0) {
+      importElements.addAllBtn.textContent = 'Add All (' + (batchCount + 1) + ')';
+      importElements.addAllBtn.style.display = '';
+      // Trim any excess files that won't fit.
+      if (queued > batchCount) importQueue.length = batchCount;
+    } else {
+      importElements.addAllBtn.style.display = 'none';
+      importQueue = [];
+    }
+  }
+
+  // Configure import mode dropdown for animated GIFs
+  if (importElements.modeSelect) {
+    importElements.modeSelect.style.display = 'none';
+    importElements.modeSelect.value = 'picture';
+  }
+  if (file.name.toLowerCase().endsWith('.gif')) {
+    file.arrayBuffer().then(buf => {
+      const data = new Uint8Array(buf);
+      const frameCount = countGifFrames(data);
+      if (frameCount > 1 && importElements.modeSelect) {
+        // Show dropdown with available modes
+        const sel = importElements.modeSelect;
+        sel.innerHTML = '<option value="picture">Picture</option>';
+        if (frameCount === 2) {
+          sel.innerHTML += '<option value="flash">Flash</option>';
+        }
+        sel.innerHTML += '<option value="animation">Animation</option>';
+        sel.style.display = '';
+      }
+    }).catch(() => {});
+  }
 
   // Reset controls using cached elements
   if (importElements.dithering) importElements.dithering.value = 'none';
@@ -11694,17 +11977,26 @@ function openImportDialog(file) {
       img.src = /** @type {string} */ (e.target.result);
     }
   };
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   reader.readAsDataURL(file);
 }
 
 /**
- * Close import dialog
+ * Close import dialog.
+ * While a batch "Add All" import is active, the dialog stays open between
+ * individual imports — the batch driver calls this itself once the queue
+ * is drained.
  */
 function closeImportDialog() {
+  if (importBatchActive) return;
+
   if (importElements.dialog) {
     importElements.dialog.style.display = 'none';
   }
+  if (importElements.modeSelect) importElements.modeSelect.style.display = 'none';
+  if (importElements.addAllBtn) importElements.addAllBtn.style.display = 'none';
   importFile = null;
+  importQueue = [];
 
   // Reset ULA+ palette import state
   importUlaPlusPalette = null;
@@ -11718,6 +12010,56 @@ function closeImportDialog() {
   hideImportPaletteGrid();
   if (importElements.ulaPlusPaletteReset) importElements.ulaPlusPaletteReset.style.display = 'none';
   if (importPreviewCanvas) importPreviewCanvas.style.cursor = '';
+}
+
+/**
+ * Load a new image file into the already-open import dialog without resetting
+ * user-adjustable settings. Used by the batch "Add All" flow.
+ * @param {File} file
+ * @returns {Promise<void>} Resolves once the image is loaded and preview refreshed.
+ */
+function loadImageIntoDialog(file) {
+  return new Promise((resolve, reject) => {
+    importFile = file;
+    const img = new Image();
+    img.onload = () => {
+      importImage = img;
+      importOriginalSize = { width: img.naturalWidth, height: img.naturalHeight };
+
+      const origSizeLabel = document.getElementById('importOriginalSize');
+      if (origSizeLabel) origSizeLabel.textContent = `${img.naturalWidth}x${img.naturalHeight}`;
+
+      // Auto-detect crop region (mirrors openImportDialog logic).
+      if (img.naturalWidth === 256 && img.naturalHeight === 192) {
+        importCrop = { x: 0, y: 0, w: 256, h: 192 };
+      } else if (img.naturalWidth > 256 || img.naturalHeight > 192) {
+        detectScreenRegion();
+      } else {
+        importCrop = { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
+      }
+      updateCropInputs();
+
+      // Apply crop and refresh preview using the user's current dialog settings.
+      applyCropAndFit();
+      renderOriginalWithCrop();
+      if (typeof updateImportPreview === 'function') {
+        updateImportPreview();
+      }
+      resolve();
+    };
+    img.onerror = () => reject(new Error('Failed to load image: ' + file.name));
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      if (e.target?.result) {
+        img.src = /** @type {string} */ (e.target.result);
+      } else {
+        reject(new Error('Failed to read image: ' + file.name));
+      }
+    };
+    reader.onerror = () => reject(reader.error || new Error('FileReader failed'));
+    reader.readAsDataURL(file);
+  });
 }
 
 

@@ -309,6 +309,7 @@ function loadSnapshotFile(file) {
     if (memSection) memSection.style.display = '';
   });
 
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   reader.readAsArrayBuffer(file);
 }
 

@@ -355,11 +355,7 @@ function exportGigascreenAsm() {
     return;
   }
 
-  const baseName = getAsmBaseName(currentFileName, 'gigascreen');
-  const result = generateGigascreenAsm(screenData, baseName, getAsmEmbedData());
-  if (!result) return;
-
-  downloadFile(result.asm, baseName + '.asm');
+  runAsmExport('gigascreen', (baseName, embed) => generateGigascreenAsm(screenData, baseName, embed));
 }
 
 /**
@@ -371,10 +367,6 @@ function exportRgb3Asm() {
     return;
   }
 
-  const baseName = getAsmBaseName(currentFileName, 'rgb3');
-  // RGB3 always embeds data in code (LD HL,nn) - checkbox is ignored
-  const result = generateRgb3Asm(screenData, baseName);
-  if (!result) return;
-
-  downloadFile(result.asm, baseName + '.asm');
+  // RGB3 always embeds data in code (LD HL,nn) - embed flag is ignored
+  runAsmExport('rgb3', (baseName) => generateRgb3Asm(screenData, baseName));
 }

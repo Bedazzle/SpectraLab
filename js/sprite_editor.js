@@ -2874,6 +2874,7 @@ function onSpriteFileLoad(e) {
       alert('Error loading sprite sheet: ' + err.message);
     }
   });
+  reader.onerror = () => console.warn('FileReader error:', reader.error);
   reader.readAsText(file);
 
   // Reset input so same file can be loaded again
