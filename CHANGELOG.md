@@ -1,5 +1,8 @@
 # SpectraLab Version History
 
+## v1.80
+- Next palette color editing: **Ctrl+click** on any cell in the NXI/SL2/LoRes/LoRes Radastan palette grid to open the RGB333 color editor dialog (R: 0-7, G: 0-7, B: 0-7 sliders, original/new color preview, palette index display). Supports undo/redo.
+
 ## v1.79
 - Save all pictures (Xform tab, visible when 2+ pictures are open):
   - **ZIP (originals)** — bundles every open picture in its native binary

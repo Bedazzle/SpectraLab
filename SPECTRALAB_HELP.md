@@ -279,6 +279,21 @@ Shown when viewing/editing ULANext format pictures (ZX Spectrum Next extended pa
 - **Format info** — displays mask value, ink/paper color counts, and palette bit depth
 - Colors are rendered automatically; standard drawing tools work normally on the bitmap and attributes
 
+### Next Palette (NXI / SL2 / LoRes)
+
+Shown when editing ZX Next indexed-color formats (NXI, SL2, LoRes, LoRes Radastan). Displays 256 colors (or 16 for 4bpp modes) in a 16-column grid.
+
+- **Left click** — select ink color
+- **Right click** — select paper color
+- **Ctrl+click** on a color — open the color editor dialog (R/G/B sliders, RGB333 format: 3-bit red, 3-bit green, 3-bit blue)
+- **Shift+click** on a color — mark as copy source (animated border), then:
+  - **Click** another color — copy source RGB value to target
+  - **Shift+click** another color — swap both RGB values and remap pixels
+  - **Click same cell** or **Escape** — cancel
+- **Sort options** — None, Luminance, Hue, RGB; optional Reverse
+- **Save palette** — export palette file
+- **Load palette** — import palette file
+
 ### Gigascreen Palette
 
 Shown for Gigascreen, HLR, and STL formats. A 16-column grid displays all virtual colors created by two-frame alternation.

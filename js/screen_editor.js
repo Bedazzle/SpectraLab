@@ -412,6 +412,12 @@ let nxiSortReverse = false;
 /** @type {number} - Next palette copy/swap source index (-1 = none) */
 let nxiCopySource = -1;
 
+/** @type {number} - Index of Next palette color being edited (-1 = none) */
+let nxiEditingColorIndex = -1;
+
+/** @type {number[]|null} - Original [r8, g8, b8] before editing */
+let nxiOriginalRgb = null;
+
 /**
  * Returns the current 53c pattern array from APP_CONFIG based on the select dropdown.
  * @returns {number[]}
@@ -973,6 +979,11 @@ function buildNxiPalette() {
     if (i === nxiCopySource) cell.classList.add('copy-source');
     cell.addEventListener('mousedown', (e) => {
       e.preventDefault();
+      // Ctrl+click = edit color
+      if (e.ctrlKey && !e.shiftKey) {
+        openNxiColorPicker(i);
+        return;
+      }
       // Copy/swap workflow (matches ULA+):
       //  - First Shift+click: sets source
       //  - While source active, plain click = copy, Shift+click = swap
@@ -15069,6 +15080,174 @@ function initNxiPaletteUI() {
     }
     // Reset input so same file can be loaded again
     if (nxiFileInput) nxiFileInput.value = '';
+  });
+
+  // Wire up NXI color picker dialog
+  initNxiColorPicker();
+}
+
+// ============================================================================
+// NXI / Next Color Picker Dialog
+// ============================================================================
+
+/**
+ * Opens the NXI color picker dialog for a specific palette index.
+ * @param {number} index - Palette index (0-255 for 8bpp, 0-15 for 4bpp)
+ */
+function openNxiColorPicker(index) {
+  const palCount = getNxiPaletteEntryCount();
+  if (index < 0 || index >= palCount) return;
+  if (!nxiResolvedPalette || !nxiResolvedPalette[index]) return;
+
+  nxiEditingColorIndex = index;
+  nxiOriginalRgb = [nxiResolvedPalette[index][0], nxiResolvedPalette[index][1], nxiResolvedPalette[index][2]];
+
+  const dialog = document.getElementById('nxiColorDialog');
+  if (!dialog) return;
+
+  // Convert 0-255 back to 0-7 (RGB333)
+  const r3 = Math.round(nxiOriginalRgb[0] * 7 / 255);
+  const g3 = Math.round(nxiOriginalRgb[1] * 7 / 255);
+  const b3 = Math.round(nxiOriginalRgb[2] * 7 / 255);
+
+  // Set slider values
+  const rSlider = /** @type {HTMLInputElement} */ (document.getElementById('nxiColorR'));
+  const gSlider = /** @type {HTMLInputElement} */ (document.getElementById('nxiColorG'));
+  const bSlider = /** @type {HTMLInputElement} */ (document.getElementById('nxiColorB'));
+
+  if (rSlider) rSlider.value = String(r3);
+  if (gSlider) gSlider.value = String(g3);
+  if (bSlider) bSlider.value = String(b3);
+
+  // Update info label
+  const infoLabel = document.getElementById('nxiColorInfo');
+  if (infoLabel) infoLabel.textContent = `Index: ${index}  RGB333: ${r3}${g3}${b3}`;
+
+  // Update color previews
+  updateNxiColorPreview();
+
+  // Show original color
+  const origPreview = document.getElementById('nxiColorOriginal');
+  if (origPreview) origPreview.style.backgroundColor = `rgb(${nxiOriginalRgb[0]},${nxiOriginalRgb[1]},${nxiOriginalRgb[2]})`;
+
+  // Show dialog
+  dialog.style.display = '';
+}
+
+/**
+ * Updates the NXI color preview in the dialog based on current slider values.
+ */
+function updateNxiColorPreview() {
+  const rSlider = /** @type {HTMLInputElement} */ (document.getElementById('nxiColorR'));
+  const gSlider = /** @type {HTMLInputElement} */ (document.getElementById('nxiColorG'));
+  const bSlider = /** @type {HTMLInputElement} */ (document.getElementById('nxiColorB'));
+
+  const r3 = parseInt(rSlider?.value || '0', 10);
+  const g3 = parseInt(gSlider?.value || '0', 10);
+  const b3 = parseInt(bSlider?.value || '0', 10);
+
+  // Update value labels
+  const rVal = document.getElementById('nxiColorRVal');
+  const gVal = document.getElementById('nxiColorGVal');
+  const bVal = document.getElementById('nxiColorBVal');
+  if (rVal) rVal.textContent = String(r3);
+  if (gVal) gVal.textContent = String(g3);
+  if (bVal) bVal.textContent = String(b3);
+
+  // Convert 0-7 to 0-255
+  const r8 = Math.round(r3 * 255 / 7);
+  const g8 = Math.round(g3 * 255 / 7);
+  const b8 = Math.round(b3 * 255 / 7);
+
+  // Update preview box
+  const preview = document.getElementById('nxiColorPreview');
+  if (preview) preview.style.backgroundColor = `rgb(${r8},${g8},${b8})`;
+
+  // Update info label
+  const infoLabel = document.getElementById('nxiColorInfo');
+  if (infoLabel && nxiEditingColorIndex >= 0) {
+    infoLabel.textContent = `Index: ${nxiEditingColorIndex}  RGB333: ${r3}${g3}${b3}`;
+  }
+}
+
+/**
+ * Applies the edited color to the NXI palette and re-renders.
+ */
+function applyNxiColor() {
+  if (nxiEditingColorIndex < 0 || !nxiResolvedPalette) return;
+
+  const rSlider = /** @type {HTMLInputElement} */ (document.getElementById('nxiColorR'));
+  const gSlider = /** @type {HTMLInputElement} */ (document.getElementById('nxiColorG'));
+  const bSlider = /** @type {HTMLInputElement} */ (document.getElementById('nxiColorB'));
+
+  const r3 = parseInt(rSlider?.value || '0', 10);
+  const g3 = parseInt(gSlider?.value || '0', 10);
+  const b3 = parseInt(bSlider?.value || '0', 10);
+
+  // Convert 0-7 to 0-255
+  const r8 = Math.round(r3 * 255 / 7);
+  const g8 = Math.round(g3 * 255 / 7);
+  const b8 = Math.round(b3 * 255 / 7);
+
+  // Save undo state
+  saveUndoState();
+
+  // Apply to resolved palette
+  nxiResolvedPalette[nxiEditingColorIndex] = [r8, g8, b8];
+
+  // Write back to screenData (no-op for non-NXI formats)
+  writeNxiPaletteToScreenData(nxiEditingColorIndex);
+
+  // Close dialog
+  closeNxiColorPicker();
+
+  // Rebuild palette UI and re-render
+  buildNxiPalette();
+  editorRender();
+  if (typeof renderPreview === 'function') renderPreview();
+}
+
+/**
+ * Closes the NXI color picker dialog without applying changes.
+ */
+function closeNxiColorPicker() {
+  const dialog = document.getElementById('nxiColorDialog');
+  if (dialog) {
+    dialog.style.display = 'none';
+  }
+  nxiEditingColorIndex = -1;
+  nxiOriginalRgb = null;
+}
+
+/**
+ * Initializes the NXI color picker dialog event listeners.
+ */
+function initNxiColorPicker() {
+  const rSlider = document.getElementById('nxiColorR');
+  const gSlider = document.getElementById('nxiColorG');
+  const bSlider = document.getElementById('nxiColorB');
+
+  rSlider?.addEventListener('input', updateNxiColorPreview);
+  gSlider?.addEventListener('input', updateNxiColorPreview);
+  bSlider?.addEventListener('input', updateNxiColorPreview);
+
+  const applyBtn = document.getElementById('nxiColorApplyBtn');
+  const cancelBtn = document.getElementById('nxiColorCancelBtn');
+  const closeBtn = document.getElementById('nxiColorCloseBtn');
+
+  applyBtn?.addEventListener('click', applyNxiColor);
+  cancelBtn?.addEventListener('click', closeNxiColorPicker);
+  closeBtn?.addEventListener('click', closeNxiColorPicker);
+
+  // Close on Escape
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      const dialog = document.getElementById('nxiColorDialog');
+      if (dialog && dialog.style.display !== 'none') {
+        closeNxiColorPicker();
+        e.preventDefault();
+      }
+    }
   });
 }
 

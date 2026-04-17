@@ -528,6 +528,22 @@ ULANext is an extended palette mode for the ZX Spectrum Next. Unlike ULA+ (which
 | $7F  | 128       | 2            |
 | $FF  | 256       | 1            |
 
+### Editing Next Palette Colors (NXI / SL2 / LoRes)
+
+When editing NXI, SL2, LoRes, or LoRes Radastan files, the palette grid supports color editing:
+
+**Ctrl+click** on any palette color to open the color editor:
+- Adjust **R** (0-7), **G** (0-7), **B** (0-7) sliders (RGB333 — 512 possible colors)
+- See the Original and New color side by side
+- The palette index and RGB333 value are displayed
+- Click **Apply** to set the new color
+
+**Shift+click** on any palette color to mark it as the copy source (animated border appears):
+- **Click** another color to copy the source color to it
+- **Shift+click** another color to swap both colors (pixels are remapped automatically)
+- **Click the same cell** or press **Escape** to cancel
+- All operations support undo (Ctrl+Z)
+
 ---
 
 ## 14. Working with Multicolor Formats (IFL/MLT)

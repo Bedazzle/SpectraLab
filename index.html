@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.79 -->
+<!-- SpectraLab v1.80 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -1923,7 +1923,7 @@
                 <label style="font-size: 10px; margin-left: 4px;" title="Reverse sort order"><input type="checkbox" id="nxiSortReverse"> Reverse</label>
               </div>
               <div id="nxiPaletteGrid" style="display: grid; grid-template-columns: repeat(16, 1fr); gap: 1px;"></div>
-              <div style="font-size: 9px; color: var(--text-tertiary); margin-top: 4px;">Left = ink, Right = paper, Shift+click = copy/swap</div>
+              <div style="font-size: 9px; color: var(--text-tertiary); margin-top: 4px;">Left = ink, Right = paper, Shift+click = copy/swap, Ctrl+click = edit color</div>
               <div id="nxiCopyStatus" style="font-size: 9px; color: var(--text-tertiary); margin-top: 2px; min-height: 12px;"></div>
             </div>
             <div id="editorToolsSection" style="margin-bottom: 8px;">
@@ -3087,6 +3087,57 @@
   </div>
 </div>
 
+<!-- NXI/Next Color Picker Dialog -->
+<div id="nxiColorDialog" class="modal-overlay" style="display:none;">
+  <div class="modal-dialog" style="width: 280px;">
+    <div class="modal-title" style="display: flex; justify-content: space-between; align-items: center;">
+      <span>Edit Next Color</span>
+      <button id="nxiColorCloseBtn" style="padding: 2px 8px; font-size: 12px;">×</button>
+    </div>
+    <div style="margin-bottom: 12px;">
+      <div style="display: flex; gap: 12px; margin-bottom: 12px;">
+        <div style="text-align: center;">
+          <div style="font-size: 10px; margin-bottom: 4px;">Original</div>
+          <div id="nxiColorOriginal" style="width: 48px; height: 48px; border: 1px solid var(--border-color);"></div>
+        </div>
+        <div style="text-align: center;">
+          <div style="font-size: 10px; margin-bottom: 4px;">New</div>
+          <div id="nxiColorPreview" style="width: 48px; height: 48px; border: 1px solid var(--border-color);"></div>
+        </div>
+      </div>
+      <div id="nxiColorInfo" style="font-size: 10px; color: var(--text-secondary); margin-bottom: 8px;"></div>
+      <div style="margin-bottom: 8px;">
+        <label style="display: flex; align-items: center; gap: 8px; font-size: 11px;">
+          <span style="width: 20px;">R:</span>
+          <input type="range" id="nxiColorR" min="0" max="7" value="0" style="flex: 1;">
+          <span id="nxiColorRVal" style="width: 16px; text-align: right;">0</span>
+        </label>
+      </div>
+      <div style="margin-bottom: 8px;">
+        <label style="display: flex; align-items: center; gap: 8px; font-size: 11px;">
+          <span style="width: 20px;">G:</span>
+          <input type="range" id="nxiColorG" min="0" max="7" value="0" style="flex: 1;">
+          <span id="nxiColorGVal" style="width: 16px; text-align: right;">0</span>
+        </label>
+      </div>
+      <div style="margin-bottom: 8px;">
+        <label style="display: flex; align-items: center; gap: 8px; font-size: 11px;">
+          <span style="width: 20px;">B:</span>
+          <input type="range" id="nxiColorB" min="0" max="7" value="0" style="flex: 1;">
+          <span id="nxiColorBVal" style="width: 16px; text-align: right;">0</span>
+        </label>
+      </div>
+      <div style="font-size: 10px; color: var(--text-secondary); margin-top: 8px;">
+        RGB333: 3-bit red, 3-bit green, 3-bit blue
+      </div>
+    </div>
+    <div style="display: flex; gap: 8px; justify-content: flex-end;">
+      <button id="nxiColorCancelBtn" style="padding: 5px 16px; font-size: 12px;">Cancel</button>
+      <button id="nxiColorApplyBtn" style="padding: 5px 16px; font-size: 12px;">Apply</button>
+    </div>
+  </div>
+</div>
+
 <!-- SL2 Disambiguation Dialog -->
 <div id="sl2DisambiguationOverlay" class="modal-overlay" style="display:none;">
   <div class="modal-dialog" style="max-width:720px;">
@@ -3346,7 +3397,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.79</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.80</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">
