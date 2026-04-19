@@ -750,12 +750,10 @@ function loadPaletteFromText(text) {
   for (const raw of lines) {
     const line = raw.trim();
     if (!line || line.startsWith(';') || line.startsWith('//')) continue;
-    if (line.startsWith('#')) {
-      // Hex format: #RRGGBB
-      const m = /^#([0-9A-Fa-f]{6})$/.exec(line);
-      if (m) {
-        colors.push('#' + m[1].toUpperCase());
-      }
+    const hexMatch = /^#?(?:[0-9A-Fa-f]{2})?([0-9A-Fa-f]{6})$/.exec(line);
+    if (hexMatch) {
+      // Hex format: #RRGGBB, RRGGBB, #AARRGGBB, AARRGGBB (alpha ignored)
+      colors.push('#' + hexMatch[1].toUpperCase());
     } else {
       // Decimal R G B (space or comma separated)
       const parts = line.split(/[\s,]+/).map(Number);
@@ -766,9 +764,13 @@ function loadPaletteFromText(text) {
     }
     if (colors.length >= 16) break;
   }
-  if (colors.length < 16) {
-    alert('Palette file must contain at least 16 valid color lines. Found: ' + colors.length);
+  if (colors.length < 15) {
+    alert('Palette file must contain 15 or 16 valid color lines. Found: ' + colors.length);
     return;
+  }
+  // 15-color palette: prepend black (regular and bright black are the same)
+  if (colors.length === 15) {
+    colors.unshift('#000000');
   }
   const customPalette = { id: 'custom', name: 'Custom (loaded)', colors };
   // Remove previous custom entry if present
@@ -5098,9 +5100,11 @@ function renderScreen() {
  * @param {number} [offsetY] - Y offset in canvas pixels (defaults to offsetX)
  */
 function drawCharGrid(ctx, offsetX, offsetY = offsetX) {
+  const isBscLike = currentFormat === FORMAT.BSC || currentFormat === FORMAT.BMC4 ||
+    (currentFormat === FORMAT.BSP && currentPicture && currentPicture.border);
   const dims = getFormatDimensions(currentFormat);
-  const width = currentPicture ? currentPicture.width : dims.width;
-  const height = currentPicture ? currentPicture.height : dims.height;
+  const width = isBscLike ? SCREEN.WIDTH : (currentPicture ? currentPicture.width : dims.width);
+  const height = isBscLike ? SCREEN.HEIGHT : (currentPicture ? currentPicture.height : dims.height);
   const scaleY = getPixelScaleY();
   const zoomY = zoom * scaleY;
 

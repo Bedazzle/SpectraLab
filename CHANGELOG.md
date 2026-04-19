@@ -1,5 +1,10 @@
 # SpectraLab Version History
 
+## v1.82
+- Fix: paper grid no longer extends into the border area for BSC, BMC4, and BSP-with-border formats (grid now covers only the 256×192 paper region)
+- Fix: painting on BSC border with a large brush no longer corrupts paper area pixels (brush strokes near border edges are now clamped to valid border coordinates)
+- Load palette from text file: accept 15 colors (black auto-prepended as index 0) in addition to 16. Added `RRGGBB` (without `#`), `#AARRGGBB`, and `AARRGGBB` (alpha ignored) hex format support.
+
 ## v1.81
 - Load external palette from text file: click the 📂 button next to the Palette dropdown to load a custom 16-color palette from a `.txt`, `.pal`, or `.csv` file. Supports `#RRGGBB` hex and `R G B` decimal formats (one color per line, comments with `;` or `//`). The custom palette appears as "Custom (loaded)" in the dropdown; reverts on page reload.
 

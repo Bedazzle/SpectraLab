@@ -61,9 +61,9 @@ Select a different display palette from the **Palette** dropdown in View Setting
 ### Load Custom Palette from File
 
 1. Click the 📂 button next to the **Palette** dropdown
-2. Select a text file (`.txt`, `.pal`, or `.csv`) containing 16 color definitions
-3. Each line defines one color: `#RRGGBB` hex or `R G B` decimal values (0-255)
-4. Lines 1-8 define regular colors, lines 9-16 define bright colors
+2. Select a text file (`.txt`, `.pal`, or `.csv`) containing 15 or 16 color definitions
+3. Each line defines one color: `#RRGGBB`, `RRGGBB`, `#AARRGGBB`, `AARRGGBB` (alpha ignored), or `R G B` decimal (0-255)
+4. Lines 1-8 define regular colors, lines 9-16 define bright colors (with 15 colors, black is auto-prepended)
 5. Comments (`;` or `//`) and blank lines are skipped
 6. The palette appears as "Custom (loaded)" in the dropdown
 7. To revert, select any built-in palette from the dropdown, or reload the page

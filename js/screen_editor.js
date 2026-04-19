@@ -17084,6 +17084,11 @@ function paintBorderWithBrush(frameX, frameY, color) {
   // Paint multiple rows based on brush size
   for (let dy = -halfHeight; dy < brushSize - halfHeight; dy++) {
     const y = frameY + dy;
+    // Clamp to valid frame coordinates to prevent writing outside border data
+    if (y < 0 || y >= BSC.FRAME_HEIGHT) continue;
+    // Skip main screen area rows when painting in side border region
+    if (y >= BSC.BORDER_TOP_PX && y < BSC.BORDER_TOP_PX + SCREEN.HEIGHT &&
+        frameX >= BSC.BORDER_LEFT_PX && frameX < BSC.BORDER_LEFT_PX + SCREEN.WIDTH) continue;
     // Use the original 24px-wide painting function for each row
     paintBscBorderCell(frameX, y, color);
   }
