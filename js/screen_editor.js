@@ -730,13 +730,13 @@ function updateEditorColorPickers() {
 function toggleNxiColorPicker(show) {
   const nxiSection = document.getElementById('nxiColorSection');
   if (nxiSection) nxiSection.style.display = show ? '' : 'none';
+  const bright = document.getElementById('editorBrightCheckbox');
+  if (bright && bright.parentElement) bright.parentElement.style.display = show ? 'none' : '';
+  const flash = document.getElementById('editorFlashCheckbox');
+  if (flash && flash.parentElement) flash.parentElement.style.display = show ? 'none' : '';
   if (show) {
     const s = document.getElementById('editorColorSection');
     if (s) s.style.display = 'none';
-    const bright = document.getElementById('editorBrightCheckbox');
-    if (bright && bright.parentElement) bright.parentElement.style.display = 'none';
-    const flash = document.getElementById('editorFlashCheckbox');
-    if (flash && flash.parentElement) flash.parentElement.style.display = 'none';
   }
   // SL2 has no embedded palette — hide load button
   const nxiLoadBtn = document.getElementById('nxiLoadPalBtn');

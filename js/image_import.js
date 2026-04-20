@@ -1771,10 +1771,9 @@ function analyzeCell(pixels, cellX, cellY, width) {
 
           if (inkDist < paperDist) {
             totalError += inkDist;
-            bitmap[dy] |= (0x80 >> dx); // Set bit for ink
+            bitmap[dy] |= (0x80 >> dx);
           } else {
             totalError += paperDist;
-            // Paper is 0, no need to set bit
           }
         }
 
@@ -1790,6 +1789,7 @@ function analyzeCell(pixels, cellX, cellY, width) {
   }
 
   const bestPal = bestBright ? palette.bright : palette.regular;
+
   return {
     ink: bestInk,
     paper: bestPaper,
@@ -3897,26 +3897,43 @@ function convertToBmc4(sourceCanvas, dithering, brightness, contrast, saturation
   let borderOffset = 7680;
 
   const encodeFullBorderLine = (y) => {
+    // Calculate best color per 8px cell
     const segColors = new Array(48);
-
-    // First block (segments 0-2): edge, 8px granularity
-    segColors[0] = findNearestBorderColor(getBlockAverageColor(pixels, 384, 0, y, 8), regularPalette);
-    segColors[1] = findNearestBorderColor(getBlockAverageColor(pixels, 384, 8, y, 8), regularPalette);
-    segColors[2] = findNearestBorderColor(getBlockAverageColor(pixels, 384, 16, y, 8), regularPalette);
-
-    // Interior blocks (segments 3-44): 24px granularity
-    for (let block = 1; block < 15; block++) {
-      const x = block * 24;
-      const color = findNearestBorderColor(getBlockAverageColor(pixels, 384, x, y, 24), regularPalette);
-      segColors[block * 3] = color;
-      segColors[block * 3 + 1] = color;
-      segColors[block * 3 + 2] = color;
+    for (let seg = 0; seg < 48; seg++) {
+      segColors[seg] = findNearestBorderColor(getBlockAverageColor(pixels, 384, seg * 8, y, 8), regularPalette);
     }
 
-    // Last block (segments 45-47): edge, 8px granularity
-    segColors[45] = findNearestBorderColor(getBlockAverageColor(pixels, 384, 360, y, 8), regularPalette);
-    segColors[46] = findNearestBorderColor(getBlockAverageColor(pixels, 384, 368, y, 8), regularPalette);
-    segColors[47] = findNearestBorderColor(getBlockAverageColor(pixels, 384, 376, y, 8), regularPalette);
+    // Enforce 24px (3-cell) minimum run length for interior segments (3-44).
+    // Edge segments 0-2 and 45-47 can be any width (they touch frame/paper edge).
+    // A short interior run is OK if it touches an edge segment of the same color.
+    // Merge remaining short runs into their longer neighbor; repeat until stable.
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let i = 3; i < 45; ) {
+        const color = segColors[i];
+        let runEnd = i + 1;
+        while (runEnd < 45 && segColors[runEnd] === color) runEnd++;
+        const runLen = runEnd - i;
+        if (runLen < 3) {
+          let totalLen = runLen;
+          for (let j = i - 1; j >= 0 && segColors[j] === color; j--) totalLen++;
+          for (let j = runEnd; j < 48 && segColors[j] === color; j++) totalLen++;
+          if (totalLen < 3) {
+            const prevColor = segColors[i - 1];
+            const nextColor = runEnd < 45 ? segColors[runEnd] : segColors[44];
+            let prevLen = 0;
+            for (let j = i - 1; j >= 0 && segColors[j] === prevColor; j--) prevLen++;
+            let nextLen = 0;
+            for (let j = runEnd; j < 48 && segColors[j] === nextColor; j++) nextLen++;
+            const mergeColor = prevLen >= nextLen ? prevColor : nextColor;
+            for (let j = i; j < runEnd; j++) segColors[j] = mergeColor;
+            changed = true;
+          }
+        }
+        i = runEnd;
+      }
+    }
 
     // Encode to bytes (2 segments per byte)
     for (let i = 0; i < 24; i++) {
@@ -5890,30 +5907,49 @@ function convertToBsc(sourceCanvas, dithering, brightness, contrast, saturation 
   let borderOffset = BSC_CONST.BORDER_OFFSET;
 
   // Pre-calculate colors for 48 segments (8px each) for a line
-  // Then encode to bytes respecting 24-pixel minimum for interior
+  // Then enforce 24-pixel minimum run length for interior segments
   const encodeFullBorderLine = (y) => {
-    // 384 pixels = 48 segments of 8px = 16 blocks of 24px (3 segments each)
-    // Edge blocks (first and last) can have finer detail
+    // 384 pixels = 48 segments of 8px each
+    // Calculate best color per 8px cell
     const segColors = new Array(48);
-
-    // First block (segments 0-2): edge, can be 8px granularity
-    segColors[0] = findNearestBorderColor(getBlockAverageColor(pixels, 384, 0, y, 8), regularPalette);
-    segColors[1] = findNearestBorderColor(getBlockAverageColor(pixels, 384, 8, y, 8), regularPalette);
-    segColors[2] = findNearestBorderColor(getBlockAverageColor(pixels, 384, 16, y, 8), regularPalette);
-
-    // Interior blocks (segments 3-44): 24px granularity (14 blocks)
-    for (let block = 1; block < 15; block++) {
-      const x = block * 24;
-      const color = findNearestBorderColor(getBlockAverageColor(pixels, 384, x, y, 24), regularPalette);
-      segColors[block * 3] = color;
-      segColors[block * 3 + 1] = color;
-      segColors[block * 3 + 2] = color;
+    for (let seg = 0; seg < 48; seg++) {
+      segColors[seg] = findNearestBorderColor(getBlockAverageColor(pixels, 384, seg * 8, y, 8), regularPalette);
     }
 
-    // Last block (segments 45-47): edge, can be 8px granularity
-    segColors[45] = findNearestBorderColor(getBlockAverageColor(pixels, 384, 360, y, 8), regularPalette);
-    segColors[46] = findNearestBorderColor(getBlockAverageColor(pixels, 384, 368, y, 8), regularPalette);
-    segColors[47] = findNearestBorderColor(getBlockAverageColor(pixels, 384, 376, y, 8), regularPalette);
+    // Enforce 24px (3-cell) minimum run length for interior segments (3-44).
+    // Edge segments 0-2 and 45-47 can be any width (they touch frame/paper edge).
+    // A short interior run is OK if it touches an edge segment of the same color
+    // (the combined run across the boundary counts).
+    // Merge remaining short runs into their longer neighbor; repeat until stable.
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let i = 3; i < 45; ) {
+        const color = segColors[i];
+        let runEnd = i + 1;
+        while (runEnd < 45 && segColors[runEnd] === color) runEnd++;
+        const runLen = runEnd - i;
+        if (runLen < 3) {
+          // Count how far this color extends into edge/neighbor territory
+          let totalLen = runLen;
+          for (let j = i - 1; j >= 0 && segColors[j] === color; j--) totalLen++;
+          for (let j = runEnd; j < 48 && segColors[j] === color; j++) totalLen++;
+          if (totalLen < 3) {
+            // Truly short — merge into the longer neighbor
+            const prevColor = segColors[i - 1];
+            const nextColor = runEnd < 45 ? segColors[runEnd] : segColors[44];
+            let prevLen = 0;
+            for (let j = i - 1; j >= 0 && segColors[j] === prevColor; j--) prevLen++;
+            let nextLen = 0;
+            for (let j = runEnd; j < 48 && segColors[j] === nextColor; j++) nextLen++;
+            const mergeColor = prevLen >= nextLen ? prevColor : nextColor;
+            for (let j = i; j < runEnd; j++) segColors[j] = mergeColor;
+            changed = true;
+          }
+        }
+        i = runEnd;
+      }
+    }
 
     // Encode to bytes (2 segments per byte)
     for (let i = 0; i < 24; i++) {
@@ -9994,6 +10030,11 @@ function initImageImport() {
       renderScrToCanvas(scrData, importPreviewCanvas, currentZoom);
     }
 
+    // Update preview size label to reflect actual output dimensions
+    const fmtDims = getImportFormatDimensions(format);
+    const prevSizeLabel = document.getElementById('importPreviewSize');
+    if (prevSizeLabel) prevSizeLabel.textContent = `${fmtDims.w}x${fmtDims.h}`;
+
     // Draw grid overlay if enabled
     if (showGridCheckbox?.checked && importPreviewCanvas) {
       drawImportPreviewGrid(importPreviewCanvas, currentZoom, format);
@@ -10337,8 +10378,16 @@ function initImageImport() {
   importElements.hlrPattern?.addEventListener('change', updatePreview);
   importElements.chrMode?.addEventListener('change', updatePreview);
   importElements.specsciiCharset?.addEventListener('change', updatePreview);
-  contrastSlider?.addEventListener('input', updatePreview);
-  brightnessSlider?.addEventListener('input', updatePreview);
+  contrastSlider?.addEventListener('input', function() {
+    const contrastLabel = document.getElementById('importContrastValue');
+    if (contrastLabel) contrastLabel.textContent = this.value;
+    updatePreview();
+  });
+  brightnessSlider?.addEventListener('input', function() {
+    const brightnessLabel = document.getElementById('importBrightnessValue');
+    if (brightnessLabel) brightnessLabel.textContent = this.value;
+    updatePreview();
+  });
   saturationSlider?.addEventListener('input', function() {
     if (importElements.saturationValue) {
       importElements.saturationValue.textContent = this.value;
@@ -11697,6 +11746,9 @@ function autoDetectBrightness() {
   if (importElements.brightness) {
     const adjustment = Math.round((128 - avgLum) * 0.5);
     importElements.brightness.value = String(Math.max(-100, Math.min(100, adjustment)));
+    // Update the brightness label so the user sees the auto-detected value
+    const brightnessLabel = document.getElementById('importBrightnessValue');
+    if (brightnessLabel) brightnessLabel.textContent = String(Math.max(-100, Math.min(100, adjustment)));
   }
 }
 
@@ -11776,6 +11828,10 @@ function openImportDialog(file) {
   if (importElements.balanceB) importElements.balanceB.value = '0';
 
   // Reset value display labels using cached elements
+  const brightnessLabel = document.getElementById('importBrightnessValue');
+  if (brightnessLabel) brightnessLabel.textContent = '0';
+  const contrastLabel = document.getElementById('importContrastValue');
+  if (contrastLabel) contrastLabel.textContent = '0';
   if (importElements.gammaValue) importElements.gammaValue.textContent = '1.0';
   if (importElements.sharpnessValue) importElements.sharpnessValue.textContent = '0';
   if (importElements.smoothingValue) importElements.smoothingValue.textContent = '0';
@@ -11873,9 +11929,6 @@ function openImportDialog(file) {
 
     // Render original with crop overlay
     renderOriginalWithCrop();
-
-    // Auto-detect brightness
-    autoDetectBrightness();
 
     // Generate initial preview using cached elements
     const dithering = importElements.dithering?.value || 'floyd-steinberg';

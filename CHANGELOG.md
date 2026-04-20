@@ -1,5 +1,16 @@
 # SpectraLab Version History
 
+## v1.84
+- Fix: image import brightness slider was silently set to a non-zero value by auto-brightness detection, causing incorrect bright/dark attribute assignment when re-importing ZX Spectrum screen exports as PNG. Brightness now defaults to 0 when the import dialog opens
+- Fix: brightness and contrast value labels in the import dialog were not updating when moving the sliders (unlike saturation, gamma, sharpness, and smoothing which updated correctly)
+- Fix: BSC/BMC4 image import — border color runs were snapped to a fixed 24px grid instead of starting at any 8px cell boundary. Now each 8px cell is color-matched independently, then short interior runs (< 24px) are merged into their longest neighbor
+- Fix: BSC/BMC4 image import — border run merging could cause an infinite loop freezing the browser tab
+- Fix: import preview size label now updates to show actual output dimensions when changing target format (e.g. "384x304" for BSC instead of always showing "256x192")
+
+
+## v1.83
+- Fix: Bright/Flash checkboxes in the Edit tab could disappear after editing NXI/SL2/LoRes formats and switching back to SCR
+
 ## v1.82
 - Fix: paper grid no longer extends into the border area for BSC, BMC4, and BSP-with-border formats (grid now covers only the 256×192 paper region)
 - Fix: painting on BSC border with a large brush no longer corrupts paper area pixels (brush strokes near border edges are now clamped to valid border coordinates)
