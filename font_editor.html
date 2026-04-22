@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<!-- SpectraLab Font Editor v1.89 -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SpectraLab Font Editor</title>
+<script>
+// FOUC prevention — apply saved theme before first paint
+(function() {
+  const t = localStorage.getItem('spectraLabTheme');
+  if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+})();
+</script>
+<style>
+:root {
+  --bg-primary: #1a1a1a;
+  --bg-secondary: #252525;
+  --bg-tertiary: #2a2a2a;
+  --text-primary: #e0e0e0;
+  --text-secondary: #a0a0a0;
+  --text-tertiary: #707070;
+  --border-primary: #444;
+  --border-secondary: #333;
+  --accent-color: #4a9eff;
+  --accent-hover: #264f78;
+  --accent-text: #fff;
+  --danger-color: #ff4444;
+  --warning-color: #ff9900;
+  --selected-bg: #264f78;
+  --selected-text: #fff;
+  --shadow-color: rgba(0,0,0,0.4);
+  --bg-hover: #333;
+  --bg-active: #3a3a3a;
+}
+[data-theme="light"] {
+  --bg-primary: #f0f0f0;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #e8e8e8;
+  --text-primary: #1a1a1a;
+  --text-secondary: #555555;
+  --text-tertiary: #888888;
+  --border-primary: #bbb;
+  --border-secondary: #ddd;
+  --accent-color: #2979ff;
+  --accent-hover: #1565c0;
+  --accent-text: #fff;
+  --danger-color: #d32f2f;
+  --warning-color: #ef6c00;
+  --selected-bg: #bbdefb;
+  --selected-text: #1a1a1a;
+  --shadow-color: rgba(0,0,0,0.15);
+  --bg-hover: #e0e0e0;
+  --bg-active: #d0d0d0;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 12px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* Header */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+  flex-shrink: 0;
+}
+.header a {
+  color: var(--accent-color);
+  text-decoration: none;
+  font-size: 11px;
+}
+.header a:hover { text-decoration: underline; }
+.header h1 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+/* Buttons */
+button, .btn {
+  padding: 3px 8px;
+  font-size: 11px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  cursor: pointer;
+}
+button:hover { background: var(--bg-hover); }
+button:active { background: var(--bg-active); }
+/* Inputs */
+select, input[type="text"], input[type="number"] {
+  padding: 2px 4px;
+  font-size: 11px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+}
+label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+/* Main layout */
+.main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+/* Left panel - glyph grid */
+.left-panel {
+  width: 575px;
+  min-width: 575px;
+  border-right: 1px solid var(--border-primary);
+  overflow-y: auto;
+  padding: 8px;
+  background: var(--bg-primary);
+}
+#grid {
+  display: grid;
+  grid-template-columns: repeat(16, 34px);
+  gap: 1px;
+}
+.glyph {
+  cursor: pointer;
+  border: 1px solid var(--border-secondary);
+  padding: 0;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.glyph:hover {
+  border-color: var(--accent-color);
+}
+.glyph.selected {
+  border-color: var(--accent-color);
+  background: var(--selected-bg);
+  box-shadow: 0 0 4px var(--accent-color);
+}
+.glyph-label {
+  font-size: 11px;
+  line-height: 13px;
+  height: 13px;
+  text-align: center;
+  color: var(--text-secondary);
+  overflow: hidden;
+  width: 100%;
+}
+.glyph.with-label {
+  height: auto;
+  flex-direction: column;
+}
+/* Right panel - editor */
+.right-panel {
+  min-width: 280px;
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* Preview + controls row: canvas left, controls right */
+.preview-controls-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.preview-column {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.controls-column {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 200px;
+}
+.editor-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.editor-section-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  letter-spacing: 0.5px;
+}
+#previewCanvas {
+  border: 1px solid var(--border-primary);
+  cursor: crosshair;
+  image-rendering: pixelated;
+  align-self: flex-start;
+}
+#glyphInfo {
+  font-size: 11px;
+  color: var(--text-secondary);
+  min-height: 16px;
+}
+.control-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.arrow-btns {
+  display: grid;
+  grid-template-columns: 24px 24px 24px;
+  grid-template-rows: 24px 24px;
+  gap: 2px;
+}
+.arrow-btns button {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.file-info {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Mapping section */
+.mapping-section {
+  border-top: 1px solid var(--border-secondary);
+  padding-top: 8px;
+}
+/* FZX mode grid */
+#grid.fzx-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1px;
+}
+#grid.fzx-grid .glyph {
+  width: auto;
+  height: auto;
+}
+/* Font tool buttons */
+.font-tool-bar {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+.font-tool-btn {
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.font-tool-btn.selected {
+  background: var(--accent-color);
+  color: var(--accent-text);
+  border-color: var(--accent-color);
+}
+/* Font format choice modal */
+.format-modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 1000;
+  justify-content: center;
+  align-items: center;
+}
+.format-modal-overlay.active { display: flex; }
+.format-modal {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 6px;
+  padding: 16px;
+  box-shadow: 0 4px 20px var(--shadow-color);
+  max-width: 90vw;
+}
+.format-modal h3 {
+  font-size: 13px;
+  margin-bottom: 12px;
+  color: var(--text-primary);
+}
+.format-choices {
+  display: flex;
+  gap: 16px;
+}
+.format-choice {
+  cursor: pointer;
+  border: 2px solid var(--border-secondary);
+  border-radius: 4px;
+  padding: 8px;
+  text-align: center;
+  transition: border-color 0.15s;
+}
+.format-choice:hover {
+  border-color: var(--accent-color);
+}
+.format-choice canvas {
+  image-rendering: pixelated;
+  display: block;
+  margin-bottom: 6px;
+}
+.format-choice-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+/* Save modal */
+.save-modal-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 240px;
+}
+.save-modal-btns button {
+  padding: 6px 12px;
+  font-size: 12px;
+  text-align: left;
+}
+.save-modal-btns button.primary {
+  background: var(--accent-color);
+  color: var(--accent-text);
+  border-color: var(--accent-color);
+}
+.save-modal-btns button.primary:hover {
+  background: var(--accent-hover);
+}
+.save-modal-btns .save-range-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.save-modal-btns .save-range-row label {
+  font-size: 11px;
+}
+.save-modal-btns .save-range-row input {
+  width: 60px;
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <a href="index.html">&larr; SpectraLab</a>
+  <h1>Font Editor</h1>
+  <span class="file-info" id="headerFileName"></span>
+  <div class="header-controls">
+    <button id="loadFontBtn">Load</button>
+    <button id="saveFontBtn">Save</button>
+    <input type="file" id="fontFile" accept=".bin,.768,.ch8,.SpecCHR,.fnt,.fzx,.udg" style="display:none;">
+    <button id="appendFontBtn" title="Append glyphs from file">Append</button>
+    <input type="file" id="appendFontFile" accept=".bin,.768,.ch8,.SpecCHR,.fnt,.udg" style="display:none;">
+    <span class="file-info" id="fileDisplay">No font loaded</span>
+    <button id="newBtn">New</button>
+    <select id="newType" style="width:110px;" title="New item type">
+      <option value="96">Font 96</option>
+      <option value="256">Font 256</option>
+      <option value="exploded">Font 256 intrlcd</option>
+      <option value="fzx">FZX font</option>
+      <option value="custom">Custom...</option>
+    </select>
+    <button id="helpBtn" title="Keyboard shortcuts">?</button>
+    <button id="themeToggleBtn" style="cursor: pointer;" title="Toggle light/dark theme">&#9790;</button>
+  </div>
+</div>
+
+<div class="main">
+  <!-- Left: Glyph Grid -->
+  <div class="left-panel">
+    <div id="grid"></div>
+  </div>
+
+  <!-- Right: Pixel Editor & Controls -->
+  <div class="right-panel">
+    <div class="preview-controls-row">
+      <div class="preview-column" id="previewColumn">
+        <canvas id="previewCanvas" width="400" height="400"></canvas>
+        <div id="glyphInfo">Click a glyph to edit</div>
+      </div>
+
+      <div class="controls-column">
+        <div class="editor-section" id="glyphCountSection">
+          <div class="control-row">
+            <label>Glyphs: <input type="number" id="glyphCountInput" min="1" max="1024" value="256" style="width:55px;"></label>
+            <button id="convertFontBtn" title="Convert between fixed and FZX format">&rarr; FZX</button>
+          </div>
+        </div>
+
+        <div class="editor-section">
+          <div class="editor-section-title">Tools</div>
+          <div class="font-tool-bar" id="fontToolBar">
+            <button class="font-tool-btn selected" data-font-tool="pixel" title="Pixel (P)">&#9998;</button>
+            <button class="font-tool-btn" data-font-tool="line" title="Line (L)">&#9585;</button>
+            <button class="font-tool-btn" data-font-tool="rect" title="Rectangle (R)">&#9633;</button>
+            <button class="font-tool-btn" data-font-tool="circle" title="Circle (O)">&#9675;</button>
+            <button class="font-tool-btn" data-font-tool="eraser" title="Eraser (E)">&#9003;</button>
+          </div>
+        </div>
+
+        <div class="editor-section">
+          <div class="control-row">
+            <button id="invertGlyphBtn" title="Invert (I)">Invert</button>
+            <button id="clearGlyphBtn" title="Clear (Del)">Clear</button>
+            <label><input type="checkbox" id="wholeFontCheckbox"> Whole font</label>
+            <label><input type="checkbox" id="showGridCheckbox" checked> Grid</label>
+            <label><input type="checkbox" id="showLabelsCheckbox"> Labels</label>
+          </div>
+        </div>
+
+        <div class="editor-section">
+          <div class="editor-section-title">Scroll (wrap)</div>
+          <div class="control-row">
+            <div class="arrow-btns">
+              <span></span>
+              <button id="shiftUpBtn" title="Scroll up">&uarr;</button>
+              <span></span>
+              <button id="shiftLeftBtn" title="Scroll left">&larr;</button>
+              <button id="shiftDownBtn" title="Scroll down">&darr;</button>
+              <button id="shiftRightBtn" title="Scroll right">&rarr;</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="editor-section">
+          <div class="editor-section-title">Transform</div>
+          <div class="control-row">
+            <select id="transformSelect" style="width: 160px;">
+              <option value="">-- Apply transform --</option>
+              <optgroup label="Bold">
+                <option value="bold-right">Bold Right</option>
+                <option value="bold-left">Bold Left</option>
+                <option value="bold-down">Bold Down</option>
+              </optgroup>
+              <optgroup label="Italic">
+                <option value="italic1-right">Italic 1 Right</option>
+                <option value="italic1-left">Italic 1 Left</option>
+                <option value="italic2-right">Italic 2 Right</option>
+                <option value="italic2-left">Italic 2 Left</option>
+                <option value="italic3-right">Italic 3 Right</option>
+                <option value="italic3-left">Italic 3 Left</option>
+              </optgroup>
+              <optgroup label="Shift (zero-fill)">
+                <option value="shift-right-fill0">Shift Right</option>
+                <option value="shift-left-fill0">Shift Left</option>
+                <option value="shift-up-fill0">Shift Up</option>
+                <option value="shift-down-fill0">Shift Down</option>
+              </optgroup>
+              <optgroup label="Align">
+                <option value="align-left">Align Left</option>
+                <option value="align-right">Align Right</option>
+                <option value="align-top">Align Top</option>
+                <option value="align-bottom">Align Bottom</option>
+              </optgroup>
+              <optgroup label="Flip / Rotate">
+                <option value="flip-horizontal">Flip Horizontal</option>
+                <option value="flip-vertical">Flip Vertical</option>
+                <option value="rotate-90-cw">Rotate 90 CW</option>
+                <option value="rotate-90-ccw">Rotate 90 CCW</option>
+                <option value="rotate-180">Rotate 180</option>
+              </optgroup>
+            </select>
+          </div>
+        </div>
+
+        <div class="editor-section">
+          <div class="editor-section-title">Width Mode</div>
+          <div class="control-row">
+            <select id="fontWidth" style="width: 100px;">
+              <option value="8">8 (full)</option>
+              <option value="6-high">6 high</option>
+              <option value="6-low">6 low</option>
+              <option value="4-high">4 high</option>
+              <option value="4-low">4 low</option>
+              <option value="variable">Variable</option>
+            </select>
+            <label>W: <input type="number" id="glyphWidthInput" min="1" max="8" value="8" style="width:40px;" disabled></label>
+            <label id="hideWidthByteLabel" style="display:none;"><input type="checkbox" id="hideWidthByte" checked> Hide W</label>
+          </div>
+        </div>
+
+        <div class="editor-section" id="fzxSection" style="display:none;">
+          <div class="editor-section-title">FZX Font</div>
+          <div class="control-row">
+            <label>Height: <input type="number" id="fzxHeight" min="1" max="255" value="8" style="width:40px;"></label>
+            <label>Tracking: <input type="number" id="fzxTracking" min="-128" max="127" value="0" style="width:40px;"></label>
+          </div>
+          <div class="control-row">
+            <button id="newFzxBtn">New FZX Font</button>
+          </div>
+        </div>
+
+        <div class="editor-section" id="fzxGlyphSection" style="display:none;">
+          <div class="editor-section-title">FZX Glyph</div>
+          <div class="control-row">
+            <label>Width: <input type="number" id="fzxGlyphWidth" min="1" max="16" value="8" style="width:40px;"></label>
+            <label>Shift: <input type="number" id="fzxGlyphShift" min="0" max="15" value="0" style="width:40px;"></label>
+            <label>Kern: <input type="number" id="fzxGlyphKern" min="0" max="3" value="0" style="width:40px;"></label>
+          </div>
+        </div>
+
+        <div class="editor-section mapping-section" id="charMappingSection">
+          <div class="editor-section-title">Character Mapping</div>
+          <div class="control-row">
+            <input type="text" id="charInput" placeholder="Characters..." style="width:120px;">
+            <button id="mapCharBtn">Map</button>
+            <button id="clearMapBtn">Clear</button>
+          </div>
+          <div class="control-row" style="margin-top: 4px;">
+            <label>From (Cyr): <input type="text" id="remapFrom" style="width:120px;" placeholder="e.g., АБВЕКМНОРСТУХ"></label>
+            <label>To (Lat): <input type="text" id="remapTo" style="width:120px;" placeholder="e.g., ABEKMHOPCTYX"></label>
+          </div>
+        </div>
+
+        <div class="editor-section mapping-section" id="metricsSection">
+          <div class="editor-section-title">Metrics</div>
+          <div class="control-row">
+            <button id="saveMappingBtn">Export .metrics</button>
+            <button id="loadMappingBtn">Import .metrics</button>
+            <input type="file" id="loadMappingFile" accept=".metrics,.json" style="display:none;">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="editor-section mapping-section" style="flex:1; min-height:0; display:flex; flex-direction:column;">
+      <div class="editor-section-title">Text Sample</div>
+      <div class="control-row">
+        <label>Zoom: <select id="textSampleZoom" style="width:50px;">
+          <option value="1">1x</option>
+          <option value="2" selected>2x</option>
+          <option value="3">3x</option>
+        </select></label>
+        <label><input type="checkbox" id="textSampleGrid"> Grid</label>
+        <label><input type="checkbox" id="textSampleUppercase"> Uppercase</label>
+        <label><input type="checkbox" id="textSampleTimex"> Timex</label>
+      </div>
+      <div style="overflow:auto; flex:1; min-height:0;">
+        <canvas id="textSampleCanvas" style="image-rendering:pixelated; display:block;"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="format-modal-overlay" id="saveModal">
+  <div class="format-modal">
+    <h3 id="saveModalTitle">Save options</h3>
+    <div id="saveModalContent"></div>
+  </div>
+</div>
+
+<div class="format-modal-overlay" id="formatModal">
+  <div class="format-modal">
+    <h3>Choose font format:</h3>
+    <div class="format-choices">
+      <div class="format-choice" id="choiceNormal">
+        <canvas id="previewNormal" width="256" height="64"></canvas>
+        <div class="format-choice-label">Normal</div>
+      </div>
+      <div class="format-choice" id="choiceInterlaced">
+        <canvas id="previewInterlaced" width="256" height="64"></canvas>
+        <div class="format-choice-label">Interlaced</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="js/glyph_transforms.js"></script>
+<script src="js/font_editor.js"></script>
+</body>
+</html>

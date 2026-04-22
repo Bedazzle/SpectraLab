@@ -1043,7 +1043,172 @@ The floating palette includes all drawing tools, selection/clipboard tools, colo
 
 ---
 
-## 24. Supported Formats Reference
+## 24. Font Editor
+
+The Font Editor is a standalone page (`font_editor.html`) for creating and editing ZX Spectrum bitmap fonts. Supports fixed-width 8×8 fonts and FZX proportional fonts. Open it via the **Font** link in the bottom bar of the View tab, or navigate directly to `font_editor.html`.
+
+### Header Controls
+
+- **Load** — open a font file (`.768`, `.ch8`, `.bin`, `.SpecCHR`, `.fnt`, `.fzx`)
+- **Save** — context-aware save. The action depends on the current glyph count: 96 glyphs saves `.768` directly; 21 glyphs saves `.udg`; 256 glyphs shows a Normal/Interlaced dialog; 117 glyphs (96+21) offers Single file, Font+UDG, or UDG+Font options; >256 glyphs shows a range export dialog; other counts save `.bin`. FZX fonts save `.fzx` directly.
+- **Append** — load a font file and append its glyphs after existing ones (up to 1024 total)
+- **New ▾** — create a new font: 96 glyphs, 256 glyphs, custom glyph count (up to 1024), exploded (256 interlaced), or new FZX font
+- **?** — show keyboard shortcuts and help
+- **Light / Dark** — toggle theme (synced with SpectraLab via `localStorage`)
+
+### Glyph Grid (Left Panel)
+
+Displays all glyphs at 4× zoom in a 16-column grid. Click a glyph to select it for editing. For FZX fonts, the grid uses flexbox layout with variable-width cells.
+
+- Hover tooltip shows glyph index, hex code, and mapped character
+- When width mode is not 8, inactive columns are dimmed with a dark overlay
+- **Grid** checkbox controls pixel gap rendering in the grid
+- **Labels** checkbox shows the mapped character below each glyph in the grid
+
+### Drawing Tools
+
+The toolbar above the editor provides five drawing tools:
+
+| Tool | Button | Key | Left click | Right click |
+|------|--------|-----|-----------|-------------|
+| Pixel | ✎ | P | Toggle (XOR) | Clear |
+| Line | ╱ | L | Draw line (set) | Clear line (erase) |
+| Rectangle | ☐ | R | Draw outline | Draw filled |
+| Circle | ○ | O | Draw outline | Draw filled |
+| Eraser | ⌫ | E | Freehand erase | Erase rectangle area |
+
+**Shape tools** (Line, Rectangle, Circle): click to set the start point, drag to preview the shape with a semi-transparent overlay, release to commit. Moving the mouse outside the canvas cancels the shape. Right-click Eraser works the same way — drag to select an area, release to clear it.
+
+**Freehand tools** (Pixel, Eraser): click and drag for continuous drawing. The eraser uses Bresenham interpolation between mouse positions for smooth strokes without gaps.
+
+All tools work in both regular (8×8) and FZX modes, and respect active columns, row 0 protection (variable width mode), and the "Whole font" checkbox.
+
+### Pixel Editor (Center Panel)
+
+The selected glyph is shown at large zoom (50× for 8×8, dynamic size for FZX — fits within ~400px). Click or drag to draw with the active tool.
+
+- **Invert** — flip all bits in the glyph (shortcut: **I**)
+- **Clear** — set all bits to zero (shortcut: **Delete**)
+- **Whole font** checkbox — apply Invert/Clear/transforms and pixel editing to all glyphs at once. In variable width mode, respects per-glyph width boundaries.
+- In variable width mode, row 0 (width byte) is protected from editing. The **Hide W** checkbox (default: checked) hides it from the grid, editor, and text sample preview.
+
+### Controls Column (Right of Preview)
+
+- **Glyphs** — set the number of glyphs (1–1024). Works for both fixed-width and FZX fonts. Changing the count preserves existing glyph data and character mapping.
+- **→ FZX** / **→ Fixed** — convert the current font between fixed-width and FZX proportional format. Fixed→FZX calculates visual bounding box per glyph, sets width to actual content width, and left-aligns the bitmap. FZX→Fixed clips to 8×8 and applies shift offsets.
+
+### Scroll (Wrap)
+
+Arrow buttons scroll the glyph pixels with wrap-around (shifted-out pixels reappear on the opposite side).
+
+### Transforms
+
+The transform dropdown provides 22 operations, applied to the selected glyph or the whole font:
+
+| Group | Transforms |
+|-------|-----------|
+| Bold | Bold Right, Bold Left, Bold Down |
+| Italic | Italic 1/2/3 Right, Italic 1/2/3 Left |
+| Shift (zero-fill) | Shift Right, Left, Up, Down |
+| Flip / Rotate | Flip Horizontal, Flip Vertical, Rotate 90° CW, 90° CCW, 180° |
+| Align | Align Left, Align Right, Align Top, Align Bottom |
+
+Align transforms shift glyph pixels until the outermost non-empty row or column touches the corresponding edge. Works for both fixed-width and FZX glyphs.
+
+### Width Mode
+
+Select how many bits per glyph row are active:
+
+| Mode | Active bits | Pixel width |
+|------|------------|-------------|
+| 8 (full) | Bits 7–0 | 8 |
+| 6 high | Bits 7–2 | 6 |
+| 6 low | Bits 5–0 | 6 |
+| 4 high | Bits 7–4 | 4 |
+| 4 low | Bits 3–0 | 4 |
+| Variable | First byte = width | 1–8 |
+
+Inactive columns are dimmed in both the grid and the pixel editor. Switching from 4-low or 6-low to variable mode sets width bytes to the corresponding value (4 or 6). The **Hide W** checkbox controls visibility of the width byte (row 0) in variable mode.
+
+### Character Mapping
+
+- **Characters** input + **Map** button — map a character string starting at the selected glyph
+- **Clear** — remove the mapping for the current width mode
+- **From (Cyr) / To (Lat)** — character remapping (e.g., Cyrillic to Latin lookalikes)
+
+### Metrics Export/Import
+
+- **Export .metrics** — save mappings, width mode, remap, and font metadata as JSON
+- **Import .metrics** — load a previously exported `.metrics` file
+
+### Text Sample
+
+A live preview of the font rendering three pangram sentences. The text wraps character-by-character to fill the available panel width and reflows on window resize. Each sentence stays on its own line (wrapping within).
+
+- **Zoom** — 1×, 2×, or 3× pixel scale
+- **Grid** — show pixel gaps between glyph pixels (when zoom > 1×)
+- **Uppercase** — render all text in uppercase
+- **Timex** — render with 2:1 pixel aspect ratio (half-width pixels), simulating the Timex hi-res 512×192 display mode
+
+### Copy / Paste Glyphs
+
+- **Ctrl+C** — copy the selected glyph to the clipboard
+- **Ctrl+V** — paste over the selected glyph
+- Works within and across fixed/FZX modes. Cross-format paste automatically converts: fixed→FZX adjusts width and bitmap layout, FZX→fixed clips to 8×8.
+
+### Undo / Redo
+
+The Font Editor supports up to 50 levels of undo. Every modification is undoable: pixel editing, transforms, invert, clear, glyph count changes, width changes, and all FZX property edits (height, tracking, glyph width, shift, kern).
+
+- **Ctrl+Z** — undo
+- **Ctrl+Y** or **Ctrl+Shift+Z** — redo
+- Loading a new font file or creating a new font clears the undo history
+- Undo works across mode switches (fixed ↔ FZX)
+
+### FZX Proportional Fonts
+
+FZX is a proportional font format for ZX Spectrum with variable glyph widths (1–16px), configurable height (1–16px), per-glyph shift and kern properties, and signed tracking. In FZX mode:
+
+- Per-glyph controls: **Width**, **Shift**, **Kern**
+- Font-level controls: **Height**, **Tracking**
+- The glyph grid uses flexible layout reflecting actual glyph widths
+- All transforms adapt to variable-width bitmaps
+
+### Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| Ctrl+Z | Undo |
+| Ctrl+Y / Ctrl+Shift+Z | Redo |
+| Ctrl+C | Copy glyph |
+| Ctrl+V | Paste glyph |
+| Arrow keys | Navigate glyphs in grid |
+| P | Pixel tool |
+| L | Line tool |
+| R | Rectangle tool |
+| O | Circle / Ellipse tool |
+| E | Eraser tool |
+| B | Bold right |
+| I | Invert glyph / font |
+| Delete | Clear glyph / font |
+
+### Visual Format Chooser
+
+When loading a 2048-byte font file, a modal dialog shows side-by-side previews of both normal and interlaced (exploded) interpretations, rendered as 16 glyphs per row × 4 rows. Click the preferred interpretation to load it.
+
+### Supported Font Formats
+
+| Size | Glyphs | Format |
+|------|--------|--------|
+| 768 bytes | 96 | Standard ZX Spectrum font (ASCII 32–127) |
+| 2048 bytes | 256 | Full 256-character font |
+| 2048 bytes | 256 | Exploded format (row-interleaved) |
+| 1–1024 × 8 bytes | Custom | Custom glyph count font |
+| Variable | Variable | FZX proportional font (`.fzx`) |
+
+---
+
+## 25. Supported Formats Reference
 
 ### Editable Formats
 

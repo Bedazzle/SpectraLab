@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.84 -->
+<!-- SpectraLab v1.89 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -429,7 +429,7 @@
   }
 
   .panel-tab {
-    padding: 4px 8px;
+    padding: 4px 6px;
     font-size: 11px;
     background: transparent;
     border: 1px solid transparent;
@@ -1489,6 +1489,7 @@
           <button class="panel-tab" data-tab="edit">Edit</button>
           <button class="panel-tab" data-tab="transform">Xform</button>
           <button class="panel-tab" data-tab="sprites">Sprites</button>
+          <button class="panel-tab" data-tab="tools">Tools</button>
         </div>
 
         <!-- View Tab Content -->
@@ -2438,6 +2439,16 @@
             </div>
           </div>
           <input type="file" id="spriteFileInput" accept=".sls" style="display:none;">
+        </div>
+
+        <!-- Tools Tab Content -->
+        <div id="tabTools" class="panel-tab-content">
+          <div class="control-group">
+            <div class="control-group-title">External Tools</div>
+            <div style="display: flex; flex-direction: column; gap: 6px;">
+              <a href="font_editor.html" target="_blank" style="font-size: 12px; color: var(--accent-color); text-decoration: none;" title="Open Font Editor in a new tab">Font Editor</a>
+            </div>
+          </div>
         </div>
 
         <!-- SCA Animation Controls (always outside tabs) -->
@@ -3399,7 +3410,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.84</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.89</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">

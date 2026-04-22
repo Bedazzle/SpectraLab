@@ -1621,7 +1621,132 @@ Fonts taller than 8 pixels require custom printing routines since the ROM `PRINT
 
 ### FZX (Proportional Fonts)
 
-FZX is an open standard for proportional bitmap fonts on the Spectrum. Unlike the fixed 8 x 8 ROM font, FZX supports variable character widths (up to 16 pixels), configurable height, kerning, and tracking -- up to 224 characters per font. It requires a dedicated rendering driver and is not compatible with ROM printing routines.
+FZX is an open standard for proportional bitmap fonts on the ZX Spectrum, designed by Andrew Owen with a reference driver by Einar Saukas (2013). Unlike the fixed 8 x 8 ROM font, FZX supports variable character widths (1-16 pixels), configurable font height (1-255 pixels), per-character kerning and vertical shift, and global tracking. A font can contain up to 224 characters (codes 32-255). FZX requires a dedicated rendering driver and is not compatible with ROM printing routines.
+
+#### File Structure
+
+An FZX file consists of three sections: header, character table, and bitmap data.
+
+```
+Offset  Size    Content
+------  ------  -------
+0       1       Height (line spacing in pixels, 1-255)
+1       1       Tracking (signed byte, extra pixels between characters)
+2       1       Last char code (32-255; first char is always 32 = space)
+3       varies  Character table: (lastchar - 31) entries x 3 bytes
+varies  varies  Bitmap data
+```
+
+The character table has `(lastchar - 32 + 2)` entries -- one per character plus a sentinel entry at the end. Each entry is 3 bytes:
+
+```
+Byte 0-1:  16-bit word (little-endian)
+           Bits 15-14: kern (0-3 pixels overlap with previous character)
+           Bits 13-0:  offset to bitmap data, relative to this entry's position
+
+Byte 2:    Info byte
+           Bits 7-4:   shift (vertical offset from top, 0-15 pixels)
+           Bits 3-0:   width - 1 (so actual width = value + 1, range 1-16)
+```
+
+#### Offset Calculation
+
+The 14-bit offset in each entry is **relative to the entry's own position** in the file (not the file start). To get the absolute file position of a glyph's bitmap data:
+
+```
+absolute_address = entry_file_offset + (word & 0x3FFF)
+```
+
+This position-relative encoding makes the format independent of where the font is loaded in memory. The Z80 driver simply adds the offset to the entry's address in RAM.
+
+#### Bitmap Data Size
+
+Each glyph's bitmap contains `(height - shift)` rows. Rows above the shift line are implicitly blank (the shift value tells the renderer how far down from the top to start drawing). Each row is 1 byte wide for glyphs up to 8 pixels, or 2 bytes for glyphs 9-16 pixels wide. MSB = leftmost pixel.
+
+```
+bytes_per_row = (width > 8) ? 2 : 1
+bitmap_size   = (height - shift) * bytes_per_row
+```
+
+However, optimized FZX files may **truncate trailing zero rows** from each glyph to save space. The actual stored size for glyph *i* is determined by the difference between consecutive offsets:
+
+```
+stored_size = absolute_offset[i+1] - absolute_offset[i]
+```
+
+The sentinel entry (after the last character) provides the end boundary for the last glyph. Any rows beyond the stored data are implicitly zero. Offsets are always monotonically non-decreasing.
+
+#### Rendering Loop
+
+The official FZX driver renders a glyph by reading bytes from the bitmap offset and incrementing the pointer until it reaches the next character's bitmap address. It determines the endpoint using only the **low byte** of the next entry's absolute offset (sufficient because glyphs are at most 32 bytes):
+
+```asm
+; Compute end marker from next char table entry
+inc     hl              ; HL -> next entry's offset LSB
+ld      a, (hl)         ; A = LSB of next entry's offset word
+add     a, l            ; A = entry_addr_LSB + offset_LSB
+ld      e, a            ; E = LSB of next char's bitmap address
+
+; Main loop: render rows until bitmap pointer LSB matches E
+MAIN_LOOP:
+    ld      d, (hl)     ; read bitmap byte(s)
+    inc     hl
+    ; ... render row to screen ...
+CHK_LOOP:
+    ld      a, l
+    cp      e           ; reached next char's data?
+    jr      nz, MAIN_LOOP
+```
+
+#### Per-Character Properties
+
+| Property | Range | Description |
+|----------|-------|-------------|
+| Width    | 1-16  | Pixel width of the glyph bitmap |
+| Shift    | 0-15  | Vertical offset: number of blank pixel rows above the glyph |
+| Kern     | 0-3   | Overlap with the previous character (pixels to move left before printing) |
+
+Shift is commonly used for lowercase letters: in an 8-pixel-high font, lowercase letters with no ascenders (a, c, e, etc.) typically use shift=2, so their 6 rows of pixel data start 2 pixels below the top.
+
+#### Space Character
+
+The space character (code 32, index 0) is a special case. Its width defines the horizontal advance, but it has no visible bitmap. In optimized files, space's bitmap offset typically equals the next character's offset (zero stored bytes).
+
+#### Example: Decoding a Glyph
+
+Given a font with height=8 and this table entry for "A" (index 33):
+
+```
+Entry at file offset 0x0066:  D4 01 04
+
+Word = 0x01D4, kern = (0x01D4 >> 14) & 3 = 0
+Offset = 0x01D4 & 0x3FFF = 0x01D4 = 468
+Absolute = 0x0066 + 468 = 0x023A
+
+Info byte = 0x04: shift = 0, width = (4 & 0xF) + 1 = 5
+```
+
+Reading 8 bytes from 0x023A (next entry's offset is 8 bytes later):
+
+```
+Row 0: 20 = 00100000 → ..#..
+Row 1: 50 = 01010000 → .#.#.
+Row 2: 88 = 10001000 → #...#
+Row 3: 88 = 10001000 → #...#
+Row 4: F8 = 11111000 → #####
+Row 5: 88 = 10001000 → #...#
+Row 6: 88 = 10001000 → #...#
+Row 7: 00 (implicit) → .....     ← trailing zero row omitted in file
+```
+
+#### Optimization
+
+The FZX optimizer tool rearranges glyph data to minimize file size by:
+
+1. **Truncating trailing zero rows** -- glyphs ending in blank rows store fewer bytes
+2. **Sharing overlapping data** -- when one glyph's trailing bytes match another's leading bytes, they can share memory
+
+Despite data sharing, offsets remain monotonically non-decreasing in the character table (required by the driver's single-byte endpoint comparison).
 
 ### Runtime Font Generation
 

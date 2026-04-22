@@ -1,5 +1,48 @@
 # SpectraLab Version History
 
+## v1.89
+- Tools tab — new tab in the left panel (View / Edit / Xform / Sprites / Tools) for external SpectraLab pages. Font Editor link moved here from the View tab footer.
+- Fix: black area at high zoom (x16+) — the viewport-capped canvas rendering mode left undrawn gaps when overlay scrollbars were active. Raised the full-canvas threshold from 16M to 67M pixels so zoom levels up to x20 use native browser scrolling instead of the sticky-viewport workaround.
+- Fix: settings failed to load with "assignment to undeclared variable" errors for `attr53cSortMode` and `nxiSortMode` (variables declared in screen_editor.js but assigned in screen_viewer.js before the editor script loaded).
+- Font Editor: Unified glyph array — replaced the separate font/UDG dual-buffer model with a single contiguous glyph buffer supporting up to 1024 glyphs. All glyphs are equal; the artificial font vs. UDG separation is removed.
+- Append button — load a font file and append its glyphs after existing ones (up to 1024 total).
+- ROM font auto-load — on startup the editor loads the ZX Spectrum ROM font (96 glyphs) from the `fonts/` directory instead of showing an empty 256-glyph grid.
+- Glyph count raised to 1024 (was 255). Changing glyph count preserves existing character mapping.
+- Removed UDG-specific controls (UDG count input, UDG save formats, UDG new-font options).
+- Smart Save — replaced the save format dropdown with context-aware save logic. 96 glyphs saves `.768` directly; 21 glyphs saves `.udg` directly; 256 glyphs shows a Normal/Interlaced dialog (pre-selects current format); 117 glyphs (96+21) shows Single file / Font+UDG / UDG+Font options; >256 glyphs shows a range export dialog with first glyph and count inputs; other counts save `.bin` directly. FZX save unchanged.
+- Text Sample responsive wrapping — the preview now fills the available panel width and wraps individual characters to the next line. Adjusts on window resize. Each sample sentence wraps independently, preserving line breaks between them.
+- Text Sample Timex mode — new **Timex** checkbox renders text with 2:1 pixel aspect ratio (half-width pixels), simulating the Timex hi-res 512×192 display.
+- Stable preview layout — the preview column now uses a fixed width (400px for regular, computed max for FZX), preventing controls from shifting when glyph width changes.
+
+## v1.88
+- Font Editor: Drawing tools — Pixel, Line, Rectangle, Circle, and Eraser. Tool buttons in a new "Tools" section with keyboard shortcuts (P/L/R/O/E). Pixel tool retains XOR toggle for backward compatibility. Line, Rectangle, and Circle use drag-to-preview with semi-transparent overlay, release to commit. Eraser clears pixels with Bresenham interpolation for smooth strokes.
+- Right-click support: Pixel and Line right-click clear (erase) instead of set. Rectangle and Circle right-click draw filled shapes. Eraser right-click erases a rectangular area (drag to select, release to clear). Preview overlay uses distinct colors: yellow for set, green for filled shapes, red for clear.
+- FZX preview enlarged — editable area doubled (fits within 400px instead of 200px), making tall FZX glyphs (e.g. 32px height) easier to edit.
+- New/UDG controls remain visible in FZX mode — can create regular fonts or UDG without converting back first.
+- Drawing tools work in both regular and FZX modes, respecting active columns, row 0 protection (variable width), and "Whole font" checkbox.
+- Shape tools use coordinate clamping at grid edges so dragging to the boundary still commits the shape.
+
+## v1.87
+- Font Editor: UDG (User Defined Graphics) support — load, edit, and save UDG blocks (21 characters, A–U, char codes 144–164). Separate UDG glyph count control (0–21). UDG glyphs displayed in the grid after regular font glyphs. UDG data saved alongside the font in supported formats.
+- New button with dropdown — create new fonts in 6 configurations (96 glyphs, 256 glyphs, 96+UDG, 256+UDG, custom glyph count, new FZX font).
+- Save format dropdown — choose output format (`.768`, `.ch8`, `.bin`, `.fnt`, `.fzx`) instead of a single Save button.
+- Glyph count controls in the controls column (right of preview). Unified "Glyphs" input works for both fixed-width and FZX fonts (replaces separate "Last char" FZX control).
+- Convert between fixed and FZX formats — "→ FZX" / "→ Fixed" button. Fixed→FZX calculates visual bounding box per glyph, sets width to actual content width, and left-aligns the bitmap. FZX→Fixed clips to 8×8, applies shift offsets.
+- Labels checkbox — shows the mapped character below each glyph in the grid (regular, UDG, and FZX modes).
+- Align transforms — Align Left, Right, Top, Bottom added to the Transform dropdown. Each shifts glyph pixels until the outermost non-empty row/column touches the edge. Works for both fixed-width and FZX glyphs.
+- Copy/paste glyphs — Ctrl+C copies the selected glyph, Ctrl+V pastes. Works within and across fixed/FZX modes with automatic format conversion (fixed→FZX adjusts width/bitmap, FZX→fixed clips to 8×8).
+- Visual font format chooser — when loading a 2048-byte file, a modal shows side-by-side previews of both normal and interlaced interpretations (16 glyphs per row × 4 rows). Click to choose instead of the old confirm() dialog.
+- Variable width improvements — pixel editing respects active columns per width mode. Row 0 (width byte) is protected from editing in variable mode. "Hide W" checkbox (default: checked) hides the width byte in the grid, pixel editor, and text sample preview. Switching from 4-low or 6-low to variable mode sets width bytes to the corresponding value (4 or 6) instead of defaulting to 8.
+- Whole font pixel editing — when "Whole font" is checked, clicking pixels in the editor applies the change to all glyphs (including UDG). Respects per-glyph variable width boundaries.
+- Arrow key navigation — Left/Right/Up/Down arrow keys navigate between glyphs in the grid.
+
+## v1.86
+- Font Editor: FZX proportional font format support. Load, edit, and save `.fzx` files — ZX Spectrum proportional fonts with variable glyph width (1–16px), configurable height (1–16px), per-glyph shift and kern properties, and signed tracking. Variable-width glyph grid with flexbox layout, dynamic-size pixel editor canvas, per-glyph width/shift/kern controls, font-level height/tracking/lastchar controls. Transforms (invert, clear, scroll, flip) adapted for variable-width bitmaps. "New FZX Font" button for creating fonts from scratch.
+- Undo/redo support (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z). Snapshot-based: covers pixel editing, all transforms, glyph count change, width changes, and all FZX property edits (height, tracking, lastchar, glyph width, shift, kern). Up to 50 undo levels. History is cleared on font load or "New FZX Font". Works across mode switches (fixed ↔ FZX). Keyboard shortcuts use physical key codes, so they work on any keyboard layout (e.g. Russian).
+
+## v1.85
+- Font Editor: standalone page (`font_editor.html`) for editing ZX Spectrum 8×8 bitmap fonts. Load/save .768/.ch8/.bin/.SpecCHR/.fnt files (96 or 256 glyphs), exploded format support. Pixel editor with 20× zoom, glyph grid with 4× scale. 22 transforms (bold, italic, shift, flip, rotate). Width modes (8/6/4/variable). Character mapping with Cyrillic remap. Metrics export/import (.metrics JSON). Keyboard shortcuts (B=bold, I=invert, Del=clear). Dark/light theme synced with SpectraLab. Open via Font Editor link in the View tab Font section.
+
 ## v1.84
 - Fix: image import brightness slider was silently set to a non-zero value by auto-brightness detection, causing incorrect bright/dark attribute assignment when re-importing ZX Spectrum screen exports as PNG. Brightness now defaults to 0 when the import dialog opens
 - Fix: brightness and contrast value labels in the import dialog were not updating when moving the sliders (unlike saturation, gamma, sharpness, and smoothing which updated correctly)

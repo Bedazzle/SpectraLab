@@ -245,6 +245,27 @@ Full-featured floating sprite sheet editor for ZX Spectrum game graphics:
 - **Save / Load**: sprite sheets as .sls files; included in project (.slp) and workspace (.slw) save/load
 - **Use as Brush**: stamp current sprite frame onto the main canvas
 
+## Font Editor
+
+Standalone page (`font_editor.html`) for creating and editing ZX Spectrum bitmap fonts. Open via the **Font** link in the View tab bottom bar.
+
+- **Fixed-width fonts**: 8×8 bitmap fonts with arbitrary glyph count (1–255), width modes (8/6/4/variable)
+- **FZX proportional fonts**: variable glyph width (1–16px), configurable height (1–16px), per-glyph shift and kern, signed tracking
+- **UDG support**: load, edit, and save UDG blocks (21 characters A–U, char codes 144–164)
+- **File formats**: `.768`, `.ch8`, `.bin`, `.SpecCHR`, `.fnt`, `.fzx`; visual format chooser for 2048-byte files (normal vs interlaced)
+- **New font dropdown**: 96 glyphs, 256 glyphs, 96+UDG, 256+UDG, custom glyph count, new FZX font
+- **Save format dropdown**: choose output format per font type
+- **Pixel editor**: 32× zoom, click/drag to toggle pixels; variable width mode protects width byte (row 0) with optional **Hide W** checkbox
+- **Transforms**: 22 operations — bold (3), italic (6), shift (4), flip/rotate (5), align (4); applied to single glyph or whole font
+- **Copy/paste glyphs**: Ctrl+C / Ctrl+V with cross-format conversion (fixed ↔ FZX)
+- **Convert**: fixed ↔ FZX with visual bounding box detection and left-aligned bitmap
+- **Undo/redo**: up to 50 levels (Ctrl+Z / Ctrl+Y), covers all modifications including FZX property edits
+- **Character mapping**: map strings to glyph ranges, Cyrillic↔Latin remap, export/import `.metrics` JSON
+- **Grid options**: pixel gap grid, glyph labels (mapped character under each glyph)
+- **Whole font editing**: pixel changes and transforms apply to all glyphs at once (respects per-glyph variable width)
+- **Arrow key navigation**: navigate glyphs in the grid
+- **Theme**: synced with SpectraLab via localStorage
+
 ## Snapshot Support (.sna / .z80)
 
 Load ZX Spectrum memory snapshots and extract pictures and sprites:
@@ -333,6 +354,9 @@ Collapsible section in the View tab with CRT/retro post-processing effects:
 | `.sls` | variable | Sprite sheet (sprites with frames, attributes, modes) |
 | `.slb` | variable | Brush set (loaded as a new tile tab) |
 | `.slbc` | variable | Barcode set (border color patterns) |
+| `.768` / `.ch8` / `.fnt` | 768–2048 bytes | ZX Spectrum bitmap font (96/256 glyphs, normal or exploded) |
+| `.fzx` | variable | FZX proportional font |
+| `.metrics` | variable | Font character mapping metadata (JSON) |
 | `.zip` | — | Archive (auto-extract, recursive file detection) |
 
 ## Keyboard Shortcuts

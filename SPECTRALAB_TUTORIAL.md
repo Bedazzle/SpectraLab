@@ -765,7 +765,89 @@ Click **Clear** to remove the reference image.
 
 ---
 
-## 19. Tips and Hidden Features
+## 19. Editing Fonts
+
+The Font Editor lets you create and modify ZX Spectrum bitmap fonts — both fixed-width 8×8 fonts and FZX proportional fonts. Supports up to 1024 glyphs in a single unified buffer.
+
+### Opening the Font Editor
+
+1. In the View tab, find the bottom bar with "SpectraLab" and click the **Font** link
+2. The Font Editor opens in a new browser tab
+3. The ZX Spectrum ROM font (96 glyphs) is loaded by default
+
+### Creating a New Font
+
+1. Click the **New ▾** dropdown in the header
+2. Choose from: 96 glyphs, 256 glyphs, custom glyph count (up to 1024), exploded (256 interlaced), or new FZX font
+
+### Loading an Existing Font
+
+1. Click **Load** in the header
+2. Browse to a font file (`.768`, `.ch8`, `.bin`, `.SpecCHR`, `.fnt`, or `.fzx`)
+3. The editor auto-detects the glyph count from the file size
+4. For 2048-byte files, a visual chooser shows both normal and interlaced interpretations side by side — click the one that looks correct
+
+### Editing Glyph Pixels
+
+1. Click a glyph in the left grid to select it (or use **arrow keys** to navigate)
+2. The glyph appears zoomed in the center panel (50× zoom for 8×8, dynamic for FZX)
+3. Choose a drawing tool from the **Tools** row (or press **P** / **L** / **R** / **O** / **E**):
+   - **Pixel** (P) — click/drag to toggle pixels (left click = XOR toggle, right click = clear)
+   - **Line** (L) — drag to preview a line, release to draw (left = set, right = clear)
+   - **Rectangle** (R) — drag to preview, release to draw (left = outline, right = filled)
+   - **Circle** (O) — drag to preview, release to draw (left = outline, right = filled)
+   - **Eraser** (E) — drag to erase pixels (left = freehand, right = erase rectangle area)
+4. For shape tools, moving the mouse outside the canvas cancels the shape
+5. Changes are reflected immediately in the grid
+6. Check **Whole font** to apply pixel changes to all glyphs at once (respects per-glyph width in variable mode)
+7. Use **Ctrl+C** to copy a glyph and **Ctrl+V** to paste (works across fixed/FZX modes)
+
+### Applying Transforms
+
+1. Select a glyph (or check **Whole font** for batch operation)
+2. Use the **Scroll** arrows to shift pixels with wrap-around
+3. Click **Invert** to flip all bits, or **Clear** to erase
+4. Use the **Transform** dropdown for advanced operations: bold, italic, flip, rotate, and align (left/right/top/bottom)
+5. Keyboard shortcuts: **B** = bold right, **I** = invert, **Delete** = clear
+6. Use **Ctrl+Z** to undo any change, **Ctrl+Y** or **Ctrl+Shift+Z** to redo
+
+### Managing Glyph Count
+
+1. Use the **Glyphs** input (right of preview) to change the number of glyphs (1–1024)
+2. Changing the count preserves existing glyph data and character mapping
+3. Use the **Append** button to load a font file and add its glyphs after existing ones
+4. This control works for both fixed-width and FZX fonts
+
+### Converting Between Formats
+
+1. Click the **→ FZX** button to convert a fixed-width font to FZX proportional format (calculates visual width per glyph and left-aligns the bitmap)
+2. In FZX mode, click **→ Fixed** to convert back (clips to 8×8, applies shift offsets)
+
+### Setting Up Character Mapping
+
+1. Select a starting glyph in the grid
+2. Type the characters to map in the **Characters** field (e.g., `ABCDEFGHIJ`)
+3. Click **Map** — each character maps to consecutive glyphs
+4. For Cyrillic fonts, use **From (Cyr) / To (Lat)** fields to remap lookalike characters
+
+### Saving Your Font
+
+1. Click **Save** — the editor automatically chooses the right action based on your font:
+   - **96 glyphs** → saves `.768` directly (standard ZX Spectrum font)
+   - **21 glyphs** → saves `.udg` directly
+   - **256 glyphs** → a dialog asks Normal or Interlaced (pre-selects the current format)
+   - **117 glyphs** (96+21) → choose between Single file, Font+UDG, or UDG+Font byte order
+   - **>256 glyphs** → a range dialog lets you pick the first glyph and count to export
+   - **Other counts** → saves `.bin` directly
+   - **FZX fonts** → saves `.fzx` directly
+2. Use **Export .metrics** to save character mappings as a JSON file
+3. The `.metrics` file can be imported later to restore your mappings
+
+> **Tip:** The Font Editor shares the same light/dark theme as SpectraLab. Toggle it in either window and the other picks it up on reload.
+
+---
+
+## 20. Tips and Hidden Features
 
 ### Workspace Save/Load
 Save all your open pictures at once with **Save Workspace** in the Xform tab. Load them back later — preserving layers, sprites, settings, and reference images. Workspace buttons are always available in the Xform tab, even without a loaded picture.

@@ -856,6 +856,7 @@ let showAttributes = true;
 /** @type {boolean} - When true, 53c/atr cells render as solid blended colors instead of patterns */
 let attr53cBlend = false;
 
+
 /** @type {Uint8Array} - Current font data (768 bytes = 96 chars × 8 bytes) */
 // Embedded ZX Spectrum ROM font (0x20-0x7F, 96 chars × 8 bytes = 768 bytes)
 // prettier-ignore
@@ -1407,13 +1408,13 @@ function renderPictureStandard(ctx, borderOffset, pic, scrollInfo) {
     blendInkRatio = inkBitCount / 64;
   }
 
-  // For very large images with viewport-capped canvas, only render the visible region
-  const totalPixels = width * height;
-  const LARGE_IMAGE_THRESHOLD = 512 * 512;
+  // When canvas is viewport-capped (scrollInfo present), only render the visible region.
+  // This avoids drawImage scaling the full source to a destination rect much larger than
+  // the canvas, which causes rendering artifacts in some browsers at high zoom levels.
   let clipX0 = 0, clipY0 = 0, clipX1 = width, clipY1 = height;
   let useClipping = false;
 
-  if (totalPixels > LARGE_IMAGE_THRESHOLD && scrollInfo) {
+  if (scrollInfo) {
     const { scrollX, scrollY, viewW, viewH } = scrollInfo;
     // Convert viewport to source pixel coordinates (accounting for border offset)
     clipX0 = Math.max(0, Math.floor((scrollX - borderOffset) / zoom));
@@ -4856,7 +4857,7 @@ function renderScreen() {
   // For images under the huge-canvas threshold, use full logical size
   // so scrolling is handled natively by the browser (no sticky + transform needed).
   // Above the threshold, cap to viewport size and use sticky + scroll transform.
-  const HUGE_CANVAS_THRESHOLD = 4096 * 4096;
+  const HUGE_CANVAS_THRESHOLD = 8192 * 8192;
   const useFullCanvas = !isBscLike && (logicalWidth * logicalHeight) <= HUGE_CANVAS_THRESHOLD;
   if (isBscLike || useFullCanvas) {
     canvasW = Math.ceil(logicalWidth);
@@ -5826,30 +5827,30 @@ function loadSettings() {
       if (blendCb) /** @type {HTMLInputElement} */ (blendCb).checked = attr53cBlend;
     }
 
-    // Apply 53c sort mode
+    // Apply 53c sort mode (variable declared in screen_editor.js, may not exist yet)
     if (settings.attr53cSort !== undefined) {
-      attr53cSortMode = settings.attr53cSort;
+      if (typeof attr53cSortMode !== 'undefined') attr53cSortMode = settings.attr53cSort;
       const sortRadio = /** @type {HTMLInputElement|null} */ (document.querySelector(`input[name="attr53cSort"][value="${settings.attr53cSort}"]`));
       if (sortRadio) sortRadio.checked = true;
     }
 
     // Apply 53c sort reverse
     if (settings.attr53cSortReverse !== undefined) {
-      attr53cSortReverse = settings.attr53cSortReverse;
+      if (typeof attr53cSortReverse !== 'undefined') attr53cSortReverse = settings.attr53cSortReverse;
       const reverseCb = document.getElementById('attr53cSortReverse');
       if (reverseCb) /** @type {HTMLInputElement} */ (reverseCb).checked = attr53cSortReverse;
     }
 
-    // Apply Next palette sort mode
+    // Apply Next palette sort mode (variable declared in screen_editor.js, may not exist yet)
     if (settings.nxiSort !== undefined) {
-      nxiSortMode = settings.nxiSort;
+      if (typeof nxiSortMode !== 'undefined') nxiSortMode = settings.nxiSort;
       const sortRadio = /** @type {HTMLInputElement|null} */ (document.querySelector(`input[name="nxiSort"][value="${settings.nxiSort}"]`));
       if (sortRadio) sortRadio.checked = true;
     }
 
     // Apply Next palette sort reverse
     if (settings.nxiSortReverse !== undefined) {
-      nxiSortReverse = settings.nxiSortReverse;
+      if (typeof nxiSortReverse !== 'undefined') nxiSortReverse = settings.nxiSortReverse;
       const reverseCb = document.getElementById('nxiSortReverse');
       if (reverseCb) /** @type {HTMLInputElement} */ (reverseCb).checked = nxiSortReverse;
     }
