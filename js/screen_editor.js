@@ -823,6 +823,27 @@ function getNxiPaletteEntryCount() {
 }
 
 /**
+ * Checks if the current nxiResolvedPalette differs from the default palette.
+ * @param {number} count - Number of entries to compare (16 or 256)
+ * @returns {boolean} True if palette has been modified
+ */
+function checkNextPaletteModified(count) {
+  if (!nxiResolvedPalette || nxiResolvedPalette.length < count) return false;
+  const defPal = count <= 16
+    ? (typeof generateDefaultNext4bppPalette === 'function' ? generateDefaultNext4bppPalette() : null)
+    : (typeof generateDefaultNextPalette === 'function' ? generateDefaultNextPalette() : null);
+  if (!defPal) return false;
+  for (let i = 0; i < count && i < defPal.length; i++) {
+    if (nxiResolvedPalette[i][0] !== defPal[i][0] ||
+        nxiResolvedPalette[i][1] !== defPal[i][1] ||
+        nxiResolvedPalette[i][2] !== defPal[i][2]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Rewrites every pixel index in the current Next screen data using map[i] → new index.
  * Handles 8bpp (NXI/SL2 256x192 or 320x256, LoRes) and 4bpp packed (NXI/SL2 640x256, LoRes Radastan).
  * Used to preserve drawn colors when reordering palette entries.
@@ -2251,6 +2272,10 @@ function scheduleRender() {
   }
 }
 
+/** @type {{x0:number,y0:number,x1:number,y1:number,ctrl:boolean,alt:boolean}|null}
+ *  Active tool preview state — persisted so any render cycle can redraw the overlay */
+let activeToolPreview = null;
+
 /** @type {Uint8Array[]} - Undo stack (multi-level) */
 let undoStack = [];
 
@@ -2722,6 +2747,7 @@ function saveCurrentPictureState() {
   // Save NXI/SL2 palette and Layer 2 mode if present
   pic.nxiResolvedPalette = nxiResolvedPalette ? nxiResolvedPalette.map(c => [...c]) : null;
   pic.nxiLayer2Mode = nxiLayer2Mode;
+  pic.radPaletteSize = radPaletteSize;
   // Save internal picture format (deep clone to avoid shared references)
   pic.picture = clonePicture(currentPicture);
   // Save SPECSCII grids if active
@@ -2844,6 +2870,7 @@ function loadPictureState(index) {
     nxiResolvedPalette = null;
   }
   nxiLayer2Mode = pic.nxiLayer2Mode || '256x192';
+  radPaletteSize = pic.radPaletteSize || 0;
 
   // Restore internal picture format (deep clone to avoid shared references)
   currentPicture = clonePicture(pic.picture);
@@ -2933,6 +2960,7 @@ function addPicture(fileName, format, data, internalPicture, skipSave) {
     ulaNextPalette: ulaNextPalette ? ulaNextPalette.map(c => [...c]) : null,
     nxiResolvedPalette: nxiResolvedPalette ? nxiResolvedPalette.map(c => [...c]) : null,
     nxiLayer2Mode: nxiLayer2Mode,
+    radPaletteSize: radPaletteSize,
     // Internal picture format (deep clone to avoid shared references)
     picture: clonePicture(currentPicture),
     // Grids will be parsed from screenData when editor is activated
@@ -3163,6 +3191,10 @@ function updatePictureTabBar() {
  */
 function getBitmapAddress(x, y) {
   const charCol = Math.floor(x / 8);
+  // GMX/GMX160: linear layout (80 cols × 200 rows, no interleaving)
+  if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) {
+    return y * 80 + charCol;
+  }
   // ZXP/chr$: linear layout (row-major, no interleaving)
   if (currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) {
     const cols = getFormatWidth() >> 3;
@@ -3183,6 +3215,14 @@ function getBitmapAddress(x, y) {
  */
 function getAttributeAddress(x, y) {
   const charCol = Math.floor(x / 8);
+  // GMX: attrs at offset 16384, linear (80 cols × 200 rows, attrCellHeight=1)
+  if (currentFormat === FORMAT.GMX) {
+    return GMX.ATTR_OFFSET + y * 80 + charCol;
+  }
+  // GMX160: attrs at offset 128 (header size), linear (80 cols × 200 rows)
+  if (currentFormat === FORMAT.GMX160) {
+    return GMX160.HEADER_SIZE + y * 80 + charCol;
+  }
   // ZXP/chr$: linear attrs after bitmap, using picture's attrCellHeight
   if ((currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) && currentPicture) {
     const cols = currentPicture.width >> 3;
@@ -3215,7 +3255,34 @@ function getIflAttributeAddress(x, y) {
  */
 function getMltAttributeAddress(x, y) {
   const charCol = Math.floor(x / 8);
+  // mlt_ula (Timex Hi-Colour): attrs use ZX-interleaved addressing in screenData
+  if (currentPicture && currentPicture.sourceFormat === 'mlt_ula') {
+    const third = Math.floor(y / 64);
+    const charRow = Math.floor((y % 64) / 8);
+    const pixelLine = y % 8;
+    return MLT.BITMAP_SIZE + third * 2048 + pixelLine * 256 + charRow * 32 + charCol;
+  }
   return MLT.BITMAP_SIZE + y * 32 + charCol;  // One attr row per pixel line
+}
+
+/**
+ * Returns the index into layer.attributes[] for MLT format.
+ * For standard MLT, layer attrs are stored linearly (matching screenData layout).
+ * For mlt_ula, layer attrs are stored in ZX-interleaved order (matching screenData layout).
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+function getMltLayerAttrIndex(x, y) {
+  const charCol = Math.floor(x / 8);
+  // mlt_ula: layer attrs mirror screenData layout (ZX-interleaved byte order)
+  if (currentPicture && currentPicture.sourceFormat === 'mlt_ula') {
+    const third = Math.floor(y / 64);
+    const charRow = Math.floor((y % 64) / 8);
+    const pixelLine = y % 8;
+    return third * 2048 + pixelLine * 256 + charRow * 32 + charCol;
+  }
+  return y * 32 + charCol;
 }
 
 /**
@@ -3279,6 +3346,12 @@ function setPixel(data, x, y, isInk) {
   // 53c attribute-only format: set cell attribute, no bitmap
   if (currentFormat === FORMAT.ATTR_53C) {
     recolorCell53c(x, y);
+    return;
+  }
+
+  // GMX160: attribute-only format (bitmap is fixed 0x0F)
+  if (currentFormat === FORMAT.GMX160) {
+    recolorCell(x, y);
     return;
   }
 
@@ -3449,7 +3522,22 @@ function setPixel(data, x, y, isInk) {
   }
 
   // Set the attribute for this cell to current ink/paper/bright
-  const attr = getCurrentDrawingAttribute();
+  let attr = getCurrentDrawingAttribute();
+
+  // MLT (8×1 cells): in Timex Hi-Colour images bitmap is typically 0xFF (all ink).
+  // Clear the fully-set byte before drawing so only the drawn pixel is ink.
+  // Partially-set bytes (from prior drawing) are left alone to accumulate pixels.
+  if (currentFormat === FORMAT.MLT && isInk &&
+      !(layersEnabled && layers.length > 0 && activeLayerIndex > 0)) {
+    if (data[bitmapAddr] === 0xFF) {
+      const drawnMask = (1 << bit);
+      data[bitmapAddr] = drawnMask;
+      if (layersEnabled && layers.length > 0 && activeLayerIndex === 0) {
+        const layer = layers[0];
+        if (layer) layer.bitmap[bitmapAddr] = drawnMask;
+      }
+    }
+  }
 
   // MLT uses 8×1 blocks (192 rows), IFL uses 8×2 blocks (96 rows), BMC4 uses 8×4 blocks (48 rows), SCR uses 8×8 cells (24 rows)
   const attrAddr = currentFormat === FORMAT.MLT ? getMltAttributeAddress(x, y) :
@@ -3473,11 +3561,14 @@ function setPixel(data, x, y, isInk) {
           layer.attributes2[attrIdx] = attr;
         }
       } else if (currentFormat === FORMAT.MLT) {
-        const attrIdx = y * 32 + Math.floor(x / 8);
+        const attrIdx = getMltLayerAttrIndex(x, y);
         layer.attributes[attrIdx] = attr;
       } else if (currentFormat === FORMAT.IFL) {
         const attrRow = Math.floor(y / 2);
         const attrIdx = attrRow * 32 + Math.floor(x / 8);
+        layer.attributes[attrIdx] = attr;
+      } else if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) {
+        const attrIdx = y * 80 + Math.floor(x / 8);
         layer.attributes[attrIdx] = attr;
       } else if ((currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) && currentPicture) {
         const cols = currentPicture.width >> 3;
@@ -3511,11 +3602,14 @@ function setPixel(data, x, y, isInk) {
             layer.attributes2[attrIdx] = attr;
           }
         } else if (currentFormat === FORMAT.MLT) {
-          const attrIdx = y * 32 + Math.floor(x / 8);
+          const attrIdx = getMltLayerAttrIndex(x, y);
           layer.attributes[attrIdx] = attr;
         } else if (currentFormat === FORMAT.IFL) {
           const attrRow = Math.floor(y / 2);
           const attrIdx = attrRow * 32 + Math.floor(x / 8);
+          layer.attributes[attrIdx] = attr;
+        } else if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) {
+          const attrIdx = y * 80 + Math.floor(x / 8);
           layer.attributes[attrIdx] = attr;
         } else if ((currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) && currentPicture) {
           const cols = currentPicture.width >> 3;
@@ -3552,6 +3646,9 @@ function setPixelBitmapOnly(data, x, y, isInk) {
 
   // STL: bitmap is fixed 0x0F -- only attributes change.
   if (currentFormat === FORMAT.STL) return;
+
+  // GMX160: bitmap is fixed 0x0F -- only attributes change.
+  if (currentFormat === FORMAT.GMX160) return;
 
   if (currentFormat === FORMAT.MONO_2_3 && y >= 128) return;
   if (currentFormat === FORMAT.MONO_1_3 && y >= 64) return;
@@ -3669,11 +3766,14 @@ function setPixelAttributeOnly(data, x, y) {
         layer.attributes2[attrIdx] = attr;
       }
     } else if (currentFormat === FORMAT.MLT) {
-      const attrIdx = y * 32 + Math.floor(x / 8);
+      const attrIdx = getMltLayerAttrIndex(x, y);
       layer.attributes[attrIdx] = attr;
     } else if (currentFormat === FORMAT.IFL) {
       const attrRow = Math.floor(y / 2);
       const attrIdx = attrRow * 32 + Math.floor(x / 8);
+      layer.attributes[attrIdx] = attr;
+    } else if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) {
+      const attrIdx = y * 80 + Math.floor(x / 8);
       layer.attributes[attrIdx] = attr;
     } else if ((currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) && currentPicture) {
       const cols = currentPicture.width >> 3;
@@ -3842,6 +3942,7 @@ function getLayerBitmapSize() {
   if (isGigascreenEditable()) return SCREEN.BITMAP_SIZE; // Per-frame bitmap size
   if (currentFormat === FORMAT.SPECSCII) return 768; // 32×24 character grid
   if (currentFormat === FORMAT.ATTR_53C) return 768; // 32×24 attribute grid (no bitmap)
+  if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) return 80 * 200; // 16000 bytes (80 cols × 200 rows)
   if (currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 || currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD) return getFormatWidth() * getFormatHeight(); // 1 entry per pixel (row-major layer bitmap)
   if ((currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) && currentPicture) {
     return (currentPicture.width >> 3) * currentPicture.height;
@@ -3892,6 +3993,9 @@ function getLayerAttributeSize() {
   }
   if (currentFormat === FORMAT.SPECSCII) {
     return 768; // 32×24 attribute grid
+  }
+  if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) {
+    return 80 * 200; // 16000 bytes (1 attr per pixel row per col, attrCellHeight=1)
   }
   if ((currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) && currentPicture) {
     const cols = currentPicture.width >> 3;
@@ -3995,6 +4099,12 @@ function initLayers() {
         bgBitmap[i] = screenData[pixOff + i];
       }
     }
+  } else if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) {
+    bgMask.fill(1);
+    // GMX: copy linear bitmap; GMX160: fill with fixed 0x0F pattern
+    for (let i = 0; i < bitmapSize; i++) {
+      bgBitmap[i] = currentFormat === FORMAT.GMX160 ? GMX160.PIXEL_BYTE : screenData[i];
+    }
   } else {
     bgMask.fill(1); // Non-SPECSCII: background is fully opaque
     for (let i = 0; i < bitmapSize; i++) {
@@ -4045,6 +4155,13 @@ function initLayers() {
       bgLayer.bitmap2 = new Uint8Array(bitmapSize);
       for (let i = 0; i < bitmapSize; i++) {
         bgLayer.bitmap2[i] = screenData[gigaFS + i];
+      }
+    } else if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) {
+      // GMX/GMX160: attrs at format-specific offset
+      const attrOff = currentFormat === FORMAT.GMX ? GMX.ATTR_OFFSET : GMX160.HEADER_SIZE;
+      bgLayer.attributes = new Uint8Array(attrSize);
+      for (let i = 0; i < attrSize && (attrOff + i) < screenData.length; i++) {
+        bgLayer.attributes[i] = screenData[attrOff + i];
       }
     } else {
       // SCR/BSC/IFL/MLT: single attribute bank
@@ -4411,6 +4528,57 @@ function flattenLayersToScreen() {
     return;
   }
 
+  // GMX/GMX160: linear bitmap compositing (80 cols × 200 rows)
+  if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) {
+    const gmxBitmapSize = getLayerBitmapSize(); // 16000
+    const gmxWidth = getFormatWidth();  // 640
+    const gmxHeight = getFormatHeight(); // 200
+    const gmxPixelCount = gmxWidth * gmxHeight;
+
+    // Initialize or resize transparency mask
+    if (!screenTransparencyMask || screenTransparencyMask.length !== gmxPixelCount) {
+      screenTransparencyMask = new Uint8Array(gmxPixelCount);
+    }
+
+    // Start with background layer bitmap
+    const composited = new Uint8Array(gmxBitmapSize);
+    if (layers[0].visible) {
+      composited.set(layers[0].bitmap.subarray(0, gmxBitmapSize));
+    }
+
+    const bgHasContent = layers[0].visible ? 1 : 0;
+    for (let i = 0; i < gmxPixelCount; i++) {
+      screenTransparencyMask[i] = bgHasContent;
+    }
+
+    // Composite upper layers using mask
+    for (let li = 1; li < layers.length; li++) {
+      if (!layers[li].visible) continue;
+      for (let i = 0; i < gmxBitmapSize; i++) {
+        for (let bit = 0; bit < 8; bit++) {
+          const px = i * 8 + bit;
+          if (px < gmxPixelCount && layers[li].mask[px]) {
+            const bitMask = 0x80 >> bit;
+            composited[i] = (composited[i] & ~bitMask) | (layers[li].bitmap[i] & bitMask);
+            screenTransparencyMask[px] = 1;
+          }
+        }
+      }
+    }
+
+    // Write bitmap to screenData (GMX only; GMX160 bitmap is fixed)
+    if (currentFormat === FORMAT.GMX) {
+      screenData.set(composited.subarray(0, gmxBitmapSize), 0);
+    }
+
+    // Flatten attributes
+    flattenAttributesToScreen();
+
+    // Sync internal picture format
+    syncCurrentPicture();
+    return;
+  }
+
   const bitmapSize = getLayerBitmapSize();
   const width = getFormatWidth();
   const height = getFormatHeight();
@@ -4450,6 +4618,7 @@ function flattenLayersToScreen() {
   }
 
   // Composite upper layers (bitmap)
+  const isMlt = currentFormat === FORMAT.MLT;
   for (let layerIdx = 1; layerIdx < layers.length; layerIdx++) {
     const layer = layers[layerIdx];
     if (!layer.visible) continue;
@@ -4461,6 +4630,13 @@ function flattenLayersToScreen() {
           // This pixel is visible on this layer - copy it
           const bitmapAddr = getBitmapAddress(x, y);
           const bitMask = 0x80 >> (x % 8);
+
+          // MLT (8×1 cells): if background byte is 0xFF (all ink), clear it
+          // before compositing so only layer-drawn pixels show as ink.
+          // Unmasked pixels become paper, avoiding 8px color bars.
+          if (isMlt && screenData[bitmapAddr] === 0xFF) {
+            screenData[bitmapAddr] = 0;
+          }
 
           // Frame 1
           if (layer.bitmap[bitmapAddr] & bitMask) {
@@ -4588,6 +4764,36 @@ function flattenAttributesToScreen() {
     return;
   }
 
+  // GMX/GMX160: 80 cols × 200 rows, attrCellHeight=1
+  if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) {
+    const attrOff = currentFormat === FORMAT.GMX ? GMX.ATTR_OFFSET : GMX160.HEADER_SIZE;
+    const attrCols = 80;
+    const attrRows = 200;
+    for (let row = 0; row < attrRows; row++) {
+      for (let col = 0; col < attrCols; col++) {
+        const attrIdx = row * attrCols + col;
+        // Find topmost visible layer with content in this 8×1 cell
+        let ownerLayer = 0;
+        for (let li = layers.length - 1; li > 0; li--) {
+          if (!layers[li].visible) continue;
+          const cellStartX = col * 8;
+          for (let bit = 0; bit < 8; bit++) {
+            const px = row * 640 + cellStartX + bit;
+            if (px < layers[li].mask.length && layers[li].mask[px]) {
+              ownerLayer = li;
+              break;
+            }
+          }
+          if (ownerLayer > 0) break;
+        }
+        if (layers[ownerLayer].attributes && attrIdx < layers[ownerLayer].attributes.length) {
+          screenData[attrOff + attrIdx] = layers[ownerLayer].attributes[attrIdx];
+        }
+      }
+    }
+    return;
+  }
+
   // SCR/BSC/IFL/MLT: single attribute bank
   // Calculate cell dimensions based on format
   let cellHeight;
@@ -4602,23 +4808,33 @@ function flattenAttributesToScreen() {
   const attrCols = 32;
   const attrRows = height / cellHeight;
 
+  // mlt_ula: both layer attrs and screenData use ZX-interleaved byte order
+  const isMltUla = currentFormat === FORMAT.MLT && currentPicture &&
+    currentPicture.sourceFormat === 'mlt_ula';
+
   for (let attrRow = 0; attrRow < attrRows; attrRow++) {
     for (let attrCol = 0; attrCol < attrCols; attrCol++) {
       const cellStartX = attrCol * cellWidth;
       const cellStartY = attrRow * cellHeight;
-      const attrIdx = attrRow * attrCols + attrCol;
+      // For mlt_ula, use ZX-interleaved index for both layer attrs and screenData
+      const attrIdx = isMltUla
+        ? getMltLayerAttrIndex(cellStartX, cellStartY)
+        : attrRow * attrCols + attrCol;
+      const scrOff = isMltUla
+        ? getMltAttributeAddress(cellStartX, cellStartY)
+        : bitmapSize + attrIdx;
 
       // Find topmost visible layer with content AND attributes in this cell
       const ownerLayer = findLayerOwnerForRegionWithAttributes(cellStartX, cellStartY, cellWidth, cellHeight);
 
       if (ownerLayer && ownerLayer.attributes && attrIdx < ownerLayer.attributes.length) {
-        screenData[bitmapSize + attrIdx] = ownerLayer.attributes[attrIdx];
+        screenData[scrOff] = ownerLayer.attributes[attrIdx];
       } else if (layers[0].visible && layers[0].attributes && attrIdx < layers[0].attributes.length) {
         // Fallback to background layer
-        screenData[bitmapSize + attrIdx] = layers[0].attributes[attrIdx];
+        screenData[scrOff] = layers[0].attributes[attrIdx];
       } else {
         // No owner found - use default (ink=7, paper=0)
-        screenData[bitmapSize + attrIdx] = buildAttribute(7, 0, false, false);
+        screenData[scrOff] = buildAttribute(7, 0, false, false);
       }
     }
   }
@@ -5027,6 +5243,10 @@ function saveProject() {
         // BMC4: two attribute banks
         layerData.attributes = arrayToBase64(screenData.slice(BMC4.ATTR1_OFFSET, BMC4.ATTR1_OFFSET + BMC4.ATTR1_SIZE));
         layerData.attributes2 = arrayToBase64(screenData.slice(BMC4.ATTR2_OFFSET, BMC4.ATTR2_OFFSET + BMC4.ATTR2_SIZE));
+      } else if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) {
+        // GMX/GMX160: attrs at format-specific offset
+        const attrOff = currentFormat === FORMAT.GMX ? GMX.ATTR_OFFSET : GMX160.HEADER_SIZE;
+        layerData.attributes = arrayToBase64(screenData.slice(attrOff, attrOff + attrSize));
       } else {
         // SCR/BSC/IFL/MLT: single attribute bank
         layerData.attributes = arrayToBase64(screenData.slice(bitmapSize, bitmapSize + attrSize));
@@ -6377,7 +6597,9 @@ function drawDeferredStrokePreview() {
   if (!deferredStrokePath || deferredStrokePath.length < 2) return;
   const ctx = screenCanvas.getContext('2d');
   const bpx = borderSize * zoom;
+  const scaleX = getPixelScaleX();
   const scaleY = getPixelScaleY();
+  const zoomX = zoom * scaleX;
   const zoomY = zoom * scaleY;
 
   // Interpolate for smooth preview
@@ -6388,9 +6610,9 @@ function drawDeferredStrokePreview() {
   ctx.lineWidth = Math.max(1, zoom * 0.5);
   ctx.globalAlpha = 0.7;
   ctx.beginPath();
-  ctx.moveTo(smooth[0].x * zoom + bpx + zoom / 2, smooth[0].y * zoomY + bpx + zoomY / 2);
+  ctx.moveTo(smooth[0].x * zoomX + bpx + zoomX / 2, smooth[0].y * zoomY + bpx + zoomY / 2);
   for (let i = 1; i < smooth.length; i++) {
-    ctx.lineTo(smooth[i].x * zoom + bpx + zoom / 2, smooth[i].y * zoomY + bpx + zoomY / 2);
+    ctx.lineTo(smooth[i].x * zoomX + bpx + zoomX / 2, smooth[i].y * zoomY + bpx + zoomY / 2);
   }
   ctx.stroke();
   ctx.restore();
@@ -6404,7 +6626,9 @@ function drawDeferredStrokePreview() {
 function drawDeferredStrokeSegment(from, to) {
   const ctx = screenCanvas.getContext('2d');
   const bpx = borderSize * zoom;
+  const scaleX = getPixelScaleX();
   const scaleY = getPixelScaleY();
+  const zoomX = zoom * scaleX;
   const zoomY = zoom * scaleY;
 
   ctx.save();
@@ -6412,8 +6636,8 @@ function drawDeferredStrokeSegment(from, to) {
   ctx.lineWidth = Math.max(1, zoom * 0.5);
   ctx.globalAlpha = 0.7;
   ctx.beginPath();
-  ctx.moveTo(from.x * zoom + bpx + zoom / 2, from.y * zoomY + bpx + zoomY / 2);
-  ctx.lineTo(to.x * zoom + bpx + zoom / 2, to.y * zoomY + bpx + zoomY / 2);
+  ctx.moveTo(from.x * zoomX + bpx + zoomX / 2, from.y * zoomY + bpx + zoomY / 2);
+  ctx.lineTo(to.x * zoomX + bpx + zoomX / 2, to.y * zoomY + bpx + zoomY / 2);
   ctx.stroke();
   ctx.restore();
 }
@@ -6988,6 +7212,21 @@ function getPixelState(x, y) {
     return screenData[addr];
   }
 
+  // GMX160 attribute-only: return the attribute byte as pixel state
+  if (currentFormat === FORMAT.GMX160) {
+    const attrAddr = getAttributeAddress(x, y);
+    if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
+      const layer = layers[activeLayerIndex];
+      if (layer) {
+        const attrIdx = y * 80 + Math.floor(x / 8);
+        const px = y * 640 + x;
+        if (!layer.mask[px]) return -1;
+        return layer.attributes ? layer.attributes[attrIdx] : 0;
+      }
+    }
+    return screenData[attrAddr];
+  }
+
   // LoRes: return palette index (128×96, row-major)
   if (currentFormat === FORMAT.LORES) {
     const flatIdx = y * LORES.WIDTH + x;
@@ -7168,6 +7407,12 @@ function floodFill(startX, startY, isInk) {
     return;
   }
 
+  // GMX160 attribute-only: flood fill on 80×200 cell grid
+  if (currentFormat === FORMAT.GMX160) {
+    floodFillGmx160(Math.floor(startX / 8), startY);
+    return;
+  }
+
   // Check if filling with transparent color (not available in ULA+ mode)
   const usingTransparent = isInk ? isInkTransparent() : isPaperTransparent();
 
@@ -7283,6 +7528,44 @@ function floodFill53c(cellX, cellY) {
 }
 
 /**
+ * Flood fill for GMX160 attribute-only format, operating on 80×200 cell grid.
+ * @param {number} cellX - Cell column (0-79)
+ * @param {number} cellY - Cell row (0-199)
+ */
+function floodFillGmx160(cellX, cellY) {
+  const cols = 80;
+  const rows = 200;
+  if (cellX < 0 || cellX >= cols || cellY < 0 || cellY >= rows) return;
+
+  const attrOff = GMX160.HEADER_SIZE;
+  const targetAttr = screenData[attrOff + cellY * cols + cellX];
+  const fillAttr = getCurrentDrawingAttribute();
+  if (targetAttr === fillAttr) return;
+
+  const visited = new Uint8Array(cols * rows);
+  const stack = [[cellX, cellY]];
+
+  while (stack.length > 0) {
+    const [cx, cy] = stack.pop();
+    if (cx < 0 || cx >= cols || cy < 0 || cy >= rows) continue;
+
+    const idx = cy * cols + cx;
+    if (visited[idx]) continue;
+    if (screenData[attrOff + idx] !== targetAttr) continue;
+
+    visited[idx] = 1;
+    screenData[attrOff + idx] = fillAttr;
+
+    stack.push([cx - 1, cy]);
+    stack.push([cx + 1, cy]);
+    stack.push([cx, cy - 1]);
+    stack.push([cx, cy + 1]);
+  }
+
+  syncCurrentPicture();
+}
+
+/**
  * Sets a pixel without brush logic - used by flood fill
  * @param {number} x
  * @param {number} y
@@ -7296,6 +7579,12 @@ function setPixelDirect(x, y, isInk) {
   // 53c attribute-only format: set cell attribute, no bitmap
   if (currentFormat === FORMAT.ATTR_53C) {
     recolorCell53c(x, y);
+    return;
+  }
+
+  // GMX160: attribute-only format (bitmap is fixed 0x0F)
+  if (currentFormat === FORMAT.GMX160) {
+    recolorCell(x, y);
     return;
   }
 
@@ -7413,7 +7702,7 @@ function setPixelDirect(x, y, isInk) {
   // Standard formats with attributes (SCR, IFL, MLT, BMC4, BSC)
   const bitmapAddr = getBitmapAddress(x, y);
   const bitMask = 0x80 >> (x % 8);
-  const attr = getCurrentDrawingAttribute();
+  let attr = getCurrentDrawingAttribute();
 
   // Update attribute address based on format
   let attrAddr;
@@ -7425,6 +7714,18 @@ function setPixelDirect(x, y, isInk) {
     attrAddr = getBmc4AttributeAddress(x, y);
   } else {
     attrAddr = getAttributeAddress(x, y);
+  }
+
+  // MLT (8×1 cells): same bitmap clearing as in setPixel
+  if (currentFormat === FORMAT.MLT && isInk &&
+      !(layersEnabled && layers.length > 0 && activeLayerIndex > 0)) {
+    if (screenData[bitmapAddr] === 0xFF) {
+      screenData[bitmapAddr] = bitMask;
+      if (layersEnabled && layers.length > 0 && activeLayerIndex === 0) {
+        const layer = layers[0];
+        if (layer) layer.bitmap[bitmapAddr] = bitMask;
+      }
+    }
   }
 
   // When layers are enabled and on non-background layer, only modify layer data
@@ -7449,11 +7750,14 @@ function setPixelDirect(x, y, isInk) {
             layer.attributes2[attrIdx] = attr;
           }
         } else if (currentFormat === FORMAT.MLT) {
-          const attrIdx = y * 32 + Math.floor(x / 8);
+          const attrIdx = getMltLayerAttrIndex(x, y);
           layer.attributes[attrIdx] = attr;
         } else if (currentFormat === FORMAT.IFL) {
           const attrRow = Math.floor(y / 2);
           const attrIdx = attrRow * 32 + Math.floor(x / 8);
+          layer.attributes[attrIdx] = attr;
+        } else if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) {
+          const attrIdx = y * 80 + Math.floor(x / 8);
           layer.attributes[attrIdx] = attr;
         } else if ((currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) && currentPicture) {
           const cols = currentPicture.width >> 3;
@@ -7494,11 +7798,14 @@ function setPixelDirect(x, y, isInk) {
               layer.attributes2[attrIdx] = attr;
             }
           } else if (currentFormat === FORMAT.MLT) {
-            const attrIdx = y * 32 + Math.floor(x / 8);
+            const attrIdx = getMltLayerAttrIndex(x, y);
             layer.attributes[attrIdx] = attr;
           } else if (currentFormat === FORMAT.IFL) {
             const attrRow = Math.floor(y / 2);
             const attrIdx = attrRow * 32 + Math.floor(x / 8);
+            layer.attributes[attrIdx] = attr;
+          } else if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) {
+            const attrIdx = y * 80 + Math.floor(x / 8);
             layer.attributes[attrIdx] = attr;
           } else if ((currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) && currentPicture) {
             const cols = currentPicture.width >> 3;
@@ -7529,6 +7836,19 @@ function setPixelDirect(x, y, isInk) {
 function recolorCell(x, y) {
   // Monochrome and RGB3 formats have no attributes to recolor
   if (currentFormat === FORMAT.MONO_FULL || currentFormat === FORMAT.MONO_2_3 || currentFormat === FORMAT.MONO_1_3 || currentFormat === FORMAT.RGB3) {
+    return;
+  }
+
+  if (currentFormat === FORMAT.GMX) {
+    if (!screenData || screenData.length < GMX.TOTAL_SIZE) return;
+    const attrAddr = getAttributeAddress(x, y);
+    screenData[attrAddr] = getCurrentDrawingAttribute();
+    return;
+  }
+  if (currentFormat === FORMAT.GMX160) {
+    if (!screenData || screenData.length < GMX160.TOTAL_SIZE) return;
+    const attrAddr = getAttributeAddress(x, y);
+    screenData[attrAddr] = getCurrentDrawingAttribute();
     return;
   }
 
@@ -7820,7 +8140,7 @@ function copySelection() {
     const attrs = new Uint8Array(cellCols * attrRows);
     for (let ar = 0; ar < attrRows; ar++) {
       for (let cc = 0; cc < cellCols; cc++) {
-        const srcAddr = MLT.BITMAP_SIZE + (cellLeft + cc) + (rect.top + ar) * 32;
+        const srcAddr = getMltAttributeAddress((cellLeft + cc) * 8, rect.top + ar);
         attrs[ar * cellCols + cc] = screenData[srcAddr];
       }
     }
@@ -8345,7 +8665,7 @@ function executePaste(x, y) {
           const destCol = cellLeft + cc;
           const destRow = y + ar;  // MLT: one attr row per pixel line
           if (destCol < 0 || destCol >= MLT.ATTR_COLS || destRow < 0 || destRow >= MLT.ATTR_ROWS) continue;
-          const destAddr = MLT.BITMAP_SIZE + destCol + destRow * 32;
+          const destAddr = getMltAttributeAddress(destCol * 8, destRow);
           screenData[destAddr] = clipboardData.attrs[ar * clipboardData.cellCols + cc];
         }
       }
@@ -8449,16 +8769,18 @@ function drawSelectionPreview(x0, y0, x1, y1) {
   const borderPixels = getMainScreenOffset();
   const w = right - left + 1;
   const h = bottom - top + 1;
+  const scaleX = getPixelScaleX();
   const scaleY = getPixelScaleY();
+  const zoomX = zoom * scaleX;
   const zoomY = zoom * scaleY;
 
   ctx.strokeStyle = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.SELECTION_COLOR) || 'rgba(0, 255, 255, 0.9)';
   ctx.lineWidth = Math.max(1, zoom / 2);
   ctx.setLineDash([4, 4]);
   ctx.strokeRect(
-    borderPixels + left * zoom,
+    borderPixels + left * zoomX,
     borderPixels + top * zoomY,
-    w * zoom,
+    w * zoomX,
     h * zoomY
   );
   ctx.setLineDash([]);
@@ -8475,16 +8797,18 @@ function drawFinalizedSelectionOverlay() {
   if (!ctx) return;
 
   const borderPixels = getMainScreenOffset();
+  const scaleX = getPixelScaleX();
   const scaleY = getPixelScaleY();
+  const zoomX = zoom * scaleX;
   const zoomY = zoom * scaleY;
 
   ctx.strokeStyle = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.SELECTION_COLOR) || 'rgba(0, 255, 255, 0.9)';
   ctx.lineWidth = Math.max(1, zoom / 2);
   ctx.setLineDash([4, 4]);
   ctx.strokeRect(
-    borderPixels + rect.left * zoom,
+    borderPixels + rect.left * zoomX,
     borderPixels + rect.top * zoomY,
-    rect.width * zoom,
+    rect.width * zoomX,
     rect.height * zoomY
   );
   ctx.setLineDash([]);
@@ -8506,7 +8830,9 @@ function drawPastePreview(x, y) {
   y = snapped.y;
 
   const borderPixels = getMainScreenOffset();
+  const scaleX = getPixelScaleX();
   const scaleY = getPixelScaleY();
+  const zoomX = zoom * scaleX;
   const zoomY = zoom * scaleY;
 
   ctx.save();
@@ -8535,9 +8861,9 @@ function drawPastePreview(x, y) {
 
         ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
         ctx.fillRect(
-          borderPixels + dx * zoom,
+          borderPixels + dx * zoomX,
           borderPixels + dy * zoomY,
-          zoom,
+          zoomX,
           zoomY
         );
       }
@@ -8576,9 +8902,9 @@ function drawPastePreview(x, y) {
 
             ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
             ctx.fillRect(
-              borderPixels + dx * zoom,
+              borderPixels + dx * zoomX,
               borderPixels + dy * zoomY,
-              zoom,
+              zoomX,
               zoomY
             );
           }
@@ -8608,9 +8934,9 @@ function drawPastePreview(x, y) {
 
             ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
             ctx.fillRect(
-              borderPixels + dx * zoom,
+              borderPixels + dx * zoomX,
               borderPixels + dy * zoomY,
-              zoom,
+              zoomX,
               zoomY
             );
           }
@@ -8629,9 +8955,9 @@ function drawPastePreview(x, y) {
   ctx.lineWidth = Math.max(1, zoom / 2);
   ctx.setLineDash([4, 4]);
   ctx.strokeRect(
-    borderPixels + x * zoom,
+    borderPixels + x * zoomX,
     borderPixels + y * zoomY,
-    pw * zoom,
+    pw * zoomX,
     ph * zoomY
   );
   ctx.setLineDash([]);
@@ -8675,8 +9001,9 @@ function canvasToScreenCoords(canvas, event) {
   const scrollY = isViewportCapped && container ? container.scrollTop : 0;
 
   const borderPixels = borderSize * zoom;
+  const scaleX = getPixelScaleX();
   const scaleY = getPixelScaleY();
-  const screenX = Math.floor((canvasX + scrollX - borderPixels) / zoom);
+  const screenX = Math.floor((canvasX + scrollX - borderPixels) / (zoom * scaleX));
   const screenY = Math.floor((canvasY + scrollY - borderPixels) / (zoom * scaleY));
 
   if (screenX < 0 || screenX >= getFormatWidth() || screenY < 0 || screenY >= getFormatHeight()) {
@@ -9227,11 +9554,11 @@ function _handleEditorMouseMoveCoords(event, coords) {
         case EDITOR.TOOL_LINE:
         case EDITOR.TOOL_RECT:
         case EDITOR.TOOL_CIRCLE:
-          // Preview — render then draw overlay
-          editorRender();
+          // Store preview state so editorRender redraws it
           if (toolStartPoint) {
-            drawToolPreview(toolStartPoint.x * 8 + 4, toolStartPoint.y * 8 + 4, g.col * 8 + 4, g.row * 8 + 4);
+            activeToolPreview = { x0: toolStartPoint.x * 8 + 4, y0: toolStartPoint.y * 8 + 4, x1: g.col * 8 + 4, y1: g.row * 8 + 4, ctrl: false, alt: false };
           }
+          editorRender();
           break;
       }
     }
@@ -9287,11 +9614,11 @@ function _handleEditorMouseMoveCoords(event, coords) {
     case EDITOR.TOOL_RECT:
     case EDITOR.TOOL_CIRCLE:
     case EDITOR.TOOL_GRADIENT:
-      // Preview - restore and draw preview (needs synchronous render for overlay)
-      editorRender();
+      // Store preview state so editorRender (and any other render cycle) redraws it
       if (toolStartPoint) {
-        drawToolPreview(toolStartPoint.x, toolStartPoint.y, snapped.x, snapped.y, event.ctrlKey, event.altKey);
+        activeToolPreview = { x0: toolStartPoint.x, y0: toolStartPoint.y, x1: snapped.x, y1: snapped.y, ctrl: event.ctrlKey, alt: event.altKey };
       }
+      editorRender();
       break;
 
     case EDITOR.TOOL_FILL_CELL:
@@ -9374,6 +9701,9 @@ function handleEditorMouseUp(event) {
  * @param {{x:number, y:number}|null} coords
  */
 function _handleEditorMouseUpCoords(event, coords) {
+  // Clear active tool preview — drawing is done, final render below won't need it
+  activeToolPreview = null;
+
   // Finalize selection rectangle on mouse release
   if (isSelecting && selectionStartPoint) {
     if (coords) {
@@ -9547,7 +9877,9 @@ function drawToolPreview(x0, y0, x1, y1, ctrlKey, altKey) {
   if (!ctx) return;
 
   const borderPixels = getMainScreenOffset();
+  const scaleX = getPixelScaleX();
   const scaleY = getPixelScaleY();
+  const zoomX = zoom * scaleX;
   const zoomY = zoom * scaleY;
 
   ctx.strokeStyle = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.TOOL_PREVIEW_COLOR) || 'rgba(255, 255, 0, 0.8)';
@@ -9555,8 +9887,8 @@ function drawToolPreview(x0, y0, x1, y1, ctrlKey, altKey) {
 
   ctx.beginPath();
   if (currentTool === EDITOR.TOOL_LINE || currentTool === EDITOR.TOOL_GRADIENT) {
-    ctx.moveTo(borderPixels + x0 * zoom + zoom / 2, borderPixels + y0 * zoomY + zoomY / 2);
-    ctx.lineTo(borderPixels + x1 * zoom + zoom / 2, borderPixels + y1 * zoomY + zoomY / 2);
+    ctx.moveTo(borderPixels + x0 * zoomX + zoomX / 2, borderPixels + y0 * zoomY + zoomY / 2);
+    ctx.lineTo(borderPixels + x1 * zoomX + zoomX / 2, borderPixels + y1 * zoomY + zoomY / 2);
   } else if (currentTool === EDITOR.TOOL_RECT) {
     // Apply shape modifiers (Ctrl = square, Alt = from center)
     const mod = applyShapeModifiers(x0, y0, x1, y1, ctrlKey, altKey);
@@ -9564,7 +9896,7 @@ function drawToolPreview(x0, y0, x1, y1, ctrlKey, altKey) {
     const top = Math.min(mod.y0, mod.y1);
     const width = Math.abs(mod.x1 - mod.x0) + 1;
     const height = Math.abs(mod.y1 - mod.y0) + 1;
-    ctx.rect(borderPixels + left * zoom, borderPixels + top * zoomY, width * zoom, height * zoomY);
+    ctx.rect(borderPixels + left * zoomX, borderPixels + top * zoomY, width * zoomX, height * zoomY);
   } else if (currentTool === EDITOR.TOOL_CIRCLE) {
     // Apply shape modifiers (Ctrl = circle, Alt = from center)
     const mod = applyShapeModifiers(x0, y0, x1, y1, ctrlKey, altKey);
@@ -9572,9 +9904,9 @@ function drawToolPreview(x0, y0, x1, y1, ctrlKey, altKey) {
     const top = Math.min(mod.y0, mod.y1);
     const width = Math.abs(mod.x1 - mod.x0) + 1;
     const height = Math.abs(mod.y1 - mod.y0) + 1;
-    const cx = borderPixels + left * zoom + width * zoom / 2;
+    const cx = borderPixels + left * zoomX + width * zoomX / 2;
     const cy = borderPixels + top * zoomY + height * zoomY / 2;
-    const rx = width * zoom / 2;
+    const rx = width * zoomX / 2;
     const ry = height * zoomY / 2;
     ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
   }
@@ -10065,13 +10397,17 @@ function renderPreview() {
   // Set canvas size based on preview zoom, capping for large images
   const prevW = getFormatWidth();
   const prevH = getFormatHeight();
+  const prevScaleX = getPixelScaleX();
   const prevScaleY = getPixelScaleY();
+  // Display dimensions account for non-square pixels (e.g. GMX scaleX=0.5)
+  const displayW = prevW * prevScaleX;
+  const displayH = prevH * prevScaleY;
   // For large images, scale down so preview fits within 256px on the longest side
   const maxPreviewPx = 256;
-  const baseScale = Math.min(1, maxPreviewPx / Math.max(prevW, prevH * prevScaleY));
+  const baseScale = Math.min(1, maxPreviewPx / Math.max(displayW, displayH));
   const effectiveZoom = baseScale * previewZoom;
-  previewCanvas.width = Math.round(prevW * effectiveZoom);
-  previewCanvas.height = Math.round(prevH * prevScaleY * effectiveZoom);
+  previewCanvas.width = Math.round(displayW * effectiveZoom);
+  previewCanvas.height = Math.round(displayH * effectiveZoom);
 
   // Create 1:1 image
   const imageData = ctx.createImageData(prevW, prevH);
@@ -10251,57 +10587,59 @@ function renderPreview() {
     }
   } else if (currentFormat === FORMAT.MLT && screenData.length >= MLT.TOTAL_SIZE) {
     // MLT: render bitmap with 8×1 multicolor attributes (one per pixel line)
-    const sections = [
-      { bitmapAddr: 0, yOffset: 0 },
-      { bitmapAddr: 2048, yOffset: 64 },
-      { bitmapAddr: 4096, yOffset: 128 }
-    ];
+    const isLinearMlt2 = currentPicture && currentPicture.sourceFormat === 'mlt_linear';
+    const isTimexHC2 = currentPicture && currentPicture.sourceFormat === 'mlt_ula';
+    for (let y = 0; y < 192; y++) {
+      const third2 = (y >> 6);
+      const charRow2 = (y >> 3) & 7;
+      const pixelLine2 = y & 7;
+      const interleavedOff2 = third2 * 2048 + charRow2 * 32 + pixelLine2 * 256;
+      for (let col = 0; col < 32; col++) {
+        let byte;
+        if (isLinearMlt2) {
+          byte = screenData[y * 32 + col];
+        } else {
+          byte = screenData[interleavedOff2 + col];
+        }
 
-    for (const section of sections) {
-      for (let line = 0; line < 8; line++) {
-        for (let row = 0; row < 8; row++) {
-          for (let col = 0; col < 32; col++) {
-            const bitmapOffset = section.bitmapAddr + col + row * 32 + line * 256;
-            const byte = screenData[bitmapOffset];
+        const x = col * 8;
 
-            const x = col * 8;
-            const y = section.yOffset + row * 8 + line;
+        // MLT: attribute per 8×1 block (192 rows total, one per pixel line)
+        // mlt_ula (Timex Hi-Colour): attrs also use ZX-interleaved layout
+        const attrOffset = isTimexHC2
+          ? MLT.BITMAP_SIZE + interleavedOff2 + col
+          : MLT.BITMAP_SIZE + y * 32 + col;
+        const attr = screenData[attrOffset];
 
-            // MLT: attribute per 8×1 block (192 rows total, one per pixel line)
-            const attrOffset = MLT.BITMAP_SIZE + y * 32 + col;
-            const attr = screenData[attrOffset];
+        // Use getColorsRgb to support ULA+ mode
+        const colors = getColorsRgb(attr);
+        let inkRgb = colors.inkRgb;
+        let paperRgb = colors.paperRgb;
 
-            // Use getColorsRgb to support ULA+ mode
-            const colors = getColorsRgb(attr);
-            let inkRgb = colors.inkRgb;
-            let paperRgb = colors.paperRgb;
+        const isFlash = (attr & 0x80) !== 0;
+        if (isFlash && flashPhase && flashEnabled) {
+          const tmp = inkRgb;
+          inkRgb = paperRgb;
+          paperRgb = tmp;
+        }
 
-            const isFlash = (attr & 0x80) !== 0;
-            if (isFlash && flashPhase && flashEnabled) {
-              const tmp = inkRgb;
-              inkRgb = paperRgb;
-              paperRgb = tmp;
-            }
-
-            for (let bit = 0; bit < 8; bit++) {
-              const px = x + bit;
-              const maskIdx = y * prevW + px;
-              const pixelIndex = maskIdx * 4;
-              if (typeof isPixelTransparent === 'function' && isPixelTransparent(maskIdx)) {
-                const checker = getCheckerboardColor(px, y);
-                data[pixelIndex] = checker[0];
-                data[pixelIndex + 1] = checker[1];
-                data[pixelIndex + 2] = checker[2];
-              } else {
-                const isSet = (byte & (0x80 >> bit)) !== 0;
-                const rgb = isSet ? inkRgb : paperRgb;
-                data[pixelIndex] = rgb[0];
-                data[pixelIndex + 1] = rgb[1];
-                data[pixelIndex + 2] = rgb[2];
-              }
-              data[pixelIndex + 3] = 255;
-            }
+        for (let bit = 0; bit < 8; bit++) {
+          const px = x + bit;
+          const maskIdx = y * prevW + px;
+          const pixelIndex = maskIdx * 4;
+          if (typeof isPixelTransparent === 'function' && isPixelTransparent(maskIdx)) {
+            const checker = getCheckerboardColor(px, y);
+            data[pixelIndex] = checker[0];
+            data[pixelIndex + 1] = checker[1];
+            data[pixelIndex + 2] = checker[2];
+          } else {
+            const isSet = (byte & (0x80 >> bit)) !== 0;
+            const rgb = isSet ? inkRgb : paperRgb;
+            data[pixelIndex] = rgb[0];
+            data[pixelIndex + 1] = rgb[1];
+            data[pixelIndex + 2] = rgb[2];
           }
+          data[pixelIndex + 3] = 255;
         }
       }
     }
@@ -10548,20 +10886,30 @@ function renderPreview() {
         }
       }
     }
-  } else if ((currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) && currentPicture && screenData) {
-    // ZXP/chr$: linear bitmap + linear attributes
+  } else if ((currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR || currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) && currentPicture && screenData) {
+    // ZXP/chr$/GMX: linear bitmap + linear attributes
+    // GMX/GMX160: read from Picture planes (screenData is raw file format with headers/padding)
+    const isGmxPicture = currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160;
     const cols = currentPicture.width >> 3;
     const bitmapSize = cols * prevH;
     const attrCellH = currentPicture.attrCellHeight || 8;
 
+    // Sync picture from screenData for GMX formats so edits are reflected
+    if (isGmxPicture && typeof syncPictureFromScreenData === 'function') {
+      syncPictureFromScreenData(screenData, currentPicture);
+    }
+
+    const picBitmap = isGmxPicture ? currentPicture.planes[0].bitmap : null;
+    const picAttrs = isGmxPicture ? currentPicture.planes[0].attrs : null;
+
     for (let y = 0; y < prevH; y++) {
       const bitmapRowBase = y * cols;
       const attrRow = Math.floor(y / attrCellH);
-      const attrRowBase = bitmapSize + attrRow * cols;
+      const attrRowBase = isGmxPicture ? (attrRow * cols) : (bitmapSize + attrRow * cols);
 
       for (let col = 0; col < cols; col++) {
-        const byte = screenData[bitmapRowBase + col];
-        const attr = screenData[attrRowBase + col];
+        const byte = isGmxPicture ? picBitmap[bitmapRowBase + col] : screenData[bitmapRowBase + col];
+        const attr = isGmxPicture ? picAttrs[attrRowBase + col] : screenData[attrRowBase + col];
         const { inkRgb, paperRgb } = getColorsRgb(attr);
 
         const x = col * 8;
@@ -10633,6 +10981,55 @@ function renderPreview() {
         data[dstIdx + 3] = 255;
       }
     }
+  } else if (currentFormat === FORMAT.MLT && screenData.length >= MLT.TOTAL_SIZE) {
+    // MLT preview: determine if bitmap is linear or ZX-interleaved
+    const isLinearMlt = currentPicture && currentPicture.sourceFormat === 'mlt_linear';
+    const isTimexHC = currentPicture && currentPicture.sourceFormat === 'mlt_ula';
+    for (let y = 0; y < 192; y++) {
+      const third = (y >> 6);
+      const charRow = (y >> 3) & 7;
+      const pixelLine = y & 7;
+      const interleavedOff = third * 2048 + charRow * 32 + pixelLine * 256;
+      for (let col = 0; col < 32; col++) {
+        let byte;
+        if (isLinearMlt) {
+          // Linear bitmap: row-major
+          byte = screenData[y * 32 + col];
+        } else {
+          // ZX-interleaved bitmap
+          byte = screenData[interleavedOff + col];
+        }
+        // MLT: one attr per pixel row
+        // mlt_ula (Timex Hi-Colour): attrs also ZX-interleaved
+        const attr = isTimexHC
+          ? screenData[6144 + interleavedOff + col]
+          : screenData[6144 + y * 32 + col];
+        const colors = getColorsRgb(attr);
+        let ink = colors.inkRgb;
+        let paper = colors.paperRgb;
+        if (!isUlaPlusMode && !isUlaNextMode) {
+          const isFlash = (attr & 0x80) !== 0;
+          if (isFlash && flashPhase && flashEnabled) {
+            const tmp = ink; ink = paper; paper = tmp;
+          }
+        }
+        const x = col * 8;
+        for (let bit = 0; bit < 8; bit++) {
+          const px = x + bit;
+          const maskIdx = y * prevW + px;
+          const pixelIndex = maskIdx * 4;
+          if (typeof isPixelTransparent === 'function' && isPixelTransparent(maskIdx)) {
+            const checker = getCheckerboardColor(px, y);
+            data[pixelIndex] = checker[0]; data[pixelIndex + 1] = checker[1]; data[pixelIndex + 2] = checker[2];
+          } else {
+            const isSet = (byte & (0x80 >> bit)) !== 0;
+            const rgb = isSet ? ink : paper;
+            data[pixelIndex] = rgb[0]; data[pixelIndex + 1] = rgb[1]; data[pixelIndex + 2] = rgb[2];
+          }
+          data[pixelIndex + 3] = 255;
+        }
+      }
+    }
   } else if (screenData.length >= SCREEN.TOTAL_SIZE) {
     // SCR: render bitmap + attributes
     const sections = [
@@ -10702,7 +11099,7 @@ function renderPreview() {
   temp.ctx.putImageData(imageData, 0, 0);
 
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(temp.canvas, 0, 0, Math.round(prevW * effectiveZoom), Math.round(prevH * prevScaleY * effectiveZoom));
+  ctx.drawImage(temp.canvas, 0, 0, Math.round(displayW * effectiveZoom), Math.round(displayH * effectiveZoom));
 }
 
 /**
@@ -11352,6 +11749,12 @@ function editorRender(skipPreview = false) {
     if (needsBorderPreview && borderPreviewPos && !isPasting && !isSelecting) {
       drawBorderBrushPreview();
     }
+
+    // Redraw active tool preview (line/rect/circle/gradient) so it persists
+    // across any render cycle (flash timer, etc.)
+    if (activeToolPreview && isDrawing) {
+      drawToolPreview(activeToolPreview.x0, activeToolPreview.y0, activeToolPreview.x1, activeToolPreview.y1, activeToolPreview.ctrl, activeToolPreview.alt);
+    }
   }
 }
 
@@ -11512,9 +11915,12 @@ function saveScrFile(filename) {
     [FORMAT.NXI]: '.nxi',
     [FORMAT.SL2]: '.sl2',
     [FORMAT.LORES]: '.slr',
-    [FORMAT.LORES_RAD]: '.rad'
+    [FORMAT.LORES_RAD]: '.rad',
+    [FORMAT.GMX]: '.c',
+    [FORMAT.GMX160]: '.c'
   };
-  defaultExt = formatExtMap[currentFormat] || '.scr';
+  defaultExt = (currentFormat === FORMAT.MLT && currentPicture && currentPicture.sourceFormat === 'mlt_ula')
+    ? '.scr' : (formatExtMap[currentFormat] || '.scr');
 
   if (currentFormat === FORMAT.CHR && currentPicture && typeof exportChrFile === 'function') {
     // chr$: binary format export (interleaved cells)
@@ -11711,15 +12117,59 @@ function saveScrFile(filename) {
     return;
   }
 
-  if (currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) {
-    // NXI/SL2: save complete file (palette+pixels or raw pixels)
+  if (currentFormat === FORMAT.NXI) {
+    // NXI: palette is synced to screenData via writeNxiPaletteToScreenData — save as-is
+    saveData = new Uint8Array(screenData);
+  } else if (currentFormat === FORMAT.SL2) {
+    // SL2: raw pixels only — palette is not embedded in the file
+    if (checkNextPaletteModified(256)) {
+      if (!confirm('SL2 format does not store a palette. Your custom palette colors will be lost on reload (default palette will be used instead).\n\nSave without palette anyway?')) {
+        return;
+      }
+    }
     saveData = new Uint8Array(screenData);
   } else if (currentFormat === FORMAT.LORES) {
-    // LoRes: save first 12288 bytes (128×96 pixel data)
+    // LoRes: 12288 bytes pixel data, no palette
+    if (checkNextPaletteModified(256)) {
+      if (!confirm('SLR format does not store a palette. Your custom palette colors will be lost on reload (default palette will be used instead).\n\nSave without palette anyway?')) {
+        return;
+      }
+    }
     saveData = screenData.slice(0, LORES.PIXEL_DATA_SIZE);
   } else if (currentFormat === FORMAT.LORES_RAD) {
-    // LoRes Radastan: save 6144 bytes (128×96 4bpp packed nibbles)
-    saveData = screenData.slice(0, LORES_RAD.PIXEL_DATA_SIZE);
+    // LoRes Radastan: preserve original palette format
+    if (radPaletteSize === 32 && nxiResolvedPalette && nxiResolvedPalette.length >= 16) {
+      // RGB333 palette (ZX Next): 6144 + 32 bytes
+      saveData = new Uint8Array(LORES_RAD.TOTAL_SIZE_WITH_PAL);
+      saveData.set(screenData.subarray(0, LORES_RAD.PIXEL_DATA_SIZE), 0);
+      for (let i = 0; i < 16; i++) {
+        const c = nxiResolvedPalette[i];
+        const r3 = Math.round(c[0] * 7 / 255);
+        const g3 = Math.round(c[1] * 7 / 255);
+        const b3 = Math.round(c[2] * 7 / 255);
+        saveData[LORES_RAD.PIXEL_DATA_SIZE + i * 2] = (r3 << 5) | (g3 << 2) | (b3 >> 1);
+        saveData[LORES_RAD.PIXEL_DATA_SIZE + i * 2 + 1] = b3 & 1;
+      }
+    } else if (radPaletteSize === 16 && nxiResolvedPalette && nxiResolvedPalette.length >= 16) {
+      // GRB332 palette (ZX-Uno): 6144 + 16 bytes
+      saveData = new Uint8Array(LORES_RAD.TOTAL_SIZE_WITH_GRB_PAL);
+      saveData.set(screenData.subarray(0, LORES_RAD.PIXEL_DATA_SIZE), 0);
+      for (let i = 0; i < 16; i++) {
+        const c = nxiResolvedPalette[i];
+        const g3 = Math.round(c[1] * 7 / 255);
+        const r3 = Math.round(c[0] * 7 / 255);
+        const b2 = Math.round(c[2] * 3 / 255);
+        saveData[LORES_RAD.PIXEL_DATA_SIZE + i] = (g3 << 5) | (r3 << 2) | b2;
+      }
+    } else {
+      // No embedded palette — warn if user modified colors
+      if (checkNextPaletteModified(16)) {
+        if (!confirm('This RAD file has no embedded palette. Your custom palette colors will be lost on reload (default palette will be used instead).\n\nSave without palette anyway?')) {
+          return;
+        }
+      }
+      saveData = screenData.slice(0, LORES_RAD.PIXEL_DATA_SIZE);
+    }
   } else if (currentFormat === FORMAT.SPECSCII) {
     // SPECSCII: sync grids to stream and save (special case — stream format)
     if (specsciiCharGrid && specsciiAttrGrid) {
@@ -11779,6 +12229,14 @@ function saveScrFile(filename) {
     saveData.set(scrData, 0);
     saveData[SCREEN.TOTAL_SIZE] = ulaNextInkMask;
     saveData.set(palBytes, SCREEN.TOTAL_SIZE + 1);
+  } else if (currentFormat === FORMAT.MLT && currentPicture && currentPicture.sourceFormat === 'mlt_ula') {
+    // MLT+ULA+: ensure palette is current before export
+    if (ulaPlusPalette) currentPicture.palette = ulaPlusPalette.slice();
+    if (typeof syncPictureFromScreenData === 'function') {
+      syncPictureFromScreenData(screenData, currentPicture);
+    }
+    saveData = (typeof exportPicture === 'function') ? exportPicture(currentPicture)
+      : screenData.slice(0, MLT.TOTAL_SIZE_ULAPLUS);
   } else if (currentPicture && typeof exportPicture === 'function') {
     // Use internal picture format export for all formats with currentPicture
     const exported = exportPicture(currentPicture);
@@ -11817,7 +12275,9 @@ function saveScrFile(filename) {
                  currentFormat === FORMAT.SL2 ? 'screen.sl2' :
                  currentFormat === FORMAT.LORES ? 'screen.slr' :
                  currentFormat === FORMAT.LORES_RAD ? 'screen.rad' :
-                 currentFormat === FORMAT.CHR ? 'screen.ch$' : 'screen.scr';
+                 currentFormat === FORMAT.CHR ? 'screen.ch$' :
+                 currentFormat === FORMAT.GMX ? 'screen.c' :
+                 currentFormat === FORMAT.GMX160 ? 'screen.c' : 'screen.scr';
     }
   }
 
@@ -12466,6 +12926,7 @@ function createNewPicture(format, params) {
       // LoRes Radastan: 128×96 16-color 4bpp, packed nibbles (6144 bytes)
       newData = new Uint8Array(LORES_RAD.PIXEL_DATA_SIZE);
       nxiResolvedPalette = generateDefaultNext4bppPalette();
+      radPaletteSize = 0;
       newFormat = FORMAT.LORES_RAD;
       newFileName = 'new_screen.rad';
       break;
@@ -12729,7 +13190,9 @@ function drawBrushPreview() {
 
   const opacity = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.BRUSH_PREVIEW_OPACITY) || 0.5;
   const borderPixels = getMainScreenOffset();
+  const scaleX = getPixelScaleX();
   const scaleY = getPixelScaleY();
+  const zoomX = zoom * scaleX;
   const zoomY = zoom * scaleY;
 
   // Apply snap mode to preview position
@@ -12771,14 +13234,14 @@ function drawBrushPreview() {
           const px = x - hw + bx;
           const py = y - hh + by;
           ctx.fillStyle = color;
-          ctx.fillRect(borderPixels + px * zoom, borderPixels + py * zoomY, zoom, zoomY);
+          ctx.fillRect(borderPixels + px * zoomX, borderPixels + py * zoomY, zoomX, zoomY);
         }
       }
     }
   } else if (brushSize <= 1) {
     // Single pixel brush
     ctx.fillStyle = color;
-    ctx.fillRect(borderPixels + x * zoom, borderPixels + y * zoomY, zoom, zoomY);
+    ctx.fillRect(borderPixels + x * zoomX, borderPixels + y * zoomY, zoomX, zoomY);
   } else {
     // Built-in brush shapes
     const n = brushSize;
@@ -12791,7 +13254,7 @@ function drawBrushPreview() {
         const px = x + (n - 1 - i) - half;
         const py = y + i - half;
         ctx.fillStyle = color;
-        ctx.fillRect(borderPixels + px * zoom, borderPixels + py * zoomY, zoom, zoomY);
+        ctx.fillRect(borderPixels + px * zoomX, borderPixels + py * zoomY, zoomX, zoomY);
       }
     } else if (brushShape === 'bstroke') {
       // Diagonal line from top-left to bottom-right (like \)
@@ -12799,19 +13262,19 @@ function drawBrushPreview() {
         const px = x + i - half;
         const py = y + i - half;
         ctx.fillStyle = color;
-        ctx.fillRect(borderPixels + px * zoom, borderPixels + py * zoomY, zoom, zoomY);
+        ctx.fillRect(borderPixels + px * zoomX, borderPixels + py * zoomY, zoomX, zoomY);
       }
     } else if (brushShape === 'hline') {
       // Horizontal line
       for (let i = 0; i < n; i++) {
         ctx.fillStyle = color;
-        ctx.fillRect(borderPixels + (x - half + i) * zoom, borderPixels + y * zoomY, zoom, zoomY);
+        ctx.fillRect(borderPixels + (x - half + i) * zoomX, borderPixels + y * zoomY, zoomX, zoomY);
       }
     } else if (brushShape === 'vline') {
       // Vertical line
       for (let i = 0; i < n; i++) {
         ctx.fillStyle = color;
-        ctx.fillRect(borderPixels + x * zoom, borderPixels + (y - half + i) * zoomY, zoom, zoomY);
+        ctx.fillRect(borderPixels + x * zoomX, borderPixels + (y - half + i) * zoomY, zoomX, zoomY);
       }
     } else if (brushShape === 'round') {
       // Circle brush
@@ -12820,7 +13283,7 @@ function drawBrushPreview() {
         for (let dx = -r; dx <= r; dx++) {
           if (dx * dx + dy * dy <= r * r) {
             ctx.fillStyle = color;
-            ctx.fillRect(borderPixels + (x + dx) * zoom, borderPixels + (y + dy) * zoomY, zoom, zoomY);
+            ctx.fillRect(borderPixels + (x + dx) * zoomX, borderPixels + (y + dy) * zoomY, zoomX, zoomY);
           }
         }
       }
@@ -12829,7 +13292,7 @@ function drawBrushPreview() {
       for (let dy = 0; dy < n; dy++) {
         for (let dx = 0; dx < n; dx++) {
           ctx.fillStyle = color;
-          ctx.fillRect(borderPixels + (x - half + dx) * zoom, borderPixels + (y - half + dy) * zoomY, zoom, zoomY);
+          ctx.fillRect(borderPixels + (x - half + dx) * zoomX, borderPixels + (y - half + dy) * zoomY, zoomX, zoomY);
         }
       }
     }
@@ -14064,6 +14527,27 @@ function pickMltColorFromCanvas(x, y) {
 }
 
 /**
+ * Picks ink/paper colors from GMX/GMX160 format canvas (8×1 attribute cells, 80 cols).
+ * @param {number} x - X coordinate in pixels
+ * @param {number} y - Y coordinate in pixels
+ * @returns {boolean} true if colors were picked
+ */
+function pickGmxColorFromCanvas(x, y) {
+  if (!screenData) return false;
+  const attrAddr = getAttributeAddress(x, y);
+  if (attrAddr >= screenData.length) return false;
+  const attr = screenData[attrAddr];
+
+  editorInkColor = ATTR.ink(attr) + (ATTR.bright(attr) ? 8 : 0);
+  editorPaperColor = ATTR.paper(attr) + (ATTR.bright(attr) ? 8 : 0);
+  editorFlash = ATTR.flash(attr);
+  editorBright = ATTR.bright(attr);
+
+  updateColorSelectors();
+  return true;
+}
+
+/**
  * Picks ink/paper colors from BMC4 format canvas (8x4 dual attribute blocks).
  * @param {number} x - X coordinate in pixels
  * @param {number} y - Y coordinate in pixels
@@ -14155,6 +14639,10 @@ function pickColorFromCanvas(x, y, isInk) {
 
     case FORMAT.SPECSCII:
       return pickSpecsciiColorFromCanvas(x, y);
+
+    case FORMAT.GMX:
+    case FORMAT.GMX160:
+      return pickGmxColorFromCanvas(x, y);
 
     case FORMAT.MONO_FULL:
     case FORMAT.MONO_2_3:
@@ -16573,6 +17061,8 @@ function isFormatEditable() {
   if (currentFormat === FORMAT.LORES && screenData && screenData.length >= LORES.PIXEL_DATA_SIZE) return true;
   if (currentFormat === FORMAT.LORES_RAD && screenData && screenData.length >= LORES_RAD.PIXEL_DATA_SIZE) return true;
   if ((currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) && screenData && currentPicture) return true;
+  if (currentFormat === FORMAT.GMX && screenData && screenData.length >= GMX.TOTAL_SIZE) return true;
+  if (currentFormat === FORMAT.GMX160 && screenData && screenData.length >= GMX160.TOTAL_SIZE) return true;
   // BSP: non-giga (standard or with border) and giga variants
   if (currentFormat === FORMAT.BSP && screenData && currentPicture) {
     if (currentPicture.colorMode === 'gigascreen' && screenData.length >= GIGASCREEN.TOTAL_SIZE && isGigascreenEditable()) return true;
@@ -18386,16 +18876,18 @@ function drawTilesetCapturePreview(x0, y0, x1, y1) {
   const totalTiles = tilesX * tilesY;
 
   const borderPixels = getMainScreenOffset();
+  const scaleX = getPixelScaleX();
   const scaleY = getPixelScaleY();
+  const zoomX = zoom * scaleX;
   const zoomY = zoom * scaleY;
 
   ctx.strokeStyle = 'rgba(255, 200, 0, 0.9)';
   ctx.lineWidth = Math.max(1, zoom / 2);
   ctx.setLineDash([4, 4]);
   ctx.strokeRect(
-    borderPixels + left * zoom,
+    borderPixels + left * zoomX,
     borderPixels + top * zoomY,
-    w * zoom,
+    w * zoomX,
     h * zoomY
   );
   ctx.setLineDash([]);
@@ -18420,7 +18912,9 @@ function drawCapturePreview(x0, y0, x1, y1) {
   if (!ctx) return;
 
   const borderPixels = getMainScreenOffset();
+  const scaleX = getPixelScaleX();
   const scaleY = getPixelScaleY();
+  const zoomX = zoom * scaleX;
   const zoomY = zoom * scaleY;
   const left = Math.min(x0, x1);
   const top = Math.min(y0, y1);
@@ -18431,9 +18925,9 @@ function drawCapturePreview(x0, y0, x1, y1) {
   ctx.lineWidth = Math.max(1, zoom / 2);
   ctx.setLineDash([4, 4]);
   ctx.strokeRect(
-    borderPixels + left * zoom,
+    borderPixels + left * zoomX,
     borderPixels + top * zoomY,
-    w * zoom,
+    w * zoomX,
     h * zoomY
   );
   ctx.setLineDash([]);
@@ -22725,6 +23219,7 @@ function convertAnyToLoresRad() {
   currentFileName = currentFileName.replace(/\.[^.]+$/, '.rad');
   currentPicture = null;
   nxiResolvedPalette = palette;
+  radPaletteSize = 0;
 
   markPictureModified();
   saveCurrentPictureState();
@@ -22992,7 +23487,9 @@ function drawTextPreview(x, y) {
   if (!textBitmap || textBitmap.width === 0) return;
 
   const borderPixels = getMainScreenOffset();
+  const scaleX = getPixelScaleX();
   const scaleY = getPixelScaleY();
+  const zoomX = zoom * scaleX;
   const zoomY = zoom * scaleY;
 
   // Draw semi-transparent preview
@@ -23008,9 +23505,9 @@ function drawTextPreview(x, y) {
         const py = y + ty;
         if (px >= 0 && px < getFormatWidth() && py >= 0 && py < getFormatHeight()) {
           screenCtx.fillRect(
-            borderPixels + px * zoom,
+            borderPixels + px * zoomX,
             borderPixels + py * zoomY,
-            zoom,
+            zoomX,
             zoomY
           );
         }

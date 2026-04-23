@@ -1,5 +1,24 @@
 # SpectraLab Version History
 
+## v1.91
+- GMX 640×200 image import — convert PNG/JPG/GIF to Scorpion ZS 256 hi-res format. Source image is stretched to 320×200 display size, internally doubled to 640×200 for 8×1 attribute cells. Supports all dithering methods including cell-aware variants. Output: 32768-byte `.c` file with linear bitmap and attributes.
+- GMX 160×200 image import — convert to Scorpion ZS 256 attribute-only format. Fixed 0x0F bitmap pattern provides 160 color columns. Each 8×1 cell is color-matched to the best ink/paper/bright combination. Dithering is not applicable (bitmap is fixed). Output: 16128-byte `.c` file with "GMX\x0F" header.
+- MLT+ULA+ image import — convert to 8×1 multicolor with 64-color ULA+ palette. Auto-generates an optimal 64-color GRB332 palette (4 CLUTs × 16 colors) from the source image, or accepts a user-supplied `.pal` file. Supports all cell-aware and global dithering methods. Output: 12352-byte `.mlt` file (12288 MLT data + 64-byte palette).
+- Cell-aware dithering for 8×1 formats — all cell-aware dithering methods (Floyd-Steinberg, Atkinson, Sierra-2, Serpentine, Riemersma, Blue Noise, Pattern, Ordered) now work correctly in 8×1 block converters (MLT, GMX 640×200, MLT+ULA+). Previously only Ordered and None were implemented for 8×1 cells.
+- Improved ULA+ palette generation for MLT+ULA+ — color pairs are deduplicated and weighted by frequency before CLUT allocation (the most commonly needed color combinations get priority). CLUT assignment uses perceptual color similarity scoring, and remaining palette slots are filled by grouping similar colors together. This produces significantly more accurate colors compared to the original scan-order greedy approach.
+- Tile import support for GMX 640×200, GMX 160×200, and MLT+ULA+ formats — large images can be split into a grid of pictures using the "Tile to screens" feature.
+- RAD 6160-byte support — ZX-Uno Radastan files with 16-byte GRB332 embedded palette (6144 pixels + 16 palette bytes) are now loaded and saved correctly, in addition to the existing 6144-byte (no palette) and 6176-byte (RGB333 palette) variants.
+- RAD/SLR/SL2 palette save — RAD files that originally contained an embedded palette (GRB332 or RGB333) now preserve it on save. Previously the palette was stripped, saving only the raw pixel data.
+- Palette loss warning — when saving SL2, SLR (LoRes), or RAD files that have no embedded palette, a warning is shown if the user has modified palette colors, since custom colors will be lost on reload.
+- Fix: importing a ULA+ format (MLT+ULA+, ULA+, ZXP ULA+) after a non-ULA+ picture no longer contaminates the previous picture's palette state.
+
+## v1.90
+- Scorpion GMX format support — two Scorpion ZS 256 Turbo graphics modes: GMX 640×200 hi-res (32768 bytes, 8×1 attributes, `.c` extension) and GMX 160×200 attribute-only (16128 bytes, "GMX\x0F" header, `.c` extension). Both formats use standard ZX Spectrum attributes. 640×200 mode renders with PAR 2:1 (half-width pixels) matching the real hardware aspect ratio. 160×200 mode uses implied 0x0F pixel pattern for 160 color columns.
+- Scorpion GMX editing — full editing support for both GMX 640×200 and GMX 160×200 formats. GMX 640×200: bitmap + attribute editing (pixel drawing, line, rectangle, circle, flood fill, color picker, text, brushes, layers, undo/redo). GMX 160×200: attribute-only editing (recolor cells, flood fill, color picker). Both formats support save/export round-trip.
+- Fix: preview overlays (line, rectangle, circle, selection, paste, brush, text, capture) now render at correct coordinates for formats with non-square pixels (scaleX ≠ 1). Previously, GMX format previews were drawn at double the correct X position.
+- Fix: tool preview (line, rectangle, circle, gradient) no longer flickers during drawing. The preview state now persists across all render cycles including the flash timer.
+- Fix: MLT+ULA+ files (12352 bytes = 12288 MLT + 64 ULA+ palette) and `.mc` multicolor files now display correctly. Both formats use linear row-major bitmap layout instead of the standard ZX Spectrum interleaved addressing. Added dedicated `mlt_linear` sourceFormat with proper import/export/sync paths. Preview panel now renders MLT formats with correct 8×1 attribute mapping instead of falling through to the SCR renderer.
+
 ## v1.89
 - Tools tab — new tab in the left panel (View / Edit / Xform / Sprites / Tools) for external SpectraLab pages. Font Editor link moved here from the View tab footer.
 - Fix: black area at high zoom (x16+) — the viewport-capped canvas rendering mode left undrawn gaps when overlay scrollbars were active. Raised the full-canvas threshold from 16M to 67M pixels so zoom levels up to x20 use native browser scrolling instead of the sticky-viewport workaround.

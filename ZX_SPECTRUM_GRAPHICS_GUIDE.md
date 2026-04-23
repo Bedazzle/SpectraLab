@@ -544,6 +544,37 @@ Offset  Size   Content
 
 ---
 
+### MLT+ULA+ (8 x 1 Multicolor with Enhanced Palette) -- 12352 bytes
+
+**Hardware extension** -- requires a ULA+ compatible interface or enhanced clone (see ULA+ section above).
+
+Combines the MLT 8×1 multicolor layout with a 64-byte ULA+ palette, allowing up to 64 unique colors instead of the standard 16. Uses the Timex Hi-Colour memory layout where both bitmap and attributes are stored in ZX-interleaved (third-based) format.
+
+```
+Offset  Size   Content
+0       6144   Bitmap data (ZX-interleaved)
+6144    6144   Attributes (ZX-interleaved, 192 rows x 32 columns)
+12288   64     GRB332 palette (4 CLUTs x 16 colors)
+```
+
+- File extension: `.mlt` (detected by size 12352)
+- Unlike standard MLT (which stores attributes in linear row-major order), MLT+ULA+ stores both bitmap and attributes using ZX-interleaved addressing (the same thirds-based interleaving used for the bitmap area in standard SCR)
+- The attribute byte selects colors from the ULA+ palette instead of the fixed ZX Spectrum palette:
+
+```
+Attribute byte:  F  B  P2 P1 P0 I2 I1 I0
+
+clut      = (F << 1) | B          // selects one of 4 CLUTs
+ink_idx   = (clut * 16) + I       // ink color: palette[clut*16 + ink]
+paper_idx = (clut * 16) + 8 + P   // paper color: palette[clut*16 + 8 + paper]
+```
+
+- With 192 attribute rows and 4 CLUTs, this format provides per-scanline color control with a 64-color palette
+- The 64-byte palette uses the same GRB332 encoding and CLUT organization as the standard ULA+ format (see the ULA+ section for details)
+- Flash bit selects CLUT group (not animation), same as ULA+
+
+---
+
 ### BMC4 (8 x 4 Multicolor + Border) -- 11904 bytes
 
 Dual-attribute format splitting each 8 x 8 cell into two 8 x 4 halves, plus full border data.
@@ -1166,19 +1197,31 @@ The SLR file size (12288 bytes) is identical to the MLT (8x1 multicolor) format.
 
 ---
 
-### RAD (ZX Spectrum Next LoRes Radastan) -- 6144 bytes
+### RAD (ZX Spectrum Next LoRes Radastan) -- 6144, 6160, or 6176 bytes
 
-A low-resolution 16-color mode for the ZX Spectrum Next, also known as **Radastan mode**. Uses the same 128 x 96 pixel resolution as standard LoRes but packs **two pixels per byte** (4 bits per pixel), reducing the data to 6144 bytes and using only the first 16 entries of the ULA palette.
+A low-resolution 16-color mode originally from the **ZX-Uno** (Radastan mode), also supported by the ZX Spectrum Next. Uses the same 128 x 96 pixel resolution as standard LoRes but packs **two pixels per byte** (4 bits per pixel), reducing the data to 6144 bytes and using only the first 16 entries of the ULA palette.
+
+Three file sizes are recognized:
+
+```
+Size    Content
+6144    Pixel data only (no embedded palette)
+6160    Pixel data + 16-byte GRB332 palette (ZX-Uno format, 1 byte/color)
+6176    Pixel data + 32-byte RGB333 palette (ZX Next format, 2 bytes/color)
+```
 
 ```
 Offset  Size    Content
 0       6144    Pixel data (128 x 96, 4bpp packed nibbles, row-major)
+6144    0/16/32 Optional palette (see above)
 ```
 
 - Primary file extension: `.rad`
-- `.slr` files of exactly 6144 bytes are also auto-detected as Radastan
-- Hardware: ZX Spectrum Next (not compatible with classic ZX Spectrum 48/128)
-- No embedded palette; uses the first 16 entries of the default RGB332 identity palette
+- `.slr` files of 6144, 6160, or 6176 bytes are also auto-detected as Radastan
+- Hardware: ZX-Uno, ZX Spectrum Next (not compatible with classic ZX Spectrum 48/128)
+- Without an embedded palette, uses the first 16 entries of the default RGB332 identity palette
+- The 16-byte GRB332 palette uses the same encoding as ULA+ (see the ULA+ section): GGGRRRBB, 1 byte per color
+- The 32-byte RGB333 palette uses the same encoding as NXI/SL2: RRRGGGBB + 0000000B, 2 bytes per color
 
 #### Pixel Packing
 
@@ -1446,6 +1489,70 @@ Total file size: `7 + W × H × 18` bytes.
 #### Notes
 
 The cell-interleaved layout is compact and efficient for character-oriented graphics (UDGs, tiles, fonts), but requires deinterleaving to linear row-major format for rendering or editing as a bitmap image.
+
+---
+
+### GMX 640×200 (Scorpion ZS 256 Hi-Res) -- 32768 bytes
+
+A high-resolution graphics mode for the **Scorpion ZS 256 Turbo** computer. Provides 640×200 pixel resolution with per-pixel-row attributes (8×1 attribute cells), using standard ZX Spectrum color encoding. The display uses half-width pixels (PAR 2:1), so 640 source pixels appear as 320 physical pixels on screen.
+
+```
+Offset  Size    Content
+0       16000   Bitmap data (linear, row-major: y * 80 + col, 80 bytes/row × 200 rows)
+16000   384     Padding (unused, zeros)
+16384   16000   Attribute data (linear, row-major: y * 80 + col, 1 byte per 8×1 cell)
+32000   768     Padding (unused, zeros)
+```
+
+- File extension: `.c`
+- Total size: 32768 bytes
+- Bitmap layout: linear row-major (no ZX Spectrum-style interleaving)
+- 80 attribute columns × 200 attribute rows = 16000 attributes
+- Each attribute byte uses standard ZX format: `FBPPPIII` (flash, bright, paper, ink)
+- Attribute cell: 8 pixels wide × 1 pixel tall (same granularity as MLT 8×1 multicolor)
+
+#### Pixel Addressing
+
+Unlike standard SCR which uses interleaved thirds, GMX uses simple linear addressing:
+
+```
+Bitmap byte offset = y * 80 + (x / 8)
+Bit within byte    = 7 - (x % 8)       (MSB = leftmost pixel)
+Attribute offset   = 16384 + y * 80 + (x / 8)
+```
+
+#### Display Aspect Ratio
+
+The 640-pixel-wide image is displayed at half width (320 physical pixels) to maintain correct proportions on the Scorpion's display. Each source pixel is 0.5 display pixels wide.
+
+---
+
+### GMX 160×200 (Scorpion ZS 256 Attribute-Only) -- 16128 bytes
+
+An attribute-only graphics mode for the **Scorpion ZS 256 Turbo**. The bitmap pattern is fixed (0x0F per byte), and only the color attributes are variable. This provides 160 color columns × 200 rows, where each "pixel" is an 8×1 attribute cell colored by a standard ZX Spectrum attribute byte.
+
+```
+Offset  Size    Content
+0       4       Header: "GMX" + 0x0F (bytes: 47 4D 58 0F)
+4       124     Padding (unused, zeros)
+128     16000   Attribute data (linear, row-major: y * 80 + col, 1 byte per cell)
+```
+
+- File extension: `.c`
+- Total size: 16128 bytes
+- Identified by the `"GMX\x0F"` signature at offset 0
+- Fixed bitmap pattern: every byte is `0x0F` (alternating 4 ink + 4 paper pixels per byte)
+- 80 attribute columns × 200 rows = 16000 attributes
+- Each attribute byte uses standard ZX format: `FBPPPIII`
+- Display uses half-width pixels (PAR 2:1), same as GMX 640×200
+
+#### Attribute Addressing
+
+```
+Attribute offset = 128 + y * 80 + (x / 8)
+```
+
+Since the bitmap is fixed, drawing in this format means changing attribute colors rather than setting individual pixels.
 
 ---
 
@@ -1954,6 +2061,7 @@ Quick-reference table for identifying formats by file size when no file extensio
 | 3072         | STL          | Stellar 64 x 48 gigascreen        |
 | 4096         | Mono 2/3     | Monochrome, 2 thirds              |
 | 6144         | Mono / RAD   | Monochrome full screen / Next LoRes Radastan 128×96 (ambiguous) |
+| 6160         | RAD          | LoRes Radastan + 16-byte GRB332 palette (ZX-Uno) |
 | 6912         | SCR          | Standard screen                    |
 | 6976         | ULA+         | SCR + 64-byte palette              |
 | 6945–7426    | ULANext      | SCR + ink mask + palette (variable) |
@@ -1961,12 +2069,15 @@ Quick-reference table for identifying formats by file size when no file extensio
 | 11136        | BSC          | Border screen (384 x 304)         |
 | 11904        | BMC4         | 8 x 4 multicolor + border         |
 | 12288        | MLT / SLR    | 8 x 1 multicolor / Next LoRes 128×96 (ambiguous) |
+| 12352        | MLT+ULA+     | 8 x 1 multicolor + 64-byte palette |
 | 13824        | Gigascreen   | Dual-frame 50 Hz                   |
+| 16128        | GMX160       | Scorpion 160×200 attribute-only ("GMX\x0F" header) |
 | 14080        | MGH (mg8)    | Multiartist gigascreen 8 x 8       |
 | 15616        | MGH (mg4)    | Multiartist gigascreen 8 x 4       |
 | 18432        | RGB3         | Tricolor (3 x 6144)               |
 | 18688        | MGH (mg2)    | Multiartist gigascreen 8 x 2       |
 | 19456        | MGH (mg1)    | Multiartist gigascreen 8 x 1       |
+| 32768        | GMX          | Scorpion 640×200 hi-res            |
 | 49152        | SL2          | Next Layer 2 256×192 raw pixels    |
 | 49280        | SL2          | Next Layer 2 256×192 + 128b header |
 | 49664        | NXI          | Next Layer 2 256×192 + palette     |
@@ -1978,7 +2089,7 @@ Quick-reference table for identifying formats by file size when no file extensio
 
 ### Detection Priority
 
-1. Check file extension first (`.53c`, `.atr`, `.bsc`, `.ifl`, `.bmc4`, `.mlt`, `.mc`, `.3`, `.img`, `.mg1`, `.mg2`, `.mg4`, `.mg8`, `.hlr`, `.stl`, `.nxi`, `.sl2`, `.slr`, `.rad`, `.ch$`, `.chr$`, `.ch-`, `.specscii`, `.sca`, `.zxp`)
+1. Check file extension first (`.53c`, `.atr`, `.bsc`, `.ifl`, `.bmc4`, `.mlt`, `.mc`, `.3`, `.img`, `.mg1`, `.mg2`, `.mg4`, `.mg8`, `.hlr`, `.stl`, `.nxi`, `.sl2`, `.slr`, `.rad`, `.ch$`, `.chr$`, `.ch-`, `.specscii`, `.sca`, `.zxp`, `.c`)
 2. For `.zxp` files, read as text and parse (see ZXP section)
 3. For `.img` files, verify size is exactly 13824 bytes
 4. For `.mg1`/`.mg2`/`.mg4`/`.mg8` files, verify `"MGH"` signature at offset 0
@@ -1988,8 +2099,9 @@ Quick-reference table for identifying formats by file size when no file extensio
 8. For `.sl2` files, verify size is 49152, 49280, or 81920 bytes
 9. For `.slr` files: if size is 6144 bytes → Radastan (4bpp); if 12288 bytes → standard LoRes (8bpp)
 10. For `.rad` files, detect as Radastan LoRes (extension-only; 6144 bytes expected)
-11. For `.ch$`/`.chr$`/`.ch-` files, verify `chr$` signature at offset 0
-12. Fall back to file size lookup from the table above
+11. For `.c` files: if size is 16128 bytes and header is "GMX\x0F" → GMX 160×200; if size is 32768 bytes → GMX 640×200
+12. For `.ch$`/`.chr$`/`.ch-` files, verify `chr$` signature at offset 0
+13. Fall back to file size lookup from the table above
 
 ---
 

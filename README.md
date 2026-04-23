@@ -436,6 +436,7 @@ Tools and documentation that inspired or informed SpectraLab development:
 - [Image to ZX Spec](https://github.com/KodeMunkie/imagetozxspec) — Cross-platform converter with dithering
 - [img2spec](https://github.com/jarikomppa/img2spec) — Image Spectrumizer tool
 - [World of Spectrum](https://worldofspectrum.org/) — ZX Spectrum documentation and resources
+- [FZX format](https://sinclair.wiki.zxnet.co.uk/wiki/FZX_format) — FZX proportional font format specification
 
 ## License
 

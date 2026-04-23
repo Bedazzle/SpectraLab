@@ -419,10 +419,13 @@ function exportIfl(picture) {
  * @param {string} fileName - Original file name
  * @returns {Picture|null}
  */
-function importMlt(fileBytes, fileName) {
+function importMlt(fileBytes, fileName, options) {
   if (fileBytes.length < 12288) return null;
+  const isLinear = options && options.linear;
+  const isTimexHC = options && options.timexHiColour;
+  const fmt = isTimexHC ? 'mlt_ula' : isLinear ? 'mlt_linear' : 'mlt';
   const pic = makePicture({
-    sourceFormat: 'mlt',
+    sourceFormat: fmt,
     fileName: fileName,
     width: 256,
     height: 192,
@@ -432,12 +435,26 @@ function importMlt(fileBytes, fileName) {
     colorMode: 'standard'
   });
 
-  pic.planes[0].bitmap = deinterleaveBitmap(fileBytes, 0, 256, 192);
+  if (isLinear) {
+    // .mc multicolor: bitmap is linear row-major, copy directly
+    const bitmap = pic.planes[0].bitmap;
+    for (let i = 0; i < 6144 && i < fileBytes.length; i++) {
+      bitmap[i] = fileBytes[i];
+    }
+  } else {
+    // Standard MLT and Timex Hi-Colour (mlt_ula): bitmap is ZX-interleaved
+    pic.planes[0].bitmap = deinterleaveBitmap(fileBytes, 0, 256, 192);
+  }
 
-  // 6144 attrs at offset 6144 (linear: row y -> offset 6144 + y*32)
-  const attrs = pic.planes[0].attrs;
-  for (let i = 0; i < 6144; i++) {
-    attrs[i] = fileBytes[6144 + i];
+  if (isTimexHC) {
+    // Timex Hi-Colour + ULA+: attrs at offset 6144 are also ZX-interleaved
+    pic.planes[0].attrs = deinterleaveBitmap(fileBytes, 6144, 256, 192);
+  } else {
+    // Standard MLT / .mc multicolor: attrs at offset 6144, linear row-major
+    const attrs = pic.planes[0].attrs;
+    for (let i = 0; i < 6144; i++) {
+      attrs[i] = fileBytes[6144 + i];
+    }
   }
 
   return pic;
@@ -457,6 +474,52 @@ function exportMlt(picture) {
   const attrs = picture.planes[0].attrs;
   for (let i = 0; i < 6144; i++) {
     result[6144 + i] = attrs[i];
+  }
+
+  return result;
+}
+
+/**
+ * Exports a Picture to MLT format with linear bitmap (for .mc and MLT+ULA+ files).
+ * @param {Picture} picture
+ * @returns {Uint8Array}
+ */
+function exportMltLinear(picture) {
+  const result = new Uint8Array(12288);
+
+  // Bitmap is already linear in Picture — copy directly
+  const bitmap = picture.planes[0].bitmap;
+  for (let i = 0; i < 6144 && i < bitmap.length; i++) {
+    result[i] = bitmap[i];
+  }
+
+  const attrs = picture.planes[0].attrs;
+  for (let i = 0; i < 6144; i++) {
+    result[6144 + i] = attrs[i];
+  }
+
+  return result;
+}
+
+/**
+ * Exports a Picture to MLT format with Timex Hi-Colour layout (both bitmap and attrs ZX-interleaved).
+ * @param {Picture} picture
+ * @returns {Uint8Array}
+ */
+function exportMltUla(picture) {
+  const result = new Uint8Array(MLT.TOTAL_SIZE_ULAPLUS);  // 12352 = 12288 + 64
+
+  // Re-interleave bitmap (linear → ZX-interleaved)
+  const scrBitmap = interleaveBitmap(picture.planes[0].bitmap, picture.width, picture.height);
+  result.set(scrBitmap, 0);
+
+  // Re-interleave attrs using the same ZX addressing
+  const scrAttrs = interleaveBitmap(picture.planes[0].attrs, picture.width, picture.height);
+  result.set(scrAttrs, 6144);
+
+  // Append 64-byte ULA+ palette (GRB332)
+  if (picture.palette) {
+    result.set(picture.palette, 12288);
   }
 
   return result;
@@ -1668,6 +1731,72 @@ function syncPictureFromScreenData(scrData, picture) {
     return;
   }
 
+  if (fmt === 'gmx') {
+    // GMX 640×200: linear pixel data at offset 0, attrs at offset 16384
+    const bitmapSize = cols * height; // 80 × 200 = 16000
+    const bitmap = picture.planes[0].bitmap;
+    for (let i = 0; i < bitmapSize && i < scrData.length; i++) {
+      bitmap[i] = scrData[i];
+    }
+    const attrs = picture.planes[0].attrs;
+    const attrOff = 16384; // GMX.ATTR_OFFSET
+    for (let i = 0; i < bitmapSize && (attrOff + i) < scrData.length; i++) {
+      attrs[i] = scrData[attrOff + i];
+    }
+    return;
+  }
+
+  if (fmt === 'gmx160') {
+    // GMX 160×200: no pixel data in file (implied 0x0F), attrs at offset 128
+    picture.planes[0].bitmap.fill(0x0F);
+    const attrs = picture.planes[0].attrs;
+    const attrOff = 128; // GMX160.HEADER_SIZE
+    const bitmapSize = cols * height; // 80 × 200 = 16000
+    for (let i = 0; i < bitmapSize && (attrOff + i) < scrData.length; i++) {
+      attrs[i] = scrData[attrOff + i];
+    }
+    return;
+  }
+
+  if (fmt === 'mlt_ula') {
+    // Timex Hi-Colour + ULA+: both bitmap and attrs are ZX-interleaved in screenData
+    const bitmap = picture.planes[0].bitmap;
+    for (let y = 0; y < height; y++) {
+      const third = (y >> 6);
+      const charRow = (y >> 3) & 7;
+      const pixelLine = y & 7;
+      const scrOffset = third * 2048 + charRow * 32 + pixelLine * 256;
+      for (let col = 0; col < cols; col++) {
+        bitmap[y * cols + col] = scrData[scrOffset + col];
+      }
+    }
+    const attrs = picture.planes[0].attrs;
+    for (let y = 0; y < height; y++) {
+      const third = (y >> 6);
+      const charRow = (y >> 3) & 7;
+      const pixelLine = y & 7;
+      const scrOffset = 6144 + third * 2048 + charRow * 32 + pixelLine * 256;
+      for (let col = 0; col < cols; col++) {
+        attrs[y * cols + col] = scrData[scrOffset + col];
+      }
+    }
+    return;
+  }
+
+  if (fmt === 'mlt_linear') {
+    // .mc multicolor: linear bitmap + linear 8×1 attributes
+    const bitmap = picture.planes[0].bitmap;
+    const bitmapSize = cols * height;
+    for (let i = 0; i < bitmapSize && i < scrData.length; i++) {
+      bitmap[i] = scrData[i];
+    }
+    const attrs = picture.planes[0].attrs;
+    for (let i = 0; i < 6144 && (6144 + i) < scrData.length; i++) {
+      attrs[i] = scrData[6144 + i];
+    }
+    return;
+  }
+
   // Standard pixel formats: scr, scr+, ifl, mlt, bsc, mono_*
   // Deinterleave bitmap from offset 0
   const bitmap = picture.planes[0].bitmap;
@@ -1709,6 +1838,98 @@ function syncPictureFromScreenData(scrData, picture) {
 }
 
 // ============================================================================
+// GMX Import (Scorpion 640×200 and 160×200)
+// ============================================================================
+
+/**
+ * Imports a Scorpion GMX 640×200 file into a Picture.
+ * Linear pixel data (80 bytes/line × 200 lines) + attrs at offset 16384.
+ * attrCellHeight = 1 (every pixel row has its own attr row).
+ * @param {Uint8Array} fileBytes - File data (32768 bytes)
+ * @param {string} fileName - Original file name
+ * @returns {Picture|null}
+ */
+function importGmx640(fileBytes, fileName) {
+  if (fileBytes.length < GMX.TOTAL_SIZE) return null;
+  const pic = makePicture({
+    sourceFormat: 'gmx',
+    fileName: fileName,
+    width: 640,
+    height: 200,
+    attrCellHeight: 1,
+    planeCount: 1,
+    contentMode: 'pixel',
+    colorMode: 'standard'
+  });
+  // Linear pixel data: 80 bytes/line × 200 lines (no ZX interleaving)
+  pic.planes[0].bitmap.set(fileBytes.subarray(0, GMX.PIXEL_SIZE));
+  // Attr data at offset 16384: 80 bytes/line × 200 lines
+  pic.planes[0].attrs.set(fileBytes.subarray(GMX.ATTR_OFFSET, GMX.ATTR_OFFSET + GMX.PIXEL_SIZE));
+  return pic;
+}
+
+/**
+ * Imports a Scorpion GMX 160×200 attr-only file into a Picture.
+ * 128-byte header ("GMX\x0F" + padding) + 16000 attr bytes.
+ * Pixel data implied: every byte = 0x0F (00001111).
+ * Stored internally as 640×200 so both GMX formats share the rendering path.
+ * @param {Uint8Array} fileBytes - File data (16128 bytes)
+ * @param {string} fileName - Original file name
+ * @returns {Picture|null}
+ */
+function importGmx160(fileBytes, fileName) {
+  if (fileBytes.length < GMX160.TOTAL_SIZE) return null;
+  // Verify header: "GMX" + 0x0F
+  if (fileBytes[0] !== 0x47 || fileBytes[1] !== 0x4D ||
+      fileBytes[2] !== 0x58 || fileBytes[3] !== 0x0F) return null;
+  const pic = makePicture({
+    sourceFormat: 'gmx160',
+    fileName: fileName,
+    width: 640,
+    height: 200,
+    attrCellHeight: 1,
+    planeCount: 1,
+    contentMode: 'pixel',
+    colorMode: 'standard'
+  });
+  // All pixels = 00001111 (4 ink + 4 paper pixels per byte)
+  pic.planes[0].bitmap.fill(GMX160.PIXEL_BYTE);
+  // Attrs at offset 128: 80 bytes/line × 200 lines
+  pic.planes[0].attrs.set(fileBytes.subarray(GMX160.HEADER_SIZE, GMX160.HEADER_SIZE + GMX160.ATTR_SIZE));
+  return pic;
+}
+
+// ============================================================================
+// GMX export functions
+// ============================================================================
+
+/**
+ * Exports a Picture as Scorpion GMX 640×200 format (32768 bytes).
+ * Layout: 16000 bytes bitmap + 384 padding + 16000 bytes attrs + 384 padding.
+ * @param {Picture} picture
+ * @returns {Uint8Array}
+ */
+function exportGmx640(picture) {
+  const data = new Uint8Array(GMX.TOTAL_SIZE); // 32768, zero-filled (padding is zeros)
+  data.set(picture.planes[0].bitmap.subarray(0, GMX.PIXEL_SIZE), 0);
+  data.set(picture.planes[0].attrs.subarray(0, GMX.PIXEL_SIZE), GMX.ATTR_OFFSET);
+  return data;
+}
+
+/**
+ * Exports a Picture as Scorpion GMX 160×200 attr-only format (16128 bytes).
+ * Layout: 128-byte header ("GMX\x0F" + padding) + 16000 attr bytes.
+ * @param {Picture} picture
+ * @returns {Uint8Array}
+ */
+function exportGmx160(picture) {
+  const data = new Uint8Array(GMX160.TOTAL_SIZE); // 16128, zero-filled (header padding is zeros)
+  data[0] = 0x47; data[1] = 0x4D; data[2] = 0x58; data[3] = 0x0F; // "GMX\x0F"
+  data.set(picture.planes[0].attrs.subarray(0, GMX160.ATTR_SIZE), GMX160.HEADER_SIZE);
+  return data;
+}
+
+// ============================================================================
 // Import / export dispatcher (format string -> handlers)
 // ============================================================================
 
@@ -1728,7 +1949,9 @@ const PICTURE_FORMAT_HANDLERS = {
   'scr+':         { import: (b, fn) => importScrUlaPlus(b, fn), export: exportScrUlaPlus },
   'scr_ulanext':  { import: (b, fn) => importScr(b, fn),        export: null },
   'ifl':          { import: (b, fn) => importIfl(b, fn),        export: exportIfl },
-  'mlt':          { import: (b, fn) => importMlt(b, fn),        export: exportMlt },
+  'mlt':          { import: (b, fn, opts) => importMlt(b, fn, opts), export: exportMlt },
+  'mlt_linear':   { import: (b, fn, opts) => importMlt(b, fn, opts), export: exportMltLinear },
+  'mlt_ula':      { import: (b, fn, opts) => importMlt(b, fn, opts), export: exportMltUla },
   'mono_full':    { import: (b, fn) => importMono(b, fn, 192),  export: exportMono },
   'mono_2_3':     { import: (b, fn) => importMono(b, fn, 128),  export: exportMono },
   'mono_1_3':     { import: (b, fn) => importMono(b, fn,  64),  export: exportMono },
@@ -1744,7 +1967,9 @@ const PICTURE_FORMAT_HANDLERS = {
   'mgh':          { import: null,                               export: exportMgh },
   // zxp import uses importZxp() directly with parsed dimensions;
   // zxp export uses exportZxp() which returns string, not Uint8Array.
-  'zxp':          { import: null,                               export: null }
+  'zxp':          { import: null,                               export: null },
+  'gmx':          { import: (b, fn) => importGmx640(b, fn),    export: exportGmx640 },
+  'gmx160':       { import: (b, fn) => importGmx160(b, fn),    export: exportGmx160 }
 };
 
 /**

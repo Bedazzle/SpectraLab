@@ -296,6 +296,8 @@ Shown when editing ZX Next indexed-color formats (NXI, SL2, LoRes, LoRes Radasta
 - **Save palette** — export palette file
 - **Load palette** — import palette file
 
+**Palette and saving:** NXI files embed the palette in the file — palette changes are always saved. SL2, LoRes (SLR), and Radastan (RAD without embedded palette) do not store the palette in the file. If you edit palette colors in these formats, a warning will appear on save because custom colors will be lost on reload (the default palette will be used instead). Radastan files that were loaded with an embedded palette (6160-byte GRB332 or 6176-byte RGB333) preserve the palette on save.
+
 ### Gigascreen Palette
 
 Shown for Gigascreen, HLR, and STL formats. A 16-column grid displays all virtual colors created by two-frame alternation.
@@ -781,7 +783,7 @@ Crop the source image:
 
 #### Output
 
-- **Format:** SCR, ULA+, 53c (attr), IFL (8×2), BMC4 (8×4), MLT (8×1), BSC, BSP, RGB3, Gigascreen, HLR, STL, NXI (256×192, 320×256, 640×256), SL2 (256×192, 320×256, 640×256), SPECSCII, Mono, Mono 2/3, Mono 1/3, LoRes, Radastan, ZXP, chr$, btile (Nirvana 16×16), wtile (Nirvana 24×16)
+- **Format:** SCR, ULA+, 53c (attr), IFL (8×2), BMC4 (8×4), MLT (8×1), MLT+ULA+, BSC, BSP, RGB3, Gigascreen, HLR, STL, GMX 640×200, GMX 160×200, NXI (256×192, 320×256, 640×256), SL2 (256×192, 320×256, 640×256), SPECSCII, Mono, Mono 2/3, Mono 1/3, LoRes, Radastan, ZXP, chr$, btile (Nirvana 16×16), wtile (Nirvana 24×16)
 - **Palette** selector
 - **53c Pattern** (for 53c format): Checker, Stripes, DD/77
 - **SPECSCII Charset** (for SPECSCII format): Full (ROM font + block graphics, 112 glyphs), ASCII (ROM font only, 96 glyphs), UDG (block graphics only, 16 glyphs + space)
@@ -1241,6 +1243,8 @@ When loading a 2048-byte font file, a modal dialog shows side-by-side previews o
 | .nxi | 81952 bytes | ZX Next Layer 2 640×256 + embedded RGB333 palette (16-color, 4bpp column-major) |
 | .sl2 | 49152/49280 bytes | ZX Next Layer 2 256×192, default RGB332 palette (256-color indexed) |
 | .sl2 | 81920 bytes | ZX Next Layer 2 320×256 or 640×256 (disambiguation dialog) |
+| .c | 32768 bytes | Scorpion GMX 640×200 hi-res (bitmap + 8×1 attributes, PAR 2:1) |
+| .c | 16128 bytes | Scorpion GMX 160×200 attribute-only ("GMX\x0F" header, 8×1 attributes) |
 
 ### View-Only Formats
 

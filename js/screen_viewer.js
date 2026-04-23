@@ -149,7 +149,9 @@ const FORMAT = {
   SL2: 'sl2',             // ZX Spectrum Next Layer 2 raw pixels (49152 or 49280 bytes)
   LORES: 'lores',          // ZX Spectrum Next LoRes 128×96 256-color (12288 bytes)
   LORES_RAD: 'lores_rad',  // ZX Spectrum Next LoRes Radastan 128×96 16-color 4bpp (6144 bytes)
-  SCR_ULANEXT: 'scr_ulanext' // SCR with ULANext extended palette (6912 + 1 mask + RGB333 palette)
+  SCR_ULANEXT: 'scr_ulanext', // SCR with ULANext extended palette (6912 + 1 mask + RGB333 palette)
+  GMX: 'gmx',               // Scorpion GMX 640×200 (32768 bytes)
+  GMX160: 'gmx160'           // Scorpion GMX 160×200 attr-only (16128 bytes)
 };
 
 // SPECSCII format constants
@@ -342,9 +344,43 @@ const LORES = {
 const LORES_RAD = {
   WIDTH: 128, HEIGHT: 96,
   PIXEL_DATA_SIZE: 6144,
-  PALETTE_SIZE: 32,           // 16 entries × 2 bytes (RGB333), appended after pixel data
+  GRB_PALETTE_SIZE: 16,       // 16 entries × 1 byte (GRB332), ZX-Uno Radastan format
+  TOTAL_SIZE_WITH_GRB_PAL: 6160,  // 6144 + 16
+  PALETTE_SIZE: 32,           // 16 entries × 2 bytes (RGB333), ZX Next format
   TOTAL_SIZE_WITH_PAL: 6176,  // 6144 + 32
   BYTES_PER_ROW: 64
+};
+
+// Scorpion GMX 640×200 format constants
+// Layout: 16000 pixel bytes + 384 pad + 16000 attr bytes + 384 pad = 32768
+// Linear row-major (no ZX interleaving), 80 bytes/line × 200 lines
+// attrCellHeight = 1 (every pixel row has its own attr row)
+// Display: pixels are half-width → stretch height 2× for correct aspect ratio
+const GMX = {
+  WIDTH: 640,
+  HEIGHT: 200,
+  COLS: 80,                 // 640 / 8
+  LINE_BYTES: 80,           // bytes per line
+  PIXEL_SIZE: 16000,        // 80 × 200
+  ATTR_OFFSET: 16384,       // 16000 + 384 padding
+  TOTAL_SIZE: 32768,        // 16384 × 2
+  PADDING: 384              // zeros between sections
+};
+
+// Scorpion GMX 160×200 attr-only format constants
+// Layout: 128-byte header ("GMX\x0F" + zero padding) + 16000 attr bytes = 16128
+// Pixel data implied: every pixel byte = 0x0F (00001111)
+// Effective resolution: 160 color columns × 200 rows
+// Display at 320×200 (each color column = 2px)
+const GMX160 = {
+  HEADER_SIZE: 128,
+  ATTR_SIZE: 16000,         // 80 × 200
+  TOTAL_SIZE: 16128,        // 128 + 16000
+  MAGIC: 'GMX',
+  WIDTH: 320,               // display width (160 color pairs × 2px each)
+  HEIGHT: 200,
+  COLS: 40,                 // 320 / 8 (for Picture object)
+  PIXEL_BYTE: 0x0F          // implied pixel pattern
 };
 
 /**
@@ -384,6 +420,17 @@ function getNxiPixelIndex(x, y) {
  */
 function getPixelScaleY() {
   if ((currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) && nxiLayer2Mode === '640x256') return 2;
+  return 1;
+}
+
+/**
+ * Returns the horizontal display scale factor for the current format.
+ * Scorpion GMX 640×200 pixels are half-width on the CRT (640 pixels in the
+ * space of 320), so we halve the display width to match the real hardware PAR.
+ * @returns {number} 1 for most formats, 0.5 for Scorpion GMX
+ */
+function getPixelScaleX() {
+  if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) return 0.5;
   return 1;
 }
 
@@ -840,6 +887,9 @@ let nxiResolvedPalette = null;
 
 /** @type {'256x192'|'320x256'|'640x256'} - Current NXI/SL2 Layer 2 mode */
 let nxiLayer2Mode = '256x192';
+
+/** @type {0|16|32} - Original RAD palette size in bytes (0=none, 16=GRB332, 32=RGB333) */
+let radPaletteSize = 0;
 
 /** @type {boolean} - Current flash phase (false = normal, true = swapped) */
 let flashPhase = false;
@@ -1416,11 +1466,13 @@ function renderPictureStandard(ctx, borderOffset, pic, scrollInfo) {
 
   if (scrollInfo) {
     const { scrollX, scrollY, viewW, viewH } = scrollInfo;
-    // Convert viewport to source pixel coordinates (accounting for border offset)
-    clipX0 = Math.max(0, Math.floor((scrollX - borderOffset) / zoom));
-    clipY0 = Math.max(0, Math.floor((scrollY - borderOffset) / zoom));
-    clipX1 = Math.min(width, Math.ceil((scrollX + viewW - borderOffset) / zoom));
-    clipY1 = Math.min(height, Math.ceil((scrollY + viewH - borderOffset) / zoom));
+    const clipScaleX = getPixelScaleX();
+    const clipScaleY = getPixelScaleY();
+    // Convert viewport to source pixel coordinates (accounting for border offset and PAR scaling)
+    clipX0 = Math.max(0, Math.floor((scrollX - borderOffset) / (zoom * clipScaleX)));
+    clipY0 = Math.max(0, Math.floor((scrollY - borderOffset) / (zoom * clipScaleY)));
+    clipX1 = Math.min(width, Math.ceil((scrollX + viewW - borderOffset) / (zoom * clipScaleX)));
+    clipY1 = Math.min(height, Math.ceil((scrollY + viewH - borderOffset) / (zoom * clipScaleY)));
     // Align to 8-pixel (char cell) boundaries for correct rendering
     clipX0 = Math.max(0, (clipX0 >> 3) << 3);
     clipY0 = Math.max(0, clipY0);
@@ -1514,6 +1566,8 @@ function renderPictureStandard(ctx, borderOffset, pic, scrollInfo) {
     }
   }
 
+  const scaleX = getPixelScaleX();
+  const scaleY = getPixelScaleY();
   if (useClipping) {
     // Render only the clipped region: putImageData to temp, then drawImage the region
     const temp = getTempRenderCanvas(renderW, renderH);
@@ -1524,8 +1578,8 @@ function renderPictureStandard(ctx, borderOffset, pic, scrollInfo) {
     ctx.drawImage(
       temp.canvas,
       0, 0, renderW, renderH,
-      borderOffset + renderX0 * zoom, borderOffset + renderY0 * zoom,
-      renderW * zoom, renderH * zoom
+      borderOffset + renderX0 * scaleX * zoom, borderOffset + renderY0 * scaleY * zoom,
+      renderW * scaleX * zoom, renderH * scaleY * zoom
     );
   } else {
     const temp = getTempRenderCanvas(width, height);
@@ -1535,7 +1589,7 @@ function renderPictureStandard(ctx, borderOffset, pic, scrollInfo) {
     ctx.drawImage(
       temp.canvas,
       0, 0, width, height,
-      borderOffset, borderOffset, width * zoom, height * zoom
+      borderOffset, borderOffset, width * scaleX * zoom, height * scaleY * zoom
     );
   }
 }
@@ -1716,17 +1770,29 @@ function renderIflScreen(ctx, borderOffset) {
 function renderMltScreen(ctx, borderOffset) {
   const imageData = ctx.createImageData(SCREEN.WIDTH, SCREEN.HEIGHT);
   const data = imageData.data;
+  const isLinear = currentPicture && currentPicture.sourceFormat === 'mlt_linear';
+  const isTimexHC = currentPicture && currentPicture.sourceFormat === 'mlt_ula';
 
   // Process each pixel line from 0 to 191
   for (let y = 0; y < SCREEN.HEIGHT; y++) {
-    // Calculate bitmap address using ZX Spectrum interleaved layout
+    let bitmapBase;
     const third = Math.floor(y / 64);
     const charRow = Math.floor((y % 64) / 8);
     const pixelLine = y % 8;
-    const bitmapBase = third * 2048 + charRow * 32 + pixelLine * 256;
+    const interleavedBase = third * 2048 + charRow * 32 + pixelLine * 256;
+    if (isLinear) {
+      // Linear bitmap: row-major layout
+      bitmapBase = y * 32;
+    } else {
+      // ZX Spectrum interleaved layout
+      bitmapBase = interleavedBase;
+    }
 
-    // MLT attribute: one row per pixel line, stored linearly
-    const attrBase = MLT.BITMAP_SIZE + y * 32;
+    // MLT attribute: one row per pixel line
+    // mlt_ula (Timex Hi-Colour): attrs also ZX-interleaved
+    const attrBase = isTimexHC
+      ? MLT.BITMAP_SIZE + interleavedBase
+      : MLT.BITMAP_SIZE + y * 32;
 
     for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
       const byte = screenData[bitmapBase + col];
@@ -4644,17 +4710,38 @@ async function loadFileFromZip(fileName) {
         currentFormat = FORMAT.UNKNOWN;
       }
     } else if (typeof addPicture === 'function') {
-      // Create internal picture format for SCR/ULA+
-      let newInternalPicture = null;
-      if (typeof importScr === 'function') {
-        if (format === FORMAT.SCR_ULAPLUS) {
-          newInternalPicture = importScrUlaPlus(data, fullName);
-        } else if (format === FORMAT.SCR) {
-          newInternalPicture = importScr(data, fullName);
+      // Handle MLT with appended ULA+ palette (12352 = 12288 + 64)
+      let mltData = data;
+      if (format === FORMAT.MLT && data.length === MLT.TOTAL_SIZE_ULAPLUS) {
+        ulaPlusPalette = new Uint8Array(ULAPLUS.PALETTE_SIZE);
+        for (let i = 0; i < ULAPLUS.PALETTE_SIZE; i++) {
+          ulaPlusPalette[i] = data[MLT.TOTAL_SIZE + i];
         }
+        isUlaPlusMode = true;
+        resetUlaNextMode();
+        mltData = data.slice(0, MLT.TOTAL_SIZE);
+        if (typeof buildUlaPlusGrid === 'function') buildUlaPlusGrid();
+        if (typeof buildUlaPlusClassic === 'function') buildUlaPlusClassic();
+        if (typeof updateUlaPlusPalette === 'function') updateUlaPlusPalette();
       }
+
+      // Create internal picture format for all supported formats
+      let newInternalPicture = null;
+      if (typeof importPicture === 'function') {
+        let importOpts;
+        const fileExt = fileName.toLowerCase().split('.').pop();
+        if (format === FORMAT.ATTR_53C && typeof getSelectedPattern === 'function') {
+          importOpts = { pattern: getSelectedPattern() };
+        } else if (format === FORMAT.MLT && isUlaPlusMode) {
+          importOpts = { timexHiColour: true };
+        } else if (format === FORMAT.MLT && fileExt === 'mc') {
+          importOpts = { linear: true };
+        }
+        newInternalPicture = importPicture(format, mltData, fullName, importOpts);
+      }
+
       // Use multi-picture system for editable formats
-      const result = addPicture(fullName, format, data, newInternalPicture, true);
+      const result = addPicture(fullName, format, mltData, newInternalPicture, true);
       if (result >= 0) {
         // addPicture -> switchToPicture handles all rendering and UI updates
         updateFlashTimer();
@@ -4836,8 +4923,9 @@ function renderScreen() {
   const defaultDims = getFormatDimensions(currentFormat);
   const picW = currentPicture ? currentPicture.width : defaultDims.width;
   const picH = currentPicture ? currentPicture.height : defaultDims.height;
+  const scaleX = getPixelScaleX();
   const scaleY = getPixelScaleY();
-  const logicalWidth = isBscLike ? BSC.FRAME_WIDTH * zoom : picW * zoom + borderPixels * 2;
+  const logicalWidth = isBscLike ? BSC.FRAME_WIDTH * zoom : picW * scaleX * zoom + borderPixels * 2;
   const logicalHeight = isBscLike ? BSC.FRAME_HEIGHT * zoom : picH * scaleY * zoom + borderPixels * 2;
 
   // Canvas is capped to viewport size — never allocate huge canvases.
@@ -5106,7 +5194,9 @@ function drawCharGrid(ctx, offsetX, offsetY = offsetX) {
   const dims = getFormatDimensions(currentFormat);
   const width = isBscLike ? SCREEN.WIDTH : (currentPicture ? currentPicture.width : dims.width);
   const height = isBscLike ? SCREEN.HEIGHT : (currentPicture ? currentPicture.height : dims.height);
+  const scaleX = getPixelScaleX();
   const scaleY = getPixelScaleY();
+  const zoomX = zoom * scaleX;
   const zoomY = zoom * scaleY;
 
   ctx.lineWidth = 1;
@@ -5120,8 +5210,8 @@ function drawCharGrid(ctx, offsetX, offsetY = offsetX) {
       // Skip if this line would be drawn by main grid
       if (gridSize > 0 && px % gridSize === 0) continue;
       ctx.beginPath();
-      ctx.moveTo(offsetX + px * zoom, offsetY);
-      ctx.lineTo(offsetX + px * zoom, offsetY + height * zoomY);
+      ctx.moveTo(offsetX + px * zoomX, offsetY);
+      ctx.lineTo(offsetX + px * zoomX, offsetY + height * zoomY);
       ctx.stroke();
     }
 
@@ -5131,7 +5221,7 @@ function drawCharGrid(ctx, offsetX, offsetY = offsetX) {
       if (gridSize > 0 && py % gridSize === 0) continue;
       ctx.beginPath();
       ctx.moveTo(offsetX, offsetY + py * zoomY);
-      ctx.lineTo(offsetX + width * zoom, offsetY + py * zoomY);
+      ctx.lineTo(offsetX + width * zoomX, offsetY + py * zoomY);
       ctx.stroke();
     }
   }
@@ -5143,8 +5233,8 @@ function drawCharGrid(ctx, offsetX, offsetY = offsetX) {
     // Vertical grid lines
     for (let px = 0; px <= width; px += gridSize) {
       ctx.beginPath();
-      ctx.moveTo(offsetX + px * zoom, offsetY);
-      ctx.lineTo(offsetX + px * zoom, offsetY + height * zoomY);
+      ctx.moveTo(offsetX + px * zoomX, offsetY);
+      ctx.lineTo(offsetX + px * zoomX, offsetY + height * zoomY);
       ctx.stroke();
     }
 
@@ -5152,7 +5242,7 @@ function drawCharGrid(ctx, offsetX, offsetY = offsetX) {
     for (let py = 0; py <= height; py += gridSize) {
       ctx.beginPath();
       ctx.moveTo(offsetX, offsetY + py * zoomY);
-      ctx.lineTo(offsetX + width * zoom, offsetY + py * zoomY);
+      ctx.lineTo(offsetX + width * zoomX, offsetY + py * zoomY);
       ctx.stroke();
     }
   }
@@ -5210,11 +5300,13 @@ function drawStandardBorderGrid(ctx, mainOffset) {
   const dims = getFormatDimensions(currentFormat);
   const gridW = currentPicture ? currentPicture.width : dims.width;
   const gridH = currentPicture ? currentPicture.height : dims.height;
+  const scaleX = getPixelScaleX();
   const scaleY = getPixelScaleY();
+  const zoomX = zoom * scaleX;
   const zoomY = zoom * scaleY;
-  const totalWidth = gridW * zoom + mainOffset * 2;
+  const totalWidth = gridW * zoomX + mainOffset * 2;
   const totalHeight = gridH * zoomY + mainOffset * 2;
-  const mainRight = mainOffset + gridW * zoom;
+  const mainRight = mainOffset + gridW * zoomX;
   const mainBottom = mainOffset + gridH * zoomY;
 
   // Helper to draw border grid lines with given step size
@@ -5478,7 +5570,8 @@ function getFormatName(format) {
     case FORMAT.BSC: return 'BSC (border screen)';
     case FORMAT.IFL: return 'IFL (8x2 multicolor)';
     case FORMAT.BMC4: return 'BMC4 (border + 8x4 multicolor)';
-    case FORMAT.MLT: return 'MLT (8x1 multicolor)';
+    case FORMAT.MLT: return currentPicture && currentPicture.sourceFormat === 'mlt_ula'
+      ? 'MLT+ULA+ (8x1 multicolor)' : 'MLT (8x1 multicolor)';
     case FORMAT.RGB3: return '3 (tricolor RGB)';
     case FORMAT.GIGASCREEN: return 'IMG (Gigascreen)';
     case FORMAT.MONO_FULL: return 'SCR (monochrome)';
@@ -5516,6 +5609,10 @@ function getFormatName(format) {
       return 'RAD (Next LoRes Radastan 128\u00d796)';
     case FORMAT.SCR_ULANEXT:
       return 'SCR (ULANext)';
+    case FORMAT.GMX:
+      return 'GMX (Scorpion 640\u00d7200)';
+    case FORMAT.GMX160:
+      return 'GMX (Scorpion 160\u00d7200)';
     default: return 'Unknown';
   }
 }
@@ -5555,6 +5652,10 @@ function getFormatDimensions(format) {
       return { width: LORES.WIDTH, height: LORES.HEIGHT };
     case FORMAT.LORES_RAD:
       return { width: LORES_RAD.WIDTH, height: LORES_RAD.HEIGHT };
+    case FORMAT.GMX:
+      return { width: GMX.WIDTH, height: GMX.HEIGHT };
+    case FORMAT.GMX160:
+      return { width: 160, height: GMX.HEIGHT };
     case FORMAT.ZXP:
     case FORMAT.CHR:
       if (currentPicture) {
@@ -5930,9 +6031,11 @@ function startFlashTimer() {
 
   flashTimerId = setInterval(() => {
     flashPhase = !flashPhase;
-    renderScreen();
-    if (typeof editorActive !== 'undefined' && editorActive && typeof renderPreview === 'function') {
-      renderPreview();
+    // Use editorRender when editor is active so all overlays (tool preview, selection, etc.) persist
+    if (typeof editorActive !== 'undefined' && editorActive && typeof editorRender === 'function') {
+      editorRender();
+    } else {
+      renderScreen();
     }
   }, FLASH_INTERVAL);
 }
@@ -6056,12 +6159,18 @@ function detectFormat(fileName, fileSize) {
   }
 
   if (ext === 'slr') {
-    if (fileSize === LORES_RAD.PIXEL_DATA_SIZE || fileSize === LORES_RAD.TOTAL_SIZE_WITH_PAL) return FORMAT.LORES_RAD;
+    if (fileSize === LORES_RAD.PIXEL_DATA_SIZE || fileSize === LORES_RAD.TOTAL_SIZE_WITH_GRB_PAL || fileSize === LORES_RAD.TOTAL_SIZE_WITH_PAL) return FORMAT.LORES_RAD;
     return FORMAT.LORES; // Extension-only detection; 12288 conflicts with MLT by size
   }
 
   if (ext === 'rad') {
     return FORMAT.LORES_RAD;
+  }
+
+  if (ext === 'c') {
+    if (fileSize === GMX.TOTAL_SIZE) return FORMAT.GMX;
+    if (fileSize === GMX160.TOTAL_SIZE) return FORMAT.GMX160;
+    return FORMAT.UNKNOWN;
   }
 
   // Check by size
@@ -6081,7 +6190,7 @@ function detectFormat(fileName, fileSize) {
     return FORMAT.BMC4;
   }
 
-  if (fileSize === MLT.TOTAL_SIZE) {
+  if (fileSize === MLT.TOTAL_SIZE || fileSize === MLT.TOTAL_SIZE_ULAPLUS) {
     return FORMAT.MLT;
   }
 
@@ -6091,6 +6200,10 @@ function detectFormat(fileName, fileSize) {
 
   if (fileSize === GIGASCREEN.TOTAL_SIZE) {
     return FORMAT.GIGASCREEN;
+  }
+
+  if (fileSize === GMX160.TOTAL_SIZE) {
+    return FORMAT.GMX160;
   }
 
   if (fileSize === HLR.TOTAL_SIZE) {
@@ -7511,6 +7624,29 @@ function parseNxi4bppPalette(data) {
 }
 
 /**
+ * Parses a GRB332-encoded palette (1 byte per entry) into [r,g,b] arrays.
+ * Used by ZX-Uno Radastan files with embedded 16-byte palette.
+ * @param {Uint8Array} data - palette bytes
+ * @param {number} count - number of entries
+ * @returns {number[][]} entries of [r, g, b]
+ */
+function parseGrb332Palette(data, count) {
+  const palette = new Array(count);
+  for (let i = 0; i < count; i++) {
+    const byte = data[i] || 0;
+    const g3 = (byte >> 5) & 7;
+    const r3 = (byte >> 2) & 7;
+    const b2 = byte & 3;
+    palette[i] = [
+      Math.round(r3 * 255 / 7),
+      Math.round(g3 * 255 / 7),
+      Math.round(b2 * 255 / 3)
+    ];
+  }
+  return palette;
+}
+
+/**
  * Generates the default 16-color palette for 4bpp mode (first 16 entries of RGB332).
  * @returns {number[][]} 16 entries of [r, g, b]
  */
@@ -7828,8 +7964,8 @@ function loadLoresFile(file) {
 
     const sz = buffer.byteLength;
 
-    // Redirect Radastan-sized .slr files (6144 or 6176 bytes) to loadLoresRadFile
-    if (sz === LORES_RAD.PIXEL_DATA_SIZE || sz === LORES_RAD.TOTAL_SIZE_WITH_PAL) {
+    // Redirect Radastan-sized .slr files (6144, 6160, or 6176 bytes) to loadLoresRadFile
+    if (sz === LORES_RAD.PIXEL_DATA_SIZE || sz === LORES_RAD.TOTAL_SIZE_WITH_GRB_PAL || sz === LORES_RAD.TOTAL_SIZE_WITH_PAL) {
       loadLoresRadFile(file);
       return;
     }
@@ -7902,8 +8038,8 @@ function loadLoresRadFile(file) {
     if (!(buffer instanceof ArrayBuffer)) return;
 
     const sz = buffer.byteLength;
-    if (sz !== LORES_RAD.PIXEL_DATA_SIZE && sz !== LORES_RAD.TOTAL_SIZE_WITH_PAL) {
-      alert('Invalid RAD file: expected ' + LORES_RAD.PIXEL_DATA_SIZE + ' or ' + LORES_RAD.TOTAL_SIZE_WITH_PAL + ' bytes, got ' + sz + '.');
+    if (sz !== LORES_RAD.PIXEL_DATA_SIZE && sz !== LORES_RAD.TOTAL_SIZE_WITH_GRB_PAL && sz !== LORES_RAD.TOTAL_SIZE_WITH_PAL) {
+      alert('Invalid RAD file: expected ' + LORES_RAD.PIXEL_DATA_SIZE + ', ' + LORES_RAD.TOTAL_SIZE_WITH_GRB_PAL + ', or ' + LORES_RAD.TOTAL_SIZE_WITH_PAL + ' bytes, got ' + sz + '.');
       return;
     }
 
@@ -7912,16 +8048,24 @@ function loadLoresRadFile(file) {
 
     nxiLayer2Mode = '256x192';
     const fullData = new Uint8Array(buffer);
-    const data = sz === LORES_RAD.TOTAL_SIZE_WITH_PAL
+    const data = sz > LORES_RAD.PIXEL_DATA_SIZE
       ? fullData.slice(0, LORES_RAD.PIXEL_DATA_SIZE)
       : fullData;
 
-    // Use embedded palette if present (32 bytes after pixel data), otherwise default
+    // Use embedded palette if present, otherwise default
     if (sz === LORES_RAD.TOTAL_SIZE_WITH_PAL) {
+      // ZX Next: 32-byte RGB333 palette (16 entries × 2 bytes)
       const palData = fullData.slice(LORES_RAD.PIXEL_DATA_SIZE);
       nxiResolvedPalette = parseNxi4bppPalette(palData);
+      radPaletteSize = 32;
+    } else if (sz === LORES_RAD.TOTAL_SIZE_WITH_GRB_PAL) {
+      // ZX-Uno Radastan: 16-byte GRB332 palette (16 entries × 1 byte)
+      const palData = fullData.slice(LORES_RAD.PIXEL_DATA_SIZE);
+      nxiResolvedPalette = parseGrb332Palette(palData, 16);
+      radPaletteSize = 16;
     } else {
       nxiResolvedPalette = generateDefaultNext4bppPalette();
+      radPaletteSize = 0;
     }
     initUlaPlusMode(data, FORMAT.UNKNOWN);
 
@@ -8102,6 +8246,146 @@ function finishLoadSl2Extended(data, fileName, mode) {
   currentFileName = fileName;
   currentFormat = FORMAT.SL2;
   currentPicture = null;
+
+  toggleScaControlsVisibility();
+  toggleFormatControlsVisibility();
+  updateScaControls();
+  updateFileInfo();
+  renderScreen();
+  if (typeof updateEditorState === 'function') updateEditorState();
+  if (typeof editorActive !== 'undefined' && editorActive && typeof renderPreview === 'function') renderPreview();
+  updateFlashTimer();
+  if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
+}
+
+/**
+ * Renders an MLT preview into a canvas for the disambiguation dialog.
+ * Uses standard ZX palette only (no ULA+/ULANext).
+ * @param {HTMLCanvasElement} canvas - Target 256×192 canvas
+ * @param {Uint8Array} data - 12288-byte MLT data
+ * @param {boolean} linear - true = linear bitmap, false = ZX-interleaved
+ */
+function renderMltPreview(canvas, data, linear) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const img = ctx.createImageData(256, 192);
+  const px = img.data;
+  for (let y = 0; y < 192; y++) {
+    let bitmapBase;
+    if (linear) {
+      bitmapBase = y * 32;
+    } else {
+      const third = Math.floor(y / 64);
+      const charRow = Math.floor((y % 64) / 8);
+      const pixelLine = y % 8;
+      bitmapBase = third * 2048 + charRow * 32 + pixelLine * 256;
+    }
+    for (let col = 0; col < 32; col++) {
+      const byte = data[bitmapBase + col];
+      const attr = data[6144 + y * 32 + col];
+      const ink = attr & 0x07;
+      const paper = (attr >> 3) & 0x07;
+      const bright = (attr & 0x40) ? 1 : 0;
+      const palInk = bright ? ZX_PALETTE_RGB.BRIGHT[ink] : ZX_PALETTE_RGB.REGULAR[ink];
+      const palPaper = bright ? ZX_PALETTE_RGB.BRIGHT[paper] : ZX_PALETTE_RGB.REGULAR[paper];
+      for (let bit = 0; bit < 8; bit++) {
+        const isInk = (byte >> (7 - bit)) & 1;
+        const rgb = isInk ? palInk : palPaper;
+        const dst = (y * 256 + col * 8 + bit) * 4;
+        px[dst] = rgb[0]; px[dst + 1] = rgb[1]; px[dst + 2] = rgb[2]; px[dst + 3] = 255;
+      }
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+/**
+ * Shows the MLT disambiguation dialog for 12288-byte files that could be
+ * either standard MLT (ZX-interleaved bitmap) or multicolor (linear bitmap).
+ * Renders preview images for both interpretations.
+ * @param {Uint8Array} data - Raw 12288-byte data
+ * @param {string} fileName - Original file name
+ */
+function showMltDisambiguationDialog(data, fileName) {
+  const overlay = document.getElementById('mltDisambiguationOverlay');
+  if (!overlay) {
+    // Dialog not present — default to standard interleaved MLT
+    finishLoadMlt(data, fileName, false);
+    return;
+  }
+
+  const canvasInterleaved = /** @type {HTMLCanvasElement|null} */ (document.getElementById('mltPreviewInterleaved'));
+  if (canvasInterleaved) renderMltPreview(canvasInterleaved, data, false);
+
+  const canvasLinear = /** @type {HTMLCanvasElement|null} */ (document.getElementById('mltPreviewLinear'));
+  if (canvasLinear) renderMltPreview(canvasLinear, data, true);
+
+  overlay.style.display = '';
+
+  const choiceInterleaved = document.getElementById('mltChoiceInterleaved');
+  const choiceLinear = document.getElementById('mltChoiceLinear');
+  const cancelBtn = document.getElementById('mltDisambiguationCancel');
+
+  function closeDialog() {
+    overlay.style.display = 'none';
+    if (choiceInterleaved) choiceInterleaved.onclick = null;
+    if (choiceLinear) choiceLinear.onclick = null;
+    if (cancelBtn) cancelBtn.onclick = null;
+  }
+
+  if (choiceInterleaved) {
+    choiceInterleaved.onclick = function() {
+      closeDialog();
+      finishLoadMlt(data, fileName, false);
+    };
+  }
+  if (choiceLinear) {
+    choiceLinear.onclick = function() {
+      closeDialog();
+      finishLoadMlt(data, fileName, true);
+    };
+  }
+  if (cancelBtn) {
+    cancelBtn.onclick = function() {
+      closeDialog();
+    };
+  }
+}
+
+/**
+ * Completes loading an MLT file after disambiguation.
+ * @param {Uint8Array} data - 12288-byte MLT data
+ * @param {string} fileName - Original file name
+ * @param {boolean} linear - true = linear bitmap (multicolor), false = ZX-interleaved (standard MLT)
+ */
+function finishLoadMlt(data, fileName, linear) {
+  stopFlashTimer();
+  resetScaState();
+  initUlaPlusMode(data, FORMAT.MLT);
+
+  let newInternalPicture = null;
+  if (typeof importPicture === 'function') {
+    const importOpts = linear ? { linear: true } : undefined;
+    newInternalPicture = importPicture(FORMAT.MLT, data, fileName, importOpts);
+  }
+
+  if (typeof addPicture === 'function') {
+    const result = addPicture(fileName, FORMAT.MLT, data, newInternalPicture, true);
+    if (result >= 0) {
+      updateFlashTimer();
+      return;
+    }
+  }
+
+  // Fallback if editor not loaded or max pictures reached
+  if (typeof saveCurrentPictureState === 'function') {
+    saveCurrentPictureState();
+  }
+
+  screenData = data;
+  currentFileName = fileName;
+  currentFormat = FORMAT.MLT;
+  currentPicture = newInternalPicture;
 
   toggleScaControlsVisibility();
   toggleFormatControlsVisibility();
@@ -8443,18 +8727,18 @@ function loadScreenFile(file) {
 
       // Handle MLT with appended ULA+ palette (12352 = 12288 + 64)
       if (format === FORMAT.MLT && data.length === MLT.TOTAL_SIZE_ULAPLUS) {
-        // Extract ULA+ palette and trim data before initUlaPlusMode
-        const trimmedData = data.slice(0, MLT.TOTAL_SIZE);
-        // Build a fake ULA+ buffer: 6912-byte SCR + 64-byte palette
-        // initUlaPlusMode expects SCR_ULAPLUS format with palette at offset 6912
-        // Instead, manually set up ULA+ state
+        // Extract ULA+ palette from the last 64 bytes
         ulaPlusPalette = new Uint8Array(ULAPLUS.PALETTE_SIZE);
         for (let i = 0; i < ULAPLUS.PALETTE_SIZE; i++) {
           ulaPlusPalette[i] = data[MLT.TOTAL_SIZE + i];
         }
         isUlaPlusMode = true;
         resetUlaNextMode(); // Mutual exclusion
-        data = trimmedData;
+
+        // MLT+ULA+ is Timex Hi-Colour: both bitmap and attrs use ZX-interleaved layout.
+        // Trim to 12288 bytes (strip the appended 64-byte ULA+ palette).
+        data = data.slice(0, MLT.TOTAL_SIZE);
+
         // Update ULA+ palette UI
         if (typeof buildUlaPlusGrid === 'function') buildUlaPlusGrid();
         if (typeof buildUlaPlusClassic === 'function') buildUlaPlusClassic();
@@ -8464,13 +8748,32 @@ function loadScreenFile(file) {
         initUlaPlusMode(data, format);
       }
 
+      // MLT disambiguation: if 12288-byte file detected as MLT by size but not by
+      // a known extension (.mlt or .mc), show a dialog to let the user choose
+      // between standard interleaved MLT and linear multicolor.
+      if (format === FORMAT.MLT && data.length === MLT.TOTAL_SIZE && !isUlaPlusMode) {
+        const fileExt = fileName.toLowerCase().split('.').pop();
+        if (fileExt !== 'mlt' && fileExt !== 'mc') {
+          showMltDisambiguationDialog(data, fileName);
+          return;
+        }
+      }
+
       // Create internal picture format for all supported formats
       let newInternalPicture = null;
       if (typeof importPicture === 'function') {
         // For 53c format, pass the currently selected pattern
-        const importOpts = (format === FORMAT.ATTR_53C && typeof getSelectedPattern === 'function')
-          ? { pattern: getSelectedPattern() }
-          : undefined;
+        // For MLT+ULA+, signal Timex Hi-Colour layout (both bitmap and attrs ZX-interleaved)
+        // For .mc multicolor, signal linear bitmap layout
+        let importOpts;
+        const fileExt = fileName.toLowerCase().split('.').pop();
+        if (format === FORMAT.ATTR_53C && typeof getSelectedPattern === 'function') {
+          importOpts = { pattern: getSelectedPattern() };
+        } else if (format === FORMAT.MLT && isUlaPlusMode) {
+          importOpts = { timexHiColour: true };
+        } else if (format === FORMAT.MLT && fileExt === 'mc') {
+          importOpts = { linear: true };
+        }
         newInternalPicture = importPicture(format, data, fileName, importOpts);
       }
 

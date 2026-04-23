@@ -321,13 +321,17 @@ When you load a `.png`, `.gif`, `.jpg`, `.webp`, or `.bmp` file, the Image Impor
 
 ### Choose Target Format
 
-In the **Output** section, select the target ZX Spectrum format (SCR, ULA+, IFL, MLT, Gigascreen, HLR, STL, SPECSCII, ZXP, btile, wtile, etc.).
+In the **Output** section, select the target ZX Spectrum format (SCR, ULA+, IFL, MLT, MLT+ULA+, Gigascreen, HLR, STL, GMX 640×200, GMX 160×200, SPECSCII, ZXP, btile, wtile, etc.).
 
 For **SPECSCII** format, the **Charset** dropdown selects which glyphs are used: **Full** (ROM font + block graphics), **ASCII** (ROM font only), or **UDG** (block graphics only).
 
 For **ZXP** format, you can specify custom width and height (8-2048 pixels, divisible by 8) and choose between ULA and ULA+ palette types.
 
 For **btile** / **wtile** formats (Nirvana engine tiles), you can specify custom canvas size. Width snaps to tile-aligned values (multiples of 16 for btile, 24 for wtile) and height to multiples of 16. Uses 8×2 multicolor attribute cells.
+
+For **MLT+ULA+** format, the ULA+ Palette controls appear — choose **Auto** to generate an optimal 64-color palette from the source image, or **Load .pal** to supply a custom palette file.
+
+For **GMX 640×200** and **GMX 160×200** (Scorpion ZS 256 formats), the canvas is 320×200 display pixels. GMX 640×200 supports full bitmap+attribute conversion with all dithering methods. GMX 160×200 is attribute-only (fixed bitmap pattern) — dithering is not applicable.
 
 ### Select Dithering Algorithm
 
@@ -554,6 +558,8 @@ When editing NXI, SL2, LoRes, or LoRes Radastan files, the palette grid supports
 - **Click the same cell** or press **Escape** to cancel
 - All operations support undo (Ctrl+Z)
 
+> **Note:** NXI files embed the palette, so palette edits are always saved. SL2, LoRes, and Radastan files without an embedded palette do not store the palette — if you edit colors, a warning will appear on save. Radastan files loaded with an embedded palette (6160 or 6176 bytes) will preserve palette changes.
+
 ---
 
 ## 14. Working with Multicolor Formats (IFL/MLT)
@@ -626,7 +632,38 @@ Both formats use the same gigascreen palette and Blend dark/Blend/Emulate flicke
 
 ---
 
-## 16. Saving and Exporting
+## 16. Working with Scorpion GMX Formats
+
+### Overview
+
+The Scorpion ZS 256 Turbo computer features two extended graphics modes beyond the standard ZX Spectrum screen. Both use 8×1 attribute cells (one attribute per pixel row) with standard ZX Spectrum colors, and display at half-width pixels (640 source pixels shown as 320 display pixels).
+
+### GMX 640×200 (Hi-Res)
+
+1. Open a `.c` file of 32768 bytes, or create a new one via **New** → **GMX 640×200 (.c)**
+2. The screen is 640×200 pixels with 80 attribute columns and 200 attribute rows
+3. Drawing works the same as standard SCR — pixel and attribute editing, all drawing tools (pencil, line, rectangle, circle, fill, text, brushes), layers, and undo/redo
+4. The attribute grid shows 8×1 cells (press **G** to toggle grid visibility)
+5. Save with **Ctrl+S** — exports as 32768-byte `.c` file
+
+### GMX 160×200 (Attribute-Only)
+
+1. Open a `.c` file of 16128 bytes (with "GMX\x0F" header)
+2. The screen is 160×200 color cells (80 attribute columns × 200 rows, each cell 8 pixels wide × 1 pixel tall)
+3. This is an **attribute-only** format — there is no bitmap to edit. Drawing tools recolor cells using the current ink/paper/bright settings
+4. Use the **Recolor** tool or any drawing tool to paint attribute cells
+5. **Flood fill** works on the attribute cell grid (fills contiguous cells with the same attribute)
+6. Save with **Ctrl+S** — exports as 16128-byte `.c` file with the "GMX\x0F" header
+
+### Tips
+
+- Both formats display with half-width pixels. The grid and all preview overlays account for this automatically.
+- The color picker (**I** key) reads the attribute under the cursor for both formats.
+- Layers are supported for both formats.
+
+---
+
+## 17. Saving and Exporting
 
 ### Save in Native Format
 
@@ -689,7 +726,7 @@ For game developers who need sprite/screen data as Z80 assembly:
 
 ---
 
-## 17. Working with SCA Animations
+## 18. Working with SCA Animations
 
 ### Open an SCA File
 
@@ -736,7 +773,7 @@ The SCA editor opens as a fullscreen overlay. Here you can:
 
 ---
 
-## 18. Using Reference Images
+## 19. Using Reference Images
 
 ### Load a Reference Image
 
@@ -765,7 +802,7 @@ Click **Clear** to remove the reference image.
 
 ---
 
-## 19. Editing Fonts
+## 20. Editing Fonts
 
 The Font Editor lets you create and modify ZX Spectrum bitmap fonts — both fixed-width 8×8 fonts and FZX proportional fonts. Supports up to 1024 glyphs in a single unified buffer.
 
@@ -847,7 +884,7 @@ The Font Editor lets you create and modify ZX Spectrum bitmap fonts — both fix
 
 ---
 
-## 20. Tips and Hidden Features
+## 21. Tips and Hidden Features
 
 ### Workspace Save/Load
 Save all your open pictures at once with **Save Workspace** in the Xform tab. Load them back later — preserving layers, sprites, settings, and reference images. Workspace buttons are always available in the Xform tab, even without a loaded picture.
