@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.91 -->
+<!-- SpectraLab v1.92 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -1783,6 +1783,14 @@
                   <span class="info-label">Dimensions:</span>
                   <span class="info-value" id="infoDimensions">-</span>
                 </div>
+                <div id="infoColorsRow" class="info-row" style="display: none;">
+                  <span class="info-label">Colors used:</span>
+                  <span class="info-value" id="infoColorsUsed">-</span>
+                </div>
+                <div id="infoHiddenRow" class="info-row" style="display: none;">
+                  <span class="info-label">Hidden cells:</span>
+                  <span class="info-value" id="infoHiddenCells">-</span>
+                </div>
                 <div id="infoAnimSection" style="display: none;">
                   <div class="info-row">
                     <span class="info-label">Frames:</span>
@@ -1941,6 +1949,7 @@
               <button class="editor-tool-btn" data-tool="eraser" title="Eraser (E) - makes transparent on non-BG layers">⌫</button>
               <button class="editor-tool-btn" data-tool="text" title="Text (T)">T</button>
               <button class="editor-tool-btn" data-tool="colorpicker" title="Color Picker (K)">⊙</button>
+              <button class="editor-tool-btn" data-tool="cellinvert" title="Cell Invert (J) — swap ink↔paper + invert bitmap">◑</button>
             </div>
             <div id="editorAirbrushSection" style="margin-bottom: 8px; display: none;">
               <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">AIRBRUSH</div>
@@ -2277,6 +2286,23 @@
               <div class="control-group-title">Generate</div>
               <div class="editor-actions">
                 <button id="qrGenerateBtn" title="Generate QR code">QR Code</button>
+              </div>
+            </div>
+
+            <!-- Optimize attributes section (SCR 8×8 cells) -->
+            <div id="optimizeAttrsSection" class="control-group" style="display: none;">
+              <div class="control-group-title">Optimize Attributes</div>
+              <div style="display: flex; flex-direction: column; gap: 4px;">
+                <select id="optimizeAttrsMode" style="font-size: 11px;">
+                  <option value="brightness">Paper = lighter color</option>
+                  <option value="majority">Paper = majority pixels</option>
+                  <option value="combined">Combined (lighter + majority)</option>
+                  <option value="minimize">Minimize ink bits</option>
+                </select>
+                <div style="display: flex; gap: 4px; align-items: center;">
+                  <button id="optimizeAttrsBtn" style="flex: 1;">Apply</button>
+                  <span id="optimizeAttrsInfo" style="font-size: 10px; color: var(--text-secondary);"></span>
+                </div>
               </div>
             </div>
 
@@ -3243,6 +3269,7 @@
           <tr><td style="color: var(--text-secondary);">E</td><td>Eraser tool</td></tr>
           <tr><td style="color: var(--text-secondary);">T</td><td>Text tool</td></tr>
           <tr><td style="color: var(--text-secondary);">K</td><td>Color picker tool</td></tr>
+          <tr><td style="color: var(--text-secondary);">J</td><td>Cell invert (swap ink↔paper + invert bitmap)</td></tr>
           <tr><td style="color: var(--text-secondary);">S</td><td>Select tool</td></tr>
         </table>
         <div style="font-weight: bold; margin: 12px 0 6px;">Drawing</div>
@@ -3431,7 +3458,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.91</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.92</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">

@@ -441,3 +441,5 @@ Tools and documentation that inspired or informed SpectraLab development:
 ## License
 
 MIT
+
+The example pictures in the `examples/` directory are works of ZX Spectrum pixel art. All rights to these works belong to their respective authors.

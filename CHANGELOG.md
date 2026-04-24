@@ -1,5 +1,16 @@
 # SpectraLab Version History
 
+## v1.92
+- Font editor: renamed font width modes from "6 high/6 low/4 high/4 low" to "6 (left)/6 (right)/4 (left)/4 (right)" for clarity.
+- Fix: FZX-to-fixed font conversion no longer cuts off glyphs with non-zero shift. The shift offset was applied twice (once in the bitmap storage, once in the conversion loop), causing shifted glyphs to be pushed down and truncated.
+- Optimize Attributes — new tool in the Xform tab for SCR format. Automatically flips ink↔paper and inverts bitmap in cells where the assignment is suboptimal. The displayed colors remain identical; only the bitmap polarity changes. Four modes: Paper = lighter color (brightness rule), Paper = majority pixels (fill rule), Combined (brightness + majority), Minimize ink bits (compression-friendly). Useful for cleaning up images converted from other software.
+- Cell Invert tool (J) — new drawing tool that swaps ink↔paper and inverts bitmap for individual cells. Click or drag across cells to manually flip their polarity without changing displayed colors. Each cell is only inverted once per stroke (no flicker on revisited cells). Available for SCR, IFL, MLT, BMC4, BSC, GMX, and Gigascreen formats.
+- GMX display — changed from horizontal squeeze (640→320, scaleX=0.5) to vertical stretch (scaleY=2). All 640 horizontal pixels are now visible; each row is doubled vertically to maintain correct aspect ratio. Previously, nearest-neighbor 2:1 horizontal downscale dropped every other pixel column, making thin text and single-pixel lines invisible.
+- GMX 640×200 import quality — source image is now imported at native 640×200 resolution instead of being pre-scaled to 320×200 and doubled. This preserves fine detail (thin text, single-pixel lines) from high-resolution sources.
+- File Info counters (update live during editing):
+  - **Colors used** — distinct attribute values for attribute formats (SCR, IFL, MLT, BMC4, GMX, etc.); distinct palette indices for NXI/SL2 and LoRes formats.
+  - **Hidden cells** — cells where ink equals paper but bitmap is not all 0x00 or all 0xFF. Not shown for attribute-only formats with fixed bitmaps (GMX 160, HLR, 53c, STL).
+
 ## v1.91
 - GMX 640×200 image import — convert PNG/JPG/GIF to Scorpion ZS 256 hi-res format. Source image is stretched to 320×200 display size, internally doubled to 640×200 for 8×1 attribute cells. Supports all dithering methods including cell-aware variants. Output: 32768-byte `.c` file with linear bitmap and attributes.
 - GMX 160×200 image import — convert to Scorpion ZS 256 attribute-only format. Fixed 0x0F bitmap pattern provides 160 color columns. Each 8×1 cell is color-matched to the best ink/paper/bright combination. Dithering is not applicable (bitmap is fixed). Output: 16128-byte `.c` file with "GMX\x0F" header.

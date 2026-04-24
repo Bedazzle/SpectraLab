@@ -3884,28 +3884,17 @@ function convertToGmx640(sourceCanvas, dithering, brightness, contrast, saturati
   const ctx = sourceCanvas.getContext('2d');
   if (!ctx) throw new Error('Cannot get canvas context');
 
-  const imageData = ctx.getImageData(0, 0, 320, 200);
+  const imageData = ctx.getImageData(0, 0, 640, 200);
   const pixels = imageData.data;
 
-  applyImageAdjustments(pixels, 320, 200, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
+  applyImageAdjustments(pixels, 640, 200, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
 
   if (monoOutput && !grayscale) {
     applyGrayscale(pixels);
   }
 
-  // Convert to float and double horizontally: 320×200 → 640×200
-  const srcFloat = rgbaToFloat(pixels, 320 * 200);
-  const floatPixels = new Float32Array(640 * 200 * 3);
-  for (let y = 0; y < 200; y++) {
-    for (let x = 0; x < 320; x++) {
-      const si = (y * 320 + x) * 3;
-      const di1 = (y * 640 + x * 2) * 3;
-      const di2 = di1 + 3;
-      floatPixels[di1] = floatPixels[di2] = srcFloat[si];
-      floatPixels[di1 + 1] = floatPixels[di2 + 1] = srcFloat[si + 1];
-      floatPixels[di1 + 2] = floatPixels[di2 + 2] = srcFloat[si + 2];
-    }
-  }
+  // Convert to float at native 640×200 resolution (no doubling)
+  const floatPixels = rgbaToFloat(pixels, 640 * 200);
 
   const palette = getCombinedPalette();
   const fullPalette = [...palette.regular, ...palette.bright];
@@ -7441,26 +7430,24 @@ function renderGmxToCanvas(gmxData, canvas, zoom = 2, isGmx160 = false) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
-  const displayW = 320;
-  const displayH = 200;
+  const nativeW = isGmx160 ? 320 : 640;
+  const nativeH = 200;
 
-  canvas.width = displayW * zoom;
-  canvas.height = displayH * zoom;
+  // Display at native width × doubled height to preserve all pixels
+  canvas.width = nativeW * zoom;
+  canvas.height = nativeH * 2 * zoom;
 
-  const imageData = ctx.createImageData(displayW, displayH);
-  const pixels = imageData.data;
   const palette = getCombinedPalette();
+
+  const imageData = ctx.createImageData(nativeW, nativeH);
+  const pixels = imageData.data;
 
   for (let y = 0; y < 200; y++) {
     for (let col = 0; col < 80; col++) {
-      // Read bitmap byte (8 pixels at 640-wide)
       const bitmapByte = isGmx160 ? GMX160.PIXEL_BYTE : gmxData[y * 80 + col];
-
-      // Read attr byte
       const attr = isGmx160
         ? gmxData[GMX160.HEADER_SIZE + y * 80 + col]
         : gmxData[GMX.ATTR_OFFSET + y * 80 + col];
-
       const ink = attr & 0x07;
       const paper = (attr >> 3) & 0x07;
       const bright = (attr & 0x40) !== 0;
@@ -7468,28 +7455,41 @@ function renderGmxToCanvas(gmxData, canvas, zoom = 2, isGmx160 = false) {
       const inkColor = pal[ink];
       const paperColor = pal[paper];
 
-      // Each 8-pixel bitmap byte maps to 4 display pixels (2:1 horizontal squeeze)
-      for (let dp = 0; dp < 4; dp++) {
-        // Use left pixel of each pair (bit positions 7,5,3,1)
-        const bitPos = 7 - dp * 2;
-        const isInk = (bitmapByte & (1 << bitPos)) !== 0;
-        const color = isInk ? inkColor : paperColor;
-
-        const dx = col * 4 + dp;
-        const idx = (y * displayW + dx) * 4;
-        pixels[idx] = color[0];
-        pixels[idx + 1] = color[1];
-        pixels[idx + 2] = color[2];
-        pixels[idx + 3] = 255;
+      if (isGmx160) {
+        // 4 display pixels per cell (fixed 0x0F bitmap, pairs of bits)
+        for (let dp = 0; dp < 4; dp++) {
+          const bitPos = 7 - dp * 2;
+          const isInk = (bitmapByte & (1 << bitPos)) !== 0;
+          const color = isInk ? inkColor : paperColor;
+          const dx = col * 4 + dp;
+          const idx = (y * nativeW + dx) * 4;
+          pixels[idx] = color[0];
+          pixels[idx + 1] = color[1];
+          pixels[idx + 2] = color[2];
+          pixels[idx + 3] = 255;
+        }
+      } else {
+        // 8 display pixels per cell at native 640 width
+        for (let bit = 0; bit < 8; bit++) {
+          const isInk = (bitmapByte & (1 << (7 - bit))) !== 0;
+          const color = isInk ? inkColor : paperColor;
+          const dx = col * 8 + bit;
+          const idx = (y * nativeW + dx) * 4;
+          pixels[idx] = color[0];
+          pixels[idx + 1] = color[1];
+          pixels[idx + 2] = color[2];
+          pixels[idx + 3] = 255;
+        }
       }
     }
   }
 
-  const temp = getImportTempCanvas(displayW, displayH);
+  // Put native image on temp canvas, then stretch vertically ×2 (no horizontal squeeze)
+  const temp = getImportTempCanvas(nativeW, nativeH);
   if (temp) {
     temp.ctx.putImageData(imageData, 0, 0);
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(temp.canvas, 0, 0, displayW * zoom, displayH * zoom);
+    ctx.drawImage(temp.canvas, 0, 0, nativeW * zoom, nativeH * 2 * zoom);
   }
 }
 
@@ -9849,7 +9849,8 @@ function getImportFormatDimensions(format) {
   if (format === 'nxi320' || format === 'sl2_320') return { w: 320, h: 256 };
   if (format === 'nxi640' || format === 'sl2_640') return { w: 640, h: 256 };
   if (format === 'lores' || format === 'lores_rad') return { w: 128, h: 96 };
-  if (format === 'gmx' || format === 'gmx160') return { w: 320, h: 200 };
+  if (format === 'gmx') return { w: 640, h: 200 };
+  if (format === 'gmx160') return { w: 320, h: 200 };
   return { w: 256, h: 192 };
 }
 

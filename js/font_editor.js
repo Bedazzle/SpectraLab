@@ -1828,7 +1828,9 @@ function convertFixedToFzx() {
 
 /**
  * Convert FZX proportional font to fixed-width 8×8 font.
- * Clips glyphs wider than 8 or taller than 8. Applies shift as vertical offset.
+ * Clips glyphs wider than 8 or taller than 8.
+ * The internal bitmap already has shift baked in (empty rows 0..shift-1),
+ * so we read directly by outRow without additional offset.
  */
 function convertFzxToFixed() {
   if (!fzxFont) return;
@@ -1841,10 +1843,9 @@ function convertFzxToFixed() {
     const outOffset = i * FONT_CONST.BYTES_PER_GLYPH;
 
     for (let outRow = 0; outRow < 8; outRow++) {
-      const srcRow = outRow - g.shift;
-      if (srcRow < 0 || srcRow >= fzxFont.height) continue;
+      if (outRow >= fzxFont.height) continue;
       // Take first byte of source row (leftmost 8 pixels)
-      newData[outOffset + outRow] = g.bitmap[srcRow * bpr];
+      newData[outOffset + outRow] = g.bitmap[outRow * bpr];
     }
   }
 

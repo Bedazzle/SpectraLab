@@ -414,23 +414,21 @@ function getNxiPixelIndex(x, y) {
 
 /**
  * Returns the vertical display scale factor for the current format.
- * 640×256 Layer 2 pixels are displayed 2× tall to match the real hardware
- * aspect ratio (pixels are half-width on the Next, so we double the height).
- * @returns {number} 1 for all formats except 640×256 which returns 2
+ * Formats with half-width pixels (NXI 640×256, GMX 640×200) double the height
+ * instead of halving the width, so all horizontal pixels are preserved.
+ * @returns {number} 2 for GMX and NXI 640×256, 1 for all other formats
  */
 function getPixelScaleY() {
   if ((currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) && nxiLayer2Mode === '640x256') return 2;
+  if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) return 2;
   return 1;
 }
 
 /**
  * Returns the horizontal display scale factor for the current format.
- * Scorpion GMX 640×200 pixels are half-width on the CRT (640 pixels in the
- * space of 320), so we halve the display width to match the real hardware PAR.
- * @returns {number} 1 for most formats, 0.5 for Scorpion GMX
+ * @returns {number} Always 1 (no horizontal scaling)
  */
 function getPixelScaleX() {
-  if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) return 0.5;
   return 1;
 }
 
@@ -1101,6 +1099,14 @@ let infoFrameCount;
 let infoPayloadType;
 /** @type {HTMLElement} */
 let infoFrameDelay;
+/** @type {HTMLElement} */
+let infoColorsRow;
+/** @type {HTMLElement} */
+let infoColorsUsed;
+/** @type {HTMLElement} */
+let infoHiddenRow;
+/** @type {HTMLElement} */
+let infoHiddenCells;
 
 /** @type {HTMLInputElement} */
 let flashCheckbox;
@@ -1177,6 +1183,10 @@ function cacheElements() {
   infoFrameCount = /** @type {HTMLElement} */ (document.getElementById('infoFrameCount'));
   infoPayloadType = /** @type {HTMLElement} */ (document.getElementById('infoPayloadType'));
   infoFrameDelay = /** @type {HTMLElement} */ (document.getElementById('infoFrameDelay'));
+  infoColorsRow = /** @type {HTMLElement} */ (document.getElementById('infoColorsRow'));
+  infoColorsUsed = /** @type {HTMLElement} */ (document.getElementById('infoColorsUsed'));
+  infoHiddenRow = /** @type {HTMLElement} */ (document.getElementById('infoHiddenRow'));
+  infoHiddenCells = /** @type {HTMLElement} */ (document.getElementById('infoHiddenCells'));
 }
 
 // ============================================================================
@@ -5180,6 +5190,9 @@ function renderScreen() {
 
   // Apply overlay display filters (scanlines, noise, glow, vignette)
   if (typeof applyOverlayFilters === 'function') applyOverlayFilters();
+
+  // Update hidden pixel count after rendering
+  updateInfoCounters();
 }
 
 /**
@@ -5678,6 +5691,156 @@ function getShortFileName(fileName) {
 }
 
 /**
+ * Count distinct colors used in the picture.
+ * For attribute formats: counts unique (color index + bright) combinations used as ink or paper.
+ * @returns {number} Number of distinct colors, or -1 if not applicable
+ */
+function countDistinctColors() {
+  // NXI/SL2: count distinct palette indices in pixel data
+  if (currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) {
+    if (!screenData || screenData.length === 0) return -1;
+    const offset = getNxiPixelOffset();
+    if (nxiLayer2Mode === '640x256') {
+      // 4bpp: count distinct nibble values (0-15)
+      const used = new Uint8Array(16);
+      const w = 640, h = 256;
+      for (let i = 0; i < (w * h) / 2; i++) {
+        const b = screenData[offset + i];
+        used[(b >> 4) & 0x0F] = 1;
+        used[b & 0x0F] = 1;
+      }
+      let count = 0;
+      for (let i = 0; i < 16; i++) count += used[i];
+      return count;
+    }
+    // 8bpp: count distinct byte values (0-255)
+    const used = new Uint8Array(256);
+    const w = nxiLayer2Mode === '320x256' ? 320 : 256;
+    const h = nxiLayer2Mode === '320x256' ? 256 : 192;
+    for (let i = 0; i < w * h; i++) {
+      used[screenData[offset + i]] = 1;
+    }
+    let count = 0;
+    for (let i = 0; i < 256; i++) count += used[i];
+    return count;
+  }
+
+  // LoRes: count distinct byte values (0-255)
+  if (currentFormat === FORMAT.LORES) {
+    if (!screenData || screenData.length === 0) return -1;
+    const used = new Uint8Array(256);
+    const len = LORES.WIDTH * LORES.HEIGHT;
+    for (let i = 0; i < len; i++) {
+      used[screenData[i]] = 1;
+    }
+    let count = 0;
+    for (let i = 0; i < 256; i++) count += used[i];
+    return count;
+  }
+
+  // LoRes Radastan: count distinct 4bpp values (0-15)
+  if (currentFormat === FORMAT.LORES_RAD) {
+    if (!screenData || screenData.length === 0) return -1;
+    const used = new Uint8Array(16);
+    const len = LORES_RAD.WIDTH * LORES_RAD.HEIGHT / 2;
+    for (let i = 0; i < len; i++) {
+      const b = screenData[i];
+      used[(b >> 4) & 0x0F] = 1;
+      used[b & 0x0F] = 1;
+    }
+    let count = 0;
+    for (let i = 0; i < 16; i++) count += used[i];
+    return count;
+  }
+
+  // Attribute-based formats: count distinct attribute byte values
+  if (!currentPicture || !currentPicture.planes || !currentPicture.planes[0]) return -1;
+  const cellH = currentPicture.attrCellHeight;
+  if (cellH <= 0) return -1;
+  const cols = currentPicture.cols;
+  const attrs = currentPicture.planes[0].attrs;
+  if (!attrs) return -1;
+  const attrRows = currentPicture.attrRows;
+  const used = new Uint8Array(256);
+  for (let i = 0, len = attrRows * cols; i < len; i++) {
+    used[attrs[i]] = 1;
+  }
+  let count = 0;
+  for (let i = 0; i < 256; i++) count += used[i];
+  return count;
+}
+
+/**
+ * Count cells with hidden pixels: ink === paper but bitmap rows are not uniform.
+ * @returns {number} Number of cells with hidden pixel data, or -1 if not applicable
+ */
+function countHiddenPixelCells() {
+  // Attribute-only formats have a fixed bitmap — hidden cells are not meaningful
+  if (currentFormat === FORMAT.GMX160 || currentFormat === FORMAT.HLR ||
+      currentFormat === FORMAT.ATTR_53C || currentFormat === FORMAT.STL) return -1;
+  if (!currentPicture || !currentPicture.planes || !currentPicture.planes[0]) return -1;
+  const cellH = currentPicture.attrCellHeight;
+  if (cellH <= 0) return -1; // no attributes (mono, RGB3, etc.)
+  const cols = currentPicture.cols;
+  const height = currentPicture.height;
+  const bitmap = currentPicture.planes[0].bitmap;
+  const attrs = currentPicture.planes[0].attrs;
+  if (!bitmap || !attrs) return -1;
+  const attrRows = currentPicture.attrRows;
+  let count = 0;
+  for (let ar = 0; ar < attrRows; ar++) {
+    for (let col = 0; col < cols; col++) {
+      const attr = attrs[ar * cols + col];
+      const ink = attr & 0x07;
+      const paper = (attr >> 3) & 0x07;
+      if (ink !== paper) continue;
+      // All-zero (pure paper) or all-FF (pure ink) cells are not hidden,
+      // but any other bitmap content is invisible when ink=paper
+      const y0 = ar * cellH;
+      const yEnd = Math.min(y0 + cellH, height);
+      let allZero = true, allFF = true;
+      for (let y = y0; y < yEnd; y++) {
+        const b = bitmap[y * cols + col];
+        if (b !== 0x00) allZero = false;
+        if (b !== 0xFF) allFF = false;
+        if (!allZero && !allFF) break;
+      }
+      if (!allZero && !allFF) count++;
+    }
+  }
+  return count;
+}
+
+/**
+ * Lightweight update of just the hidden pixel count label.
+ * Called after rendering so the count reflects current edits.
+ */
+function updateInfoCounters() {
+  // Sync live edits from screenData into picture before counting
+  if (currentPicture && screenData && screenData.length > 0 && typeof syncPictureFromScreenData === 'function') {
+    syncPictureFromScreenData(screenData, currentPicture);
+  }
+  if (infoColorsRow && infoColorsUsed) {
+    const colorCount = currentFileName ? countDistinctColors() : -1;
+    if (colorCount >= 0) {
+      infoColorsRow.style.display = '';
+      infoColorsUsed.textContent = String(colorCount);
+    } else {
+      infoColorsRow.style.display = 'none';
+    }
+  }
+  if (infoHiddenRow && infoHiddenCells) {
+    const hiddenCount = currentFileName ? countHiddenPixelCells() : -1;
+    if (hiddenCount >= 0) {
+      infoHiddenRow.style.display = '';
+      infoHiddenCells.textContent = String(hiddenCount);
+    } else {
+      infoHiddenRow.style.display = 'none';
+    }
+  }
+}
+
+/**
  * Updates the file info display and info panel
  */
 function updateFileInfo() {
@@ -5734,6 +5897,9 @@ function updateFileInfo() {
       infoDimensions.textContent = '-';
     }
   }
+
+  // Colors used + hidden cells counters
+  updateInfoCounters();
 
   // Animation section (only for SCA)
   if (infoAnimSection) {

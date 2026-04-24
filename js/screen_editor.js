@@ -159,7 +159,8 @@ const EDITOR = {
   TOOL_TEXT: 'text',
   TOOL_AIRBRUSH: 'airbrush',
   TOOL_GRADIENT: 'gradient',
-  TOOL_COLOR_PICKER: 'colorpicker'
+  TOOL_COLOR_PICKER: 'colorpicker',
+  TOOL_CELL_INVERT: 'cellinvert'
 };
 
 const GRADIENT_TYPE = {
@@ -2241,6 +2242,9 @@ let isDrawing = false;
 
 /** @type {{x: number, y: number}|null} */
 let lastDrawnPixel = null;
+
+/** @type {Set<string>} Cells already inverted during current Cell Invert drag */
+let cellInvertVisited = new Set();
 
 // Deferred stroke for big pictures (>512px in either dimension).
 // Mouse path is collected during drawing, smooth curve drawn on mouse-up.
@@ -7826,6 +7830,125 @@ function setPixelDirect(x, y, isInk) {
 }
 
 /**
+ * Returns a unique string key for the attribute cell containing pixel (x, y).
+ * Used to track visited cells during Cell Invert drag.
+ * @param {number} x
+ * @param {number} y
+ * @returns {string}
+ */
+function cellInvertKey(x, y) {
+  const col = Math.floor(x / 8);
+  if (currentFormat === FORMAT.MLT) return col + ',' + y;
+  if (currentFormat === FORMAT.IFL) return col + ',' + Math.floor(y / 2);
+  if (currentFormat === FORMAT.BMC4) return col + ',' + Math.floor(y / 4);
+  if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) return col + ',' + y;
+  return col + ',' + Math.floor(y / 8);
+}
+
+/**
+ * Inverts a cell's bitmap and swaps ink↔paper in the attribute.
+ * The displayed colors remain identical — only the polarity changes.
+ * Works for SCR (8×8), IFL (8×2), MLT (8×1), BMC4 (8×4), BSC, GMX.
+ * @param {number} x - pixel X coordinate
+ * @param {number} y - pixel Y coordinate
+ */
+function cellInvert(x, y) {
+  const charCol = Math.floor(x / 8);
+
+  if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) {
+    const attrAddr = getAttributeAddress(x, y);
+    const attr = screenData[attrAddr];
+    screenData[attrAddr] = ATTR.make(ATTR.paper(attr), ATTR.ink(attr), ATTR.bright(attr), ATTR.flash(attr));
+    if (currentFormat === FORMAT.GMX) {
+      // Invert bitmap byte (linear layout)
+      const bitmapAddr = y * 80 + charCol;
+      screenData[bitmapAddr] ^= 0xFF;
+    }
+    // GMX160: no bitmap to invert (fixed 0x0F pattern)
+    return;
+  }
+
+  if (currentFormat === FORMAT.MLT) {
+    if (!screenData || screenData.length < MLT.TOTAL_SIZE) return;
+    const attrAddr = getMltAttributeAddress(x, y);
+    const attr = screenData[attrAddr];
+    screenData[attrAddr] = ATTR.make(ATTR.paper(attr), ATTR.ink(attr), ATTR.bright(attr), ATTR.flash(attr));
+    // Invert one bitmap byte for this pixel row
+    const bitmapAddr = getBitmapAddress(x, y);
+    screenData[bitmapAddr] ^= 0xFF;
+    return;
+  }
+
+  if (currentFormat === FORMAT.IFL) {
+    if (!screenData || screenData.length < IFL.TOTAL_SIZE) return;
+    const attrAddr = getIflAttributeAddress(x, y);
+    const attr = screenData[attrAddr];
+    screenData[attrAddr] = ATTR.make(ATTR.paper(attr), ATTR.ink(attr), ATTR.bright(attr), ATTR.flash(attr));
+    // Invert 2 bitmap rows for this 8×2 block
+    const blockY = Math.floor(y / 2) * 2;
+    for (let line = 0; line < 2; line++) {
+      const addr = getBitmapAddress(charCol * 8, blockY + line);
+      screenData[addr] ^= 0xFF;
+    }
+    return;
+  }
+
+  if (currentFormat === FORMAT.BMC4) {
+    if (!screenData || screenData.length < BMC4.TOTAL_SIZE) return;
+    const attrAddr = getBmc4AttributeAddress(x, y);
+    const attr = screenData[attrAddr];
+    screenData[attrAddr] = ATTR.make(ATTR.paper(attr), ATTR.ink(attr), ATTR.bright(attr), ATTR.flash(attr));
+    // Invert 4 bitmap rows for this 8×4 block
+    const blockY = Math.floor(y / 4) * 4;
+    for (let line = 0; line < 4; line++) {
+      const addr = getBitmapAddress(charCol * 8, blockY + line);
+      screenData[addr] ^= 0xFF;
+    }
+    return;
+  }
+
+  // Formats without standard ink/paper attributes: nothing to invert
+  if (currentFormat === FORMAT.MONO_FULL || currentFormat === FORMAT.MONO_2_3 || currentFormat === FORMAT.MONO_1_3 ||
+      currentFormat === FORMAT.RGB3 || currentFormat === FORMAT.SPECSCII || currentFormat === FORMAT.ATTR_53C ||
+      currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 || currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD ||
+      currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) return;
+
+  // SCR / BSC / Gigascreen-family: 8×8 cell
+  const charRow = Math.floor(y / 8);
+  const attrAddr = SCREEN.BITMAP_SIZE + charRow * SCREEN.CHAR_COLS + charCol;
+
+  if (isGigascreenEditable()) {
+    // Gigascreen: invert both frames
+    const gigaFS = getGigaFrameSize();
+    const attrOffset = getGigaAttrRow(y) * 32 + charCol;
+
+    const attr1 = screenData[6144 + attrOffset];
+    screenData[6144 + attrOffset] = ATTR.make(ATTR.paper(attr1), ATTR.ink(attr1), ATTR.bright(attr1), ATTR.flash(attr1));
+    const attr2 = screenData[gigaFS + 6144 + attrOffset];
+    screenData[gigaFS + 6144 + attrOffset] = ATTR.make(ATTR.paper(attr2), ATTR.ink(attr2), ATTR.bright(attr2), ATTR.flash(attr2));
+
+    const cellY = Math.floor(y / 8) * 8;
+    for (let line = 0; line < 8; line++) {
+      const addr = getBitmapAddress(charCol * 8, cellY + line);
+      screenData[addr] ^= 0xFF;
+      screenData[gigaFS + addr] ^= 0xFF;
+    }
+    return;
+  }
+
+  if (!screenData || attrAddr >= screenData.length) return;
+  const attr = screenData[attrAddr];
+  screenData[attrAddr] = ATTR.make(ATTR.paper(attr), ATTR.ink(attr), ATTR.bright(attr), ATTR.flash(attr));
+
+  // Invert 8 bitmap rows for this 8×8 cell
+  const cellY = charRow * 8;
+  for (let line = 0; line < 8; line++) {
+    const addr = getBitmapAddress(charCol * 8, cellY + line);
+    screenData[addr] ^= 0xFF;
+  }
+}
+
+/**
  * Recolors a cell's attribute without modifying bitmap data
  * SCR: 8×8 cell
  * IFL: 8×2 block
@@ -8382,6 +8505,97 @@ function invertSelection() {
   }
 
   editorRender();
+}
+
+/**
+ * Optimize SCR attributes by flipping ink/paper + inverting bitmap for cells
+ * that match the selected criterion. The color output is unchanged; only the
+ * bitmap polarity and ink↔paper assignment change.
+ *
+ * @param {'brightness'|'majority'|'combined'|'minimize'} mode
+ * @returns {number} Number of cells flipped
+ */
+function optimizeAttributes(mode) {
+  if (currentFormat !== FORMAT.SCR) return 0;
+
+  let flipped = 0;
+
+  for (let charRow = 0; charRow < SCREEN.CHAR_ROWS; charRow++) {
+    for (let charCol = 0; charCol < SCREEN.CHAR_COLS; charCol++) {
+      const attrAddr = SCREEN.BITMAP_SIZE + charRow * SCREEN.CHAR_COLS + charCol;
+      const attr = screenData[attrAddr];
+      const ink = ATTR.ink(attr);
+      const paper = ATTR.paper(attr);
+      const bright = ATTR.bright(attr);
+      const flash = ATTR.flash(attr);
+
+      // Skip cells where flip makes no difference
+      if (ink === paper) continue;
+      // Flash cells alternate ink/paper — flipping is meaningless
+      if (flash) continue;
+
+      // Count set bits (ink pixels) in the 8 bitmap rows of this cell
+      let setBits = 0;
+      const bitmapAddrs = [];
+      for (let line = 0; line < 8; line++) {
+        const y = charRow * 8 + line;
+        const third = y >> 6;
+        const charRowInThird = (y & 63) >> 3;
+        const pixelLine = y & 7;
+        const addr = third * 2048 + pixelLine * 256 + charRowInThird * 32 + charCol;
+        bitmapAddrs.push(addr);
+        const b = screenData[addr];
+        // popcount via lookup
+        let v = b;
+        v = v - ((v >> 1) & 0x55);
+        v = (v & 0x33) + ((v >> 2) & 0x33);
+        setBits += (v + (v >> 4)) & 0x0F;
+      }
+
+      const totalBits = 64;
+      const clearBits = totalBits - setBits;
+
+      // Get actual RGB brightness (luminance)
+      const pal = bright ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
+      const inkRgb = pal[ink];
+      const paperRgb = pal[paper];
+      const inkY = 0.299 * inkRgb[0] + 0.587 * inkRgb[1] + 0.114 * inkRgb[2];
+      const paperY = 0.299 * paperRgb[0] + 0.587 * paperRgb[1] + 0.114 * paperRgb[2];
+
+      let shouldFlip = false;
+
+      if (mode === 'brightness') {
+        // Paper should be the lighter color
+        shouldFlip = paperY < inkY;
+      } else if (mode === 'majority') {
+        // Paper (clear bits) should be the majority
+        shouldFlip = setBits > clearBits;
+      } else if (mode === 'combined') {
+        // Paper should be lighter AND majority
+        // Flip if paper is darker, or if brightness is equal and ink is majority
+        if (paperY < inkY) {
+          shouldFlip = true;
+        } else if (paperY === inkY && setBits > clearBits) {
+          shouldFlip = true;
+        }
+      } else if (mode === 'minimize') {
+        // Minimize set bits (best compression)
+        shouldFlip = setBits > clearBits;
+      }
+
+      if (shouldFlip) {
+        // Invert all 8 bitmap bytes
+        for (let i = 0; i < 8; i++) {
+          screenData[bitmapAddrs[i]] ^= 0xFF;
+        }
+        // Swap ink ↔ paper, keep bright and flash
+        screenData[attrAddr] = ATTR.make(paper, ink, bright, flash);
+        flipped++;
+      }
+    }
+  }
+
+  return flipped;
 }
 
 /**
@@ -9331,6 +9545,15 @@ function _handleEditorMouseDownCoords(event, coords) {
       editorRender();
       break;
 
+    case EDITOR.TOOL_CELL_INVERT: {
+      cellInvertVisited.clear();
+      const cellKey = cellInvertKey(coords.x, coords.y);
+      cellInvertVisited.add(cellKey);
+      cellInvert(coords.x, coords.y);
+      editorRender();
+      break;
+    }
+
     case EDITOR.TOOL_ERASER:
       drawEraser(snapped.x, snapped.y);
       editorRender();
@@ -9630,6 +9853,16 @@ function _handleEditorMouseMoveCoords(event, coords) {
       recolorCell(coords.x, coords.y);
       scheduleRender();
       break;
+
+    case EDITOR.TOOL_CELL_INVERT: {
+      const ck = cellInvertKey(coords.x, coords.y);
+      if (!cellInvertVisited.has(ck)) {
+        cellInvertVisited.add(ck);
+        cellInvert(coords.x, coords.y);
+        scheduleRender();
+      }
+      break;
+    }
 
     case EDITOR.TOOL_ERASER:
       if (isSnapActive()) {
@@ -18440,6 +18673,12 @@ function setEditorEnabled(active, force) {
     generateSection.style.display = hideGenerate ? 'none' : '';
   }
 
+  // Show Optimize Attributes section only for SCR (standard 6912-byte format)
+  const optimizeAttrsSection = document.getElementById('optimizeAttrsSection');
+  if (optimizeAttrsSection) {
+    optimizeAttrsSection.style.display = (editorActive && currentFormat === FORMAT.SCR) ? '' : 'none';
+  }
+
   if (screenCanvas) {
     if (editorActive) {
       screenCanvas.style.cursor = brushPreviewMode ? 'none' : 'crosshair';
@@ -18481,7 +18720,7 @@ function setEditorEnabled(active, force) {
       if (specsciiSection) specsciiSection.style.display = 'none';
 
       // Hide tools not applicable to 53c: airbrush, gradient, text
-      const attr53cHiddenTools = ['airbrush', 'gradient', 'text', 'fillcell'];
+      const attr53cHiddenTools = ['airbrush', 'gradient', 'text', 'fillcell', 'cellinvert'];
       (editorToolButtons || document.querySelectorAll('.editor-tool-btn[data-tool]')).forEach(btn => {
         const tool = /** @type {HTMLElement} */ (btn).dataset.tool;
         /** @type {HTMLElement} */ (btn).style.display = attr53cHiddenTools.includes(tool) ? 'none' : '';
@@ -18497,7 +18736,7 @@ function setEditorEnabled(active, force) {
       if (specsciiSection) specsciiSection.style.display = '';
 
       // Hide tools not applicable to SPECSCII: airbrush, gradient, fill cell
-      const specsciiHiddenTools = ['airbrush', 'gradient', 'fillcell'];
+      const specsciiHiddenTools = ['airbrush', 'gradient', 'fillcell', 'cellinvert'];
       (editorToolButtons || document.querySelectorAll('.editor-tool-btn[data-tool]')).forEach(btn => {
         const tool = /** @type {HTMLElement} */ (btn).dataset.tool;
         /** @type {HTMLElement} */ (btn).style.display = specsciiHiddenTools.includes(tool) ? 'none' : '';
@@ -18535,7 +18774,7 @@ function setEditorEnabled(active, force) {
       if (specsciiSection) specsciiSection.style.display = 'none';
 
       // Hide tools not applicable to indexed-color: fillcell, recolor, text, select
-      const nxiHiddenTools = ['fillcell', 'recolor', 'text', 'select'];
+      const nxiHiddenTools = ['fillcell', 'recolor', 'text', 'select', 'cellinvert'];
       (editorToolButtons || document.querySelectorAll('.editor-tool-btn[data-tool]')).forEach(btn => {
         const tool = /** @type {HTMLElement} */ (btn).dataset.tool;
         /** @type {HTMLElement} */ (btn).style.display = nxiHiddenTools.includes(tool) ? 'none' : '';
@@ -18564,9 +18803,15 @@ function setEditorEnabled(active, force) {
       if (specsciiSection) specsciiSection.style.display = 'none';
 
       // Restore all tool buttons (may have been hidden by SPECSCII mode)
+      const noAttrFormats = currentFormat === FORMAT.MONO_FULL || currentFormat === FORMAT.MONO_2_3 ||
+                            currentFormat === FORMAT.MONO_1_3 || currentFormat === FORMAT.RGB3;
       (editorToolButtons || document.querySelectorAll('.editor-tool-btn[data-tool]')).forEach(btn => {
-        /** @type {HTMLElement} */ (btn).style.display = '';
+        const tool = /** @type {HTMLElement} */ (btn).dataset.tool;
+        /** @type {HTMLElement} */ (btn).style.display = (noAttrFormats && tool === 'cellinvert') ? 'none' : '';
       });
+      if (noAttrFormats && currentTool === EDITOR.TOOL_CELL_INVERT) {
+        setEditorTool(EDITOR.TOOL_PIXEL);
+      }
 
       // Restore all brush paint mode options
       const paintMode = /** @type {HTMLSelectElement|null} */ (document.getElementById('brushPaintMode'));
@@ -24305,6 +24550,22 @@ function initEditor() {
   });
 
   // Reset to defaults button
+  // Optimize Attributes button
+  document.getElementById('optimizeAttrsBtn')?.addEventListener('click', () => {
+    if (currentFormat !== FORMAT.SCR) return;
+    const mode = /** @type {'brightness'|'majority'|'combined'|'minimize'} */ (
+      document.getElementById('optimizeAttrsMode')?.value || 'brightness'
+    );
+    saveUndoState();
+    const flipped = optimizeAttributes(mode);
+    const infoEl = document.getElementById('optimizeAttrsInfo');
+    if (infoEl) infoEl.textContent = flipped > 0 ? flipped + ' cells flipped' : 'no changes';
+    if (flipped > 0) {
+      editorRender();
+      renderPreview();
+    }
+  });
+
   document.getElementById('resetSettingsBtn')?.addEventListener('click', () => {
     if (confirm('Reset all settings to defaults?\n\nThis will clear saved settings, brushes, and reload the page.')) {
       // Clear all SpectraLab keys from localStorage
@@ -24757,6 +25018,7 @@ function initEditorKeyboardShortcuts() {
         case 'KeyE': setEditorTool(EDITOR.TOOL_ERASER); break;
         case 'KeyT': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_TEXT); break;
         case 'KeyK': setEditorTool(EDITOR.TOOL_COLOR_PICKER); break;
+        case 'KeyJ': setEditorTool(EDITOR.TOOL_CELL_INVERT); break;
         case 'KeyN':
           if (selectionStartPoint && selectionEndPoint) {
             invertSelection();

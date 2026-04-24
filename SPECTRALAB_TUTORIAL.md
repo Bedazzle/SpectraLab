@@ -88,7 +88,7 @@ Select a different display palette from the **Palette** dropdown in View Setting
 
 ### View File Info
 
-Expand the **File Info** section to see the file name, size, format, and dimensions.
+Expand the **File Info** section to see the file name, size, format, and dimensions. Additional counters update live during editing: **Colors used** shows distinct colors (attribute values for ZX formats, palette indices for NXI/LoRes); **Hidden cells** shows cells where ink equals paper but the bitmap has an invisible pattern (not shown for attribute-only formats like GMX 160, HLR, 53c, STL).
 
 ![Viewing a SCR file](screenshots/tutorial_view_scr.png)
 
@@ -246,6 +246,13 @@ Use the **Save** (💾) and **Load** (📂) buttons above the brush slots:
 2. Click on cells to change their ink/paper/bright attributes without modifying the bitmap pixels
 3. This is useful for recoloring existing artwork
 
+### Cell Invert (J)
+
+1. Press **J** to switch to Cell Invert mode
+2. Click (or drag across) cells to swap their ink↔paper and invert the bitmap simultaneously
+3. The displayed colors remain identical — only the polarity changes (which pixels are "ink" vs "paper")
+4. Useful for manually fixing individual cells in converted images where ink/paper assignment is suboptimal
+
 ![Fill tools](screenshots/tutorial_fill.png)
 
 ---
@@ -331,7 +338,7 @@ For **btile** / **wtile** formats (Nirvana engine tiles), you can specify custom
 
 For **MLT+ULA+** format, the ULA+ Palette controls appear — choose **Auto** to generate an optimal 64-color palette from the source image, or **Load .pal** to supply a custom palette file.
 
-For **GMX 640×200** and **GMX 160×200** (Scorpion ZS 256 formats), the canvas is 320×200 display pixels. GMX 640×200 supports full bitmap+attribute conversion with all dithering methods. GMX 160×200 is attribute-only (fixed bitmap pattern) — dithering is not applicable.
+For **GMX 640×200** and **GMX 160×200** (Scorpion ZS 256 formats): GMX 640×200 imports at native 640×200 resolution, preserving fine detail (thin text, single-pixel lines) from high-resolution sources. All dithering methods are supported. GMX 160×200 is attribute-only (fixed bitmap pattern) — dithering is not applicable.
 
 ### Select Dithering Algorithm
 
@@ -636,7 +643,7 @@ Both formats use the same gigascreen palette and Blend dark/Blend/Emulate flicke
 
 ### Overview
 
-The Scorpion ZS 256 Turbo computer features two extended graphics modes beyond the standard ZX Spectrum screen. Both use 8×1 attribute cells (one attribute per pixel row) with standard ZX Spectrum colors, and display at half-width pixels (640 source pixels shown as 320 display pixels).
+The Scorpion ZS 256 Turbo computer features two extended graphics modes beyond the standard ZX Spectrum screen. Both use 8×1 attribute cells (one attribute per pixel row) with standard ZX Spectrum colors. The display preserves all 640 horizontal pixels and doubles each row vertically (640×400 on screen) to maintain the correct aspect ratio.
 
 ### GMX 640×200 (Hi-Res)
 
@@ -657,7 +664,7 @@ The Scorpion ZS 256 Turbo computer features two extended graphics modes beyond t
 
 ### Tips
 
-- Both formats display with half-width pixels. The grid and all preview overlays account for this automatically.
+- Both formats display with doubled rows (640×400 on screen) to preserve all horizontal pixel detail. The grid and all preview overlays account for this automatically.
 - The color picker (**I** key) reads the attribute under the cursor for both formats.
 - Layers are supported for both formats.
 
@@ -676,6 +683,20 @@ Press **Ctrl+S** or click the **Save** button. The file is downloaded in its ori
 3. Select the target format — the picture is converted in place
 
 Conversions include lossless transformations (e.g. NXI ↔ SL2 strips or adds the palette header) and lossy ones (e.g. SCR → NXI 320×256 renders and upscales the image, NXI/SL2 → SCR downscales and quantizes to ZX attributes). Cross-mode NXI/SL2 conversions between 256×192, 320×256, and 640×256 are also available. SCR → SPECSCII conversion matches each 8×8 cell bitmap to the best ROM font character or block graphic, preserving attributes.
+
+### Optimize Attributes (SCR)
+
+Pictures converted from other software sometimes have suboptimal ink/paper assignments — for example, paper is darker than ink in some cells. This doesn't affect the displayed colors, but makes the monochrome bitmap look worse and compresses poorly.
+
+1. Load an SCR file (or import an image as SCR)
+2. Go to the **Xform** tab → **Optimize Attributes** section
+3. Choose a mode:
+   - **Paper = lighter color** — ensures paper is always the brighter color (most natural look)
+   - **Paper = majority pixels** — ensures paper covers more area than ink
+   - **Combined** — applies both brightness and majority rules
+   - **Minimize ink bits** — minimizes set bits for best compression
+4. Click **Apply** — the info label shows how many cells were flipped
+5. Undo with Ctrl+Z if needed
 
 ### Export to Other Formats
 

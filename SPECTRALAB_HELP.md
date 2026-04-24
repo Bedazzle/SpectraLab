@@ -184,6 +184,8 @@ Displays information about the loaded file:
 - **Size** — file size in bytes
 - **Format** — detected format
 - **Dimensions** — pixel dimensions
+- **Colors used** — number of distinct colors in the picture. For attribute formats (SCR, IFL, MLT, BMC4, GMX, etc.): counts distinct attribute byte values (each unique ink+paper+bright+flash combination). For NXI/SL2 and LoRes: counts distinct palette indices. Updates live during editing.
+- **Hidden cells** — number of cells where ink equals paper but bitmap is not all 0x00 or all 0xFF, indicating invisible pixel data. Shown for formats with editable bitmaps. Not shown for attribute-only formats with fixed bitmaps (GMX 160, HLR, 53c, STL). Updates live during editing.
 - **Frames** — number of frames (for SCA animations)
 - **Type** — payload type (for SCA)
 - **Delay** — frame delay (for SCA)
@@ -216,6 +218,7 @@ When no picture is loaded, the Edit tab shows: "Load a picture or click this tab
 | Text | T | Place text on the canvas |
 | Recolor | A | Change attributes only, keep bitmap (via keyboard shortcut) |
 | Color Picker | K | Pick colors from canvas (left=ink, right=paper) |
+| Cell Invert | J | Swap ink↔paper + invert bitmap (colors unchanged, polarity flips) |
 | Select | S | Select rectangular area (in Xform tab) |
 
 ### Drawing Modifiers
@@ -558,6 +561,21 @@ Available format exports:
 ### Generate
 
 - **QR Code** — open the QR Code generator dialog
+
+### Optimize Attributes
+
+Available for **SCR** format only. Automatically flips ink↔paper and inverts bitmap bits in 8×8 cells where the current assignment is suboptimal. The displayed colors remain identical — only the bitmap polarity and ink/paper roles change. Cells with ink == paper or flash are skipped.
+
+Four modes:
+
+| Mode | Rule | Best for |
+|------|------|----------|
+| Paper = lighter color | Flip if paper is darker than ink (by luminance) | Natural look — paper is always the lighter background |
+| Paper = majority pixels | Flip if more than half the pixels are ink (set bits) | Reducing ink density — more white space in bitmap |
+| Combined | Flip if paper is darker, or if equal brightness and ink is majority | General cleanup — covers both brightness and density |
+| Minimize ink bits | Flip if set bits > clear bits | Best compression — fewer 1-bits means better RLE/LZ ratios |
+
+The info label shows how many cells were flipped. The operation is undoable (Ctrl+Z).
 
 ### Clipboard
 
@@ -1124,13 +1142,13 @@ Select how many bits per glyph row are active:
 | Mode | Active bits | Pixel width |
 |------|------------|-------------|
 | 8 (full) | Bits 7–0 | 8 |
-| 6 high | Bits 7–2 | 6 |
-| 6 low | Bits 5–0 | 6 |
-| 4 high | Bits 7–4 | 4 |
-| 4 low | Bits 3–0 | 4 |
+| 6 (left) | Bits 7–2 | 6 |
+| 6 (right) | Bits 5–0 | 6 |
+| 4 (left) | Bits 7–4 | 4 |
+| 4 (right) | Bits 3–0 | 4 |
 | Variable | First byte = width | 1–8 |
 
-Inactive columns are dimmed in both the grid and the pixel editor. Switching from 4-low or 6-low to variable mode sets width bytes to the corresponding value (4 or 6). The **Hide W** checkbox controls visibility of the width byte (row 0) in variable mode.
+Inactive columns are dimmed in both the grid and the pixel editor. Switching from 4 (right) or 6 (right) to variable mode sets width bytes to the corresponding value (4 or 6). The **Hide W** checkbox controls visibility of the width byte (row 0) in variable mode.
 
 ### Character Mapping
 
@@ -1243,8 +1261,8 @@ When loading a 2048-byte font file, a modal dialog shows side-by-side previews o
 | .nxi | 81952 bytes | ZX Next Layer 2 640×256 + embedded RGB333 palette (16-color, 4bpp column-major) |
 | .sl2 | 49152/49280 bytes | ZX Next Layer 2 256×192, default RGB332 palette (256-color indexed) |
 | .sl2 | 81920 bytes | ZX Next Layer 2 320×256 or 640×256 (disambiguation dialog) |
-| .c | 32768 bytes | Scorpion GMX 640×200 hi-res (bitmap + 8×1 attributes, PAR 2:1) |
-| .c | 16128 bytes | Scorpion GMX 160×200 attribute-only ("GMX\x0F" header, 8×1 attributes) |
+| .c | 32768 bytes | Scorpion GMX 640×200 hi-res (bitmap + 8×1 attributes, rows doubled for display) |
+| .c | 16128 bytes | Scorpion GMX 160×200 attribute-only ("GMX\x0F" header, 8×1 attributes, rows doubled for display) |
 
 ### View-Only Formats
 
