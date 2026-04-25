@@ -171,6 +171,54 @@ function interleaveBitmap(linearBitmap, width, height) {
   return scrBitmap;
 }
 
+/**
+ * Reorder RCS (Re-ordered Compressed Screen) data back to standard SCR layout.
+ * Reverses the S→C→R→L reordering applied by reorderScrToRcs().
+ * @param {Uint8Array} rcsBytes - 6912-byte RCS-ordered data
+ * @returns {Uint8Array} 6912-byte standard SCR data
+ * @see https://github.com/einar-saukas/RCS
+ */
+function reorderRcsToScr(rcsBytes) {
+  const output = new Uint8Array(SCREEN.TOTAL_SIZE);
+  let i = 0;
+  for (let s = 0; s < 3; s++) {
+    for (let c = 0; c < 32; c++) {
+      for (let r = 0; r < 8; r++) {
+        for (let l = 0; l < 8; l++) {
+          output[s * 2048 + l * 256 + r * 32 + c] = rcsBytes[i++];
+        }
+      }
+    }
+  }
+  // Copy attributes unchanged
+  output.set(rcsBytes.subarray(SCREEN.BITMAP_SIZE, SCREEN.TOTAL_SIZE), SCREEN.BITMAP_SIZE);
+  return output;
+}
+
+/**
+ * Reorder standard SCR data to RCS (Re-ordered Compressed Screen) layout.
+ * Rearranges 6144 bitmap bytes for better compression; attributes unchanged.
+ * @param {Uint8Array} scrBytes - Standard 6912-byte SCR data
+ * @returns {Uint8Array} 6912-byte RCS-ordered data
+ * @see https://github.com/einar-saukas/RCS
+ */
+function reorderScrToRcs(scrBytes) {
+  const output = new Uint8Array(SCREEN.TOTAL_SIZE);
+  let i = 0;
+  for (let s = 0; s < 3; s++) {
+    for (let c = 0; c < 32; c++) {
+      for (let r = 0; r < 8; r++) {
+        for (let l = 0; l < 8; l++) {
+          output[i++] = scrBytes[s * 2048 + l * 256 + r * 32 + c];
+        }
+      }
+    }
+  }
+  // Copy attributes unchanged
+  output.set(scrBytes.subarray(SCREEN.BITMAP_SIZE, SCREEN.TOTAL_SIZE), SCREEN.BITMAP_SIZE);
+  return output;
+}
+
 // ============================================================================
 // Border helpers
 // ============================================================================

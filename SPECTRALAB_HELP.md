@@ -42,7 +42,7 @@ When multiple pictures are open, a tab bar appears above the canvas. Each tab sh
 Click the file input at the top of the left sidebar or **drag and drop** a file onto the canvas.
 
 **Supported input formats:**
-`.scr`, `.53c`, `.atr`, `.bsc`, `.bsp`, `.bmc4`, `.ifl`, `.mlt`, `.mc`, `.3`, `.img`, `.hlr`, `.stl`, `.nxi`, `.sl2`, `.specscii`, `.sca`, `.btile`, `.wtile`, `.ch$`, `.chr$`, `.ch-`, `.zxp`, `.slp`, `.slw`, `.sna`, `.z80`, `.zip`, `.png`, `.gif`, `.jpg`, `.jpeg`, `.webp`, `.bmp`
+`.scr`, `.rcs`, `.53c`, `.atr`, `.bsc`, `.bsp`, `.bmc4`, `.ifl`, `.mlt`, `.mc`, `.3`, `.img`, `.hlr`, `.stl`, `.nxi`, `.sl2`, `.specscii`, `.sca`, `.btile`, `.wtile`, `.ch$`, `.chr$`, `.ch-`, `.zxp`, `.slp`, `.slw`, `.sna`, `.z80`, `.zip`, `.png`, `.gif`, `.jpg`, `.jpeg`, `.webp`, `.bmp`
 
 ### New Picture
 
@@ -540,6 +540,31 @@ Available conversions include:
   - For pictures with flash attributes: a dialog lets you choose **Animated GIF** (two-frame flash animation at 320ms per phase) or **Static PNG** (normal phase only)
   - For all other formats: exports directly as PNG
 
+### RCS Export
+
+For **SCR** format, the Export dropdown includes `.rcs (RCS reordered)` — exports the screen in [RCS (Re-ordered Compressed Screen)](https://github.com/einar-saukas/RCS) layout by Einar Saukas. The 6144 bitmap bytes are reordered using S→C→R→L nesting (sector → column → character row → pixel line) to group spatially related bytes together, producing significantly better compression ratios with packers like ZX7. The 768 attribute bytes are appended unchanged. Output: 6912-byte `.rcs` file.
+
+RCS files can also be opened directly — the reordering is automatically reversed on load, converting back to standard SCR for viewing and editing.
+
+### ZX7 Compression
+
+For **SCR** format, the Export dropdown also includes built-in [ZX7](https://spectrumcomputing.co.uk/entry/27996/ZX-Spectrum/ZX7) compression options:
+
+- **`.scr.zx7 (ZX7 compressed)`** — compresses the screen data with ZX7 (forward mode)
+- **`.rcs.zx7 (RCS + ZX7)`** — applies RCS reordering first, then ZX7 compression, for potentially better ratios
+- **`Compare compressions...`** — opens a dialog showing all five compression variants side-by-side:
+  - Plain SCR (6912 bytes, uncompressed baseline)
+  - ZX7 (forward)
+  - ZX7 backwards
+  - RCS + ZX7 (forward)
+  - RCS + ZX7 backwards
+
+  The dialog displays compressed size, bytes saved, and ratio for each variant, highlights the best result (pre-selected), and lets you save the selected variant with a single Save button.
+
+**Create ASM** checkbox — when enabled, saving also generates a sjasmplus `.asm` file alongside the compressed data. The ASM file is a complete working example: it decompresses the data directly to screen memory at `$4000`, includes the appropriate ZX7 decompressor (forward or backward) and RCS-to-SCR reorder routine where needed, uses `device zxspectrum48` and `savesna` to produce a `.sna` snapshot.
+
+Forward-compressed files use `.zx7` extension, backward-compressed use `.zx7b` (e.g. `.scr.zx7`, `.scr.zx7b`, `.rcs.zx7`, `.rcs.zx7b`). All variants can be opened directly — ZX7 decompression (and RCS reordering reversal where needed) is automatic on load.
+
 ### Format ASM Export
 
 The Export dropdown generates self-contained sjasmplus-compatible ASM source files that display the loaded picture on real hardware. Each export produces a complete viewer program — just assemble and run.
@@ -576,6 +601,19 @@ Four modes:
 | Minimize ink bits | Flip if set bits > clear bits | Best compression — fewer 1-bits means better RLE/LZ ratios |
 
 The info label shows how many cells were flipped. The operation is undoable (Ctrl+Z).
+
+### Clean Hidden Cells
+
+Available for formats with both bitmap and attributes: **SCR**, **BSC**, **IFL**, **MLT**, **BMC4**, **GMX**, **Gigascreen**, **ULA+**. Hidden for attribute-only formats (GMX 160, HLR, 53c, STL, SPECSCII) and formats without attributes.
+
+A "hidden cell" is one where ink equals paper but the bitmap is not uniform (not all-0x00 or all-0xFF). The pixel pattern is invisible on screen because both colors are the same, but it wastes bytes and inflates compressed size.
+
+Click **Apply** to clean all hidden cells. For each hidden cell, the tool examines the bitmap density of the four neighbor cells (up, down, left, right):
+- If the majority of neighbor bitmap bits are set → fill with 0xFF
+- Otherwise → fill with 0x00
+- If no neighbors exist (corner/edge with no valid neighbors) → fill with 0x00
+
+This preserves visual continuity with surrounding cells. The info label shows how many cells were cleaned. The operation is undoable (Ctrl+Z). The File Info "Hidden cells" counter updates after cleaning.
 
 ### Clipboard
 
@@ -1235,6 +1273,11 @@ When loading a 2048-byte font file, a modal dialog shows side-by-side previews o
 | Extension | Size | Description |
 |-----------|------|-------------|
 | .scr | 6912 bytes | Standard screen (bitmap + attributes) |
+| .rcs | 6912 bytes | [RCS](https://github.com/einar-saukas/RCS) reordered screen (auto-converted to SCR on load) |
+| .scr.zx7 | variable | [ZX7](https://spectrumcomputing.co.uk/entry/27996/ZX-Spectrum/ZX7) compressed screen (auto-decompressed on load) |
+| .scr.zx7b | variable | ZX7 backward compressed screen (auto-decompressed on load) |
+| .rcs.zx7 | variable | RCS reordered + ZX7 compressed (auto-decompressed and un-reordered on load) |
+| .rcs.zx7b | variable | RCS reordered + ZX7 backward compressed (auto-decompressed and un-reordered on load) |
 | .scr | 6976 bytes | ULA+ (64-color palette) |
 | .scr | 6945–7426 bytes | ULANext (Next extended palette, up to 256 colors) |
 | .scr | 6144 bytes | Monochrome full |

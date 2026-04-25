@@ -698,6 +698,18 @@ Pictures converted from other software sometimes have suboptimal ink/paper assig
 4. Click **Apply** — the info label shows how many cells were flipped
 5. Undo with Ctrl+Z if needed
 
+### Clean Hidden Cells
+
+When ink equals paper in a cell, any bitmap pattern is invisible — but the non-uniform bytes remain in the file, wasting space and hurting compression. The "Clean Hidden Cells" tool fixes this automatically.
+
+1. Load a file in any supported format (SCR, BSC, IFL, MLT, BMC4, GMX, Gigascreen, ULA+)
+2. Go to the **Xform** tab → **Clean Hidden Cells** section
+3. Click **Apply** — each hidden cell's bitmap is set to 0x00 or 0xFF based on what the surrounding cells look like (neighbor bitmap density)
+4. The info label shows how many cells were cleaned
+5. Undo with Ctrl+Z if needed
+
+Check the File Info panel — the "Hidden cells" counter should drop to zero after cleaning.
+
 ### Export to Other Formats
 
 1. In the **Xform** tab, select an export format from the dropdown
@@ -716,6 +728,46 @@ Use the **PNG/GIF** button in the Xform tab to export the current screen as a st
   - **Animated GIF** — two-frame flash animation (320ms per phase), matching ZX Spectrum timing
   - **Static PNG** — normal phase only, no animation
 - For all other formats, clicking the button opens a confirmation dialog and exports a PNG directly.
+
+### RCS Export (SCR only)
+
+[RCS (Re-ordered Compressed Screen)](https://github.com/einar-saukas/RCS) by Einar Saukas rearranges SCR bitmap bytes for better compression. To export:
+
+1. Load an SCR file
+2. In the **Xform** tab, select `.rcs (RCS reordered)` from the **Export** dropdown
+3. Click **Export** — downloads a 6912-byte `.rcs` file
+4. Compress the `.rcs` file with ZX7 or another packer for optimal results
+
+The reordering groups spatially related bytes together (sector → column → character row → pixel line), which typically yields significantly smaller compressed output than packing the standard SCR layout directly.
+
+You can also open `.rcs` files directly in SpectraLab — the RCS reordering is automatically reversed on load, converting the data back to standard SCR for viewing and editing.
+
+### ZX7 Compression (SCR only)
+
+SpectraLab includes built-in [ZX7](https://spectrumcomputing.co.uk/entry/27996/ZX-Spectrum/ZX7) compression by Einar Saukas. For SCR files, the Export dropdown offers:
+
+**Direct export:**
+
+1. Select `.scr.zx7 (ZX7 compressed)` — compresses the screen with ZX7
+2. Select `.rcs.zx7 (RCS + ZX7)` — applies RCS reordering first, then ZX7 compression
+3. Click **Export** — downloads the compressed file
+
+**Compare all variants:**
+
+1. Select `Compare compressions...` from the Export dropdown
+2. Click **Export** — a dialog appears showing five compression variants:
+   - Plain SCR (uncompressed baseline)
+   - ZX7 forward
+   - ZX7 backwards
+   - RCS + ZX7 forward
+   - RCS + ZX7 backwards
+3. The best (smallest) result is highlighted and pre-selected
+4. Select the variant you want and click **Save**
+5. Optional: check **Create ASM** before saving to also generate a sjasmplus `.asm` file that decompresses the data directly to screen memory (`device zxspectrum48`, `savesna`)
+
+**Opening compressed files:**
+
+Open `.scr.zx7`/`.scr.zx7b` or `.rcs.zx7`/`.rcs.zx7b` files directly — SpectraLab automatically decompresses ZX7 data (forward or backward) and reverses RCS reordering if needed.
 
 ### Format ASM Export
 

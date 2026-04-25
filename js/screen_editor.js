@@ -8599,6 +8599,101 @@ function optimizeAttributes(mode) {
 }
 
 /**
+ * Remove hidden pixels: for cells where ink===paper and bitmap is non-trivial,
+ * set bitmap to 0x00 or 0xFF based on neighbor cells' bitmap density.
+ * @returns {number} Number of cells cleaned
+ */
+function removeHiddenPixels() {
+  if (!currentPicture || !currentPicture.planes || !currentPicture.planes[0]) return 0;
+  // Attribute-only formats: fixed bitmap, hidden cells not meaningful
+  if (currentFormat === FORMAT.GMX160 || currentFormat === FORMAT.HLR ||
+      currentFormat === FORMAT.ATTR_53C || currentFormat === FORMAT.STL) return 0;
+  const cellH = currentPicture.attrCellHeight;
+  if (cellH <= 0) return 0;
+
+  // Sync screenData → picture so we have normalized linear arrays
+  if (typeof syncPictureFromScreenData === 'function') {
+    syncPictureFromScreenData(screenData, currentPicture);
+  }
+
+  const cols = currentPicture.cols;
+  const height = currentPicture.height;
+  const bitmap = currentPicture.planes[0].bitmap;
+  const attrs = currentPicture.planes[0].attrs;
+  if (!bitmap || !attrs) return 0;
+  const attrRows = currentPicture.attrRows;
+  let cleaned = 0;
+
+  /** popcount for a byte */
+  function popcount8(v) {
+    v = v - ((v >> 1) & 0x55);
+    v = (v & 0x33) + ((v >> 2) & 0x33);
+    return (v + (v >> 4)) & 0x0F;
+  }
+
+  /** Count set bits in a neighbor cell's bitmap area */
+  function neighborBits(ar, col) {
+    if (ar < 0 || ar >= attrRows || col < 0 || col >= cols) return -1;
+    const y0 = ar * cellH;
+    const yEnd = Math.min(y0 + cellH, height);
+    let bits = 0;
+    for (let y = y0; y < yEnd; y++) {
+      bits += popcount8(bitmap[y * cols + col]);
+    }
+    return bits;
+  }
+
+  for (let ar = 0; ar < attrRows; ar++) {
+    for (let col = 0; col < cols; col++) {
+      const attr = attrs[ar * cols + col];
+      const ink = attr & 0x07;
+      const paper = (attr >> 3) & 0x07;
+      if (ink !== paper) continue;
+
+      // Check if bitmap is non-trivial (not all-0x00 and not all-0xFF)
+      const y0 = ar * cellH;
+      const yEnd = Math.min(y0 + cellH, height);
+      let allZero = true, allFF = true;
+      for (let y = y0; y < yEnd; y++) {
+        const b = bitmap[y * cols + col];
+        if (b !== 0x00) allZero = false;
+        if (b !== 0xFF) allFF = false;
+        if (!allZero && !allFF) break;
+      }
+      if (allZero || allFF) continue;
+
+      // Count set bits in neighbor cells
+      let totalNeighborBits = 0;
+      let totalNeighborTotal = 0;
+      const neighbors = [
+        neighborBits(ar - 1, col),
+        neighborBits(ar + 1, col),
+        neighborBits(ar, col - 1),
+        neighborBits(ar, col + 1)
+      ];
+      for (let i = 0; i < 4; i++) {
+        if (neighbors[i] >= 0) {
+          totalNeighborBits += neighbors[i];
+          totalNeighborTotal += cellH * 8;
+        }
+      }
+
+      // Decide fill value: majority of neighbor bits set → 0xFF, else 0x00
+      const fillValue = (totalNeighborTotal > 0 && totalNeighborBits > totalNeighborTotal / 2) ? 0xFF : 0x00;
+
+      // Write fill value to screenData using getBitmapAddress for each row
+      for (let y = y0; y < yEnd; y++) {
+        const addr = getBitmapAddress(col * 8, y);
+        screenData[addr] = fillValue;
+      }
+      cleaned++;
+    }
+  }
+
+  return cleaned;
+}
+
+/**
  * Enters paste preview mode if clipboard has compatible data
  */
 function startPasteMode() {
@@ -18679,6 +18774,17 @@ function setEditorEnabled(active, force) {
     optimizeAttrsSection.style.display = (editorActive && currentFormat === FORMAT.SCR) ? '' : 'none';
   }
 
+  // Show Remove Hidden Cells section for formats with both bitmap and attributes
+  const removeHiddenSection = document.getElementById('removeHiddenSection');
+  if (removeHiddenSection) {
+    const hasHiddenSupport = editorActive && currentPicture &&
+      currentPicture.attrCellHeight > 0 &&
+      currentFormat !== FORMAT.GMX160 && currentFormat !== FORMAT.HLR &&
+      currentFormat !== FORMAT.ATTR_53C && currentFormat !== FORMAT.STL &&
+      currentFormat !== FORMAT.SPECSCII;
+    removeHiddenSection.style.display = hasHiddenSupport ? '' : 'none';
+  }
+
   if (screenCanvas) {
     if (editorActive) {
       screenCanvas.style.cursor = brushPreviewMode ? 'none' : 'crosshair';
@@ -21515,6 +21621,12 @@ function updateExportAsmButton() {
     options.push({ value: 'scr', label: '.scr (bitmap render)' });
     options.push({ value: 'tap', label: '.tap (BASIC program)' });
   }
+  if (currentFormat === FORMAT.SCR) {
+    options.push({ value: 'rcs', label: '.rcs (RCS reordered)' });
+    options.push({ value: 'zx7', label: '.scr.zx7 (ZX7 compressed)' });
+    options.push({ value: 'rcs_zx7', label: '.rcs.zx7 (RCS + ZX7)' });
+    options.push({ value: 'zx7_compare', label: 'Compare compressions...' });
+  }
 
   // Populate dropdown
   exportSelect.innerHTML = '';
@@ -24062,6 +24174,419 @@ function initQrDialog() {
 }
 
 // ============================================================================
+// ZX7 Compression Compare
+// ============================================================================
+
+/** @type {Array<{label:string, size:number, data:Uint8Array, ext:string, type:string}>|null} */
+let zx7CompareVariants = null;
+let zx7CompareBaseName = '';
+
+/**
+ * Show ZX7 compression comparison dialog with all compression variants.
+ * Compares: plain SCR, ZX7 forward, ZX7 backwards, RCS+ZX7 forward, RCS+ZX7 backwards.
+ */
+function showZx7CompareDialog() {
+  if (typeof ZX7 === 'undefined') return;
+  if (layersEnabled) flattenLayersToScreen();
+
+  const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
+  const rcsBytes = reorderScrToRcs(scrBytes);
+  zx7CompareBaseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+
+  const zx7Fwd = ZX7.compress(scrBytes);
+  const zx7Bwd = ZX7.compressBackwards(scrBytes);
+  const rcsZx7Fwd = ZX7.compress(rcsBytes);
+  const rcsZx7Bwd = ZX7.compressBackwards(rcsBytes);
+
+  zx7CompareVariants = [
+    { label: 'Plain SCR',           size: scrBytes.length,        data: scrBytes,          ext: '.scr',     type: 'plain' },
+    { label: 'ZX7',                 size: zx7Fwd.data.length,     data: zx7Fwd.data,       ext: '.scr.zx7',  type: 'zx7_fwd' },
+    { label: 'ZX7 backwards',       size: zx7Bwd.data.length,     data: zx7Bwd.data,       ext: '.scr.zx7b', type: 'zx7_bwd' },
+    { label: 'RCS + ZX7',           size: rcsZx7Fwd.data.length,  data: rcsZx7Fwd.data,    ext: '.rcs.zx7',  type: 'rcs_zx7_fwd' },
+    { label: 'RCS + ZX7 backwards', size: rcsZx7Bwd.data.length,  data: rcsZx7Bwd.data,    ext: '.rcs.zx7b', type: 'rcs_zx7_bwd' },
+  ];
+
+  // Find smallest compressed size (skip plain SCR at index 0)
+  let bestIdx = 1;
+  for (let i = 2; i < zx7CompareVariants.length; i++) {
+    if (zx7CompareVariants[i].size < zx7CompareVariants[bestIdx].size) bestIdx = i;
+  }
+
+  const tbody = document.getElementById('zx7CompareBody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+
+  for (let i = 0; i < zx7CompareVariants.length; i++) {
+    const r = zx7CompareVariants[i];
+    const pct = ((r.size / SCREEN.TOTAL_SIZE) * 100).toFixed(1);
+    const tr = document.createElement('tr');
+    tr.style.cursor = 'pointer';
+    if (i === bestIdx) {
+      tr.style.background = 'var(--accent-bg, rgba(0, 128, 255, 0.15))';
+      tr.style.fontWeight = 'bold';
+    }
+    if (i > 0) {
+      tr.style.borderTop = '1px solid var(--border-secondary)';
+    }
+
+    // Radio button
+    const tdRadio = document.createElement('td');
+    tdRadio.style.cssText = 'text-align: center; padding: 4px 4px;';
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'zx7CompareChoice';
+    radio.value = String(i);
+    if (i === bestIdx) radio.checked = true;
+    tdRadio.appendChild(radio);
+    tr.appendChild(tdRadio);
+
+    const tdLabel = document.createElement('td');
+    tdLabel.style.padding = '4px 8px';
+    tdLabel.textContent = r.label + (i === bestIdx ? ' *' : '');
+    tr.appendChild(tdLabel);
+
+    const tdSize = document.createElement('td');
+    tdSize.style.cssText = 'text-align: right; padding: 4px 8px; font-variant-numeric: tabular-nums;';
+    tdSize.textContent = r.size.toString();
+    tr.appendChild(tdSize);
+
+    const saved = SCREEN.TOTAL_SIZE - r.size;
+    const tdSaved = document.createElement('td');
+    tdSaved.style.cssText = 'text-align: right; padding: 4px 8px; font-variant-numeric: tabular-nums;';
+    tdSaved.textContent = saved > 0 ? '\u2212' + saved : '0';
+    tr.appendChild(tdSaved);
+
+    const tdPct = document.createElement('td');
+    tdPct.style.cssText = 'text-align: right; padding: 4px 8px; font-variant-numeric: tabular-nums;';
+    tdPct.textContent = pct + '%';
+    tr.appendChild(tdPct);
+
+    // Click row to select radio
+    tr.addEventListener('click', (e) => {
+      if (e.target !== radio) radio.checked = true;
+    });
+
+    tbody.appendChild(tr);
+  }
+
+  const dlg = document.getElementById('zx7CompareDialog');
+  if (dlg) dlg.style.display = '';
+}
+
+/**
+ * Handle Save button in ZX7 compare dialog.
+ * Downloads selected variant and optionally generates ASM file.
+ */
+function zx7CompareSave() {
+  if (!zx7CompareVariants) return;
+  const selected = /** @type {HTMLInputElement|null} */ (
+    document.querySelector('input[name="zx7CompareChoice"]:checked')
+  );
+  if (!selected) return;
+  const idx = parseInt(selected.value, 10);
+  const variant = zx7CompareVariants[idx];
+  const dataFileName = zx7CompareBaseName + variant.ext;
+
+  downloadFile(new Blob([variant.data], { type: 'application/octet-stream' }), dataFileName);
+
+  // Generate ASM if checkbox is checked
+  const asmCb = /** @type {HTMLInputElement|null} */ (document.getElementById('zx7CreateAsmCb'));
+  if (asmCb && asmCb.checked) {
+    const asmText = generateZx7Asm(variant.type, dataFileName);
+    downloadFile(new Blob([asmText], { type: 'text/plain' }), zx7CompareBaseName + '_zx7.asm');
+  }
+
+  const dlg = document.getElementById('zx7CompareDialog');
+  if (dlg) dlg.style.display = 'none';
+}
+
+// ---------------------------------------------------------------------------
+// ZX7 ASM generation — sjasmplus examples with inline ZX7 decompressor
+// ---------------------------------------------------------------------------
+
+/** Standard ZX7 forward decompressor — verbatim from ZX7_SourceCode.zip */
+const DZX7_STANDARD = `; -----------------------------------------------------------------------------
+; ZX7 decoder by Einar Saukas, Antonio Villena & Metalbrain
+; "Standard" version (69 bytes only)
+; -----------------------------------------------------------------------------
+; Parameters:
+;   HL: source address (compressed data)
+;   DE: destination address (decompressing)
+; -----------------------------------------------------------------------------
+
+dzx7_standard:
+        ld      a, $80
+dzx7s_copy_byte_loop:
+        ldi                             ; copy literal byte
+dzx7s_main_loop:
+        call    dzx7s_next_bit
+        jr      nc, dzx7s_copy_byte_loop ; next bit indicates either literal or sequence
+
+; determine number of bits used for length (Elias gamma coding)
+        push    de
+        ld      bc, 0
+        ld      d, b
+dzx7s_len_size_loop:
+        inc     d
+        call    dzx7s_next_bit
+        jr      nc, dzx7s_len_size_loop
+
+; determine length
+dzx7s_len_value_loop:
+        call    nc, dzx7s_next_bit
+        rl      c
+        rl      b
+        jr      c, dzx7s_exit           ; check end marker
+        dec     d
+        jr      nz, dzx7s_len_value_loop
+        inc     bc                      ; adjust length
+
+; determine offset
+        ld      e, (hl)                 ; load offset flag (1 bit) + offset value (7 bits)
+        inc     hl
+        defb    $cb, $33                ; opcode for undocumented instruction "SLL E" aka "SLS E"
+        jr      nc, dzx7s_offset_end    ; if offset flag is set, load 4 extra bits
+        ld      d, $10                  ; bit marker to load 4 bits
+dzx7s_rld_next_bit:
+        call    dzx7s_next_bit
+        rl      d                       ; insert next bit into D
+        jr      nc, dzx7s_rld_next_bit  ; repeat 4 times, until bit marker is out
+        inc     d                       ; add 128 to DE
+        srl     d                       ; retrieve fourth bit from D
+dzx7s_offset_end:
+        rr      e                       ; insert fourth bit into E
+
+; copy previous sequence
+        ex      (sp), hl                ; store source, restore destination
+        push    hl                      ; store destination
+        sbc     hl, de                  ; HL = destination - offset - 1
+        pop     de                      ; DE = destination
+        ldir
+dzx7s_exit:
+        pop     hl                      ; restore source address (compressed data)
+        jr      nc, dzx7s_main_loop
+dzx7s_next_bit:
+        add     a, a                    ; check next bit
+        ret     nz                      ; no more bits left?
+        ld      a, (hl)                 ; load another group of 8 bits
+        inc     hl
+        rla
+        ret
+
+; -----------------------------------------------------------------------------`;
+
+/** Standard ZX7 backward decompressor — verbatim from ZX7_SourceCode.zip */
+const DZX7_BACKWARD = `; -----------------------------------------------------------------------------
+; ZX7 decoder by Einar Saukas, Antonio Villena & Metalbrain
+; "Standard" version (69 bytes only) - BACKWARDS VARIANT
+; -----------------------------------------------------------------------------
+; Parameters:
+;   HL: last source address (compressed data)
+;   DE: last destination address (decompressing)
+; -----------------------------------------------------------------------------
+
+dzx7_standard_back:
+        ld      a, $80
+dzx7s_copy_byte_loop_b:
+        ldd                             ; copy literal byte
+dzx7s_main_loop_b:
+        call    dzx7s_next_bit_b
+        jr      nc, dzx7s_copy_byte_loop_b ; next bit indicates either literal or sequence
+
+; determine number of bits used for length (Elias gamma coding)
+        push    de
+        ld      bc, 0
+        ld      d, b
+dzx7s_len_size_loop_b:
+        inc     d
+        call    dzx7s_next_bit_b
+        jr      nc, dzx7s_len_size_loop_b
+
+; determine length
+dzx7s_len_value_loop_b:
+        call    nc, dzx7s_next_bit_b
+        rl      c
+        rl      b
+        jr      c, dzx7s_exit_b         ; check end marker
+        dec     d
+        jr      nz, dzx7s_len_value_loop_b
+        inc     bc                      ; adjust length
+
+; determine offset
+        ld      e, (hl)                 ; load offset flag (1 bit) + offset value (7 bits)
+        dec     hl
+        defb    $cb, $33                ; opcode for undocumented instruction "SLL E" aka "SLS E"
+        jr      nc, dzx7s_offset_end_b  ; if offset flag is set, load 4 extra bits
+        ld      d, $10                  ; bit marker to load 4 bits
+dzx7s_rld_next_bit_b:
+        call    dzx7s_next_bit_b
+        rl      d                       ; insert next bit into D
+        jr      nc, dzx7s_rld_next_bit_b ; repeat 4 times, until bit marker is out
+        inc     d                       ; add 128 to DE
+        srl     d                       ; retrieve fourth bit from D
+dzx7s_offset_end_b:
+        rr      e                       ; insert fourth bit into E
+
+; copy previous sequence
+        ex      (sp), hl                ; store source, restore destination
+        push    hl                      ; store destination
+        adc     hl, de                  ; HL = destination + offset + 1
+        pop     de                      ; DE = destination
+        lddr
+dzx7s_exit_b:
+        pop     hl                      ; restore source address (compressed data)
+        jr      nc, dzx7s_main_loop_b
+dzx7s_next_bit_b:
+        add     a, a                    ; check next bit
+        ret     nz                      ; no more bits left?
+        ld      a, (hl)                 ; load another group of 8 bits
+        dec     hl
+        rla
+        ret
+
+; -----------------------------------------------------------------------------`;
+
+/** RCS-to-SCR reorder routine (Z80, sjasmplus syntax) */
+const RCS_TO_SCR_ASM = `; Reorder RCS data to standard SCR layout
+; HL = source RCS data (6912 bytes), output to screen $4000
+rcsToScr:
+        ld      de, $4000
+        ld      b, 3            ; 3 sectors
+.sector:
+        push    bc
+        push    de
+        ld      b, 32           ; 32 columns
+.column:
+        push    bc
+        push    de
+        ld      b, 8            ; 8 character rows
+.charRow:
+        push    bc
+        push    de
+        ld      b, 8            ; 8 pixel lines
+.pixLine:
+        ld      a, (hl)
+        ld      (de), a
+        inc     hl
+        inc     d               ; next pixel line (+256)
+        djnz    .pixLine
+        pop     de
+        ld      a, e
+        add     a, 32           ; next char row (+32)
+        ld      e, a
+        pop     bc
+        djnz    .charRow
+        pop     de
+        inc     e               ; next column
+        pop     bc
+        djnz    .column
+        pop     de
+        ld      a, d
+        add     a, 8            ; next sector (+2048)
+        ld      d, a
+        pop     bc
+        djnz    .sector
+        ld      de, $5800       ; copy 768 attribute bytes
+        ld      bc, 768
+        ldir
+        ret`;
+
+/**
+ * Generate a sjasmplus ASM file that decompresses ZX7 data to the screen.
+ * @param {string} type - Variant type: 'plain', 'zx7_fwd', 'zx7_bwd', 'rcs_zx7_fwd', 'rcs_zx7_bwd'
+ * @param {string} dataFile - Filename of the binary data file to incbin
+ * @returns {string} Complete ASM source
+ */
+function generateZx7Asm(type, dataFile) {
+  const snaName = dataFile.replace(/\.[^.]+(\.[^.]+)?$/, '') + '.sna';
+  const lines = [];
+
+  lines.push('; ZX7 decompression example — sjasmplus');
+  lines.push('; Generated by SpectraLab');
+  lines.push('; Assemble: sjasmplus ' + dataFile.replace(/\.[^.]+(\.[^.]+)?$/, '') + '_zx7.asm');
+  lines.push('');
+  lines.push('        device  zxspectrum48');
+  lines.push('        org     $8000');
+  lines.push('');
+  lines.push('start:');
+  lines.push('        di');
+  lines.push('        ld      sp, $8000');
+
+  if (type === 'plain') {
+    lines.push('        ld      hl, scrData');
+    lines.push('        ld      de, $4000');
+    lines.push('        ld      bc, 6912');
+    lines.push('        ldir');
+    lines.push('        jr      $');
+    lines.push('');
+    lines.push('scrData:');
+    lines.push('        incbin  "' + dataFile + '"');
+  } else if (type === 'zx7_fwd') {
+    lines.push('        ld      hl, compressedData');
+    lines.push('        ld      de, $4000');
+    lines.push('        call    dzx7_standard');
+    lines.push('        jr      $');
+    lines.push('');
+    lines.push('compressedData:');
+    lines.push('        incbin  "' + dataFile + '"');
+    lines.push('');
+    lines.push(DZX7_STANDARD);
+  } else if (type === 'zx7_bwd') {
+    lines.push('        ld      hl, compressedDataEnd - 1');
+    lines.push('        ld      de, $4000 + 6912 - 1');
+    lines.push('        call    dzx7_standard_back');
+    lines.push('        jr      $');
+    lines.push('');
+    lines.push('compressedData:');
+    lines.push('        incbin  "' + dataFile + '"');
+    lines.push('compressedDataEnd:');
+    lines.push('');
+    lines.push(DZX7_BACKWARD);
+  } else if (type === 'rcs_zx7_fwd') {
+    lines.push('        ld      hl, compressedData');
+    lines.push('        ld      de, tempBuf');
+    lines.push('        call    dzx7_standard');
+    lines.push('        ld      hl, tempBuf');
+    lines.push('        call    rcsToScr');
+    lines.push('        jr      $');
+    lines.push('');
+    lines.push('compressedData:');
+    lines.push('        incbin  "' + dataFile + '"');
+    lines.push('');
+    lines.push(DZX7_STANDARD);
+    lines.push('');
+    lines.push(RCS_TO_SCR_ASM);
+    lines.push('');
+    lines.push('tempBuf:');
+    lines.push('        defs    6912');
+  } else if (type === 'rcs_zx7_bwd') {
+    lines.push('        ld      hl, compressedDataEnd - 1');
+    lines.push('        ld      de, tempBuf + 6912 - 1');
+    lines.push('        call    dzx7_standard_back');
+    lines.push('        ld      hl, tempBuf');
+    lines.push('        call    rcsToScr');
+    lines.push('        jr      $');
+    lines.push('');
+    lines.push('compressedData:');
+    lines.push('        incbin  "' + dataFile + '"');
+    lines.push('compressedDataEnd:');
+    lines.push('');
+    lines.push(DZX7_BACKWARD);
+    lines.push('');
+    lines.push(RCS_TO_SCR_ASM);
+    lines.push('');
+    lines.push('tempBuf:');
+    lines.push('        defs    6912');
+  }
+
+  lines.push('');
+  lines.push('        savesna "' + snaName + '", start');
+  lines.push('');
+
+  return lines.join('\n');
+}
+
+// ============================================================================
 // Initialization
 // ============================================================================
 
@@ -24475,6 +25000,11 @@ function initEditor() {
     const dlg = document.getElementById('exportImageDialog');
     if (dlg) dlg.style.display = 'none';
   });
+  document.getElementById('zx7CompareCancelBtn')?.addEventListener('click', () => {
+    const dlg = document.getElementById('zx7CompareDialog');
+    if (dlg) dlg.style.display = 'none';
+  });
+  document.getElementById('zx7CompareSaveBtn')?.addEventListener('click', zx7CompareSave);
   document.getElementById('exportImageOkBtn')?.addEventListener('click', exportImageToFile);
   document.getElementById('exportImageGigaMode')?.addEventListener('change', updateExportImageDims);
   document.getElementById('exportImageFlashMode')?.addEventListener('change', updateExportImageDims);
@@ -24502,6 +25032,27 @@ function initEditor() {
       const tapData = exportSpecsciiToTap();
       const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
       downloadFile(new Blob([tapData], { type: 'application/octet-stream' }), baseName + '.tap');
+    } else if (value === 'rcs') {
+      if (layersEnabled) flattenLayersToScreen();
+      const scrBytes = screenData.slice(0, SCREEN.TOTAL_SIZE);
+      const rcsBytes = reorderScrToRcs(new Uint8Array(scrBytes));
+      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      downloadFile(new Blob([rcsBytes], { type: 'application/octet-stream' }), baseName + '.rcs');
+    } else if (value === 'zx7') {
+      if (layersEnabled) flattenLayersToScreen();
+      const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
+      const compressed = ZX7.compress(scrBytes);
+      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      downloadFile(new Blob([compressed.data], { type: 'application/octet-stream' }), baseName + '.scr.zx7');
+    } else if (value === 'rcs_zx7') {
+      if (layersEnabled) flattenLayersToScreen();
+      const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
+      const rcsBytes = reorderScrToRcs(scrBytes);
+      const compressed = ZX7.compress(rcsBytes);
+      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      downloadFile(new Blob([compressed.data], { type: 'application/octet-stream' }), baseName + '.rcs.zx7');
+    } else if (value === 'zx7_compare') {
+      showZx7CompareDialog();
     }
   });
 
@@ -24561,6 +25112,18 @@ function initEditor() {
     const infoEl = document.getElementById('optimizeAttrsInfo');
     if (infoEl) infoEl.textContent = flipped > 0 ? flipped + ' cells flipped' : 'no changes';
     if (flipped > 0) {
+      editorRender();
+      renderPreview();
+    }
+  });
+
+  // Remove Hidden Pixels button
+  document.getElementById('removeHiddenBtn')?.addEventListener('click', () => {
+    saveUndoState();
+    const cleaned = removeHiddenPixels();
+    const infoEl = document.getElementById('removeHiddenInfo');
+    if (infoEl) infoEl.textContent = cleaned > 0 ? cleaned + ' cells cleaned' : 'no hidden cells';
+    if (cleaned > 0) {
       editorRender();
       renderPreview();
     }

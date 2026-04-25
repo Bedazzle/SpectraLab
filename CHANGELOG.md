@@ -1,5 +1,12 @@
 # SpectraLab Version History
 
+## v1.94
+- ZX7 compression — built-in [ZX7](https://spectrumcomputing.co.uk/entry/27996/ZX-Spectrum/ZX7) compression by Einar Saukas for SCR format. Export dropdown adds three options: `.scr.zx7` (ZX7 compressed), `.rcs.zx7` (RCS reordered + ZX7 compressed), and **Compare compressions...** dialog. The compare dialog shows five variants side-by-side (plain SCR, ZX7, ZX7 backwards, RCS+ZX7, RCS+ZX7 backwards) with compressed sizes, bytes saved, and ratios, highlights the smallest result, and lets you save the selected variant. Backward variants use `.zx7b` extension (`.scr.zx7b`, `.rcs.zx7b`). **Create ASM** checkbox generates a ready-to-assemble sjasmplus example that decompresses the file directly to screen memory (includes ZX7 decompressor and RCS reorder routine where needed, uses `device zxspectrum48` and `savesna`). Open `.scr.zx7`/`.scr.zx7b` and `.rcs.zx7`/`.rcs.zx7b` files directly — decompression (and RCS reordering reversal) is automatic on load.
+
+## v1.93
+- RCS format support — import and export [RCS (Re-ordered Compressed Screen)](https://github.com/einar-saukas/RCS) files by Einar Saukas. RCS reorders the 6144 bitmap bytes using S→C→R→L nesting for better compression ratios; attributes are unchanged. Export via the Export dropdown when an SCR file is loaded (6912-byte `.rcs` output). Open `.rcs` files directly — reordering is automatically reversed on load, converting back to standard SCR for viewing and editing.
+- Clean Hidden Cells — new tool in the Xform tab. For cells where ink equals paper but the bitmap contains a non-trivial pattern (not all-0x00 or all-0xFF), sets all bitmap bytes to 0x00 or 0xFF based on neighbor cells' bitmap density. If the majority of bits in the four adjacent cells (up/down/left/right) are set, the hidden cell is filled with 0xFF; otherwise with 0x00. Available for all formats with both bitmap and attributes: SCR, BSC, IFL, MLT, BMC4, GMX, Gigascreen, ULA+. Hidden for attribute-only formats (GMX 160, HLR, 53c, STL, SPECSCII) and formats without attributes. Undoable with Ctrl+Z. The File Info "Hidden cells" counter updates after cleaning.
+
 ## v1.92
 - Font editor: renamed font width modes from "6 high/6 low/4 high/4 low" to "6 (left)/6 (right)/4 (left)/4 (right)" for clarity.
 - Fix: FZX-to-fixed font conversion no longer cuts off glyphs with non-zero shift. The shift offset was applied twice (once in the bitmap storage, once in the conversion loop), causing shifted glyphs to be pushed down and truncated.

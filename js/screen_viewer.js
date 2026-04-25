@@ -4333,7 +4333,7 @@ function getUlaPlusPaletteIndex(attr, isInk) {
 // ============================================================================
 
 /** @type {string[]} - List of supported file extensions */
-const SUPPORTED_EXTENSIONS = ['scr', '53c', 'atr', 'bsc', 'bsp', 'ifl', 'bmc4', 'mlt', 'mc', '3', 'img', 'mem', 'specscii', 'sca', 'sna', 'z80', 'btile', 'wtile', 'zxp', 'ch$', 'chr$', 'ch-', 'mg1', 'mg2', 'mg4', 'mg8', 'hlr', 'stl', 'nxi', 'sl2', 'slr', 'rad'];
+const SUPPORTED_EXTENSIONS = ['scr', 'rcs', '53c', 'atr', 'bsc', 'bsp', 'ifl', 'bmc4', 'mlt', 'mc', '3', 'img', 'mem', 'specscii', 'sca', 'sna', 'z80', 'btile', 'wtile', 'zxp', 'ch$', 'chr$', 'ch-', 'mg1', 'mg2', 'mg4', 'mg8', 'hlr', 'stl', 'nxi', 'sl2', 'slr', 'rad', 'zx7', 'zx7b'];
 const IMAGE_EXTENSIONS = ['png', 'gif', 'jpg', 'jpeg', 'webp', 'bmp'];
 
 /** @type {JSZip|null} - Current loaded ZIP archive */
@@ -6300,6 +6300,13 @@ function detectFormat(fileName, fileSize) {
     return FORMAT.UNKNOWN;
   }
 
+  if (ext === 'rcs') {
+    if (fileSize === SCREEN.TOTAL_SIZE) {
+      return FORMAT.SCR;
+    }
+    return FORMAT.UNKNOWN;
+  }
+
   if (ext === 'specscii') {
     return FORMAT.SPECSCII;
   }
@@ -6331,6 +6338,11 @@ function detectFormat(fileName, fileSize) {
 
   if (ext === 'rad') {
     return FORMAT.LORES_RAD;
+  }
+
+  if (ext === 'zx7' || ext === 'zx7b') {
+    // ZX7 compressed — actual format determined after decompression in loadScreenFile
+    return FORMAT.SCR;
   }
 
   if (ext === 'c') {
@@ -8871,6 +8883,30 @@ function loadScreenFile(file) {
           alert(`Invalid Gigascreen file: expected ${GIGASCREEN.TOTAL_SIZE} bytes (2×6912), got ${data.length} bytes.`);
           return;
         }
+      }
+
+      // ZX7 compressed files — decompress before further processing
+      const fileExt = fileName.toLowerCase().split('.').pop();
+      if ((fileExt === 'zx7' || fileExt === 'zx7b') && typeof ZX7 !== 'undefined') {
+        try {
+          data = fileExt === 'zx7b' ? ZX7.decompressBackwards(data) : ZX7.decompress(data);
+        } catch (e) {
+          alert('Failed to decompress ZX7 file: ' + e.message);
+          return;
+        }
+        // Strip .zx7/.zx7b and re-detect format from inner extension + decompressed size
+        const innerName = fileName.replace(/\.zx7b?$/i, '');
+        format = detectFormat(innerName, data.length);
+        // Check if RCS reordering needs reversing (.rcs.zx7/.rcs.zx7b → inner ext is .rcs)
+        const innerExt = innerName.toLowerCase().split('.').pop();
+        if (innerExt === 'rcs' && format === FORMAT.SCR && typeof reorderRcsToScr === 'function') {
+          data = reorderRcsToScr(data);
+        }
+      }
+
+      // RCS files are SCR data with reordered bitmap bytes — reverse on load
+      if (fileExt === 'rcs' && format === FORMAT.SCR && typeof reorderRcsToScr === 'function') {
+        data = reorderRcsToScr(data);
       }
 
       // Save current picture state BEFORE initUlaPlusMode clobbers ULA+ globals
