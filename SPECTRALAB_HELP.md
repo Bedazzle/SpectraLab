@@ -546,24 +546,26 @@ For **SCR** format, the Export dropdown includes `.rcs (RCS reordered)` — expo
 
 RCS files can also be opened directly — the reordering is automatically reversed on load, converting back to standard SCR for viewing and editing.
 
-### ZX7 Compression
+### ZX7 / ZX0 Compression
 
-For **SCR** format, the Export dropdown also includes built-in [ZX7](https://spectrumcomputing.co.uk/entry/27996/ZX-Spectrum/ZX7) compression options:
+For **SCR** format, the Export dropdown includes built-in [ZX7](https://spectrumcomputing.co.uk/entry/27996/ZX-Spectrum/ZX7) and [ZX0](https://github.com/einar-saukas/ZX0) (v2 format) compression options by Einar Saukas:
 
 - **`.scr.zx7 (ZX7 compressed)`** — compresses the screen data with ZX7 (forward mode)
-- **`.rcs.zx7 (RCS + ZX7)`** — applies RCS reordering first, then ZX7 compression, for potentially better ratios
-- **`Compare compressions...`** — opens a dialog showing all five compression variants side-by-side:
+- **`.rcs.zx7 (RCS + ZX7)`** — applies RCS reordering first, then ZX7 compression
+- **`.scr.zx0 (ZX0 compressed)`** — compresses the screen data with ZX0 (forward mode)
+- **`.rcs.zx0 (RCS + ZX0)`** — applies RCS reordering first, then ZX0 compression
+- **`Compare compressions...`** — opens a dialog showing all nine compression variants side-by-side:
   - Plain SCR (6912 bytes, uncompressed baseline)
-  - ZX7 (forward)
-  - ZX7 backwards
-  - RCS + ZX7 (forward)
-  - RCS + ZX7 backwards
+  - ZX7 / ZX7 backwards
+  - RCS + ZX7 / RCS + ZX7 backwards
+  - ZX0 / ZX0 backwards
+  - RCS + ZX0 / RCS + ZX0 backwards
 
   The dialog displays compressed size, bytes saved, and ratio for each variant, highlights the best result (pre-selected), and lets you save the selected variant with a single Save button.
 
-**Create ASM** checkbox — when enabled, saving also generates a sjasmplus `.asm` file alongside the compressed data. The ASM file is a complete working example: it decompresses the data directly to screen memory at `$4000`, includes the appropriate ZX7 decompressor (forward or backward) and RCS-to-SCR reorder routine where needed, uses `device zxspectrum48` and `savesna` to produce a `.sna` snapshot.
+**Create ASM** checkbox — when enabled, saving also generates a sjasmplus `.asm` file alongside the compressed data. The ASM file is a complete working example: it decompresses the data directly to screen memory at `$4000`, includes the appropriate ZX7 or ZX0 decompressor (forward or backward) and RCS-to-SCR reorder routine where needed, uses `device zxspectrum48` and `savesna` to produce a `.sna` snapshot.
 
-Forward-compressed files use `.zx7` extension, backward-compressed use `.zx7b` (e.g. `.scr.zx7`, `.scr.zx7b`, `.rcs.zx7`, `.rcs.zx7b`). All variants can be opened directly — ZX7 decompression (and RCS reordering reversal where needed) is automatic on load.
+Forward-compressed files use `.zx7`/`.zx0` extensions, backward-compressed use `.zx7b`/`.zx0b`. All variants can be opened directly — decompression (and RCS reordering reversal where needed) is automatic on load.
 
 ### Format ASM Export
 
@@ -1278,6 +1280,10 @@ When loading a 2048-byte font file, a modal dialog shows side-by-side previews o
 | .scr.zx7b | variable | ZX7 backward compressed screen (auto-decompressed on load) |
 | .rcs.zx7 | variable | RCS reordered + ZX7 compressed (auto-decompressed and un-reordered on load) |
 | .rcs.zx7b | variable | RCS reordered + ZX7 backward compressed (auto-decompressed and un-reordered on load) |
+| .scr.zx0 | variable | [ZX0](https://github.com/einar-saukas/ZX0) compressed screen (auto-decompressed on load) |
+| .scr.zx0b | variable | ZX0 backward compressed screen (auto-decompressed on load) |
+| .rcs.zx0 | variable | RCS reordered + ZX0 compressed (auto-decompressed and un-reordered on load) |
+| .rcs.zx0b | variable | RCS reordered + ZX0 backward compressed (auto-decompressed and un-reordered on load) |
 | .scr | 6976 bytes | ULA+ (64-color palette) |
 | .scr | 6945–7426 bytes | ULANext (Next extended palette, up to 256 colors) |
 | .scr | 6144 bytes | Monochrome full |

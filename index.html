@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.94 -->
+<!-- SpectraLab v1.95 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -1474,7 +1474,7 @@
       <div class="panel-content">
         <!-- File input -->
         <div class="control-group">
-          <input type="file" id="inputFile" multiple accept=".scr,.rcs,.53c,.atr,.bsc,.bsp,.bmc4,.ifl,.mlt,.mc,.3,.img,.mg1,.mg2,.mg4,.mg8,.hlr,.stl,.nxi,.sl2,.slr,.rad,.c,.specscii,.sca,.zxp,.ch$,.chr$,.ch-,.slp,.slw,.sna,.z80,.btile,.wtile,.zx7,.zx7b,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
+          <input type="file" id="inputFile" multiple accept=".scr,.rcs,.53c,.atr,.bsc,.bsp,.bmc4,.ifl,.mlt,.mc,.3,.img,.mg1,.mg2,.mg4,.mg8,.hlr,.stl,.nxi,.sl2,.slr,.rad,.c,.specscii,.sca,.zxp,.ch$,.chr$,.ch-,.slp,.slw,.sna,.z80,.btile,.wtile,.zx7,.zx7b,.zx0,.zx0b,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
         </div>
 
         <!-- New and Save buttons -->
@@ -3467,7 +3467,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.94</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.95</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">
@@ -3918,11 +3918,11 @@
   </div>
 </div>
 
-<!-- ZX7 Compression Compare Dialog -->
-<div id="zx7CompareDialog" class="modal-overlay" style="display:none;">
+<!-- Compression Compare Dialog -->
+<div id="compareDialog" class="modal-overlay" style="display:none;">
   <div class="modal-dialog" style="min-width: 460px;">
-    <div class="modal-title">ZX7 Compression Compare</div>
-    <table id="zx7CompareTable" style="width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 12px;">
+    <div class="modal-title">Compression Compare</div>
+    <table id="compareTable" style="width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 12px;">
       <thead>
         <tr style="border-bottom: 1px solid var(--border-secondary);">
           <th style="padding: 4px 4px; width: 20px;"></th>
@@ -3932,15 +3932,15 @@
           <th style="text-align: right; padding: 4px 8px;">Ratio</th>
         </tr>
       </thead>
-      <tbody id="zx7CompareBody"></tbody>
+      <tbody id="compareBody"></tbody>
     </table>
     <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; margin-bottom: 12px; cursor: pointer;">
-      <input type="checkbox" id="zx7CreateAsmCb">
-      Create ASM (sjasmplus example with ZX7 decompressor)
+      <input type="checkbox" id="compareCreateAsmCb">
+      Create ASM (sjasmplus example with decompressor)
     </label>
     <div style="display: flex; gap: 8px; justify-content: flex-end;">
-      <button id="zx7CompareCancelBtn" style="padding: 5px 16px; font-size: 12px;">Cancel</button>
-      <button id="zx7CompareSaveBtn" style="padding: 5px 16px; font-size: 12px;">Save</button>
+      <button id="compareCancelBtn" style="padding: 5px 16px; font-size: 12px;">Cancel</button>
+      <button id="compareSaveBtn" style="padding: 5px 16px; font-size: 12px;">Save</button>
     </div>
   </div>
 </div>
@@ -3998,6 +3998,7 @@
 <script src="js/sca_editor.js"></script>
 <script src="js/qrcode.js"></script>
 <script src="js/zx7.js"></script>
+<script src="js/zx0.js"></script>
 <script src="js/screen_editor.js"></script>
 <script src="js/sprite_editor.js"></script>
 </body>

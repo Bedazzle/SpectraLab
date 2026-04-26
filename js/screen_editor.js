@@ -21625,7 +21625,9 @@ function updateExportAsmButton() {
     options.push({ value: 'rcs', label: '.rcs (RCS reordered)' });
     options.push({ value: 'zx7', label: '.scr.zx7 (ZX7 compressed)' });
     options.push({ value: 'rcs_zx7', label: '.rcs.zx7 (RCS + ZX7)' });
-    options.push({ value: 'zx7_compare', label: 'Compare compressions...' });
+    options.push({ value: 'zx0', label: '.scr.zx0 (ZX0 compressed)' });
+    options.push({ value: 'rcs_zx0', label: '.rcs.zx0 (RCS + ZX0)' });
+    options.push({ value: 'compare', label: 'Compare compressions...' });
   }
 
   // Populate dropdown
@@ -24174,129 +24176,221 @@ function initQrDialog() {
 }
 
 // ============================================================================
-// ZX7 Compression Compare
+// Compression Compare (ZX7 + ZX0)
 // ============================================================================
 
 /** @type {Array<{label:string, size:number, data:Uint8Array, ext:string, type:string}>|null} */
-let zx7CompareVariants = null;
-let zx7CompareBaseName = '';
+let compareVariants = null;
+let compareBaseName = '';
 
 /**
- * Show ZX7 compression comparison dialog with all compression variants.
- * Compares: plain SCR, ZX7 forward, ZX7 backwards, RCS+ZX7 forward, RCS+ZX7 backwards.
+ * Show compression comparison dialog with all ZX7 and ZX0 variants.
+ * The dialog appears immediately with "Compressing..." placeholders;
+ * each variant is computed asynchronously so the UI stays responsive.
  */
-function showZx7CompareDialog() {
-  if (typeof ZX7 === 'undefined') return;
+function showCompareDialog() {
+  if (typeof ZX7 === 'undefined' && typeof ZX0 === 'undefined') return;
   if (layersEnabled) flattenLayersToScreen();
 
   const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
   const rcsBytes = reorderScrToRcs(scrBytes);
-  zx7CompareBaseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+  compareBaseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
 
-  const zx7Fwd = ZX7.compress(scrBytes);
-  const zx7Bwd = ZX7.compressBackwards(scrBytes);
-  const rcsZx7Fwd = ZX7.compress(rcsBytes);
-  const rcsZx7Bwd = ZX7.compressBackwards(rcsBytes);
-
-  zx7CompareVariants = [
-    { label: 'Plain SCR',           size: scrBytes.length,        data: scrBytes,          ext: '.scr',     type: 'plain' },
-    { label: 'ZX7',                 size: zx7Fwd.data.length,     data: zx7Fwd.data,       ext: '.scr.zx7',  type: 'zx7_fwd' },
-    { label: 'ZX7 backwards',       size: zx7Bwd.data.length,     data: zx7Bwd.data,       ext: '.scr.zx7b', type: 'zx7_bwd' },
-    { label: 'RCS + ZX7',           size: rcsZx7Fwd.data.length,  data: rcsZx7Fwd.data,    ext: '.rcs.zx7',  type: 'rcs_zx7_fwd' },
-    { label: 'RCS + ZX7 backwards', size: rcsZx7Bwd.data.length,  data: rcsZx7Bwd.data,    ext: '.rcs.zx7b', type: 'rcs_zx7_bwd' },
+  // Build the list of jobs: plain SCR is ready, compression rows start pending
+  /** @type {Array<{label:string, ext:string, type:string, compress: (() => {data:Uint8Array})|null}>} */
+  const jobs = [
+    { label: 'Plain SCR', ext: '.scr', type: 'plain', compress: null },
   ];
-
-  // Find smallest compressed size (skip plain SCR at index 0)
-  let bestIdx = 1;
-  for (let i = 2; i < zx7CompareVariants.length; i++) {
-    if (zx7CompareVariants[i].size < zx7CompareVariants[bestIdx].size) bestIdx = i;
+  if (typeof ZX7 !== 'undefined') {
+    jobs.push(
+      { label: 'ZX7',                 ext: '.scr.zx7',  type: 'zx7_fwd',     compress: () => ZX7.compress(scrBytes) },
+      { label: 'ZX7 backwards',       ext: '.scr.zx7b', type: 'zx7_bwd',     compress: () => ZX7.compressBackwards(scrBytes) },
+      { label: 'RCS + ZX7',           ext: '.rcs.zx7',  type: 'rcs_zx7_fwd', compress: () => ZX7.compress(rcsBytes) },
+      { label: 'RCS + ZX7 backwards', ext: '.rcs.zx7b', type: 'rcs_zx7_bwd', compress: () => ZX7.compressBackwards(rcsBytes) },
+    );
+  }
+  if (typeof ZX0 !== 'undefined') {
+    jobs.push(
+      { label: 'ZX0',                 ext: '.scr.zx0',  type: 'zx0_fwd',     compress: () => ZX0.compress(scrBytes) },
+      { label: 'ZX0 backwards',       ext: '.scr.zx0b', type: 'zx0_bwd',     compress: () => ZX0.compress(scrBytes, 0, true) },
+      { label: 'RCS + ZX0',           ext: '.rcs.zx0',  type: 'rcs_zx0_fwd', compress: () => ZX0.compress(rcsBytes) },
+      { label: 'RCS + ZX0 backwards', ext: '.rcs.zx0b', type: 'rcs_zx0_bwd', compress: () => ZX0.compress(rcsBytes, 0, true) },
+    );
   }
 
-  const tbody = document.getElementById('zx7CompareBody');
+  // Initialize compareVariants with plain SCR filled in, rest pending
+  compareVariants = jobs.map((job, i) => ({
+    label: job.label,
+    size: i === 0 ? scrBytes.length : 0,
+    data: i === 0 ? scrBytes : new Uint8Array(0),
+    ext: job.ext,
+    type: job.type,
+  }));
+
+  // Build table rows immediately
+  const tbody = document.getElementById('compareBody');
   if (!tbody) return;
   tbody.innerHTML = '';
 
-  for (let i = 0; i < zx7CompareVariants.length; i++) {
-    const r = zx7CompareVariants[i];
-    const pct = ((r.size / SCREEN.TOTAL_SIZE) * 100).toFixed(1);
+  /** @type {HTMLTableRowElement[]} */
+  const rows = [];
+  /** @type {HTMLTableCellElement[]} */
+  const sizeCells = [];
+  /** @type {HTMLTableCellElement[]} */
+  const savedCells = [];
+  /** @type {HTMLTableCellElement[]} */
+  const pctCells = [];
+  /** @type {HTMLTableCellElement[]} */
+  const labelCells = [];
+  /** @type {HTMLInputElement[]} */
+  const radios = [];
+
+  const saveBtn = document.getElementById('compareSaveBtn');
+  if (saveBtn) saveBtn.disabled = true;
+
+  for (let i = 0; i < jobs.length; i++) {
     const tr = document.createElement('tr');
     tr.style.cursor = 'pointer';
-    if (i === bestIdx) {
-      tr.style.background = 'var(--accent-bg, rgba(0, 128, 255, 0.15))';
-      tr.style.fontWeight = 'bold';
-    }
     if (i > 0) {
       tr.style.borderTop = '1px solid var(--border-secondary)';
     }
 
-    // Radio button
     const tdRadio = document.createElement('td');
     tdRadio.style.cssText = 'text-align: center; padding: 4px 4px;';
     const radio = document.createElement('input');
     radio.type = 'radio';
-    radio.name = 'zx7CompareChoice';
+    radio.name = 'compareChoice';
     radio.value = String(i);
-    if (i === bestIdx) radio.checked = true;
     tdRadio.appendChild(radio);
     tr.appendChild(tdRadio);
+    radios.push(radio);
 
     const tdLabel = document.createElement('td');
     tdLabel.style.padding = '4px 8px';
-    tdLabel.textContent = r.label + (i === bestIdx ? ' *' : '');
+    tdLabel.textContent = jobs[i].label;
     tr.appendChild(tdLabel);
+    labelCells.push(tdLabel);
 
     const tdSize = document.createElement('td');
     tdSize.style.cssText = 'text-align: right; padding: 4px 8px; font-variant-numeric: tabular-nums;';
-    tdSize.textContent = r.size.toString();
     tr.appendChild(tdSize);
+    sizeCells.push(tdSize);
 
-    const saved = SCREEN.TOTAL_SIZE - r.size;
     const tdSaved = document.createElement('td');
     tdSaved.style.cssText = 'text-align: right; padding: 4px 8px; font-variant-numeric: tabular-nums;';
-    tdSaved.textContent = saved > 0 ? '\u2212' + saved : '0';
     tr.appendChild(tdSaved);
+    savedCells.push(tdSaved);
 
     const tdPct = document.createElement('td');
     tdPct.style.cssText = 'text-align: right; padding: 4px 8px; font-variant-numeric: tabular-nums;';
-    tdPct.textContent = pct + '%';
     tr.appendChild(tdPct);
+    pctCells.push(tdPct);
 
-    // Click row to select radio
     tr.addEventListener('click', (e) => {
       if (e.target !== radio) radio.checked = true;
     });
 
+    rows.push(tr);
     tbody.appendChild(tr);
+
+    // Fill in plain SCR row immediately, others show "Compressing..."
+    if (i === 0) {
+      tdSize.textContent = scrBytes.length.toString();
+      tdSaved.textContent = '0';
+      tdPct.textContent = '100.0%';
+    } else {
+      tdSize.textContent = '';
+      tdSaved.textContent = '';
+      tdPct.textContent = 'Compressing\u2026';
+      tdPct.style.color = 'var(--text-secondary, #888)';
+    }
   }
 
-  const dlg = document.getElementById('zx7CompareDialog');
+  // Show dialog immediately
+  const dlg = document.getElementById('compareDialog');
   if (dlg) dlg.style.display = '';
+
+  // Process compression jobs one at a time via setTimeout so UI can repaint
+  let jobIdx = 1; // skip plain SCR
+  function processNextJob() {
+    if (jobIdx >= jobs.length) {
+      // All done — highlight best and select it
+      let bestIdx = 1;
+      for (let i = 2; i < compareVariants.length; i++) {
+        if (compareVariants[i].size < compareVariants[bestIdx].size) bestIdx = i;
+      }
+      for (let i = 0; i < rows.length; i++) {
+        if (i === bestIdx) {
+          rows[i].style.background = 'var(--accent-bg, rgba(0, 128, 255, 0.15))';
+          rows[i].style.fontWeight = 'bold';
+          labelCells[i].textContent = compareVariants[i].label + ' *';
+          radios[i].checked = true;
+        } else {
+          rows[i].style.background = '';
+          rows[i].style.fontWeight = '';
+        }
+      }
+      if (saveBtn) saveBtn.disabled = false;
+      return;
+    }
+
+    const i = jobIdx;
+    const job = jobs[i];
+    try {
+      const result = job.compress();
+      compareVariants[i].size = result.data.length;
+      compareVariants[i].data = result.data;
+    } catch (e) {
+      compareVariants[i].size = SCREEN.TOTAL_SIZE;
+      compareVariants[i].data = scrBytes;
+    }
+
+    // Update row cells
+    const size = compareVariants[i].size;
+    const pct = ((size / SCREEN.TOTAL_SIZE) * 100).toFixed(1);
+    const saved = SCREEN.TOTAL_SIZE - size;
+    sizeCells[i].textContent = size.toString();
+    savedCells[i].textContent = saved > 0 ? '\u2212' + saved : '0';
+    pctCells[i].textContent = pct + '%';
+    pctCells[i].style.color = '';
+
+    jobIdx++;
+    setTimeout(processNextJob, 0);
+  }
+
+  setTimeout(processNextJob, 0);
 }
 
 /**
- * Handle Save button in ZX7 compare dialog.
+ * Handle Save button in compare dialog.
  * Downloads selected variant and optionally generates ASM file.
  */
-function zx7CompareSave() {
-  if (!zx7CompareVariants) return;
+function compareSave() {
+  if (!compareVariants) return;
   const selected = /** @type {HTMLInputElement|null} */ (
-    document.querySelector('input[name="zx7CompareChoice"]:checked')
+    document.querySelector('input[name="compareChoice"]:checked')
   );
   if (!selected) return;
   const idx = parseInt(selected.value, 10);
-  const variant = zx7CompareVariants[idx];
-  const dataFileName = zx7CompareBaseName + variant.ext;
+  const variant = compareVariants[idx];
+  const dataFileName = compareBaseName + variant.ext;
 
   downloadFile(new Blob([variant.data], { type: 'application/octet-stream' }), dataFileName);
 
   // Generate ASM if checkbox is checked
-  const asmCb = /** @type {HTMLInputElement|null} */ (document.getElementById('zx7CreateAsmCb'));
+  const asmCb = /** @type {HTMLInputElement|null} */ (document.getElementById('compareCreateAsmCb'));
   if (asmCb && asmCb.checked) {
-    const asmText = generateZx7Asm(variant.type, dataFileName);
-    downloadFile(new Blob([asmText], { type: 'text/plain' }), zx7CompareBaseName + '_zx7.asm');
+    const isZx0 = variant.type.startsWith('zx0') || variant.type.startsWith('rcs_zx0');
+    if (isZx0) {
+      const asmText = generateZx0Asm(variant.type, dataFileName);
+      downloadFile(new Blob([asmText], { type: 'text/plain' }), compareBaseName + '_zx0.asm');
+    } else {
+      const asmText = generateZx7Asm(variant.type, dataFileName);
+      downloadFile(new Blob([asmText], { type: 'text/plain' }), compareBaseName + '_zx7.asm');
+    }
   }
 
-  const dlg = document.getElementById('zx7CompareDialog');
+  const dlg = document.getElementById('compareDialog');
   if (dlg) dlg.style.display = 'none';
 }
 
@@ -24572,6 +24666,232 @@ function generateZx7Asm(type, dataFile) {
     lines.push('compressedDataEnd:');
     lines.push('');
     lines.push(DZX7_BACKWARD);
+    lines.push('');
+    lines.push(RCS_TO_SCR_ASM);
+    lines.push('');
+    lines.push('tempBuf:');
+    lines.push('        defs    6912');
+  }
+
+  lines.push('');
+  lines.push('        savesna "' + snaName + '", start');
+  lines.push('');
+
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// ZX0 ASM generation — sjasmplus examples with inline ZX0 decompressor
+// ---------------------------------------------------------------------------
+
+/** Standard ZX0 v2 forward decompressor — verbatim from ZX0 repo (68 bytes) */
+const DZX0_STANDARD = `; -----------------------------------------------------------------------------
+; ZX0 decoder by Einar Saukas & Urusergi
+; "Standard" version (68 bytes only)
+; -----------------------------------------------------------------------------
+; Parameters:
+;   HL: source address (compressed data)
+;   DE: destination address (decompressing)
+; -----------------------------------------------------------------------------
+
+dzx0_standard:
+        ld      bc, $ffff               ; preserve default offset 1
+        push    bc
+        inc     bc
+        ld      a, $80
+dzx0s_literals:
+        call    dzx0s_elias             ; obtain length
+        ldir                            ; copy literals
+        add     a, a                    ; copy from last offset or new offset?
+        jr      c, dzx0s_new_offset
+        call    dzx0s_elias             ; obtain length
+dzx0s_copy:
+        ex      (sp), hl                ; preserve source, restore offset
+        push    hl                      ; preserve offset
+        add     hl, de                  ; calculate destination - offset
+        ldir                            ; copy from offset
+        pop     hl                      ; restore offset
+        ex      (sp), hl                ; preserve offset, restore source
+        add     a, a                    ; copy from literals or new offset?
+        jr      nc, dzx0s_literals
+dzx0s_new_offset:
+        pop     bc                      ; discard last offset
+        ld      c, $fe                  ; prepare negative offset
+        call    dzx0s_elias_loop        ; obtain offset MSB
+        inc     c
+        ret     z                       ; check end marker
+        ld      b, c
+        ld      c, (hl)                 ; obtain offset LSB
+        inc     hl
+        rr      b                       ; last offset bit becomes first length bit
+        rr      c
+        push    bc                      ; preserve new offset
+        ld      bc, 1                   ; obtain length
+        call    nc, dzx0s_elias_backtrack
+        inc     bc
+        jr      dzx0s_copy
+dzx0s_elias:
+        inc     c                       ; interlaced Elias gamma coding
+dzx0s_elias_loop:
+        add     a, a
+        jr      nz, dzx0s_elias_skip
+        ld      a, (hl)                 ; load another group of 8 bits
+        inc     hl
+        rla
+dzx0s_elias_skip:
+        ret     c
+dzx0s_elias_backtrack:
+        add     a, a
+        rl      c
+        rl      b
+        jr      dzx0s_elias_loop
+; -----------------------------------------------------------------------------`;
+
+/** Standard ZX0 v2 backward decompressor — verbatim from ZX0 repo (69 bytes) */
+const DZX0_BACKWARD = `; -----------------------------------------------------------------------------
+; ZX0 decoder by Einar Saukas
+; "Standard" version (69 bytes only) - BACKWARDS VARIANT
+; -----------------------------------------------------------------------------
+; Parameters:
+;   HL: last source address (compressed data)
+;   DE: last destination address (decompressing)
+; -----------------------------------------------------------------------------
+
+dzx0_standard_back:
+        ld      bc, 1                   ; preserve default offset 1
+        push    bc
+        ld      a, $80
+dzx0sb_literals:
+        call    dzx0sb_elias            ; obtain length
+        lddr                            ; copy literals
+        inc     c
+        add     a, a                    ; copy from last offset or new offset?
+        jr      c, dzx0sb_new_offset
+        call    dzx0sb_elias            ; obtain length
+dzx0sb_copy:
+        ex      (sp), hl                ; preserve source, restore offset
+        push    hl                      ; preserve offset
+        add     hl, de                  ; calculate destination - offset
+        lddr                            ; copy from offset
+        inc     c
+        pop     hl                      ; restore offset
+        ex      (sp), hl                ; preserve offset, restore source
+        add     a, a                    ; copy from literals or new offset?
+        jr      nc, dzx0sb_literals
+dzx0sb_new_offset:
+        inc     sp                      ; discard last offset
+        inc     sp
+        call    dzx0sb_elias            ; obtain offset MSB
+        dec     b
+        ret     z                       ; check end marker
+        dec     c                       ; adjust for positive offset
+        ld      b, c
+        ld      c, (hl)                 ; obtain offset LSB
+        dec     hl
+        srl     b                       ; last offset bit becomes first length bit
+        rr      c
+        inc     bc
+        push    bc                      ; preserve new offset
+        ld      bc, 1                   ; obtain length
+        call    c, dzx0sb_elias_backtrack
+        inc     bc
+        jr      dzx0sb_copy
+dzx0sb_elias_backtrack:
+        add     a, a
+        rl      c
+        rl      b
+dzx0sb_elias:
+        add     a, a                    ; inverted interlaced Elias gamma coding
+        jr      nz, dzx0sb_elias_skip
+        ld      a, (hl)                 ; load another group of 8 bits
+        dec     hl
+        rla
+dzx0sb_elias_skip:
+        jr      c, dzx0sb_elias_backtrack
+        ret
+; -----------------------------------------------------------------------------`;
+
+/**
+ * Generate a sjasmplus ASM file that decompresses ZX0 data to the screen.
+ * @param {string} type - Variant type: 'plain', 'zx0_fwd', 'zx0_bwd', 'rcs_zx0_fwd', 'rcs_zx0_bwd'
+ * @param {string} dataFile - Filename of the binary data file to incbin
+ * @returns {string} Complete ASM source
+ */
+function generateZx0Asm(type, dataFile) {
+  const snaName = dataFile.replace(/\.[^.]+(\.[^.]+)?$/, '') + '.sna';
+  const lines = [];
+
+  lines.push('; ZX0 decompression example \u2014 sjasmplus');
+  lines.push('; Generated by SpectraLab');
+  lines.push('; Assemble: sjasmplus ' + dataFile.replace(/\.[^.]+(\.[^.]+)?$/, '') + '_zx0.asm');
+  lines.push('');
+  lines.push('        device  zxspectrum48');
+  lines.push('        org     $8000');
+  lines.push('');
+  lines.push('start:');
+  lines.push('        di');
+  lines.push('        ld      sp, $8000');
+
+  if (type === 'plain') {
+    lines.push('        ld      hl, scrData');
+    lines.push('        ld      de, $4000');
+    lines.push('        ld      bc, 6912');
+    lines.push('        ldir');
+    lines.push('        jr      $');
+    lines.push('');
+    lines.push('scrData:');
+    lines.push('        incbin  "' + dataFile + '"');
+  } else if (type === 'zx0_fwd') {
+    lines.push('        ld      hl, compressedData');
+    lines.push('        ld      de, $4000');
+    lines.push('        call    dzx0_standard');
+    lines.push('        jr      $');
+    lines.push('');
+    lines.push('compressedData:');
+    lines.push('        incbin  "' + dataFile + '"');
+    lines.push('');
+    lines.push(DZX0_STANDARD);
+  } else if (type === 'zx0_bwd') {
+    lines.push('        ld      hl, compressedDataEnd - 1');
+    lines.push('        ld      de, $4000 + 6912 - 1');
+    lines.push('        call    dzx0_standard_back');
+    lines.push('        jr      $');
+    lines.push('');
+    lines.push('compressedData:');
+    lines.push('        incbin  "' + dataFile + '"');
+    lines.push('compressedDataEnd:');
+    lines.push('');
+    lines.push(DZX0_BACKWARD);
+  } else if (type === 'rcs_zx0_fwd') {
+    lines.push('        ld      hl, compressedData');
+    lines.push('        ld      de, tempBuf');
+    lines.push('        call    dzx0_standard');
+    lines.push('        ld      hl, tempBuf');
+    lines.push('        call    rcsToScr');
+    lines.push('        jr      $');
+    lines.push('');
+    lines.push('compressedData:');
+    lines.push('        incbin  "' + dataFile + '"');
+    lines.push('');
+    lines.push(DZX0_STANDARD);
+    lines.push('');
+    lines.push(RCS_TO_SCR_ASM);
+    lines.push('');
+    lines.push('tempBuf:');
+    lines.push('        defs    6912');
+  } else if (type === 'rcs_zx0_bwd') {
+    lines.push('        ld      hl, compressedDataEnd - 1');
+    lines.push('        ld      de, tempBuf + 6912 - 1');
+    lines.push('        call    dzx0_standard_back');
+    lines.push('        ld      hl, tempBuf');
+    lines.push('        call    rcsToScr');
+    lines.push('        jr      $');
+    lines.push('');
+    lines.push('compressedData:');
+    lines.push('        incbin  "' + dataFile + '"');
+    lines.push('compressedDataEnd:');
+    lines.push('');
+    lines.push(DZX0_BACKWARD);
     lines.push('');
     lines.push(RCS_TO_SCR_ASM);
     lines.push('');
@@ -25000,11 +25320,11 @@ function initEditor() {
     const dlg = document.getElementById('exportImageDialog');
     if (dlg) dlg.style.display = 'none';
   });
-  document.getElementById('zx7CompareCancelBtn')?.addEventListener('click', () => {
-    const dlg = document.getElementById('zx7CompareDialog');
+  document.getElementById('compareCancelBtn')?.addEventListener('click', () => {
+    const dlg = document.getElementById('compareDialog');
     if (dlg) dlg.style.display = 'none';
   });
-  document.getElementById('zx7CompareSaveBtn')?.addEventListener('click', zx7CompareSave);
+  document.getElementById('compareSaveBtn')?.addEventListener('click', compareSave);
   document.getElementById('exportImageOkBtn')?.addEventListener('click', exportImageToFile);
   document.getElementById('exportImageGigaMode')?.addEventListener('change', updateExportImageDims);
   document.getElementById('exportImageFlashMode')?.addEventListener('change', updateExportImageDims);
@@ -25051,8 +25371,21 @@ function initEditor() {
       const compressed = ZX7.compress(rcsBytes);
       const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
       downloadFile(new Blob([compressed.data], { type: 'application/octet-stream' }), baseName + '.rcs.zx7');
-    } else if (value === 'zx7_compare') {
-      showZx7CompareDialog();
+    } else if (value === 'zx0') {
+      if (layersEnabled) flattenLayersToScreen();
+      const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
+      const compressed = ZX0.compress(scrBytes);
+      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      downloadFile(new Blob([compressed.data], { type: 'application/octet-stream' }), baseName + '.scr.zx0');
+    } else if (value === 'rcs_zx0') {
+      if (layersEnabled) flattenLayersToScreen();
+      const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
+      const rcsBytes = reorderScrToRcs(scrBytes);
+      const compressed = ZX0.compress(rcsBytes);
+      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      downloadFile(new Blob([compressed.data], { type: 'application/octet-stream' }), baseName + '.rcs.zx0');
+    } else if (value === 'compare') {
+      showCompareDialog();
     }
   });
 

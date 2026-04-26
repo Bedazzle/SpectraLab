@@ -742,32 +742,32 @@ The reordering groups spatially related bytes together (sector → column → ch
 
 You can also open `.rcs` files directly in SpectraLab — the RCS reordering is automatically reversed on load, converting the data back to standard SCR for viewing and editing.
 
-### ZX7 Compression (SCR only)
+### ZX7 / ZX0 Compression (SCR only)
 
-SpectraLab includes built-in [ZX7](https://spectrumcomputing.co.uk/entry/27996/ZX-Spectrum/ZX7) compression by Einar Saukas. For SCR files, the Export dropdown offers:
+SpectraLab includes built-in [ZX7](https://spectrumcomputing.co.uk/entry/27996/ZX-Spectrum/ZX7) and [ZX0](https://github.com/einar-saukas/ZX0) (v2 format) compression by Einar Saukas. For SCR files, the Export dropdown offers:
 
 **Direct export:**
 
-1. Select `.scr.zx7 (ZX7 compressed)` — compresses the screen with ZX7
-2. Select `.rcs.zx7 (RCS + ZX7)` — applies RCS reordering first, then ZX7 compression
+1. Select `.scr.zx7` or `.scr.zx0` — compresses the screen with ZX7 or ZX0
+2. Select `.rcs.zx7` or `.rcs.zx0` — applies RCS reordering first, then compression
 3. Click **Export** — downloads the compressed file
 
 **Compare all variants:**
 
 1. Select `Compare compressions...` from the Export dropdown
-2. Click **Export** — a dialog appears showing five compression variants:
+2. Click **Export** — a dialog appears showing nine compression variants:
    - Plain SCR (uncompressed baseline)
-   - ZX7 forward
-   - ZX7 backwards
-   - RCS + ZX7 forward
-   - RCS + ZX7 backwards
+   - ZX7 forward / ZX7 backwards
+   - RCS + ZX7 forward / RCS + ZX7 backwards
+   - ZX0 forward / ZX0 backwards
+   - RCS + ZX0 forward / RCS + ZX0 backwards
 3. The best (smallest) result is highlighted and pre-selected
 4. Select the variant you want and click **Save**
 5. Optional: check **Create ASM** before saving to also generate a sjasmplus `.asm` file that decompresses the data directly to screen memory (`device zxspectrum48`, `savesna`)
 
 **Opening compressed files:**
 
-Open `.scr.zx7`/`.scr.zx7b` or `.rcs.zx7`/`.rcs.zx7b` files directly — SpectraLab automatically decompresses ZX7 data (forward or backward) and reverses RCS reordering if needed.
+Open `.scr.zx7`/`.scr.zx7b`/`.scr.zx0`/`.scr.zx0b` or `.rcs.zx7`/`.rcs.zx7b`/`.rcs.zx0`/`.rcs.zx0b` files directly — SpectraLab automatically decompresses the data (forward or backward) and reverses RCS reordering if needed.
 
 ### Format ASM Export
 

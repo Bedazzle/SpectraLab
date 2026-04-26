@@ -4333,7 +4333,7 @@ function getUlaPlusPaletteIndex(attr, isInk) {
 // ============================================================================
 
 /** @type {string[]} - List of supported file extensions */
-const SUPPORTED_EXTENSIONS = ['scr', 'rcs', '53c', 'atr', 'bsc', 'bsp', 'ifl', 'bmc4', 'mlt', 'mc', '3', 'img', 'mem', 'specscii', 'sca', 'sna', 'z80', 'btile', 'wtile', 'zxp', 'ch$', 'chr$', 'ch-', 'mg1', 'mg2', 'mg4', 'mg8', 'hlr', 'stl', 'nxi', 'sl2', 'slr', 'rad', 'zx7', 'zx7b'];
+const SUPPORTED_EXTENSIONS = ['scr', 'rcs', '53c', 'atr', 'bsc', 'bsp', 'ifl', 'bmc4', 'mlt', 'mc', '3', 'img', 'mem', 'specscii', 'sca', 'sna', 'z80', 'btile', 'wtile', 'zxp', 'ch$', 'chr$', 'ch-', 'mg1', 'mg2', 'mg4', 'mg8', 'hlr', 'stl', 'nxi', 'sl2', 'slr', 'rad', 'zx7', 'zx7b', 'zx0', 'zx0b'];
 const IMAGE_EXTENSIONS = ['png', 'gif', 'jpg', 'jpeg', 'webp', 'bmp'];
 
 /** @type {JSZip|null} - Current loaded ZIP archive */
@@ -6342,6 +6342,11 @@ function detectFormat(fileName, fileSize) {
 
   if (ext === 'zx7' || ext === 'zx7b') {
     // ZX7 compressed — actual format determined after decompression in loadScreenFile
+    return FORMAT.SCR;
+  }
+
+  if (ext === 'zx0' || ext === 'zx0b') {
+    // ZX0 compressed — actual format determined after decompression in loadScreenFile
     return FORMAT.SCR;
   }
 
@@ -8898,6 +8903,24 @@ function loadScreenFile(file) {
         const innerName = fileName.replace(/\.zx7b?$/i, '');
         format = detectFormat(innerName, data.length);
         // Check if RCS reordering needs reversing (.rcs.zx7/.rcs.zx7b → inner ext is .rcs)
+        const innerExt = innerName.toLowerCase().split('.').pop();
+        if (innerExt === 'rcs' && format === FORMAT.SCR && typeof reorderRcsToScr === 'function') {
+          data = reorderRcsToScr(data);
+        }
+      }
+
+      // ZX0 compressed files — decompress before further processing
+      if ((fileExt === 'zx0' || fileExt === 'zx0b') && typeof ZX0 !== 'undefined') {
+        try {
+          data = fileExt === 'zx0b' ? ZX0.decompress(data, true) : ZX0.decompress(data);
+        } catch (e) {
+          alert('Failed to decompress ZX0 file: ' + e.message);
+          return;
+        }
+        // Strip .zx0/.zx0b and re-detect format from inner extension + decompressed size
+        const innerName = fileName.replace(/\.zx0b?$/i, '');
+        format = detectFormat(innerName, data.length);
+        // Check if RCS reordering needs reversing (.rcs.zx0/.rcs.zx0b → inner ext is .rcs)
         const innerExt = innerName.toLowerCase().split('.').pop();
         if (innerExt === 'rcs' && format === FORMAT.SCR && typeof reorderRcsToScr === 'function') {
           data = reorderRcsToScr(data);
