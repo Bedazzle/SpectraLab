@@ -1,5 +1,9 @@
 # SpectraLab Version History
 
+## v1.96
+- Palette sort by usage for NXI/SL2/LoRes formats — "Sort by usage" button in the Next palette section reorders palette entries so that used colors come first (sorted by pixel frequency, descending), followed by unused colors. Pixel indices are automatically remapped so the image remains visually identical. Undoable with Ctrl+Z.
+- Fix: creating a new NXI/SL2/LoRes picture no longer overwrites the palette of the previously loaded picture.
+
 ## v1.95
 - ZX0 compression — built-in [ZX0](https://github.com/einar-saukas/ZX0) compression (v2 format) by Einar Saukas for SCR format. Export dropdown adds `.scr.zx0` (ZX0 compressed) and `.rcs.zx0` (RCS reordered + ZX0 compressed). The **Compare compressions...** dialog now shows all nine variants (plain SCR, ZX7/ZX0 forward/backward, RCS+ZX7/ZX0 forward/backward) side-by-side with compressed sizes, bytes saved, and ratios, highlights the smallest result, and lets you save the selected variant. Backward variants use `.zx0b` extension (`.scr.zx0b`, `.rcs.zx0b`). **Create ASM** checkbox generates a ready-to-assemble sjasmplus example that decompresses the file directly to screen memory (includes the appropriate ZX7 or ZX0 decompressor and RCS reorder routine where needed, uses `device zxspectrum48` and `savesna`). Open `.scr.zx0`/`.scr.zx0b` and `.rcs.zx0`/`.rcs.zx0b` files directly — decompression (and RCS reordering reversal) is automatic on load.
 

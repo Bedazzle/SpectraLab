@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.95 -->
+<!-- SpectraLab v1.96 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -1932,6 +1932,8 @@
                 <label style="font-size: 10px;" title="Sort by hue, then luminance"><input type="radio" name="nxiSort" value="hue"> Hue</label>
                 <label style="font-size: 10px;" title="Sort by RGB value (red, then green, then blue)"><input type="radio" name="nxiSort" value="rgb"> RGB</label>
                 <label style="font-size: 10px; margin-left: 4px;" title="Reverse sort order"><input type="checkbox" id="nxiSortReverse"> Reverse</label>
+                <button id="nxiSortByUsageBtn" title="Move used colors to palette start (by frequency)"
+                        style="padding: 1px 4px; font-size: 10px; margin-left: 4px; display: none;">Sort by usage</button>
               </div>
               <div id="nxiPaletteGrid" style="display: grid; grid-template-columns: repeat(16, 1fr); gap: 1px;"></div>
               <div style="font-size: 9px; color: var(--text-tertiary); margin-top: 4px;">Left = ink, Right = paper, Shift+click = copy/swap, Ctrl+click = edit color</div>
@@ -3467,7 +3469,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.95</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.96</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">

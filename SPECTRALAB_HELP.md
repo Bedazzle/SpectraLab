@@ -296,6 +296,7 @@ Shown when editing ZX Next indexed-color formats (NXI, SL2, LoRes, LoRes Radasta
   - **Shift+click** another color — swap both RGB values and remap pixels
   - **Click same cell** or **Escape** — cancel
 - **Sort options** — None, Luminance, Hue, RGB; optional Reverse
+- **Sort by usage** — physically reorders palette entries so used colors come first (sorted by pixel frequency, descending), followed by unused colors. Pixel indices are remapped to keep the image unchanged. Undoable with Ctrl+Z.
 - **Save palette** — export palette file
 - **Load palette** — import palette file
 

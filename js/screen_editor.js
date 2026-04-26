@@ -744,6 +744,7 @@ function toggleNxiColorPicker(show) {
   if (nxiLoadBtn) {
     nxiLoadBtn.style.display = (show && currentFormat === FORMAT.SL2) ? 'none' : '';
   }
+  updateNxiSortByUsageBtn();
 }
 
 /**
@@ -882,6 +883,106 @@ function remapNxiPixelIndices(map) {
       screenData[i] = ((map[(b >> 4) & 0x0F] & 0x0F) << 4) | (map[b & 0x0F] & 0x0F);
     }
   }
+}
+
+/**
+ * Sorts palette entries by usage frequency (used colors first, descending),
+ * remaps pixel indices to match, and rebuilds the palette UI.
+ * Hidden when palette is the default identity RGB332.
+ */
+function nxiSortPaletteByUsage() {
+  if (!nxiResolvedPalette || !screenData) return;
+  const palCount = getNxiPaletteEntryCount();
+
+  saveUndoState();
+
+  // 1. Count usage of each palette index
+  const usageCount = new Uint32Array(palCount);
+  const fmt = currentFormat;
+  if (fmt === FORMAT.NXI || fmt === FORMAT.SL2) {
+    const is4bpp = nxiLayer2Mode === '640x256';
+    const pixelOffset = getNxiPixelOffset();
+    let pixelSize;
+    if (nxiLayer2Mode === '320x256' || nxiLayer2Mode === '640x256') pixelSize = NXI.PIXEL_DATA_SIZE_EXT;
+    else pixelSize = NXI.WIDTH * NXI.HEIGHT;
+    const end = Math.min(pixelOffset + pixelSize, screenData.length);
+    if (is4bpp) {
+      for (let i = pixelOffset; i < end; i++) {
+        const b = screenData[i];
+        usageCount[(b >> 4) & 0x0F]++;
+        usageCount[b & 0x0F]++;
+      }
+    } else {
+      for (let i = pixelOffset; i < end; i++) {
+        usageCount[screenData[i]]++;
+      }
+    }
+  } else if (fmt === FORMAT.LORES) {
+    const end = Math.min(LORES.PIXEL_DATA_SIZE, screenData.length);
+    for (let i = 0; i < end; i++) {
+      usageCount[screenData[i]]++;
+    }
+  } else if (fmt === FORMAT.LORES_RAD) {
+    const end = Math.min(LORES_RAD.PIXEL_DATA_SIZE, screenData.length);
+    for (let i = 0; i < end; i++) {
+      const b = screenData[i];
+      usageCount[(b >> 4) & 0x0F]++;
+      usageCount[b & 0x0F]++;
+    }
+  }
+
+  // 2. Build sorted index list: used first (desc by freq), then unused (original order)
+  const indices = [];
+  for (let i = 0; i < palCount; i++) indices.push(i);
+  indices.sort((a, b) => {
+    const usedA = usageCount[a] > 0 ? 1 : 0;
+    const usedB = usageCount[b] > 0 ? 1 : 0;
+    if (usedA !== usedB) return usedB - usedA; // used first
+    if (usedA && usedB) return usageCount[b] - usageCount[a]; // desc by frequency
+    return a - b; // unused: original order
+  });
+
+  // 3. Build remap table: oldToNew[oldIndex] = newPosition
+  const oldToNew = new Array(palCount);
+  for (let newPos = 0; newPos < palCount; newPos++) {
+    oldToNew[indices[newPos]] = newPos;
+  }
+
+  // 4. Remap pixel indices
+  remapNxiPixelIndices(oldToNew);
+
+  // 5. Reorder palette
+  const newPalette = new Array(palCount);
+  for (let i = 0; i < palCount; i++) {
+    newPalette[i] = nxiResolvedPalette[indices[i]].slice();
+  }
+  for (let i = 0; i < palCount; i++) {
+    nxiResolvedPalette[i] = newPalette[i];
+  }
+
+  // 6. Sync palette to screenData for NXI format
+  if (fmt === FORMAT.NXI) {
+    for (let i = 0; i < palCount; i++) {
+      writeNxiPaletteToScreenData(i);
+    }
+  }
+
+  // 7. Rebuild UI
+  buildNxiPalette();
+  editorRender();
+  if (typeof renderPreview === 'function') renderPreview();
+  updateNxiSortByUsageBtn();
+}
+
+/**
+ * Shows or hides the "Sort by usage" button based on format.
+ */
+function updateNxiSortByUsageBtn() {
+  const sortBtn = document.getElementById('nxiSortByUsageBtn');
+  if (!sortBtn) return;
+  const isPaletted = currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 ||
+                     currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD;
+  sortBtn.style.display = (editorActive && isPaletted) ? '' : 'none';
 }
 
 /**
@@ -12686,6 +12787,11 @@ function createNewPicture(format, params) {
 
   let newInternalPicture = null;
 
+  // Save current picture state BEFORE the switch cases modify globals
+  // (nxiResolvedPalette, nxiLayer2Mode, radPaletteSize, ulaPlusPalette, etc.)
+  // so the old picture retains its palette.
+  saveCurrentPictureState();
+
   switch (format) {
     case 'zxp': {
       let w = (params && params.width) || 256;
@@ -13292,8 +13398,8 @@ function createNewPicture(format, params) {
     }
   }
 
-  // Use multi-picture system
-  const result = addPicture(newFileName, newFormat, newData, newInternalPicture);
+  // Use multi-picture system (skipSave=true — already saved above before globals were modified)
+  const result = addPicture(newFileName, newFormat, newData, newInternalPicture, true);
   if (result >= 0) {
     // addPicture -> switchToPicture handles all rendering and UI updates
     return;
@@ -15143,6 +15249,7 @@ function loadNxiPalette(file) {
     buildNxiPalette();
     editorRender();
     if (typeof renderPreview === 'function') renderPreview();
+    updateNxiSortByUsageBtn();
   };
 
   reader.onerror = () => {
@@ -15898,6 +16005,9 @@ function initNxiPaletteUI() {
     if (nxiFileInput) nxiFileInput.value = '';
   });
 
+  // Sort by usage button
+  document.getElementById('nxiSortByUsageBtn')?.addEventListener('click', nxiSortPaletteByUsage);
+
   // Wire up NXI color picker dialog
   initNxiColorPicker();
 }
@@ -16021,6 +16131,7 @@ function applyNxiColor() {
   buildNxiPalette();
   editorRender();
   if (typeof renderPreview === 'function') renderPreview();
+  updateNxiSortByUsageBtn();
 }
 
 /**
