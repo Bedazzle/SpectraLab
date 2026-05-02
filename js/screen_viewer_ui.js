@@ -189,8 +189,6 @@ function initScreenViewerUI() {
   inputFile?.addEventListener('change', function(event) {
     const target = /** @type {HTMLInputElement} */ (event.target);
     handleOpenFiles(target.files);
-    // Reset so selecting the same files again re-triggers change.
-    target.value = '';
     // Remove focus so keyboard shortcuts work immediately
     /** @type {HTMLElement} */ (document.activeElement)?.blur();
     screenCanvas?.focus();

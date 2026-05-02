@@ -59,9 +59,9 @@ Click the **New** button to open the New Picture dialog. Select a format from th
 | BMC4 | .bmc4 | 384×304, 8×4 multicolor + border |
 | RGB3 | .3 | 256×192, tricolor RGB (8 colors) |
 | Gigascreen | .img | 256×192, two-frame blend |
-| Monochrome | .scr | 256×192, bitmap only |
-| Monochrome 2/3 | .scr | 256×128, bitmap only |
-| Monochrome 1/3 | .scr | 256×64, bitmap only |
+| Monochrome | .scr | 256×192, bitmap only (ink auto-adjusted if ink=paper) |
+| Monochrome 2/3 | .scr | 256×128, bitmap only (ink auto-adjusted if ink=paper) |
+| Monochrome 1/3 | .scr | 256×64, bitmap only (ink auto-adjusted if ink=paper) |
 | Attributes | .atr | 32×24 color cells |
 | SPECSCII | .specscii | 32×24 text mode |
 | chr$ | .ch$ | Variable-size, interleaved 8×8 cells |
@@ -218,7 +218,7 @@ When no picture is loaded, the Edit tab shows: "Load a picture or click this tab
 | Text | T | Place text on the canvas |
 | Recolor | A | Change attributes only, keep bitmap (via keyboard shortcut) |
 | Color Picker | K | Pick colors from canvas (left=ink, right=paper) |
-| Cell Invert | J | Swap ink↔paper + invert bitmap (colors unchanged, polarity flips) |
+| Cell Invert | J | Swap ink↔paper + invert bitmap (colors unchanged, polarity flips). Left-click: single cell (drag to paint). Right-click: invert all cells with the same attribute |
 | Select | S | Select rectangular area (in Xform tab) |
 
 ### Drawing Modifiers
@@ -555,18 +555,46 @@ For **SCR** format, the Export dropdown includes built-in [ZX7](https://spectrum
 - **`.rcs.zx7 (RCS + ZX7)`** — applies RCS reordering first, then ZX7 compression
 - **`.scr.zx0 (ZX0 compressed)`** — compresses the screen data with ZX0 (forward mode)
 - **`.rcs.zx0 (RCS + ZX0)`** — applies RCS reordering first, then ZX0 compression
-- **`Compare compressions...`** — opens a dialog showing all nine compression variants side-by-side:
+- **`.scr.lc (LC compressed)`** — compresses the screen data with Laser Compact 5.2.1 (includes LCMP5 header; reordering and segment handling are built-in)
+- **`.scr.upk (upkr level 1)`** — compresses the screen data with upkr (rANS entropy coding, Z80 settings, fast compression)
+- **`.scr.upk (upkr level 9)`** — compresses the screen data with upkr (rANS entropy coding, Z80 settings, best compression)
+- **`Compare compressions...`** — opens a dialog showing all twelve compression variants side-by-side:
   - Plain SCR (6912 bytes, uncompressed baseline)
   - ZX7 / ZX7 backwards
   - RCS + ZX7 / RCS + ZX7 backwards
   - ZX0 / ZX0 backwards
   - RCS + ZX0 / RCS + ZX0 backwards
+  - LC (Laser Compact 5.2.1)
+  - upkr level 1 / upkr level 9
 
-  The dialog displays compressed size, bytes saved, and ratio for each variant, highlights the best result (pre-selected), and lets you save the selected variant with a single Save button.
+  The dialog opens with an empty table (all sizes shown as "—"). Click the **Compare** button to run compressions — results appear one by one, the best variant is highlighted and pre-selected. The dialog stays open after saving, so you can export multiple formats without re-running compression.
 
-**Create ASM** checkbox — when enabled, saving also generates a sjasmplus `.asm` file alongside the compressed data. The ASM file is a complete working example: it decompresses the data directly to screen memory at `$4000`, includes the appropriate ZX7 or ZX0 decompressor (forward or backward) and RCS-to-SCR reorder routine where needed, uses `device zxspectrum48` and `savesna` to produce a `.sna` snapshot.
+  **⚙ Format settings** (gear icon in the title bar) — toggle a settings panel to enable/disable format families (ZX7, ZX0, RCS variants, LC, upkr). Disabled formats are excluded from the comparison table. The upkr depacker variant can be switched between Compact (130B code + 320B probs = 450B total) and Fast (155B code + 320B probs = 475B total, unrolled multiply loop). All settings are saved to localStorage and persist across sessions.
 
-Forward-compressed files use `.zx7`/`.zx0` extensions, backward-compressed use `.zx7b`/`.zx0b`. All variants can be opened directly — decompression (and RCS reordering reversal where needed) is automatic on load.
+  **Data** dropdown — selects which portion of screen data to compress:
+  - **Full SCR** (default) — full 6912 bytes (bitmap + attributes)
+  - **Bitmap only** — 6144 bytes (bitmap without attributes)
+
+  **Segment** dropdown (enabled only when Data = "Bitmap only") — selects a bitmap segment:
+  - **Whole** — all 6144 bitmap bytes
+  - **Third 1 / 2 / 3** — individual 2048-byte thirds of the bitmap
+  - **Thirds 1+2 / 2+3** — two consecutive thirds (4096 bytes)
+
+  RCS variants are only shown when Segment is "Whole" (RCS reorders the full 6144 bitmap; slicing after reorder is meaningless). For segment slices, only plain + ZX7/ZX0 forward/backward rows are shown.
+
+  **Clean hidden cells** checkbox — when enabled, hidden cells (ink === paper with non-trivial bitmap) are cleaned on a temporary working copy before compression, using neighbor bitmap density to decide fill value. The original image is not modified.
+
+  **Optimize attributes** checkbox — when enabled, ink/paper are swapped and bitmap inverted in cells where set bits exceed clear bits ("minimize ink bits" mode) on the same temporary copy. Both optimizations can be combined; toggling either checkbox resets the table to "—" (stale results).
+
+  Changing any option (Data, Segment, checkboxes) resets the table — click Compare again to re-run.
+
+  **Depacker** column — shows the Z80 depacker size in bytes for each method, including code and any required buffer: ZX7 forward/backward = 69 bytes, ZX0 forward = 68, ZX0 backward = 69. RCS variants use [smart integrated decoders](https://github.com/einar-saukas/RCS) that decompress and decode directly to screen without a temp buffer: RCS+ZX7 = 110, RCS+ZX7 backwards = 110, RCS+ZX0 = 112, RCS+ZX0 backwards = 113. LC = 209 bytes (decompresses directly to screen, no extra buffer). upkr = 450 bytes (130 code + 320-byte probs array). Plain row has no depacker.
+
+  **Total** column — shows real saving: saved bytes minus depacker overhead (saved − depacker). A positive value means compression is beneficial even accounting for the depacker. A negative value (highlighted in red) means the compressed data plus depacker exceeds the original size.
+
+**Create ASM** checkbox — when enabled, saving also generates a sjasmplus `.asm` file alongside the compressed data. ASM generation is only available for Full SCR + Whole mode. The ASM file is a complete working example: it decompresses the data directly to screen memory at `$4000`, includes the appropriate ZX7, ZX0, LC, or upkr decompressor (forward or backward where applicable) and RCS-to-SCR reorder routine where needed, uses `device zxspectrum48` and `savesna` to produce a `.sna` snapshot. The LC variant uses the Laser Compact 5.2 depacker by Hrumer which decompresses LCMP5-headered data directly to screen. The upkr variant uses the Z80 unpacker by Peter Helcmanovsky (IX=packed data, DE'=destination via EXX).
+
+Forward-compressed files use `.zx7`/`.zx0` extensions, backward-compressed use `.zx7b`/`.zx0b`. LC compressed files use `.lc` extension. upkr compressed files use `.upk` extension. All variants can be opened directly — decompression (and RCS reordering reversal where needed) is automatic on load.
 
 ### Format ASM Export
 
@@ -1269,7 +1297,118 @@ When loading a 2048-byte font file, a modal dialog shows side-by-side previews o
 
 ---
 
-## 25. Supported Formats Reference
+## 25. ZGS Editor
+
+The ZGS Editor is a standalone page (`zgs_editor.html`) for editing ZGS (ZX Graphics Script) vector scenes used in ZX Spectrum adventure games. ZGS uses a bytecode format with a 128x96 logical coordinate grid rendered to a 256x192 pixel display. Open it via the **ZGS Editor** link in the Tools tab, or navigate directly to `zgs_editor.html`.
+
+### File Formats
+
+| Extension | Type | Description |
+|-----------|------|-------------|
+| .zgs | Binary | ZGS bytecode with 10-byte header (magic `ZG`, version, flags, asset library, scene offset), optional LZ compression, asset library (sprites and shape scripts) |
+| .zgt | Text | Human-readable assembly-like representation of ZGS bytecode |
+| .zgp | Project | Multi-scene project file (JSON). Contains all scene names and source text, plus the active scene index |
+
+### Header Controls
+
+- **Open** — load a `.zgs` (binary, auto-disassembled to text), `.zgt` (text), or `.zgp` (project) file
+- **New** — create a new project with one blank scene
+- **Save** — dropdown menu with format choices:
+  - **Save .zgs** — assemble and save the active scene as binary `.zgs` file
+  - **Save .zgt** — save the active scene as a `.zgt` text file
+  - **Save .zgp** — save the multi-scene project as a `.zgp` file
+  - **Save .asm** — export all scenes as a complete sjasmplus Z80 assembly. Downloads a `.zip` containing the `.asm` file, compiled `.zgs` binaries for each scene, a packed text dictionary (`.zdict`), and font binaries (`font_8x8.bin`, `font_6x8.bin`, `font_4x8.bin`). The exported file includes the 4-JP config block and conditional compilation flags (see below)
+- **☾/☀** — toggle light/dark theme (synced with main SpectraLab via `localStorage`)
+
+### Scene Tabs
+
+The tab bar below the header shows all scenes in the project. Click a tab to switch scenes. Each scene has its own source text, undo/redo history, and compiled binary.
+
+- **+** button — add a new scene
+- **Double-click** a tab name — rename the scene
+- **× button** on a tab — delete the scene (at least 1 must remain)
+
+### ASM Config Block Layout
+
+The exported `.asm` file places a poke-friendly config block at fixed addresses starting at ORG (0x8000 by default):
+
+| Offset | Content | Description |
+|--------|---------|-------------|
+| +0x00 | `jp show_from_addr` | Clear screen, draw scene at `scene_addr`, wait key |
+| +0x03 | `jp show_by_num` | Clear screen, draw `scene_num` from table, wait key |
+| +0x06 | `jp zgs_clear_screen` | Clear screen using `clear_color` attribute |
+| +0x09 | `jp zgs_wait_key` | Wait for keypress |
+| +0x0C | `zgs_font_addr dw` | 32-col 8×8 font address (`font_8x8`, incbin) |
+| +0x0E | `zgs_scene_addr dw` | Scene address for `show_from_addr` (patchable) |
+| +0x10 | `zgs_dict_addr dw` | Packed text dictionary address (or 0) |
+| +0x12 | `scene_num db` | Scene index for `show_by_num` (0-based, patchable) |
+| +0x13 | `clear_color db` | Attribute byte for `zgs_clear_screen` (0 = black) |
+| +0x14 | `zgs_font_42_addr dw` | 42-col 6×8 font address (`font_6x8`, incbin) |
+| +0x16 | `zgs_font_64_addr dw` | 64-col 4×8 font address (`font_4x8`, incbin) |
+| +0x18 | `scene_count db` | Total number of scenes |
+| +0x19 | `scene_table dw×N` | Addresses of each scene |
+
+To show a specific scene programmatically: poke the scene index into `scene_num` (ORG+0x12), then `CALL ORG+3`. To change the screen clear color: poke the attribute byte into `clear_color` (ORG+0x13).
+
+### Conditional Compilation (ASM Export)
+
+The exported `.asm` file includes eight `DEFINE` flags at the top that control which opcode groups are compiled in. Comment out unused DEFINEs to reduce the binary size — disabled features compile to minimal `or 1 : ret` stubs and their subroutines, data tables, and variables are excluded entirely.
+
+| DEFINE | Opcodes | ~Bytes | Description |
+|--------|---------|-------:|-------------|
+| `ZGS_USE_LINES` | 0x64–0x6A | 443 | Line, hline, vline drawing |
+| `ZGS_USE_RECTS` | 0x6B–0x70, 0x7E | 636 | Rectangle outline/fill, clear_region |
+| `ZGS_USE_CIRCLES` | 0x73–0x76 | 612 | Circle outline/fill |
+| `ZGS_USE_POLYGONS` | 0x71–0x72 | 666 | Polygon outline/fill |
+| `ZGS_USE_FLOOD` | 0x19, 0x77 | 2166 | Flood fill (includes 1280 bytes of buffers) |
+| `ZGS_USE_TEXT` | 0x80–0x81 | 180 | set_cursor, print_text |
+| `ZGS_USE_PACKED_TEXT` | 0x82 | 724 | print_packed (includes ~520 byte dictionary) |
+| `ZGS_USE_TEXT_42` | 0x83–0x85 | 968 | set_cursor_42, print_text_42, print_packed_42 (42-col, 6px wide; includes 768-byte font_6x8.bin) |
+| `ZGS_USE_TEXT_64` | 0x86–0x88 | 968 | set_cursor_64, print_text_64, print_packed_64 (64-col, 4px wide; includes 768-byte font_4x8.bin) |
+| `ZGS_USE_STAMPS` | 0x78–0x79 | 146 | Stamp (sprite blit) |
+
+`ZGS_USE_TEXT`, `ZGS_USE_TEXT_42`, and `ZGS_USE_TEXT_64` are auto-detected from scene content. Other DEFINEs are active by default. Font binaries are IFDEF-guarded: `font_8x8.bin` (32-col) requires `ZGS_USE_TEXT`, `font_6x8.bin` (42-col) requires `ZGS_USE_TEXT_42`, `font_4x8.bin` (64-col) requires `ZGS_USE_TEXT_64`. Users can replace any font binary with a custom design. When all drawing features are disabled (only text features remain), the coordinate system — dot/move handlers, `plot_pixel`, math helpers (`read_abs`, `read_dshort`, `read_dmed`), and pattern/mask tables — is automatically excluded via the internal `ZGS_HAS_DRAWING` flag.
+
+Dependencies: `ZGS_USE_PACKED_TEXT` requires `ZGS_USE_TEXT` (uses `print_one_char`). `ZGS_USE_RECTS` (outline) and `ZGS_USE_POLYGONS` (outline) require `ZGS_USE_LINES` (they call `draw_line`). The user is responsible for ensuring disabled opcodes don't appear in the scene data.
+
+### Text Editor (Left Panel)
+
+A monospace textarea for editing `.zgt` assembly. Supports Tab key for indentation. Changes auto-render after 500ms of inactivity.
+
+**Instruction categories:**
+
+| Category | Examples |
+|----------|---------|
+| Attributes | `set_ink white bright`, `set_paper blue`, `set_attr 0x47`, `set_pattern checker`, `set_mode xor`/`set_mode set` |
+| Movement | `move_abs 10, 20`, `move_short 2, -1`, `move_dmed -5, 3` |
+| Drawing | `dot_abs`, `line_dmed`, `hline_chain`, `vline_abs`, `rect_fill_abs`, `circle_outline_abs`, `polygon_fill`, `flood_abs` |
+| Batch ops | `dot_batch`, `line_batch`, `rect_fill_batch` |
+| Assets | `.sub`/`.endsub` (shape scripts), `.sprite`/`.endsprite` (bitmap sprites), `call`, `stamp_abs`, `stamp_chain` |
+| Text | `set_cursor col, row`, `print_text "string"`, `print_packed "string"`, `set_cursor_42 col, row`, `print_text_42 "string"`, `print_packed_42 "string"`, `set_cursor_64 col, row`, `print_text_64 "string"`, `print_packed_64 "string"` |
+| Control | `.repeat`/`.endrepeat`, `wait_key`, `clear_region`, `end` |
+
+### Preview (Right Panel)
+
+A 256x192 canvas (CSS-scaled 2x with pixelated rendering) showing the rendered scene.
+
+- **Render** — manually re-render the scene
+- **Play** — animated step-by-step drawing (one opcode per tick)
+- **Step** — execute a single opcode
+- **Speed** slider — controls animation delay (5–500ms per opcode)
+- **Pen** checkbox — toggle pen position crosshair on the overlay
+- **Grid** checkbox — toggle 8×8 character cell grid overlay with screen third separators
+
+### Status Bar
+
+Shows assembler errors with line numbers, or success info (file size in bytes, opcode count).
+
+### Drag and Drop
+
+Drag a `.zgs`, `.zgt`, or `.zgp` file onto the page to open it.
+
+---
+
+## 26. Supported Formats Reference
 
 ### Editable Formats
 
@@ -1285,6 +1424,8 @@ When loading a 2048-byte font file, a modal dialog shows side-by-side previews o
 | .scr.zx0b | variable | ZX0 backward compressed screen (auto-decompressed on load) |
 | .rcs.zx0 | variable | RCS reordered + ZX0 compressed (auto-decompressed and un-reordered on load) |
 | .rcs.zx0b | variable | RCS reordered + ZX0 backward compressed (auto-decompressed and un-reordered on load) |
+| .scr.lc | variable | Laser Compact 5.2.1 compressed screen with LCMP5 header (auto-decompressed on load) |
+| .scr.upk | variable | upkr compressed screen with Z80 settings (auto-decompressed on load) |
 | .scr | 6976 bytes | ULA+ (64-color palette) |
 | .scr | 6945–7426 bytes | ULANext (Next extended palette, up to 256 colors) |
 | .scr | 6144 bytes | Monochrome full |
@@ -1344,3 +1485,121 @@ When loading a 2048-byte font file, a modal dialog shows side-by-side previews o
 | .slb | Custom brush set |
 | .slbc | Barcode brush set |
 | .sls | Sprite sheet |
+
+---
+
+## ZGS Editor
+
+The ZGS Editor is a standalone tool (`zgs_editor.html`) for creating and editing ZGS (ZX Graphics Script) vector scenes. Open it via the **ZGS Editor** link in the Tools tab of the main application.
+
+### Layout
+
+- **Left panel** — text editor for `.zgt` assembly source
+- **Right panel** — preview canvas, drawing toolbar, command toolbar, playback controls
+
+### File Operations
+
+| Button | Action |
+|--------|--------|
+| **Open** | Load `.zgs` (binary, auto-disassembled), `.zgt` (text), or `.zgp` (project) |
+| **New** | Create a new project with one blank scene |
+| **Save** | Dropdown menu: Save .zgs (binary), .zgt (text), .zgp (project), .asm (Z80 assembly ZIP) |
+
+Files can also be dragged and dropped onto the page.
+
+### Playback Controls
+
+| Control | Action |
+|---------|--------|
+| **Render** | Assemble and render the full scene instantly |
+| **Play** / **Pause** | Animate step-by-step playback |
+| **Step** | Execute one opcode and re-render; highlights the corresponding source line |
+| **Speed** slider | Delay between steps during Play (5–500 ms) |
+| **Zoom** | Canvas zoom: x1, x2, x3 |
+| **Pen** checkbox | Toggle pen position crosshair on the overlay |
+| **Grid** checkbox | Toggle 8×8 character cell grid overlay (orange lines, brighter third separators at y=64/128). Persists via localStorage |
+
+### Theme Toggle
+
+Click the **☾/☀** button in the header bar to switch between dark and light themes. The setting is shared with the main SpectraLab and Font Editor via the same `spectraLabTheme` localStorage key.
+
+### Drawing Tools (Shape Toolbar)
+
+Select a tool, then click or drag on the canvas. The generated instruction is inserted before the `end` statement and the canvas re-renders immediately.
+
+| Tool | Action | Generated instruction |
+|------|--------|-----------------------|
+| **Cursor** | Left-click copies `lx, ly` to clipboard | — |
+| **Dot** | Click to place a dot | `dot_abs lx, ly` |
+| **Line** | Left-drag: single line. Right-drag: polyline (rubber band tracks from last endpoint; right-click/drag to add segments; left click or Esc to finish) | `move_abs x0, y0` + `line_dmed dx, dy` |
+| **Rect** | Drag to define rectangle | `rect_outline_abs x, y, w, h` |
+| **RectF** | Drag to define filled rectangle | `rect_fill_abs x, y, w, h` |
+| **Circle** | Drag center→radius | `circle_outline_abs cx, cy, r` |
+| **CircleF** | Drag center→radius | `circle_fill_abs cx, cy, r` |
+| **Flood** | Click to fill | `flood_abs lx, ly` |
+| **Text** | Click to set cursor position | `set_cursor col, row` |
+| **ClearR** | Drag to select character cells | `clear_region col, row, w, h, attr` |
+
+During drag, a yellow rubber-band overlay previews the shape. The ClearR tool snaps to the 8×8 character cell grid and shows a red dashed preview.
+
+### Text Toolbar
+
+When the **Text** tool is selected, a text toolbar appears with:
+
+- **Cursor info** — shows the current cursor position after clicking the canvas
+- **Text mode** — dropdown selector for character width: **32 col** (8px wide, standard), **42 col** (6px wide), **64 col** (4px wide). Each mode uses independent cursor tracking and font address
+- **Text input** — type the text to print
+- **Print** button — inserts `print_text "..."`, `print_text_42 "..."`, or `print_text_64 "..."` based on the selected text mode
+
+Click the canvas first to place a `set_cursor` command (variant depends on text mode: `set_cursor col, row`, `set_cursor_42 col, row`, or `set_cursor_64 col, row`), then type text and click Print to insert the corresponding print command. The two operations are separate, allowing you to draw between cursor placement and text printing.
+
+Text is rendered using the ZX Spectrum ROM font (8×8 for 32-col, 6×8 for 42-col, 4×8 for 64-col, characters 32–127) with the current attribute. The cursor advances after each character and wraps to the next row at the column limit (32, 42, or 64). The 6×8 font uses columns 0-5 from the 8×8 ROM font. The 4×8 font is derived by OR-ing column pairs from the 8×8 font (output_bit[n] = input_bit[2n] | input_bit[2n+1]).
+
+#### Packed Text (`print_packed`)
+
+`print_packed "string"` works identically to `print_text` visually, but uses dictionary compression to reduce bytecode size by 30–50% for English text. The encoder uses a dictionary of common bigrams, trigrams, and words. Use for longer text passages (adventure game descriptions, dialogue) where space savings matter. The `.dict` directive selects the encoding dictionary:
+
+- `.dict lower` — built-in lowercase English dictionary (default)
+- `.dict upper` — built-in uppercase English dictionary
+- `.dict user` — custom dictionary loaded from a `.zdict` file
+
+To use a custom dictionary, select "Dict: user" from the dropdown in the text toolbar and click "Load .zdict" to load your dictionary file. Custom dictionaries can be generated with the `zgs_mkdict.py` tool from game text files. The dictionary is locked once the first `print_packed` command is inserted to prevent encoding mismatches.
+
+### Command Toolbar
+
+Insert commands before the `end` statement via dropdowns and buttons:
+
+| Control | Inserts |
+|---------|---------|
+| **Ink...** dropdown | `set_ink <color>` (+ `bright` if Brt checked). Label shows current selection (e.g., "Ink: red") |
+| **Paper...** dropdown | `set_paper <color>` (+ `bright` if Brt checked). Label shows current selection |
+| **Brt** checkbox | Appends `bright` to next Ink/Paper command |
+| **Pattern...** dropdown | `set_pattern <name>`. Label shows current selection (e.g., "Pat: checker") |
+| **XOR** button | `set_mode xor` |
+| **SET** button | `set_mode set` |
+| **Clear** button | `clear_region 0, 0, 32, 24, <attr>` (full screen, current attr) |
+| **WaitKey** button | `wait_key` |
+| **End** button | `end` |
+
+### Coordinate Display
+
+Hover over the canvas to see the current position:
+- **Tooltip** (top-right of canvas) — logical coordinates `lx, ly`
+- **Status bar** — logical and pixel coordinates `x: lx  y: ly  (px: px, py)`
+
+Right-click anywhere on the canvas to copy coordinates to clipboard.
+
+### Pen Crosshair
+
+When the **Pen** checkbox is enabled, a semi-transparent green crosshair marks the VM pen position on the overlay canvas. It updates after Render, Play steps, and Step.
+
+### Source Line Sync
+
+When using **Step**, the textarea highlights the source line corresponding to the current VM program counter. This is powered by a source map built during assembly.
+
+### Text Editor
+
+- Auto-render with 500 ms debounce on typing
+- **Tab** key inserts two spaces
+- Comments start with `;`
+- Lines after `end` are ignored by the assembler
