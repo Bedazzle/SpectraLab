@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v1.96 -->
+<!-- SpectraLab v2.14 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -1474,7 +1474,7 @@
       <div class="panel-content">
         <!-- File input -->
         <div class="control-group">
-          <input type="file" id="inputFile" multiple accept=".scr,.rcs,.53c,.atr,.bsc,.bsp,.bmc4,.ifl,.mlt,.mc,.3,.img,.mg1,.mg2,.mg4,.mg8,.hlr,.stl,.nxi,.sl2,.slr,.rad,.c,.specscii,.sca,.zxp,.ch$,.chr$,.ch-,.slp,.slw,.sna,.z80,.btile,.wtile,.zx7,.zx7b,.zx0,.zx0b,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
+          <input type="file" id="inputFile" multiple accept=".scr,.rcs,.53c,.atr,.bsc,.bsp,.bmc4,.ifl,.mlt,.mc,.3,.img,.mg1,.mg2,.mg4,.mg8,.hlr,.stl,.nxi,.sl2,.slr,.rad,.c,.specscii,.sca,.zxp,.ch$,.chr$,.ch-,.slp,.slw,.sna,.z80,.btile,.wtile,.zx7,.zx7b,.zx0,.zx0b,.lc,.upk,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
         </div>
 
         <!-- New and Save buttons -->
@@ -1952,6 +1952,7 @@
               <button class="editor-tool-btn" data-tool="text" title="Text (T)">T</button>
               <button class="editor-tool-btn" data-tool="colorpicker" title="Color Picker (K)">⊙</button>
               <button class="editor-tool-btn" data-tool="cellinvert" title="Cell Invert (J) — swap ink↔paper + invert bitmap">◑</button>
+              <button class="editor-tool-btn" data-tool="ditherbrush" title="Dither Brush (W) — re-dither cells with different method" style="display:none">▩</button>
             </div>
             <div id="editorAirbrushSection" style="margin-bottom: 8px; display: none;">
               <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">AIRBRUSH</div>
@@ -2019,6 +2020,46 @@
                 </label>
               </div>
               <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 4px;">Drag from start to end point</div>
+            </div>
+            <div id="editorDitherBrushSection" style="margin-bottom: 8px; display: none;">
+              <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">DITHER BRUSH</div>
+              <div class="editor-color-row" style="gap: 8px; flex-wrap: wrap;">
+                <label style="min-width: auto; display: flex; align-items: center; gap: 4px;">
+                  Method:
+                  <select id="ditherBrushMethod" style="width: 90px; flex: none; font-size: 11px; padding: 2px;">
+                    <option value="cell-floyd-steinberg" selected>Floyd-Steinberg</option>
+                    <option value="cell-atkinson">Atkinson</option>
+                    <option value="cell-ordered">Ordered 4x4</option>
+                    <option value="cell-sierra2">Sierra-2</option>
+                    <option value="cell-serpentine">Serpentine</option>
+                    <option value="cell-riemersma">Riemersma</option>
+                    <option value="cell-bluenoise">Blue Noise</option>
+                    <option value="cell-pattern">Pattern</option>
+                    <option value="cell-none">None</option>
+                  </select>
+                </label>
+                <label style="min-width: auto; display: flex; align-items: center; gap: 4px;">
+                  <span style="white-space: nowrap;">&#8960;px:</span>
+                  <select id="ditherBrushSize" style="width: 45px; flex: none; font-size: 11px; padding: 2px;">
+                    <option value="3">3</option>
+                    <option value="4">4</option>
+                    <option value="5">5</option>
+                    <option value="6">6</option>
+                    <option value="8" selected>8</option>
+                    <option value="10">10</option>
+                    <option value="12">12</option>
+                    <option value="14">14</option>
+                    <option value="16">16</option>
+                  </select>
+                </label>
+              </div>
+              <div class="editor-color-row" style="gap: 8px; flex-wrap: wrap; margin-top: 4px;">
+                <label style="min-width: auto; display: flex; align-items: center; gap: 4px;">
+                  Strength:
+                  <input type="range" id="ditherBrushStrength" min="0" max="100" value="100" style="width: 80px;">
+                  <span id="ditherBrushStrengthLabel" style="font-size: 10px; min-width: 28px;">100%</span>
+                </label>
+              </div>
             </div>
             <div id="editorTextSection" style="margin-bottom: 8px; display: none;">
               <div id="textToolHeader" class="collapsible-header" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 2px 0;">
@@ -2325,6 +2366,7 @@
                 <button id="editorCutBtn" class="editor-tool-btn" title="Cut (Ctrl+X)">✂</button>
                 <button id="editorPasteBtn" class="editor-tool-btn" title="Paste (Ctrl+V)">⧉</button>
                 <button id="editorInvertBtn" class="editor-tool-btn" title="Invert (N)">◐</button>
+                <button id="editorReditherBtn" class="editor-tool-btn" title="Re-dither selection (Shift+W)" style="display:none">▩</button>
                 <button id="clipboardRotateBtn" class="editor-tool-btn" title="Rotate 90° - clipboard (pasting) or custom brush (R)" style="min-width: 24px; padding: 2px 4px;">↻</button>
                 <button id="clipboardFlipHBtn" class="editor-tool-btn" title="Flip horizontal - clipboard (pasting) or custom brush (H)" style="min-width: 24px; padding: 2px 4px;">↔</button>
                 <button id="clipboardFlipVBtn" class="editor-tool-btn" title="Flip vertical - clipboard (pasting) or custom brush (V)" style="min-width: 24px; padding: 2px 4px;">↕</button>
@@ -2483,6 +2525,7 @@
           <div class="control-group">
             <div class="control-group-title">External Tools</div>
             <div style="display: flex; flex-direction: column; gap: 6px;">
+              <a href="zgs_editor.html" target="_blank" style="font-size: 12px; color: var(--accent-color); text-decoration: none;" title="Open ZGS Scene Editor in a new tab">ZGS Editor</a>
               <a href="font_editor.html" target="_blank" style="font-size: 12px; color: var(--accent-color); text-decoration: none;" title="Open Font Editor in a new tab">Font Editor</a>
             </div>
           </div>
@@ -3281,6 +3324,7 @@
           <tr><td style="color: var(--text-secondary);">T</td><td>Text tool</td></tr>
           <tr><td style="color: var(--text-secondary);">K</td><td>Color picker tool</td></tr>
           <tr><td style="color: var(--text-secondary);">J</td><td>Cell invert (swap ink↔paper + invert bitmap)</td></tr>
+          <tr><td style="color: var(--text-secondary);">W</td><td>Dither brush (re-dither cells)</td></tr>
           <tr><td style="color: var(--text-secondary);">S</td><td>Select tool</td></tr>
         </table>
         <div style="font-weight: bold; margin: 12px 0 6px;">Drawing</div>
@@ -3301,6 +3345,7 @@
           <tr><td style="color: var(--text-secondary);">Ctrl+V</td><td>Paste</td></tr>
           <tr><td style="color: var(--text-secondary);">R / H / V</td><td>Rotate/Mirror clipboard (while pasting)</td></tr>
           <tr><td style="color: var(--text-secondary);">N</td><td>Invert selection (swap ink ↔ paper)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Shift+W</td><td>Re-dither selection</td></tr>
           <tr><td style="color: var(--text-secondary);">Ctrl+Z</td><td>Undo</td></tr>
           <tr><td style="color: var(--text-secondary);">Ctrl+Y</td><td>Redo</td></tr>
           <tr><td style="color: var(--text-secondary);">Ctrl+S</td><td>Save</td></tr>
@@ -3469,7 +3514,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 1.96</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 2.14</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">
@@ -3496,20 +3541,47 @@
 <!-- PNG/GIF Import Dialog -->
 <div id="imageImportDialog" class="modal-overlay" style="display:none;">
   <div class="modal-dialog" style="max-width: 90vw; min-width: 580px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden;">
-    <div id="importCanvasContainer" style="display: flex; gap: 12px; margin-bottom: 12px; justify-content: center; overflow: auto; flex: 1 1 auto; min-height: 0;">
-      <div style="text-align: center;">
-        <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">ORIGINAL <span id="importOriginalSize">256x192</span></div>
-        <canvas id="importOriginalCanvas" width="512" height="384" style="border: 1px solid var(--border-secondary); background: #000; image-rendering: pixelated;"></canvas>
+    <div id="importCanvasContainer" style="display: flex; gap: 12px; margin-bottom: 12px; justify-content: center; flex: 1 1 auto; min-height: 0;">
+      <div style="display: flex; flex-direction: column; min-width: 0;">
+        <div style="display: flex; align-items: center; gap: 4px; margin-bottom: 4px;">
+          <select id="importSourceZoom" style="padding: 1px 2px; font-size: 10px; min-width: 0;">
+            <option value="0" selected>Fit</option>
+            <option value="1">x1</option>
+            <option value="2">x2</option>
+            <option value="3">x3</option>
+            <option value="4">x4</option>
+          </select>
+          <span style="font-size: 10px; color: var(--text-tertiary);">ORIGINAL <span id="importOriginalSize">256x192</span></span>
+        </div>
+        <div style="overflow: auto; flex: 1 1 auto; min-height: 0; border: 1px solid var(--border-secondary);">
+          <canvas id="importOriginalCanvas" width="512" height="384" style="display: block; background: #000; image-rendering: pixelated;"></canvas>
+        </div>
       </div>
-      <div style="text-align: center;">
-        <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">PREVIEW <span id="importPreviewSize">256x192</span></div>
-        <canvas id="importPreviewCanvas" width="512" height="384" style="border: 1px solid var(--border-secondary); background: #000; image-rendering: pixelated;"></canvas>
+      <div style="display: flex; flex-direction: column; min-width: 0;">
+        <div style="display: flex; align-items: center; gap: 4px; margin-bottom: 4px;">
+          <select id="importZoom" style="padding: 1px 2px; font-size: 10px; min-width: 0;">
+            <option value="0">Fit</option>
+            <option value="1">x1</option>
+            <option value="2" selected>x2</option>
+            <option value="3">x3</option>
+            <option value="4">x4</option>
+            <option value="5">x5</option>
+          </select>
+          <label style="font-size: 10px; display: flex; align-items: center; gap: 2px;" title="Show 8x8 grid on output preview">
+            <input type="checkbox" id="importShowGrid" style="margin: 0;">Grid
+          </label>
+          <span style="font-size: 10px; color: var(--text-tertiary);">PREVIEW <span id="importPreviewSize">256x192</span></span>
+        </div>
+        <div style="overflow: auto; flex: 1 1 auto; min-height: 0; border: 1px solid var(--border-secondary);">
+          <canvas id="importPreviewCanvas" width="512" height="384" style="display: block; background: #000; image-rendering: pixelated;"></canvas>
+        </div>
       </div>
     </div>
     <!-- Tab buttons -->
     <div style="display: flex; gap: 0; margin-bottom: 8px; border-bottom: 1px solid var(--border-secondary); flex-shrink: 0;">
-      <button id="importTabImage" class="import-tab active" style="padding: 4px 16px; font-size: 11px; border: 1px solid var(--border-secondary); border-bottom: none; background: var(--bg-primary); cursor: pointer; margin-bottom: -1px;">Image</button>
-      <button id="importTabAdjust" class="import-tab" style="padding: 4px 16px; font-size: 11px; border: 1px solid var(--border-secondary); border-bottom: none; background: var(--bg-secondary); cursor: pointer; margin-bottom: -1px; margin-left: -1px;">Adjustments</button>
+      <button id="importTabImage" class="import-tab active" style="padding: 4px 16px; font-size: 11px; border: 1px solid var(--border-secondary); border-bottom: none; background: var(--bg-secondary); cursor: pointer; margin-bottom: -1px;">Image</button>
+      <button id="importTabAdjust" class="import-tab" style="padding: 4px 16px; font-size: 11px; border: 1px solid var(--border-secondary); border-bottom: none; background: var(--bg-primary); cursor: pointer; margin-bottom: -1px; margin-left: -1px;">Adjustments</button>
+      <button id="importTabDither" class="import-tab" style="padding: 4px 16px; font-size: 11px; border: 1px solid var(--border-secondary); border-bottom: none; background: var(--bg-primary); cursor: pointer; margin-bottom: -1px; margin-left: -1px;">Dither</button>
     </div>
     <!-- Tab panels wrapper: both panels overlap in same grid cell so height stays constant -->
     <div style="display: grid; margin-bottom: 12px; flex-shrink: 0;">
@@ -3529,6 +3601,17 @@
           <button id="importCropFull" style="padding: 3px 8px; font-size: 10px;">Full</button>
           <button id="importCropDetect" style="padding: 3px 8px; font-size: 10px;" title="Detect 256x192 region">Detect</button>
           <label style="font-size: 10px; margin-left: 4px;" title="Lock 4:3 aspect ratio"><input type="checkbox" id="importCropLock43" checked style="margin: 0 3px 0 0; vertical-align: middle;">4:3</label>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-secondary);">
+          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Use LAB color space for more accurate perceptual color matching">
+            <input type="checkbox" id="importUseLab" checked style="margin: 0;">LAB colors
+          </label>
+          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Convert to grayscale before processing">
+            <input type="checkbox" id="importGrayscale" style="margin: 0;">Grayscale
+          </label>
+          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Output black and white only (no colors)">
+            <input type="checkbox" id="importMonoOutput" style="margin: 0;">Mono output
+          </label>
         </div>
       </div>
       <!-- TRANSFORM group -->
@@ -3613,17 +3696,6 @@
             </select>
           </label>
         </div>
-        <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-secondary);">
-          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Use LAB color space for more accurate perceptual color matching">
-            <input type="checkbox" id="importUseLab" checked style="margin: 0;">LAB colors
-          </label>
-          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Convert to grayscale before processing">
-            <input type="checkbox" id="importGrayscale" style="margin: 0;">Grayscale
-          </label>
-          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Output black and white only (no colors)">
-            <input type="checkbox" id="importMonoOutput" style="margin: 0;">Mono output
-          </label>
-        </div>
       </div>
       <!-- OUTPUT group -->
       <div style="flex: 0 0 auto; padding: 8px; border: 1px solid var(--border-secondary); border-radius: 4px;">
@@ -3631,7 +3703,7 @@
         <div style="display: flex; flex-direction: column; gap: 6px;">
           <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;">
             <span style="width: 44px;">Format:</span>
-            <select id="importFormat" style="width: 90px; padding: 2px; font-size: 11px;">
+            <select id="importFormat" style="width: 120px; padding: 2px; font-size: 11px;">
               <optgroup label="Standard">
                 <option value="scr" selected>SCR</option>
                 <option value="ulaplus">ULA+</option>
@@ -3694,7 +3766,7 @@
           </label>
           <label id="importPaletteRow" style="font-size: 11px; display: flex; align-items: center; gap: 4px;">
             <span style="width: 44px;">Palette:</span>
-            <select id="importPalette" style="width: 90px; padding: 2px; font-size: 11px;"></select>
+            <select id="importPalette" style="width: 120px; padding: 2px; font-size: 11px;"></select>
           </label>
           <label id="import53cPatternRow" style="font-size: 11px; display: none; align-items: center; gap: 4px;">
             <span style="width: 44px;">Pattern:</span>
@@ -3783,8 +3855,8 @@
       </div>
     </div>
     <!-- Adjustments tab content -->
-    <div id="importPanelAdjust" style="grid-area: 1/1; visibility: hidden; gap: 16px;">
-      <div style="display: flex; gap: 16px;">
+    <div id="importPanelAdjust" style="grid-area: 1/1; visibility: hidden;">
+      <div style="display: flex; gap: 12px;">
         <div style="flex: 1;">
           <div style="font-size: 10px; margin-bottom: 2px;">Contrast: <span id="importContrastValue">0</span></div>
           <input type="range" id="importContrast" min="-100" max="100" value="0" style="width: 100%;">
@@ -3808,25 +3880,53 @@
           <div style="display: flex; align-items: center; gap: 2px; margin-bottom: 2px;"><span style="font-size: 10px; width: 14px;">R:</span><input type="range" id="importBalanceR" min="-50" max="50" value="0" style="flex: 1;" title="Red"></div>
           <div style="display: flex; align-items: center; gap: 2px; margin-bottom: 2px;"><span style="font-size: 10px; width: 14px;">G:</span><input type="range" id="importBalanceG" min="-50" max="50" value="0" style="flex: 1;" title="Green"></div>
           <div style="display: flex; align-items: center; gap: 2px;"><span style="font-size: 10px; width: 14px;">B:</span><input type="range" id="importBalanceB" min="-50" max="50" value="0" style="flex: 1;" title="Blue"></div>
+          <div style="text-align: right; margin-top: 4px;"><button id="importAdjustReset" style="padding: 2px 10px; font-size: 10px;" title="Reset all adjustments to defaults">Reset</button></div>
         </div>
       </div>
-      <div style="text-align: right;"><button id="importAdjustReset" style="padding: 2px 10px; font-size: 10px;" title="Reset all adjustments to defaults">Reset</button></div>
+    </div>
+    <!-- Dither tab content -->
+    <div id="importPanelDither" style="grid-area: 1/1; visibility: hidden;">
+      <div id="importDitherRegionsSection" style="font-size: 11px; padding: 8px 0;">
+        <label style="display: flex; align-items: center; gap: 4px; margin-bottom: 12px;" title="Region 1: draw this region on the canvas, assign dithering method and strength">
+          <input type="radio" name="ditherRegion" value="1" checked>
+          <span id="ditherRegion1Color" style="display:inline-block;width:10px;height:10px;background:rgba(255,0,0,0.5);border:1px solid #f00;cursor:pointer;" title="Click to change region color"></span>
+          <select id="ditherRegion1Method" style="width: 130px; padding: 2px; font-size: 11px;"></select>
+          <input type="range" id="ditherRegion1Strength" min="0" max="100" value="100" title="Dither strength for region 1" style="width: 105px;">
+          <span id="ditherRegion1StrengthVal" style="width: 24px; text-align: right; font-size: 10px;">100</span>
+        </label>
+        <label style="display: flex; align-items: center; gap: 4px; margin-bottom: 12px;" title="Region 2: draw this region on the canvas, assign dithering method and strength">
+          <input type="radio" name="ditherRegion" value="2">
+          <span id="ditherRegion2Color" style="display:inline-block;width:10px;height:10px;background:rgba(0,255,0,0.5);border:1px solid #0f0;cursor:pointer;" title="Click to change region color"></span>
+          <select id="ditherRegion2Method" style="width: 130px; padding: 2px; font-size: 11px;"></select>
+          <input type="range" id="ditherRegion2Strength" min="0" max="100" value="100" title="Dither strength for region 2" style="width: 105px;">
+          <span id="ditherRegion2StrengthVal" style="width: 24px; text-align: right; font-size: 10px;">100</span>
+        </label>
+        <label style="display: flex; align-items: center; gap: 4px; margin-bottom: 12px;" title="Region 3: draw this region on the canvas, assign dithering method and strength">
+          <input type="radio" name="ditherRegion" value="3">
+          <span id="ditherRegion3Color" style="display:inline-block;width:10px;height:10px;background:rgba(0,128,255,0.5);border:1px solid #08f;cursor:pointer;" title="Click to change region color"></span>
+          <select id="ditherRegion3Method" style="width: 130px; padding: 2px; font-size: 11px;"></select>
+          <input type="range" id="ditherRegion3Strength" min="0" max="100" value="100" title="Dither strength for region 3" style="width: 105px;">
+          <span id="ditherRegion3StrengthVal" style="width: 24px; text-align: right; font-size: 10px;">100</span>
+        </label>
+        <label style="display: flex; align-items: center; gap: 4px; margin-bottom: 16px;" title="Erase: click to select eraser, then draw on the canvas to remove regions">
+          <input type="radio" name="ditherRegion" value="0">Erase
+        </label>
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 16px;">
+          <label style="display: flex; align-items: center; gap: 4px;" title="Show region overlay on source, preview, both canvases, or hide">
+            Show:
+            <select id="ditherRegionShow" style="padding: 2px; font-size: 11px;">
+              <option value="source" selected>Source</option>
+              <option value="preview">Preview</option>
+              <option value="both">Both</option>
+              <option value="none">None</option>
+            </select>
+          </label>
+          <button id="ditherRegionClearAll" style="padding: 2px 10px; font-size: 11px;" title="Clear all painted dither regions">Clear All</button>
+        </div>
+      </div>
     </div>
     </div><!-- end tab panels wrapper -->
-    <div style="display: flex; gap: 8px; justify-content: space-between; align-items: center; flex-shrink: 0;">
-      <div style="display: flex; align-items: center; gap: 12px;">
-        <div style="display: flex; align-items: center; gap: 4px;">
-          <span style="font-size: 11px; color: var(--text-secondary);">Zoom:</span>
-          <select id="importZoom" style="padding: 2px 4px; font-size: 11px;">
-            <option value="1" selected>x1</option>
-            <option value="2">x2</option>
-            <option value="3">x3</option>
-          </select>
-        </div>
-        <label style="font-size: 11px; display: flex; align-items: center; gap: 2px;" title="Show 8x8 grid on output preview">
-          <input type="checkbox" id="importShowGrid" style="margin: 0;">Grid
-        </label>
-      </div>
+    <div style="display: flex; gap: 8px; justify-content: flex-end; align-items: center; flex-shrink: 0;">
       <div style="display: flex; gap: 8px; align-items: center;">
         <button id="importCancelBtn" style="padding: 5px 16px; font-size: 12px;">Cancel</button>
         <select id="importModeSelect" style="padding: 4px 6px; font-size: 12px; display: none;">
@@ -3922,8 +4022,30 @@
 
 <!-- Compression Compare Dialog -->
 <div id="compareDialog" class="modal-overlay" style="display:none;">
-  <div class="modal-dialog" style="min-width: 460px;">
-    <div class="modal-title">Compression Compare</div>
+  <div class="modal-dialog" style="min-width: 580px;">
+    <div class="modal-title" style="display: flex; align-items: center; justify-content: space-between;">
+      <span>Compression Compare</span>
+      <button id="compareSettingsBtn" title="Format settings" style="background: none; border: none; cursor: pointer; font-size: 16px; padding: 0 4px; opacity: 0.6;">&#9881;</button>
+    </div>
+    <!-- Settings popover -->
+    <div id="compareSettingsPanel" style="display: none; border: 1px solid var(--border-secondary); border-radius: 4px; padding: 8px 12px; margin-bottom: 10px; background: var(--bg-secondary, #f8f8f8); font-size: 11px;">
+      <div style="font-weight: bold; margin-bottom: 6px;">Enabled formats</div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2px 16px;">
+        <label style="cursor: pointer;"><input type="checkbox" id="cmpFmtZx7"> ZX7 (fwd/bwd)</label>
+        <label style="cursor: pointer;"><input type="checkbox" id="cmpFmtZx0" checked> ZX0 (fwd/bwd)</label>
+        <label style="cursor: pointer;"><input type="checkbox" id="cmpFmtRcs" checked> RCS variants</label>
+        <label style="cursor: pointer;"><input type="checkbox" id="cmpFmtLc" checked> LC</label>
+        <label style="cursor: pointer;"><input type="checkbox" id="cmpFmtUpkr"> upkr (level 1 &amp; 9)</label>
+      </div>
+      <div style="margin-top: 8px; font-weight: bold; margin-bottom: 6px;">Depacker options</div>
+      <div style="display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; align-items: center;">
+        <span>upkr:</span>
+        <select id="cmpUpkrDepacker" style="font-size: 11px; padding: 1px 2px;">
+          <option value="compact">Compact — 130B code + 320B probs (450B)</option>
+          <option value="fast">Fast — 155B code + 320B probs (475B)</option>
+        </select>
+      </div>
+    </div>
     <table id="compareTable" style="width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 12px;">
       <thead>
         <tr style="border-bottom: 1px solid var(--border-secondary);">
@@ -3932,16 +4054,45 @@
           <th style="text-align: right; padding: 4px 8px;">Size</th>
           <th style="text-align: right; padding: 4px 8px;">Saved</th>
           <th style="text-align: right; padding: 4px 8px;">Ratio</th>
+          <th style="text-align: right; padding: 4px 8px;">Depacker</th>
+          <th style="text-align: right; padding: 4px 8px;">Total</th>
         </tr>
       </thead>
       <tbody id="compareBody"></tbody>
     </table>
+    <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 8px;">
+      <label style="font-size: 11px;">Data:
+        <select id="compareDataMode" style="font-size: 11px; padding: 1px 2px;">
+          <option value="full">Full SCR</option>
+          <option value="bitmap">Bitmap only</option>
+        </select>
+      </label>
+      <label style="font-size: 11px;">Segment:
+        <select id="compareSegment" style="font-size: 11px; padding: 1px 2px;" disabled>
+          <option value="whole">Whole</option>
+          <option value="1">Third 1</option>
+          <option value="2">Third 2</option>
+          <option value="3">Third 3</option>
+          <option value="12">Thirds 1+2</option>
+          <option value="23">Thirds 2+3</option>
+        </select>
+      </label>
+    </div>
+    <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 8px;">
+      <label style="font-size: 11px; cursor: pointer;">
+        <input type="checkbox" id="compareCleanHiddenCb"> Clean hidden cells
+      </label>
+      <label style="font-size: 11px; cursor: pointer;">
+        <input type="checkbox" id="compareOptimizeAttrsCb"> Optimize attributes
+      </label>
+      <button id="compareRunBtn" style="padding: 3px 12px; font-size: 11px; margin-left: auto;">Compare</button>
+    </div>
     <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; margin-bottom: 12px; cursor: pointer;">
       <input type="checkbox" id="compareCreateAsmCb">
       Create ASM (sjasmplus example with decompressor)
     </label>
     <div style="display: flex; gap: 8px; justify-content: flex-end;">
-      <button id="compareCancelBtn" style="padding: 5px 16px; font-size: 12px;">Cancel</button>
+      <button id="compareCancelBtn" style="padding: 5px 16px; font-size: 12px;">Close</button>
       <button id="compareSaveBtn" style="padding: 5px 16px; font-size: 12px;">Save</button>
     </div>
   </div>
@@ -4001,6 +4152,8 @@
 <script src="js/qrcode.js"></script>
 <script src="js/zx7.js"></script>
 <script src="js/zx0.js"></script>
+<script src="js/lc.js"></script>
+<script src="js/upkr.js"></script>
 <script src="js/screen_editor.js"></script>
 <script src="js/sprite_editor.js"></script>
 </body>

@@ -502,6 +502,9 @@ function applyBilateralFilter(pixels, width, height, amount) {
 let ditherStrength = 1.0;
 let ditherSerpentine = false;
 
+/** @type {Float32Array|null} - Last converted source pixels (RGB float, 3 values per pixel) for dither brush */
+let lastConvertedSourcePixels = null;
+
 /**
  * Floyd-Steinberg kernel (shared with serpentine + hybrid)
  */
@@ -1159,7 +1162,6 @@ function findCellColors(pixels, cellX, cellY, width, palette) {
  * @returns {Uint8Array} 8-byte bitmap for the cell
  */
 function ditherCellFloydSteinberg(pixels, cellX, cellY, width, inkRgb, paperRgb) {
-  // Copy cell pixels to local buffer for dithering
   const cellPixels = new Float32Array(8 * 8 * 3);
   for (let dy = 0; dy < 8; dy++) {
     for (let dx = 0; dx < 8; dx++) {
@@ -1172,9 +1174,8 @@ function ditherCellFloydSteinberg(pixels, cellX, cellY, width, inkRgb, paperRgb)
   }
 
   const bitmap = new Uint8Array(8);
-  const twoColorPalette = [inkRgb, paperRgb];
+  const s = ditherStrength;
 
-  // Apply Floyd-Steinberg within cell
   for (let y = 0; y < 8; y++) {
     for (let x = 0; x < 8; x++) {
       const idx = (y * 8 + x) * 3;
@@ -1182,7 +1183,6 @@ function ditherCellFloydSteinberg(pixels, cellX, cellY, width, inkRgb, paperRgb)
       const oldG = cellPixels[idx + 1];
       const oldB = cellPixels[idx + 2];
 
-      // Find nearest of the two colors
       const inkDist = colorDistance([oldR, oldG, oldB], inkRgb);
       const paperDist = colorDistance([oldR, oldG, oldB], paperRgb);
       const useInk = inkDist < paperDist;
@@ -1192,12 +1192,10 @@ function ditherCellFloydSteinberg(pixels, cellX, cellY, width, inkRgb, paperRgb)
         bitmap[y] |= (0x80 >> x);
       }
 
-      // Calculate error
-      const errR = oldR - newColor[0];
-      const errG = oldG - newColor[1];
-      const errB = oldB - newColor[2];
+      const errR = (oldR - newColor[0]) * s;
+      const errG = (oldG - newColor[1]) * s;
+      const errB = (oldB - newColor[2]) * s;
 
-      // Distribute error to neighbors (within cell only)
       if (x + 1 < 8) {
         const i = idx + 3;
         cellPixels[i] += errR * 7 / 16;
@@ -1271,10 +1269,10 @@ function ditherCellAtkinson(pixels, cellX, cellY, width, inkRgb, paperRgb) {
         bitmap[y] |= (0x80 >> x);
       }
 
-      // Atkinson: 1/8 error to 6 neighbors
-      const errR = (oldR - newColor[0]) / 8;
-      const errG = (oldG - newColor[1]) / 8;
-      const errB = (oldB - newColor[2]) / 8;
+      // Atkinson: 1/8 error to 6 neighbors, scaled by strength
+      const errR = (oldR - newColor[0]) / 8 * ditherStrength;
+      const errG = (oldG - newColor[1]) / 8 * ditherStrength;
+      const errB = (oldB - newColor[2]) / 8 * ditherStrength;
 
       const neighbors = [
         [x + 1, y], [x + 2, y],
@@ -1307,6 +1305,27 @@ function ditherCellAtkinson(pixels, cellX, cellY, width, inkRgb, paperRgb) {
  * @returns {Uint8Array} 8-byte bitmap for the cell
  */
 function ditherCellOrdered(pixels, cellX, cellY, width, inkRgb, paperRgb) {
+  return ditherCellOrderedGeneric(pixels, cellX, cellY, width, inkRgb, paperRgb, BAYER_4X4, 4, 16);
+}
+
+/**
+ * Apply ordered 2x2 dithering within a single 8x8 cell using only 2 colors
+ */
+function ditherCellOrdered2(pixels, cellX, cellY, width, inkRgb, paperRgb) {
+  return ditherCellOrderedGeneric(pixels, cellX, cellY, width, inkRgb, paperRgb, BAYER_2X2, 2, 4);
+}
+
+/**
+ * Apply ordered 8x8 dithering within a single 8x8 cell using only 2 colors
+ */
+function ditherCellOrdered8(pixels, cellX, cellY, width, inkRgb, paperRgb) {
+  return ditherCellOrderedGeneric(pixels, cellX, cellY, width, inkRgb, paperRgb, BAYER_8X8, 8, 64);
+}
+
+/**
+ * Generic ordered dithering within a single 8x8 cell using any Bayer matrix
+ */
+function ditherCellOrderedGeneric(pixels, cellX, cellY, width, inkRgb, paperRgb, matrix, size, divisor) {
   const bitmap = new Uint8Array(8);
 
   for (let dy = 0; dy < 8; dy++) {
@@ -1318,18 +1337,16 @@ function ditherCellOrdered(pixels, cellX, cellY, width, inkRgb, paperRgb) {
       const g = pixels[srcIdx + 1];
       const b = pixels[srcIdx + 2];
 
-      // Calculate luminance difference between ink and paper
       const inkLum = 0.299 * inkRgb[0] + 0.587 * inkRgb[1] + 0.114 * inkRgb[2];
       const paperLum = 0.299 * paperRgb[0] + 0.587 * paperRgb[1] + 0.114 * paperRgb[2];
       const pixelLum = 0.299 * r + 0.587 * g + 0.114 * b;
 
-      // Normalize to 0-1 range between paper and ink
       const range = Math.abs(inkLum - paperLum);
       let t = range > 0 ? (pixelLum - Math.min(inkLum, paperLum)) / range : 0.5;
       t = Math.max(0, Math.min(1, t));
 
-      // Apply Bayer threshold using GLOBAL coordinates for seamless pattern across cells
-      const threshold = (BAYER_4X4[globalY % 4][globalX % 4] + 0.5) / 16;
+      const rawThreshold = (matrix[globalY % size][globalX % size] + 0.5) / divisor;
+      const threshold = 0.5 + (rawThreshold - 0.5) * ditherStrength;
       const useInk = inkLum < paperLum ? (t < threshold) : (t >= (1 - threshold));
 
       if (useInk) {
@@ -1413,9 +1430,10 @@ function ditherCellSierra2(pixels, cellX, cellY, width, inkRgb, paperRgb) {
       }
 
       const newColor = useInk ? inkRgb : paperRgb;
-      const errR = r - newColor[0];
-      const errG = g - newColor[1];
-      const errB = b - newColor[2];
+      const s = ditherStrength;
+      const errR = (r - newColor[0]) * s;
+      const errG = (g - newColor[1]) * s;
+      const errB = (b - newColor[2]) * s;
 
       // Two-row Sierra: /16 scale
       const diffuse = (ddx, ddy, weight) => {
@@ -1475,9 +1493,10 @@ function ditherCellSerpentine(pixels, cellX, cellY, width, inkRgb, paperRgb) {
       }
 
       const newColor = useInk ? inkRgb : paperRgb;
-      const errR = r - newColor[0];
-      const errG = g - newColor[1];
-      const errB = b - newColor[2];
+      const s = ditherStrength;
+      const errR = (r - newColor[0]) * s;
+      const errG = (g - newColor[1]) * s;
+      const errB = (b - newColor[2]) * s;
 
       const diffuse = (ddx, ddy, weight) => {
         const nx = dx + (leftToRight ? ddx : -ddx), ny = dy + ddy;
@@ -1544,9 +1563,10 @@ function ditherCellRiemersma(pixels, cellX, cellY, width, inkRgb, paperRgb) {
       errSum[1] += errHist[h * 3 + 1] * weight;
       errSum[2] += errHist[h * 3 + 2] * weight;
     }
-    const r = local[localIdx] + errSum[0];
-    const g = local[localIdx + 1] + errSum[1];
-    const b = local[localIdx + 2] + errSum[2];
+    const s = ditherStrength;
+    const r = local[localIdx] + errSum[0] * s;
+    const g = local[localIdx + 1] + errSum[1] * s;
+    const b = local[localIdx + 2] + errSum[2] * s;
 
     const inkDist = colorDistance([r, g, b], inkRgb);
     const paperDist = colorDistance([r, g, b], paperRgb);
@@ -1596,7 +1616,8 @@ function ditherCellBlueNoise(pixels, cellX, cellY, width, inkRgb, paperRgb) {
       // Use blue noise pattern (tile from global 16x16)
       const globalX = cellX * 8 + dx;
       const globalY = cellY * 8 + dy;
-      const threshold = BLUE_NOISE_16[globalY % 16][globalX % 16] / 255;
+      const rawThreshold = BLUE_NOISE_16[globalY % 16][globalX % 16] / 255;
+      const threshold = 0.5 + (rawThreshold - 0.5) * ditherStrength;
       const useInk = inkLum < paperLum ? (t < threshold) : (t >= (1 - threshold));
 
       if (useInk) {
@@ -1643,7 +1664,8 @@ function ditherCellPattern(pixels, cellX, cellY, width, inkRgb, paperRgb) {
       // Use clustered dot pattern with phase shift to avoid grid effect
       const patternY = (dy + phaseY) % 8;
       const patternX = (dx + phaseX) % 8;
-      const threshold = (CLUSTER_8X8[patternY][patternX] + 0.5) / 64;
+      const rawThreshold = (CLUSTER_8X8[patternY][patternX] + 0.5) / 64;
+      const threshold = 0.5 + (rawThreshold - 0.5) * ditherStrength;
       const useInk = inkLum < paperLum ? (t < threshold) : (t >= (1 - threshold));
 
       if (useInk) {
@@ -1930,6 +1952,9 @@ function convertToScr(sourceCanvas, dithering, brightness, contrast, saturation 
 
   const floatPixels = rgbaToFloat(pixels, 256 * 192);
 
+  // Stash adjusted source pixels for dither brush re-dithering
+  lastConvertedSourcePixels = new Float32Array(floatPixels);
+
   const palette = getCombinedPalette();
   const fullPalette = [...palette.regular, ...palette.bright];
 
@@ -2002,6 +2027,12 @@ function convertToScr(sourceCanvas, dithering, brightness, contrast, saturation 
               break;
             case 'ordered':
               bitmap = ditherCellOrdered(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'ordered2':
+              bitmap = ditherCellOrdered2(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'ordered8':
+              bitmap = ditherCellOrdered8(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
               break;
             case 'sierra2':
               bitmap = ditherCellSierra2(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
@@ -2574,6 +2605,15 @@ function convertToZxpUlaPlus(sourceCanvas, dithering, brightness, contrast, satu
   const isCellAware = dithering.startsWith('cell-');
   const cellDitherMethod = isCellAware ? dithering.replace('cell-', '') : dithering;
 
+  // For global (non-cell-aware) dithering, apply full-image dithering before cell processing
+  if (!isCellAware && dithering !== 'none') {
+    const ulaPaletteRgb = [];
+    for (let i = 0; i < 64; i++) {
+      ulaPaletteRgb.push(grb332ToRgb(palette[i]));
+    }
+    applyGlobalDither(dithering, floatPixels, w, h, ulaPaletteRgb);
+  }
+
   for (let cellY = 0; cellY < attrRows; cellY++) {
     for (let cellX = 0; cellX < cols; cellX++) {
       const colors = findUlaPlusCellColorsParam(floatPixels, cellX, cellY, w, h, palette);
@@ -2584,6 +2624,8 @@ function convertToZxpUlaPlus(sourceCanvas, dithering, brightness, contrast, satu
           case 'floyd': bitmap = ditherCellFloydSteinberg(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb); break;
           case 'atkinson': bitmap = ditherCellAtkinson(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb); break;
           case 'ordered': bitmap = ditherCellOrdered(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb); break;
+          case 'ordered2': bitmap = ditherCellOrdered2(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb); break;
+          case 'ordered8': bitmap = ditherCellOrdered8(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb); break;
           case 'sierra2': bitmap = ditherCellSierra2(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb); break;
           case 'serpentine': bitmap = ditherCellSerpentine(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb); break;
           case 'riemersma': bitmap = ditherCellRiemersma(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb); break;
@@ -2592,6 +2634,7 @@ function convertToZxpUlaPlus(sourceCanvas, dithering, brightness, contrast, satu
           default: bitmap = ditherCellNone(floatPixels, cellX, cellY, w, colors.inkRgb, colors.paperRgb); break;
         }
       } else {
+        // Nearest-color mapping (pixels already dithered by applyGlobalDither above)
         bitmap = new Uint8Array(8);
         for (let dy = 0; dy < 8; dy++) {
           const py = cellY * 8 + dy;
@@ -2799,8 +2842,9 @@ function findUlaPlusCellColors(pixels, cellX, cellY, palette) {
 
 /**
  * Convert image to ULA+ format with optimal palette
+ * @param {boolean} [monoOutput=false] - true: force grayscale input
  */
-function convertToUlaPlus(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, externalPalette = null) {
+function convertToUlaPlus(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, externalPalette = null, monoOutput = false) {
   updateColorDistanceMode();
 
   const ctx = sourceCanvas.getContext('2d');
@@ -2810,6 +2854,11 @@ function convertToUlaPlus(sourceCanvas, dithering, brightness, contrast, saturat
   const pixels = imageData.data;
 
   applyImageAdjustments(pixels, 256, 192, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
+
+  // Mono output: force grayscale if not already applied
+  if (monoOutput && !grayscale) {
+    applyGrayscale(pixels);
+  }
 
   const floatPixels = rgbaToFloat(pixels, 256 * 192);
 
@@ -2824,6 +2873,16 @@ function convertToUlaPlus(sourceCanvas, dithering, brightness, contrast, saturat
   // Check if using cell-aware dithering
   const isCellAware = dithering.startsWith('cell-');
   const cellDitherMethod = isCellAware ? dithering.replace('cell-', '') : dithering;
+
+  // For global (non-cell-aware) dithering, apply full-image dithering before cell processing
+  if (!isCellAware && dithering !== 'none') {
+    // Build full ULA+ palette as RGB array for the global dither
+    const ulaPaletteRgb = [];
+    for (let i = 0; i < 64; i++) {
+      ulaPaletteRgb.push(grb332ToRgb(palette[i]));
+    }
+    applyGlobalDither(dithering, floatPixels, 256, 192, ulaPaletteRgb);
+  }
 
   // Convert each cell
   for (let cellY = 0; cellY < 24; cellY++) {
@@ -2843,6 +2902,12 @@ function convertToUlaPlus(sourceCanvas, dithering, brightness, contrast, saturat
             break;
           case 'ordered':
             bitmap = ditherCellOrdered(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'ordered2':
+            bitmap = ditherCellOrdered2(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'ordered8':
+            bitmap = ditherCellOrdered8(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
             break;
           case 'sierra2':
             bitmap = ditherCellSierra2(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
@@ -2864,7 +2929,7 @@ function convertToUlaPlus(sourceCanvas, dithering, brightness, contrast, saturat
             break;
         }
       } else {
-        // Simple nearest-color mapping
+        // Nearest-color mapping (pixels already dithered by applyGlobalDither above)
         bitmap = new Uint8Array(8);
         for (let dy = 0; dy < 8; dy++) {
           for (let dx = 0; dx < 8; dx++) {
@@ -3148,15 +3213,29 @@ function ditherBlock2FloydSteinberg(pixels, blockX, blockY, width, inkRgb, paper
 }
 
 /**
- * Apply ordered dithering within an 8×2 block
+ * Generic ordered dithering within an 8×H block using any Bayer matrix
+ * @param {Float32Array} pixels - Source pixels (full image)
+ * @param {number} blockX - Block X (column)
+ * @param {number} blockStartY - First pixel row of the block
+ * @param {number} blockH - Block height in pixels
+ * @param {number} width - Image width
+ * @param {number[]} inkRgb - Ink color RGB
+ * @param {number[]} paperRgb - Paper color RGB
+ * @param {number[][]} matrix - Bayer matrix
+ * @param {number} size - Matrix dimension
+ * @param {number} divisor - Matrix normalizer (size*size)
+ * @returns {Uint8Array|number} bitmap (Uint8Array for H>1, number for H=1)
  */
-function ditherBlock2Ordered(pixels, blockX, blockY, width, inkRgb, paperRgb) {
-  const bitmap = new Uint8Array(2);
+function ditherBlockOrderedGeneric(pixels, blockX, blockStartY, blockH, width, inkRgb, paperRgb, matrix, size, divisor) {
+  const singleRow = (blockH === 1);
+  const bitmap = singleRow ? 0 : new Uint8Array(blockH);
+  let bitmapVal = 0;
 
-  for (let dy = 0; dy < 2; dy++) {
+  for (let dy = 0; dy < blockH; dy++) {
+    let rowBits = 0;
     for (let dx = 0; dx < 8; dx++) {
       const globalX = blockX * 8 + dx;
-      const globalY = blockY * 2 + dy;
+      const globalY = blockStartY + dy;
       const idx = (globalY * width + globalX) * 3;
       const r = pixels[idx];
       const g = pixels[idx + 1];
@@ -3167,15 +3246,269 @@ function ditherBlock2Ordered(pixels, blockX, blockY, width, inkRgb, paperRgb) {
       const totalDist = inkDist + paperDist;
       const inkRatio = totalDist > 0 ? paperDist / totalDist : 0.5;
 
-      // Use Bayer 4x4 with GLOBAL coordinates for seamless pattern across blocks
-      const t = (BAYER_4X4[globalY % 4][globalX % 4] + 0.5) / 16;
+      const rawT = (matrix[globalY % size][globalX % size] + 0.5) / divisor;
+      const t = 0.5 + (rawT - 0.5) * ditherStrength;
       if (inkRatio > t) {
-        bitmap[dy] |= (0x80 >> dx);
+        rowBits |= (0x80 >> dx);
       }
+    }
+    if (singleRow) bitmapVal = rowBits;
+    else bitmap[dy] = rowBits;
+  }
+
+  return singleRow ? bitmapVal : bitmap;
+}
+
+/**
+ * Generic error-diffusion dithering within an 8×H block
+ * @param {Float32Array} pixels - Source pixels (full image)
+ * @param {number} blockX - Block X (column)
+ * @param {number} blockStartY - First pixel row of the block
+ * @param {number} blockH - Block height in pixels
+ * @param {number} width - Image width
+ * @param {number[]} inkRgb - Ink color
+ * @param {number[]} paperRgb - Paper color
+ * @param {Array<[number, number, number]>} kernel - [[dx, dy, weight], ...]
+ * @returns {Uint8Array|number} bitmap
+ */
+function ditherBlockErrorDiffusion(pixels, blockX, blockStartY, blockH, width, inkRgb, paperRgb, kernel) {
+  const singleRow = (blockH === 1);
+  const local = new Float32Array(8 * blockH * 3);
+  for (let dy = 0; dy < blockH; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const srcIdx = ((blockStartY + dy) * width + (blockX * 8 + dx)) * 3;
+      const dstIdx = (dy * 8 + dx) * 3;
+      local[dstIdx] = pixels[srcIdx];
+      local[dstIdx + 1] = pixels[srcIdx + 1];
+      local[dstIdx + 2] = pixels[srcIdx + 2];
     }
   }
 
+  const bitmap = singleRow ? 0 : new Uint8Array(blockH);
+  let bitmapVal = 0;
+
+  for (let dy = 0; dy < blockH; dy++) {
+    let rowBits = 0;
+    for (let dx = 0; dx < 8; dx++) {
+      const idx = (dy * 8 + dx) * 3;
+      const r = local[idx], g = local[idx + 1], b = local[idx + 2];
+
+      const inkDist = colorDistance([r, g, b], inkRgb);
+      const paperDist = colorDistance([r, g, b], paperRgb);
+      const useInk = inkDist < paperDist;
+      const newColor = useInk ? inkRgb : paperRgb;
+
+      if (useInk) rowBits |= (0x80 >> dx);
+
+      const s = ditherStrength;
+      const errR = (r - newColor[0]) * s;
+      const errG = (g - newColor[1]) * s;
+      const errB = (b - newColor[2]) * s;
+
+      for (const [kdx, kdy, weight] of kernel) {
+        const nx = dx + kdx, ny = dy + kdy;
+        if (nx >= 0 && nx < 8 && ny >= 0 && ny < blockH) {
+          const ni = (ny * 8 + nx) * 3;
+          local[ni] += errR * weight;
+          local[ni + 1] += errG * weight;
+          local[ni + 2] += errB * weight;
+        }
+      }
+    }
+    if (singleRow) bitmapVal = rowBits;
+    else bitmap[dy] = rowBits;
+  }
+
+  return singleRow ? bitmapVal : bitmap;
+}
+
+/**
+ * Generic threshold-based dithering within an 8×H block (blue-noise, pattern)
+ * @param {Float32Array} pixels - Source pixels (full image)
+ * @param {number} blockX - Block X
+ * @param {number} blockStartY - First pixel row
+ * @param {number} blockH - Block height
+ * @param {number} width - Image width
+ * @param {number[]} inkRgb - Ink color
+ * @param {number[]} paperRgb - Paper color
+ * @param {string} type - 'blue-noise' or 'pattern'
+ * @returns {Uint8Array|number} bitmap
+ */
+function ditherBlockThreshold(pixels, blockX, blockStartY, blockH, width, inkRgb, paperRgb, type) {
+  const singleRow = (blockH === 1);
+  const bitmap = singleRow ? 0 : new Uint8Array(blockH);
+  let bitmapVal = 0;
+
+  const inkLum = 0.299 * inkRgb[0] + 0.587 * inkRgb[1] + 0.114 * inkRgb[2];
+  const paperLum = 0.299 * paperRgb[0] + 0.587 * paperRgb[1] + 0.114 * paperRgb[2];
+  const range = Math.abs(inkLum - paperLum);
+
+  const phaseX = (blockX * 3) % 8;
+  const phaseY = (Math.floor(blockStartY / blockH) * 5) % 8;
+
+  for (let dy = 0; dy < blockH; dy++) {
+    let rowBits = 0;
+    for (let dx = 0; dx < 8; dx++) {
+      const globalX = blockX * 8 + dx;
+      const globalY = blockStartY + dy;
+      const idx = (globalY * width + globalX) * 3;
+      const pixelLum = 0.299 * pixels[idx] + 0.587 * pixels[idx + 1] + 0.114 * pixels[idx + 2];
+
+      let t = range > 0 ? (pixelLum - Math.min(inkLum, paperLum)) / range : 0.5;
+      t = Math.max(0, Math.min(1, t));
+
+      let rawThreshold;
+      if (type === 'blue-noise') {
+        rawThreshold = BLUE_NOISE_16[globalY % 16][globalX % 16] / 255;
+      } else { // pattern
+        const patternY = (dy + phaseY) % 8;
+        const patternX = (dx + phaseX) % 8;
+        rawThreshold = (CLUSTER_8X8[patternY][patternX] + 0.5) / 64;
+      }
+      const threshold = 0.5 + (rawThreshold - 0.5) * ditherStrength;
+      const useInk = inkLum < paperLum ? (t < threshold) : (t >= (1 - threshold));
+      if (useInk) rowBits |= (0x80 >> dx);
+    }
+    if (singleRow) bitmapVal = rowBits;
+    else bitmap[dy] = rowBits;
+  }
+
+  return singleRow ? bitmapVal : bitmap;
+}
+
+/**
+ * Generic Riemersma dithering within an 8×H block
+ */
+function ditherBlockRiemersma(pixels, blockX, blockStartY, blockH, width, inkRgb, paperRgb) {
+  const singleRow = (blockH === 1);
+  const local = new Float32Array(8 * blockH * 3);
+  for (let dy = 0; dy < blockH; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const srcIdx = ((blockStartY + dy) * width + (blockX * 8 + dx)) * 3;
+      const dstIdx = (dy * 8 + dx) * 3;
+      local[dstIdx] = pixels[srcIdx];
+      local[dstIdx + 1] = pixels[srcIdx + 1];
+      local[dstIdx + 2] = pixels[srcIdx + 2];
+    }
+  }
+
+  // Scan order: row by row for simplicity in small blocks
+  const histLen = Math.min(16, 8 * blockH);
+  const errHist = new Float32Array(histLen * 3);
+  let histIdx = 0;
+
+  const bitmap = singleRow ? 0 : new Uint8Array(blockH);
+  let bitmapVal = 0;
+
+  for (let dy = 0; dy < blockH; dy++) {
+    let rowBits = 0;
+    for (let dx = 0; dx < 8; dx++) {
+      const localIdx = (dy * 8 + dx) * 3;
+      let errSum0 = 0, errSum1 = 0, errSum2 = 0;
+      for (let h = 0; h < histLen; h++) {
+        const weight = (histLen - h) / ((histLen * (histLen + 1)) / 2);
+        errSum0 += errHist[h * 3] * weight;
+        errSum1 += errHist[h * 3 + 1] * weight;
+        errSum2 += errHist[h * 3 + 2] * weight;
+      }
+      const s = ditherStrength;
+      const r = local[localIdx] + errSum0 * s;
+      const g = local[localIdx + 1] + errSum1 * s;
+      const b = local[localIdx + 2] + errSum2 * s;
+
+      const inkDist = colorDistance([r, g, b], inkRgb);
+      const paperDist = colorDistance([r, g, b], paperRgb);
+      const useInk = inkDist < paperDist;
+
+      if (useInk) rowBits |= (0x80 >> dx);
+
+      const newColor = useInk ? inkRgb : paperRgb;
+      errHist[histIdx * 3] = r - newColor[0];
+      errHist[histIdx * 3 + 1] = g - newColor[1];
+      errHist[histIdx * 3 + 2] = b - newColor[2];
+      histIdx = (histIdx + 1) % histLen;
+    }
+    if (singleRow) bitmapVal = rowBits;
+    else bitmap[dy] = rowBits;
+  }
+
+  return singleRow ? bitmapVal : bitmap;
+}
+
+// FS kernel for block error diffusion
+const BLOCK_FS_KERNEL = [[1, 0, 7/16], [-1, 1, 3/16], [0, 1, 5/16], [1, 1, 1/16]];
+// Atkinson kernel for block error diffusion
+const BLOCK_ATKINSON_KERNEL = [[1, 0, 1/8], [2, 0, 1/8], [-1, 1, 1/8], [0, 1, 1/8], [1, 1, 1/8], [0, 2, 1/8]];
+// Sierra-2 kernel for block error diffusion
+const BLOCK_SIERRA2_KERNEL = [[1, 0, 4/16], [2, 0, 3/16], [-2, 1, 1/16], [-1, 1, 2/16], [0, 1, 3/16], [1, 1, 2/16], [2, 1, 1/16]];
+
+/**
+ * Apply ordered dithering within an 8×2 block (4x4 Bayer)
+ */
+function ditherBlock2Ordered(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  return ditherBlockOrderedGeneric(pixels, blockX, blockY * 2, 2, width, inkRgb, paperRgb, BAYER_4X4, 4, 16);
+}
+
+function ditherBlock2Ordered2(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  return ditherBlockOrderedGeneric(pixels, blockX, blockY * 2, 2, width, inkRgb, paperRgb, BAYER_2X2, 2, 4);
+}
+
+function ditherBlock2Ordered8(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  return ditherBlockOrderedGeneric(pixels, blockX, blockY * 2, 2, width, inkRgb, paperRgb, BAYER_8X8, 8, 64);
+}
+
+function ditherBlock2Atkinson(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  return ditherBlockErrorDiffusion(pixels, blockX, blockY * 2, 2, width, inkRgb, paperRgb, BLOCK_ATKINSON_KERNEL);
+}
+
+function ditherBlock2Sierra2(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  return ditherBlockErrorDiffusion(pixels, blockX, blockY * 2, 2, width, inkRgb, paperRgb, BLOCK_SIERRA2_KERNEL);
+}
+
+function ditherBlock2Serpentine(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  // Serpentine FS within 8×2 block
+  const local = new Float32Array(8 * 2 * 3);
+  for (let dy = 0; dy < 2; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const srcIdx = ((blockY * 2 + dy) * width + (blockX * 8 + dx)) * 3;
+      const dstIdx = (dy * 8 + dx) * 3;
+      local[dstIdx] = pixels[srcIdx]; local[dstIdx + 1] = pixels[srcIdx + 1]; local[dstIdx + 2] = pixels[srcIdx + 2];
+    }
+  }
+  const s = ditherStrength;
+  const bitmap = new Uint8Array(2);
+  for (let dy = 0; dy < 2; dy++) {
+    const ltr = (dy % 2 === 0);
+    for (let i = 0; i < 8; i++) {
+      const dx = ltr ? i : (7 - i);
+      const idx = (dy * 8 + dx) * 3;
+      const r = local[idx], g = local[idx + 1], b = local[idx + 2];
+      const inkDist = colorDistance([r, g, b], inkRgb);
+      const paperDist = colorDistance([r, g, b], paperRgb);
+      const useInk = inkDist < paperDist;
+      if (useInk) bitmap[dy] |= (0x80 >> dx);
+      const nc = useInk ? inkRgb : paperRgb;
+      const er = (r - nc[0]) * s, eg = (g - nc[1]) * s, eb = (b - nc[2]) * s;
+      const diffuse = (ddx, ddy, w) => {
+        const nx = dx + (ltr ? ddx : -ddx), ny = dy + ddy;
+        if (nx >= 0 && nx < 8 && ny < 2) { const ni = (ny * 8 + nx) * 3; local[ni] += er * w; local[ni + 1] += eg * w; local[ni + 2] += eb * w; }
+      };
+      diffuse(1, 0, 7/16); diffuse(-1, 1, 3/16); diffuse(0, 1, 5/16); diffuse(1, 1, 1/16);
+    }
+  }
   return bitmap;
+}
+
+function ditherBlock2Riemersma(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  return ditherBlockRiemersma(pixels, blockX, blockY * 2, 2, width, inkRgb, paperRgb);
+}
+
+function ditherBlock2BlueNoise(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  return ditherBlockThreshold(pixels, blockX, blockY * 2, 2, width, inkRgb, paperRgb, 'blue-noise');
+}
+
+function ditherBlock2Pattern(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  return ditherBlockThreshold(pixels, blockX, blockY * 2, 2, width, inkRgb, paperRgb, 'pattern');
 }
 
 /**
@@ -3271,8 +3604,32 @@ function convertToIfl(sourceCanvas, dithering, brightness, contrast, saturation 
             case 'floyd':
               bitmap = ditherBlock2FloydSteinberg(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
               break;
+            case 'atkinson':
+              bitmap = ditherBlock2Atkinson(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+              break;
             case 'ordered':
               bitmap = ditherBlock2Ordered(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'ordered2':
+              bitmap = ditherBlock2Ordered2(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'ordered8':
+              bitmap = ditherBlock2Ordered8(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'sierra2':
+              bitmap = ditherBlock2Sierra2(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'serpentine':
+              bitmap = ditherBlock2Serpentine(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'riemersma':
+              bitmap = ditherBlock2Riemersma(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'blue-noise':
+              bitmap = ditherBlock2BlueNoise(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+              break;
+            case 'pattern':
+              bitmap = ditherBlock2Pattern(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
               break;
             default:
               bitmap = ditherBlock2None(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
@@ -3498,31 +3855,18 @@ function ditherBlock1None(pixels, blockX, y, width, inkRgb, paperRgb) {
 }
 
 /**
- * Ordered dithering for 8×1 block
+ * Ordered dithering for 8×1 block (4x4 Bayer)
  */
 function ditherBlock1Ordered(pixels, blockX, y, width, inkRgb, paperRgb) {
-  let bitmap = 0;
+  return ditherBlockOrderedGeneric(pixels, blockX, y, 1, width, inkRgb, paperRgb, BAYER_4X4, 4, 16);
+}
 
-  for (let dx = 0; dx < 8; dx++) {
-    const globalX = blockX * 8 + dx;
-    const idx = (y * width + globalX) * 3;
-    const r = pixels[idx];
-    const g = pixels[idx + 1];
-    const b = pixels[idx + 2];
+function ditherBlock1Ordered2(pixels, blockX, y, width, inkRgb, paperRgb) {
+  return ditherBlockOrderedGeneric(pixels, blockX, y, 1, width, inkRgb, paperRgb, BAYER_2X2, 2, 4);
+}
 
-    const inkDist = colorDistance([r, g, b], inkRgb);
-    const paperDist = colorDistance([r, g, b], paperRgb);
-    const totalDist = inkDist + paperDist;
-    const inkRatio = totalDist > 0 ? paperDist / totalDist : 0.5;
-
-    // Use Bayer 4x4 with GLOBAL coordinates for seamless pattern
-    const t = (BAYER_4X4[y % 4][globalX % 4] + 0.5) / 16;
-    if (inkRatio > t) {
-      bitmap |= (0x80 >> dx);
-    }
-  }
-
-  return bitmap;
+function ditherBlock1Ordered8(pixels, blockX, y, width, inkRgb, paperRgb) {
+  return ditherBlockOrderedGeneric(pixels, blockX, y, 1, width, inkRgb, paperRgb, BAYER_8X8, 8, 64);
 }
 
 /**
@@ -3538,6 +3882,7 @@ function ditherBlock1Floyd(pixels, blockX, y, width, inkRgb, paperRgb) {
     local[dx * 3 + 2] = pixels[idx + 2];
   }
 
+  const s = ditherStrength;
   for (let dx = 0; dx < 8; dx++) {
     const li = dx * 3;
     const r = local[li], g = local[li + 1], b = local[li + 2];
@@ -3546,7 +3891,7 @@ function ditherBlock1Floyd(pixels, blockX, y, width, inkRgb, paperRgb) {
     const useInk = inkDist < paperDist;
     if (useInk) bitmap |= (0x80 >> dx);
     const newColor = useInk ? inkRgb : paperRgb;
-    const errR = r - newColor[0], errG = g - newColor[1], errB = b - newColor[2];
+    const errR = (r - newColor[0]) * s, errG = (g - newColor[1]) * s, errB = (b - newColor[2]) * s;
     // Single-row F-S: 7/16 to right neighbor
     if (dx + 1 < 8) {
       local[(dx + 1) * 3] += errR * 7 / 16;
@@ -3570,6 +3915,7 @@ function ditherBlock1Atkinson(pixels, blockX, y, width, inkRgb, paperRgb) {
     local[dx * 3 + 2] = pixels[idx + 2];
   }
 
+  const s = ditherStrength;
   for (let dx = 0; dx < 8; dx++) {
     const li = dx * 3;
     const r = local[li], g = local[li + 1], b = local[li + 2];
@@ -3578,8 +3924,8 @@ function ditherBlock1Atkinson(pixels, blockX, y, width, inkRgb, paperRgb) {
     const useInk = inkDist < paperDist;
     if (useInk) bitmap |= (0x80 >> dx);
     const newColor = useInk ? inkRgb : paperRgb;
-    // Atkinson: 1/8 to right neighbors
-    const errR = (r - newColor[0]) / 8, errG = (g - newColor[1]) / 8, errB = (b - newColor[2]) / 8;
+    // Atkinson: 1/8 to right neighbors (scaled by strength)
+    const errR = (r - newColor[0]) / 8 * s, errG = (g - newColor[1]) / 8 * s, errB = (b - newColor[2]) / 8 * s;
     if (dx + 1 < 8) { local[(dx + 1) * 3] += errR; local[(dx + 1) * 3 + 1] += errG; local[(dx + 1) * 3 + 2] += errB; }
     if (dx + 2 < 8) { local[(dx + 2) * 3] += errR; local[(dx + 2) * 3 + 1] += errG; local[(dx + 2) * 3 + 2] += errB; }
   }
@@ -3599,6 +3945,7 @@ function ditherBlock1Sierra2(pixels, blockX, y, width, inkRgb, paperRgb) {
     local[dx * 3 + 2] = pixels[idx + 2];
   }
 
+  const s = ditherStrength;
   for (let dx = 0; dx < 8; dx++) {
     const li = dx * 3;
     const r = local[li], g = local[li + 1], b = local[li + 2];
@@ -3607,7 +3954,7 @@ function ditherBlock1Sierra2(pixels, blockX, y, width, inkRgb, paperRgb) {
     const useInk = inkDist < paperDist;
     if (useInk) bitmap |= (0x80 >> dx);
     const newColor = useInk ? inkRgb : paperRgb;
-    const errR = r - newColor[0], errG = g - newColor[1], errB = b - newColor[2];
+    const errR = (r - newColor[0]) * s, errG = (g - newColor[1]) * s, errB = (b - newColor[2]) * s;
     if (dx + 1 < 8) { local[(dx + 1) * 3] += errR * 4 / 16; local[(dx + 1) * 3 + 1] += errG * 4 / 16; local[(dx + 1) * 3 + 2] += errB * 4 / 16; }
     if (dx + 2 < 8) { local[(dx + 2) * 3] += errR * 3 / 16; local[(dx + 2) * 3 + 1] += errG * 3 / 16; local[(dx + 2) * 3 + 2] += errB * 3 / 16; }
   }
@@ -3628,6 +3975,7 @@ function ditherBlock1Serpentine(pixels, blockX, y, width, inkRgb, paperRgb) {
     local[dx * 3 + 2] = pixels[idx + 2];
   }
 
+  const s = ditherStrength;
   const leftToRight = (y % 2 === 0);
   for (let i = 0; i < 8; i++) {
     const dx = leftToRight ? i : (7 - i);
@@ -3638,7 +3986,7 @@ function ditherBlock1Serpentine(pixels, blockX, y, width, inkRgb, paperRgb) {
     const useInk = inkDist < paperDist;
     if (useInk) bitmap |= (0x80 >> dx);
     const newColor = useInk ? inkRgb : paperRgb;
-    const errR = r - newColor[0], errG = g - newColor[1], errB = b - newColor[2];
+    const errR = (r - newColor[0]) * s, errG = (g - newColor[1]) * s, errB = (b - newColor[2]) * s;
     const nextDx = dx + (leftToRight ? 1 : -1);
     if (nextDx >= 0 && nextDx < 8) {
       local[nextDx * 3] += errR * 7 / 16;
@@ -3662,6 +4010,7 @@ function ditherBlock1Riemersma(pixels, blockX, y, width, inkRgb, paperRgb) {
     local[dx * 3 + 2] = pixels[idx + 2];
   }
 
+  const s = ditherStrength;
   const histLen = 4;
   const errHist = new Float32Array(histLen * 3);
   let histIdx = 0;
@@ -3675,7 +4024,7 @@ function ditherBlock1Riemersma(pixels, blockX, y, width, inkRgb, paperRgb) {
       errSum2 += errHist[h * 3 + 2] * weight;
     }
     const li = dx * 3;
-    const r = local[li] + errSum0, g = local[li + 1] + errSum1, b = local[li + 2] + errSum2;
+    const r = local[li] + errSum0 * s, g = local[li + 1] + errSum1 * s, b = local[li + 2] + errSum2 * s;
     const inkDist = colorDistance([r, g, b], inkRgb);
     const paperDist = colorDistance([r, g, b], paperRgb);
     const useInk = inkDist < paperDist;
@@ -3697,6 +4046,7 @@ function ditherBlock1BlueNoise(pixels, blockX, y, width, inkRgb, paperRgb) {
   const inkLum = 0.299 * inkRgb[0] + 0.587 * inkRgb[1] + 0.114 * inkRgb[2];
   const paperLum = 0.299 * paperRgb[0] + 0.587 * paperRgb[1] + 0.114 * paperRgb[2];
   const range = Math.abs(inkLum - paperLum);
+  const s = ditherStrength;
 
   for (let dx = 0; dx < 8; dx++) {
     const globalX = blockX * 8 + dx;
@@ -3704,7 +4054,8 @@ function ditherBlock1BlueNoise(pixels, blockX, y, width, inkRgb, paperRgb) {
     const pixelLum = 0.299 * pixels[idx] + 0.587 * pixels[idx + 1] + 0.114 * pixels[idx + 2];
     let t = range > 0 ? (pixelLum - Math.min(inkLum, paperLum)) / range : 0.5;
     t = Math.max(0, Math.min(1, t));
-    const threshold = BLUE_NOISE_16[y % 16][globalX % 16] / 255;
+    const rawThreshold = BLUE_NOISE_16[y % 16][globalX % 16] / 255;
+    const threshold = 0.5 + (rawThreshold - 0.5) * s;
     const useInk = inkLum < paperLum ? (t < threshold) : (t >= (1 - threshold));
     if (useInk) bitmap |= (0x80 >> dx);
   }
@@ -3721,6 +4072,7 @@ function ditherBlock1Pattern(pixels, blockX, y, width, inkRgb, paperRgb) {
   const range = Math.abs(inkLum - paperLum);
   const phaseX = (blockX * 3) % 8;
   const phaseY = (y * 5) % 8;
+  const s = ditherStrength;
 
   for (let dx = 0; dx < 8; dx++) {
     const globalX = blockX * 8 + dx;
@@ -3730,7 +4082,8 @@ function ditherBlock1Pattern(pixels, blockX, y, width, inkRgb, paperRgb) {
     t = Math.max(0, Math.min(1, t));
     const patternY = (0 + phaseY) % 8; // single row within block
     const patternX = (dx + phaseX) % 8;
-    const threshold = (CLUSTER_8X8[patternY][patternX] + 0.5) / 64;
+    const rawThreshold = (CLUSTER_8X8[patternY][patternX] + 0.5) / 64;
+    const threshold = 0.5 + (rawThreshold - 0.5) * s;
     const useInk = inkLum < paperLum ? (t < threshold) : (t >= (1 - threshold));
     if (useInk) bitmap |= (0x80 >> dx);
   }
@@ -3787,6 +4140,12 @@ function convertToMlt(sourceCanvas, dithering, brightness, contrast, saturation 
             break;
           case 'ordered':
             bitmap = ditherBlock1Ordered(floatPixels, blockX, y, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'ordered2':
+            bitmap = ditherBlock1Ordered2(floatPixels, blockX, y, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'ordered8':
+            bitmap = ditherBlock1Ordered8(floatPixels, blockX, y, 256, colors.inkRgb, colors.paperRgb);
             break;
           case 'sierra2':
             bitmap = ditherBlock1Sierra2(floatPixels, blockX, y, 256, colors.inkRgb, colors.paperRgb);
@@ -3925,6 +4284,12 @@ function convertToGmx640(sourceCanvas, dithering, brightness, contrast, saturati
           case 'ordered':
             bitmap = ditherBlock1Ordered(floatPixels, blockX, y, 640, colors.inkRgb, colors.paperRgb);
             break;
+          case 'ordered2':
+            bitmap = ditherBlock1Ordered2(floatPixels, blockX, y, 640, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'ordered8':
+            bitmap = ditherBlock1Ordered8(floatPixels, blockX, y, 640, colors.inkRgb, colors.paperRgb);
+            break;
           case 'sierra2':
             bitmap = ditherBlock1Sierra2(floatPixels, blockX, y, 640, colors.inkRgb, colors.paperRgb);
             break;
@@ -4009,7 +4374,7 @@ function convertToGmx640(sourceCanvas, dithering, brightness, contrast, saturati
  * @param {number} balanceB
  * @returns {Uint8Array} GMX160 data (16128 bytes)
  */
-function convertToGmx160(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0) {
+function convertToGmx160(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, monoOutput = false) {
   updateColorDistanceMode();
 
   const ctx = sourceCanvas.getContext('2d');
@@ -4020,53 +4385,54 @@ function convertToGmx160(sourceCanvas, dithering, brightness, contrast, saturati
 
   applyImageAdjustments(pixels, 320, 200, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
 
-  // Convert to float and double horizontally: 320×200 → 640×200
-  const srcFloat = rgbaToFloat(pixels, 320 * 200);
-  const floatPixels = new Float32Array(640 * 200 * 3);
-  for (let y = 0; y < 200; y++) {
-    for (let x = 0; x < 320; x++) {
-      const si = (y * 320 + x) * 3;
-      const di1 = (y * 640 + x * 2) * 3;
-      const di2 = di1 + 3;
-      floatPixels[di1] = floatPixels[di2] = srcFloat[si];
-      floatPixels[di1 + 1] = floatPixels[di2 + 1] = srcFloat[si + 1];
-      floatPixels[di1 + 2] = floatPixels[di2 + 2] = srcFloat[si + 2];
-    }
+  // Mono output: force grayscale if not already applied
+  if (monoOutput && !grayscale) {
+    applyGrayscale(pixels);
   }
+
+  const srcFloat = rgbaToFloat(pixels, 320 * 200);
 
   const palette = getCombinedPalette();
   const allColors = [...palette.regular, ...palette.bright]; // 16 colors
+
+  // Build 160×200 half-cell grid: each entry is the average color of 2 source pixels
+  // Column mapping: source col c → half-cell c (even = paper half, odd = ink half of cell c/2...
+  // Actually: cell col = floor(halfCol/2), halfCol%2: 0=paper, 1=ink)
+  // But simpler: 160 columns where each covers 2 source pixels horizontally
+  const GW = 160, GH = 200;
+  const grid = new Float32Array(GW * GH * 3);
+  for (let y = 0; y < GH; y++) {
+    for (let hc = 0; hc < GW; hc++) {
+      const sx = hc * 2;
+      const si0 = (y * 320 + sx) * 3;
+      const si1 = (y * 320 + sx + 1) * 3;
+      const gi = (y * GW + hc) * 3;
+      grid[gi]     = (srcFloat[si0]     + srcFloat[si1])     / 2;
+      grid[gi + 1] = (srcFloat[si0 + 1] + srcFloat[si1 + 1]) / 2;
+      grid[gi + 2] = (srcFloat[si0 + 2] + srcFloat[si1 + 2]) / 2;
+    }
+  }
+
+  // Apply dithering to the 160×200 grid using the 16-color palette
+  const method = mapCellDithering(dithering);
+  if (method !== 'none') {
+    applyGlobalDither(method, grid, GW, GH, allColors);
+  }
 
   const output = new Uint8Array(GMX160.TOTAL_SIZE); // 16128 bytes
   // Write header: "GMX\x0F"
   output[0] = 0x47; output[1] = 0x4D; output[2] = 0x58; output[3] = 0x0F;
 
   // 0x0F pattern: bits 00001111 → left 4 pixels = paper (0), right 4 pixels = ink (1)
-  // For each 8×1 cell: compute mean RGB of ink half (right 4px) and paper half (left 4px)
+  // For each cell, read dithered paper and ink half-cell colors, find best attr
   for (let y = 0; y < 200; y++) {
     for (let col = 0; col < 80; col++) {
-      let sumInkR = 0, sumInkG = 0, sumInkB = 0;
-      let sumPaperR = 0, sumPaperG = 0, sumPaperB = 0;
-
-      for (let dx = 0; dx < 8; dx++) {
-        const x = col * 8 + dx;
-        const pi = (y * 640 + x) * 3;
-        const r = floatPixels[pi];
-        const g = floatPixels[pi + 1];
-        const b = floatPixels[pi + 2];
-        if (dx >= 4) { // ink positions (right 4 pixels)
-          sumInkR += r; sumInkG += g; sumInkB += b;
-        } else { // paper positions (left 4 pixels)
-          sumPaperR += r; sumPaperG += g; sumPaperB += b;
-        }
-      }
-
-      const mInkR = sumInkR / 4;
-      const mInkG = sumInkG / 4;
-      const mInkB = sumInkB / 4;
-      const mPaperR = sumPaperR / 4;
-      const mPaperG = sumPaperG / 4;
-      const mPaperB = sumPaperB / 4;
+      const paperHc = col * 2;
+      const inkHc = col * 2 + 1;
+      const pi = (y * GW + paperHc) * 3;
+      const ii = (y * GW + inkHc) * 3;
+      const mPaperR = grid[pi], mPaperG = grid[pi + 1], mPaperB = grid[pi + 2];
+      const mInkR = grid[ii], mInkG = grid[ii + 1], mInkB = grid[ii + 2];
 
       // Find best ink+paper+bright combo
       let bestErr = Infinity, bestAttr = 0;
@@ -4360,6 +4726,12 @@ function convertToMltUla(sourceCanvas, dithering, brightness, contrast, saturati
           case 'ordered':
             bitmap = ditherBlock1Ordered(floatPixels, blockX, y, 256, colors.inkRgb, colors.paperRgb);
             break;
+          case 'ordered2':
+            bitmap = ditherBlock1Ordered2(floatPixels, blockX, y, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'ordered8':
+            bitmap = ditherBlock1Ordered8(floatPixels, blockX, y, 256, colors.inkRgb, colors.paperRgb);
+            break;
           case 'sierra2':
             bitmap = ditherBlock1Sierra2(floatPixels, blockX, y, 256, colors.inkRgb, colors.paperRgb);
             break;
@@ -4597,6 +4969,75 @@ function analyzeBlock4Mono(pixels, blockX, blockY, width, inkRgb, paperRgb) {
 /**
  * No dithering for 8×4 block
  */
+function ditherBlock4FloydSteinberg(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  return ditherBlockErrorDiffusion(pixels, blockX, blockY * 4, 4, width, inkRgb, paperRgb, BLOCK_FS_KERNEL);
+}
+
+function ditherBlock4Atkinson(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  return ditherBlockErrorDiffusion(pixels, blockX, blockY * 4, 4, width, inkRgb, paperRgb, BLOCK_ATKINSON_KERNEL);
+}
+
+function ditherBlock4Ordered(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  return ditherBlockOrderedGeneric(pixels, blockX, blockY * 4, 4, width, inkRgb, paperRgb, BAYER_4X4, 4, 16);
+}
+
+function ditherBlock4Ordered2(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  return ditherBlockOrderedGeneric(pixels, blockX, blockY * 4, 4, width, inkRgb, paperRgb, BAYER_2X2, 2, 4);
+}
+
+function ditherBlock4Ordered8(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  return ditherBlockOrderedGeneric(pixels, blockX, blockY * 4, 4, width, inkRgb, paperRgb, BAYER_8X8, 8, 64);
+}
+
+function ditherBlock4Sierra2(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  return ditherBlockErrorDiffusion(pixels, blockX, blockY * 4, 4, width, inkRgb, paperRgb, BLOCK_SIERRA2_KERNEL);
+}
+
+function ditherBlock4Serpentine(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  const local = new Float32Array(8 * 4 * 3);
+  for (let dy = 0; dy < 4; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const srcIdx = ((blockY * 4 + dy) * width + (blockX * 8 + dx)) * 3;
+      const dstIdx = (dy * 8 + dx) * 3;
+      local[dstIdx] = pixels[srcIdx]; local[dstIdx + 1] = pixels[srcIdx + 1]; local[dstIdx + 2] = pixels[srcIdx + 2];
+    }
+  }
+  const s = ditherStrength;
+  const bitmap = new Uint8Array(4);
+  for (let dy = 0; dy < 4; dy++) {
+    const ltr = (dy % 2 === 0);
+    for (let i = 0; i < 8; i++) {
+      const dx = ltr ? i : (7 - i);
+      const idx = (dy * 8 + dx) * 3;
+      const r = local[idx], g = local[idx + 1], b = local[idx + 2];
+      const inkDist = colorDistance([r, g, b], inkRgb);
+      const paperDist = colorDistance([r, g, b], paperRgb);
+      const useInk = inkDist < paperDist;
+      if (useInk) bitmap[dy] |= (0x80 >> dx);
+      const nc = useInk ? inkRgb : paperRgb;
+      const er = (r - nc[0]) * s, eg = (g - nc[1]) * s, eb = (b - nc[2]) * s;
+      const diffuse = (ddx, ddy, w) => {
+        const nx = dx + (ltr ? ddx : -ddx), ny = dy + ddy;
+        if (nx >= 0 && nx < 8 && ny < 4) { const ni = (ny * 8 + nx) * 3; local[ni] += er * w; local[ni + 1] += eg * w; local[ni + 2] += eb * w; }
+      };
+      diffuse(1, 0, 7/16); diffuse(-1, 1, 3/16); diffuse(0, 1, 5/16); diffuse(1, 1, 1/16);
+    }
+  }
+  return bitmap;
+}
+
+function ditherBlock4Riemersma(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  return ditherBlockRiemersma(pixels, blockX, blockY * 4, 4, width, inkRgb, paperRgb);
+}
+
+function ditherBlock4BlueNoise(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  return ditherBlockThreshold(pixels, blockX, blockY * 4, 4, width, inkRgb, paperRgb, 'blue-noise');
+}
+
+function ditherBlock4Pattern(pixels, blockX, blockY, width, inkRgb, paperRgb) {
+  return ditherBlockThreshold(pixels, blockX, blockY * 4, 4, width, inkRgb, paperRgb, 'pattern');
+}
+
 function ditherBlock4None(pixels, blockX, blockY, width, inkRgb, paperRgb) {
   const bitmap = new Uint8Array(4);
 
@@ -4678,7 +5119,41 @@ function convertToBmc4(sourceCanvas, dithering, brightness, contrast, saturation
           ink: 0, paper: 7, bright: true,
           inkRgb: palette.bright[0], paperRgb: palette.bright[7]
         } : findBlockColors4(floatPixels, blockX, blockY, 256, palette);
-        bitmap = ditherBlock4None(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+        switch (cellDitherMethod) {
+          case 'floyd':
+            bitmap = ditherBlock4FloydSteinberg(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'atkinson':
+            bitmap = ditherBlock4Atkinson(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'ordered':
+            bitmap = ditherBlock4Ordered(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'ordered2':
+            bitmap = ditherBlock4Ordered2(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'ordered8':
+            bitmap = ditherBlock4Ordered8(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'sierra2':
+            bitmap = ditherBlock4Sierra2(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'serpentine':
+            bitmap = ditherBlock4Serpentine(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'riemersma':
+            bitmap = ditherBlock4Riemersma(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'blue-noise':
+            bitmap = ditherBlock4BlueNoise(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'pattern':
+            bitmap = ditherBlock4Pattern(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          default:
+            bitmap = ditherBlock4None(floatPixels, blockX, blockY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+        }
       } else {
         const block = monoOutput
           ? analyzeBlock4Mono(floatPixels, blockX, blockY, 256, palette.bright[0], palette.bright[7])
@@ -4712,41 +5187,38 @@ function convertToBmc4(sourceCanvas, dithering, brightness, contrast, saturation
   let borderOffset = 7680;
 
   const encodeFullBorderLine = (y) => {
+    // 384 pixels = 48 segments of 8px each
     // Calculate best color per 8px cell
     const segColors = new Array(48);
     for (let seg = 0; seg < 48; seg++) {
       segColors[seg] = findNearestBorderColor(getBlockAverageColor(pixels, 384, seg * 8, y, 8), regularPalette);
     }
 
-    // Enforce 24px (3-cell) minimum run length for interior segments (3-44).
-    // Edge segments 0-2 and 45-47 can be any width (they touch frame/paper edge).
-    // A short interior run is OK if it touches an edge segment of the same color.
-    // Merge remaining short runs into their longer neighbor; repeat until stable.
+    // Enforce 24px (3-segment) minimum run length.
+    // On real hardware, each OUT to port $FE takes 12 T-states = 24 pixels.
+    // Only the first and last runs (touching frame edges) can be shorter.
+    // Repeatedly merge short interior runs into their longer neighbor.
     let changed = true;
     while (changed) {
       changed = false;
-      for (let i = 3; i < 45; ) {
-        const color = segColors[i];
-        let runEnd = i + 1;
-        while (runEnd < 45 && segColors[runEnd] === color) runEnd++;
-        const runLen = runEnd - i;
-        if (runLen < 3) {
-          let totalLen = runLen;
-          for (let j = i - 1; j >= 0 && segColors[j] === color; j--) totalLen++;
-          for (let j = runEnd; j < 48 && segColors[j] === color; j++) totalLen++;
-          if (totalLen < 3) {
-            const prevColor = segColors[i - 1];
-            const nextColor = runEnd < 45 ? segColors[runEnd] : segColors[44];
-            let prevLen = 0;
-            for (let j = i - 1; j >= 0 && segColors[j] === prevColor; j--) prevLen++;
-            let nextLen = 0;
-            for (let j = runEnd; j < 48 && segColors[j] === nextColor; j++) nextLen++;
-            const mergeColor = prevLen >= nextLen ? prevColor : nextColor;
-            for (let j = i; j < runEnd; j++) segColors[j] = mergeColor;
-            changed = true;
-          }
-        }
-        i = runEnd;
+      const runs = [];
+      let ri = 0;
+      while (ri < 48) {
+        const color = segColors[ri];
+        let rEnd = ri + 1;
+        while (rEnd < 48 && segColors[rEnd] === color) rEnd++;
+        runs.push({ start: ri, end: rEnd, len: rEnd - ri, color });
+        ri = rEnd;
+      }
+      for (let r = 1; r < runs.length - 1; r++) {
+        const run = runs[r];
+        if (run.len >= 3) continue;
+        const prevRun = runs[r - 1];
+        const nextRun = runs[r + 1];
+        const mergeColor = prevRun.len >= nextRun.len ? prevRun.color : nextRun.color;
+        for (let j = run.start; j < run.end; j++) segColors[j] = mergeColor;
+        changed = true;
+        break;
       }
     }
 
@@ -4756,21 +5228,67 @@ function convertToBmc4(sourceCanvas, dithering, brightness, contrast, saturation
     }
   };
 
+  // Side border: 64 pixels = 8 segments of 8px each per side
+  // Left border: segment 0 touches frame edge, segment 7 touches paper
+  // Right border: segment 0 touches paper, segment 7 touches frame edge
+  // Interior segments need 24px (3-segment) minimum enforcement
   const encodeSideBorderLine = (y) => {
     // Left border (64 pixels = 8 segments, 4 bytes)
+    const leftColors = new Array(8);
+    for (let seg = 0; seg < 8; seg++) {
+      leftColors[seg] = findNearestBorderColor(getBlockAverageColor(pixels, 384, seg * 8, y, 8), regularPalette);
+    }
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const runs = [];
+      let ri = 0;
+      while (ri < 8) {
+        const color = leftColors[ri];
+        let rEnd = ri + 1;
+        while (rEnd < 8 && leftColors[rEnd] === color) rEnd++;
+        runs.push({ start: ri, end: rEnd, len: rEnd - ri, color });
+        ri = rEnd;
+      }
+      for (let r = 1; r < runs.length - 1; r++) {
+        if (runs[r].len >= 3) continue;
+        const mergeColor = runs[r - 1].len >= runs[r + 1].len ? runs[r - 1].color : runs[r + 1].color;
+        for (let j = runs[r].start; j < runs[r].end; j++) leftColors[j] = mergeColor;
+        changed = true;
+        break;
+      }
+    }
     for (let i = 0; i < 4; i++) {
-      const x = i * 16;
-      const color1 = findNearestBorderColor(getBlockAverageColor(pixels, 384, x, y, 8), regularPalette);
-      const color2 = findNearestBorderColor(getBlockAverageColor(pixels, 384, x + 8, y, 8), regularPalette);
-      bmc4[borderOffset++] = color1 | (color2 << 3);
+      bmc4[borderOffset++] = leftColors[i * 2] | (leftColors[i * 2 + 1] << 3);
     }
 
     // Right border (64 pixels = 8 segments, 4 bytes)
+    const rightColors = new Array(8);
+    for (let seg = 0; seg < 8; seg++) {
+      rightColors[seg] = findNearestBorderColor(getBlockAverageColor(pixels, 384, 320 + seg * 8, y, 8), regularPalette);
+    }
+    changed = true;
+    while (changed) {
+      changed = false;
+      const runs = [];
+      let ri = 0;
+      while (ri < 8) {
+        const color = rightColors[ri];
+        let rEnd = ri + 1;
+        while (rEnd < 8 && rightColors[rEnd] === color) rEnd++;
+        runs.push({ start: ri, end: rEnd, len: rEnd - ri, color });
+        ri = rEnd;
+      }
+      for (let r = 1; r < runs.length - 1; r++) {
+        if (runs[r].len >= 3) continue;
+        const mergeColor = runs[r - 1].len >= runs[r + 1].len ? runs[r - 1].color : runs[r + 1].color;
+        for (let j = runs[r].start; j < runs[r].end; j++) rightColors[j] = mergeColor;
+        changed = true;
+        break;
+      }
+    }
     for (let i = 0; i < 4; i++) {
-      const x = 320 + i * 16;
-      const color1 = findNearestBorderColor(getBlockAverageColor(pixels, 384, x, y, 8), regularPalette);
-      const color2 = findNearestBorderColor(getBlockAverageColor(pixels, 384, x + 8, y, 8), regularPalette);
-      bmc4[borderOffset++] = color1 | (color2 << 3);
+      bmc4[borderOffset++] = rightColors[i * 2] | (rightColors[i * 2 + 1] << 3);
     }
   };
 
@@ -4929,7 +5447,7 @@ const RGB3_CONST = {
  * Each pixel can be one of 8 colors (RGB combinations)
  * @returns {Uint8Array} 18432-byte RGB3 data
  */
-function convertToRgb3(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0) {
+function convertToRgb3(sourceCanvas, dithering, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, monoOutput = false) {
   updateColorDistanceMode();
 
   const ctx = sourceCanvas.getContext('2d');
@@ -4939,6 +5457,11 @@ function convertToRgb3(sourceCanvas, dithering, brightness, contrast, saturation
   const pixels = imageData.data;
 
   applyImageAdjustments(pixels, 256, 192, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
+
+  // Mono output: force grayscale if not already applied
+  if (monoOutput && !grayscale) {
+    applyGrayscale(pixels);
+  }
 
   const floatPixels = rgbaToFloat(pixels, 256 * 192);
 
@@ -5421,9 +5944,10 @@ function nearestGigaQuadBits(pr, pg, pb, quadColors) {
  * @param {number} balanceG
  * @param {number} balanceB
  * @param {number} cellHeight - 8 (gigascreen/mg8), 4 (mg4), 2 (mg2), 1 (mg1)
+ * @param {boolean} [monoOutput=false] - true: force grayscale input (B&W output via flicker)
  * @returns {Uint8Array}
  */
-function convertToGigascreen(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, cellHeight) {
+function convertToGigascreen(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, cellHeight, monoOutput = false) {
   updateColorDistanceMode();
 
   const ctx = sourceCanvas.getContext('2d');
@@ -5431,6 +5955,10 @@ function convertToGigascreen(sourceCanvas, dithering, brightness, contrast, satu
   const imageData = ctx.getImageData(0, 0, 256, 192);
   const pixels = imageData.data;
   applyImageAdjustments(pixels, 256, 192, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
+  // Mono output: force grayscale if not already applied
+  if (monoOutput && !grayscale) {
+    applyGrayscale(pixels);
+  }
   const floatPixels = rgbaToFloat(pixels, 256 * 192);
 
   const palette = getCombinedPalette();
@@ -5866,9 +6394,10 @@ function getSelectedImportHlrPattern() {
  * @param {number} balanceG
  * @param {number} balanceB
  * @param {Uint8Array|number[]|null} [patternBytes]  8-byte pattern, or null/undefined to auto-detect
+ * @param {boolean} [monoOutput=false] - true: force grayscale input (B&W output via flicker)
  * @returns {Uint8Array} 13824-byte gigascreen-shaped buffer with `.hlrPattern` attached
  */
-function convertToHlr(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, patternBytes) {
+function convertToHlr(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, patternBytes, monoOutput = false) {
   updateColorDistanceMode();
 
   const ctx = sourceCanvas.getContext('2d');
@@ -5876,6 +6405,10 @@ function convertToHlr(sourceCanvas, dithering, brightness, contrast, saturation,
   const imageData = ctx.getImageData(0, 0, 256, 192);
   const pixels = imageData.data;
   applyImageAdjustments(pixels, 256, 192, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
+  // Mono output: force grayscale if not already applied
+  if (monoOutput && !grayscale) {
+    applyGrayscale(pixels);
+  }
   const floatPixels = rgbaToFloat(pixels, 256 * 192);
 
   const palette = getCombinedPalette();
@@ -6062,9 +6595,10 @@ function packHlrFileFromGiga(gigaData, pattern) {
  * @param {number} balanceR
  * @param {number} balanceG
  * @param {number} balanceB
+ * @param {boolean} [monoOutput=false] - true: force grayscale input (B&W output via flicker)
  * @returns {Uint8Array} 15360-byte gigascreen-shaped buffer
  */
-function convertToStl(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB) {
+function convertToStl(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput = false) {
   updateColorDistanceMode();
 
   const ctx = sourceCanvas.getContext('2d');
@@ -6072,6 +6606,10 @@ function convertToStl(sourceCanvas, dithering, brightness, contrast, saturation,
   const imageData = ctx.getImageData(0, 0, 256, 192);
   const pixels = imageData.data;
   applyImageAdjustments(pixels, 256, 192, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
+  // Mono output: force grayscale if not already applied
+  if (monoOutput && !grayscale) {
+    applyGrayscale(pixels);
+  }
   const floatPixels = rgbaToFloat(pixels, 256 * 192);
 
   const palette = getCombinedPalette();
@@ -6249,9 +6787,10 @@ function getBlockAverageColor(pixels, width, x, y, blockWidth = 32) {
  * @param {number} balanceG - Green channel adjustment
  * @param {number} balanceB - Blue channel adjustment
  * @param {string} pattern - Pattern type: 'checker', 'stripes', or 'dd77'
+ * @param {boolean} [monoOutput=false] - true: force grayscale input
  * @returns {Uint8Array} 768-byte attribute data
  */
-function convertTo53c(sourceCanvas, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, pattern = 'checker') {
+function convertTo53c(sourceCanvas, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, pattern = 'checker', monoOutput = false) {
   // Cache color distance mode setting once at start
   updateColorDistanceMode();
 
@@ -6262,7 +6801,7 @@ function convertTo53c(sourceCanvas, brightness, contrast, saturation = 0, gamma 
   const pixels = imageData.data;
 
   // Apply adjustments
-  if (grayscale) {
+  if (grayscale || monoOutput) {
     applyGrayscale(pixels);
   }
   if (smoothing > 0) {
@@ -6389,9 +6928,10 @@ function convertTo53c(sourceCanvas, brightness, contrast, saturation = 0, gamma 
  * @param {number} [balanceR=0]
  * @param {number} [balanceG=0]
  * @param {number} [balanceB=0]
+ * @param {boolean} [monoOutput=false] - true: force grayscale input
  * @returns {{stream: Uint8Array, charGrid: Uint8Array, attrGrid: Uint8Array, mask: Uint8Array}}
  */
-function convertToSpecscii(sourceCanvas, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, charset = 'full') {
+function convertToSpecscii(sourceCanvas, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, charset = 'full', monoOutput = false) {
   updateColorDistanceMode();
 
   const ctx = sourceCanvas.getContext('2d');
@@ -6401,6 +6941,11 @@ function convertToSpecscii(sourceCanvas, brightness, contrast, saturation = 0, g
   const pixels = imageData.data;
 
   applyImageAdjustments(pixels, 256, 192, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
+
+  // Mono output: force grayscale if not already applied
+  if (monoOutput && !grayscale) {
+    applyGrayscale(pixels);
+  }
 
   const floatPixels = rgbaToFloat(pixels, 256 * 192);
   const palette = getCombinedPalette();
@@ -6731,38 +7276,34 @@ function convertToBsc(sourceCanvas, dithering, brightness, contrast, saturation 
       segColors[seg] = findNearestBorderColor(getBlockAverageColor(pixels, 384, seg * 8, y, 8), regularPalette);
     }
 
-    // Enforce 24px (3-cell) minimum run length for interior segments (3-44).
-    // Edge segments 0-2 and 45-47 can be any width (they touch frame/paper edge).
-    // A short interior run is OK if it touches an edge segment of the same color
-    // (the combined run across the boundary counts).
-    // Merge remaining short runs into their longer neighbor; repeat until stable.
+    // Enforce 24px (3-segment) minimum run length.
+    // On real hardware, each OUT to port $FE takes 12 T-states = 24 pixels.
+    // Only the first and last runs (touching frame edges) can be shorter.
+    // Repeatedly merge short interior runs into their longer neighbor.
     let changed = true;
     while (changed) {
       changed = false;
-      for (let i = 3; i < 45; ) {
-        const color = segColors[i];
-        let runEnd = i + 1;
-        while (runEnd < 45 && segColors[runEnd] === color) runEnd++;
-        const runLen = runEnd - i;
-        if (runLen < 3) {
-          // Count how far this color extends into edge/neighbor territory
-          let totalLen = runLen;
-          for (let j = i - 1; j >= 0 && segColors[j] === color; j--) totalLen++;
-          for (let j = runEnd; j < 48 && segColors[j] === color; j++) totalLen++;
-          if (totalLen < 3) {
-            // Truly short — merge into the longer neighbor
-            const prevColor = segColors[i - 1];
-            const nextColor = runEnd < 45 ? segColors[runEnd] : segColors[44];
-            let prevLen = 0;
-            for (let j = i - 1; j >= 0 && segColors[j] === prevColor; j--) prevLen++;
-            let nextLen = 0;
-            for (let j = runEnd; j < 48 && segColors[j] === nextColor; j++) nextLen++;
-            const mergeColor = prevLen >= nextLen ? prevColor : nextColor;
-            for (let j = i; j < runEnd; j++) segColors[j] = mergeColor;
-            changed = true;
-          }
-        }
-        i = runEnd;
+      // Build runs
+      const runs = [];
+      let ri = 0;
+      while (ri < 48) {
+        const color = segColors[ri];
+        let rEnd = ri + 1;
+        while (rEnd < 48 && segColors[rEnd] === color) rEnd++;
+        runs.push({ start: ri, end: rEnd, len: rEnd - ri, color });
+        ri = rEnd;
+      }
+      // Check each run for minimum length (skip first and last — they touch frame edges)
+      for (let r = 1; r < runs.length - 1; r++) {
+        const run = runs[r];
+        if (run.len >= 3) continue;
+        // Merge into longer neighbor
+        const prevRun = runs[r - 1];
+        const nextRun = runs[r + 1];
+        const mergeColor = prevRun.len >= nextRun.len ? prevRun.color : nextRun.color;
+        for (let j = run.start; j < run.end; j++) segColors[j] = mergeColor;
+        changed = true;
+        break; // restart after each merge
       }
     }
 
@@ -6772,24 +7313,69 @@ function convertToBsc(sourceCanvas, dithering, brightness, contrast, saturation 
     }
   };
 
-  // Side border: 64 pixels = 8 segments of 8px each
-  // Entire side border touches screen edge on one side and paper on the other
-  // So ALL segments can use 8px granularity (no true "interior")
+  // Side border: 64 pixels = 8 segments of 8px each per side
+  // Left border: segment 0 touches frame edge, segment 7 touches paper
+  // Right border: segment 0 touches paper, segment 7 touches frame edge
+  // Interior segments need 24px (3-segment) minimum enforcement
   const encodeSideBorderLine = (y) => {
     // Left border (64 pixels = 8 segments, 4 bytes)
+    const leftColors = new Array(8);
+    for (let seg = 0; seg < 8; seg++) {
+      leftColors[seg] = findNearestBorderColor(getBlockAverageColor(pixels, 384, seg * 8, y, 8), regularPalette);
+    }
+    // Enforce 24px minimum for interior runs (skip first and last — they touch edges)
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const runs = [];
+      let ri = 0;
+      while (ri < 8) {
+        const color = leftColors[ri];
+        let rEnd = ri + 1;
+        while (rEnd < 8 && leftColors[rEnd] === color) rEnd++;
+        runs.push({ start: ri, end: rEnd, len: rEnd - ri, color });
+        ri = rEnd;
+      }
+      for (let r = 1; r < runs.length - 1; r++) {
+        if (runs[r].len >= 3) continue;
+        const mergeColor = runs[r - 1].len >= runs[r + 1].len ? runs[r - 1].color : runs[r + 1].color;
+        for (let j = runs[r].start; j < runs[r].end; j++) leftColors[j] = mergeColor;
+        changed = true;
+        break;
+      }
+    }
     for (let i = 0; i < 4; i++) {
-      const x = i * 16;
-      const color1 = findNearestBorderColor(getBlockAverageColor(pixels, 384, x, y, 8), regularPalette);
-      const color2 = findNearestBorderColor(getBlockAverageColor(pixels, 384, x + 8, y, 8), regularPalette);
-      bsc[borderOffset++] = color1 | (color2 << 3);
+      bsc[borderOffset++] = leftColors[i * 2] | (leftColors[i * 2 + 1] << 3);
     }
 
     // Right border (64 pixels = 8 segments, 4 bytes)
+    const rightColors = new Array(8);
+    for (let seg = 0; seg < 8; seg++) {
+      rightColors[seg] = findNearestBorderColor(getBlockAverageColor(pixels, 384, 320 + seg * 8, y, 8), regularPalette);
+    }
+    // Enforce 24px minimum for interior runs
+    changed = true;
+    while (changed) {
+      changed = false;
+      const runs = [];
+      let ri = 0;
+      while (ri < 8) {
+        const color = rightColors[ri];
+        let rEnd = ri + 1;
+        while (rEnd < 8 && rightColors[rEnd] === color) rEnd++;
+        runs.push({ start: ri, end: rEnd, len: rEnd - ri, color });
+        ri = rEnd;
+      }
+      for (let r = 1; r < runs.length - 1; r++) {
+        if (runs[r].len >= 3) continue;
+        const mergeColor = runs[r - 1].len >= runs[r + 1].len ? runs[r - 1].color : runs[r + 1].color;
+        for (let j = runs[r].start; j < runs[r].end; j++) rightColors[j] = mergeColor;
+        changed = true;
+        break;
+      }
+    }
     for (let i = 0; i < 4; i++) {
-      const x = 320 + i * 16;
-      const color1 = findNearestBorderColor(getBlockAverageColor(pixels, 384, x, y, 8), regularPalette);
-      const color2 = findNearestBorderColor(getBlockAverageColor(pixels, 384, x + 8, y, 8), regularPalette);
-      bsc[borderOffset++] = color1 | (color2 << 3);
+      bsc[borderOffset++] = rightColors[i * 2] | (rightColors[i * 2 + 1] << 3);
     }
   };
 
@@ -6862,6 +7448,12 @@ function convertMainAreaToScr(sourceCanvas, dithering, monoOutput = false) {
             break;
           case 'ordered':
             bitmap = ditherCellOrdered(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'ordered2':
+            bitmap = ditherCellOrdered2(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+            break;
+          case 'ordered8':
+            bitmap = ditherCellOrdered8(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
             break;
           case 'sierra2':
             bitmap = ditherCellSierra2(floatPixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
@@ -7080,8 +7672,25 @@ function renderBscToCanvas(bscData, canvas, zoom = 2) {
   }
 }
 
-/** @type {number} - Current import dialog zoom level */
+/** @type {number} - Current import dialog zoom level (0=fit, 1-5=fixed) */
 let importZoom = 2;
+
+/** @type {number} - Current import dialog source image zoom level (0=fit, 1-4=fixed) */
+let importSourceZoom = 0;
+
+/**
+ * Get effective preview zoom value (resolves 0=fit to integer based on format dimensions)
+ * @param {number} zoom - Raw zoom value (0=fit, 1-5=fixed)
+ * @returns {number}
+ */
+function getEffectivePreviewZoom(zoom) {
+  if (zoom === 0) {
+    const format = importElements?.format?.value || 'scr';
+    const dims = getImportFormatDimensions(format);
+    return Math.max(1, Math.floor(Math.min(512 / dims.w, 384 / dims.h)));
+  }
+  return zoom;
+}
 
 /**
  * Render preview to canvas with zoom
@@ -7433,8 +8042,9 @@ function renderGmxToCanvas(gmxData, canvas, zoom = 2, isGmx160 = false) {
   const nativeW = isGmx160 ? 320 : 640;
   const nativeH = 200;
 
-  // Display at native width × doubled height to preserve all pixels
-  canvas.width = nativeW * zoom;
+  // Both modes display at 640×400: GMX640 native 640 + rows doubled,
+  // GMX160 native 320 + pixels doubled horizontally + rows doubled
+  canvas.width = 640 * zoom;
   canvas.height = nativeH * 2 * zoom;
 
   const palette = getCombinedPalette();
@@ -7484,12 +8094,13 @@ function renderGmxToCanvas(gmxData, canvas, zoom = 2, isGmx160 = false) {
     }
   }
 
-  // Put native image on temp canvas, then stretch vertically ×2 (no horizontal squeeze)
+  // Put native image on temp canvas, then stretch to 640×400 display
+  // GMX640: 640→640 (1:1 horizontal) + rows doubled; GMX160: 320→640 (2:1 horizontal) + rows doubled
   const temp = getImportTempCanvas(nativeW, nativeH);
   if (temp) {
     temp.ctx.putImageData(imageData, 0, 0);
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(temp.canvas, 0, 0, nativeW * zoom, nativeH * 2 * zoom);
+    ctx.drawImage(temp.canvas, 0, 0, 640 * zoom, nativeH * 2 * zoom);
   }
 }
 
@@ -7842,9 +8453,12 @@ function renderMonoToCanvas(monoData, canvas, zoom = 2, thirds = 3) {
  * @param {number} balanceG
  * @param {number} balanceB
  * @param {boolean} optimizePalette - true: pick best 256 from RGB333; false: use default RGB332
+ * @param {boolean} [monoOutput=false] - true: force B&W palette (index 0=black, rest=white)
  * @returns {{palette: number[][], paletteR3: Uint8Array, paletteG3: Uint8Array, paletteB3: Uint8Array, pixels: Uint8Array}}
  */
-function quantizeNextPixels(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, optimizePalette) {
+function quantizeNextPixels(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, optimizePalette, monoOutput = false) {
+  // Map cell-aware methods to global equivalents (pixel-based formats have no cells)
+  dithering = mapCellDithering(dithering);
   const W = 256, H = 192;
   const ctx = sourceCanvas.getContext('2d');
   if (!ctx) return { palette: [], paletteR3: new Uint8Array(256), paletteG3: new Uint8Array(256), paletteB3: new Uint8Array(256), pixels: new Uint8Array(W * H) };
@@ -7854,6 +8468,14 @@ function quantizeNextPixels(sourceCanvas, dithering, brightness, contrast, satur
 
   // Apply adjustments
   applyImageAdjustments(src, W, H, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
+
+  // Mono output: force grayscale if not already applied
+  if (monoOutput && !grayscale) {
+    for (let i = 0; i < W * H; i++) {
+      const gray = Math.round(src[i * 4] * 0.2126 + src[i * 4 + 1] * 0.7152 + src[i * 4 + 2] * 0.0722);
+      src[i * 4] = gray; src[i * 4 + 1] = gray; src[i * 4 + 2] = gray;
+    }
+  }
 
   // Build palette
   const palette = new Array(256);
@@ -7905,6 +8527,17 @@ function quantizeNextPixels(sourceCanvas, dithering, brightness, contrast, satur
     }
   }
 
+  // Mono output: override palette to black and white only
+  if (monoOutput) {
+    for (let i = 0; i < 256; i++) {
+      if (i === 0) {
+        palette[i] = [0, 0, 0]; palR3[i] = 0; palG3[i] = 0; palB3[i] = 0;
+      } else {
+        palette[i] = [255, 255, 255]; palR3[i] = 7; palG3[i] = 7; palB3[i] = 7;
+      }
+    }
+  }
+
   // Find nearest palette entry
   function findNearest(r, g, b) {
     let bestIdx = 0, bestDist = Infinity;
@@ -7927,51 +8560,18 @@ function quantizeNextPixels(sourceCanvas, dithering, brightness, contrast, satur
   }
 
   const pixels = new Uint8Array(W * H);
-  const useDither = dithering !== 'none' && dithering !== 'ordered' && dithering !== 'ordered8';
 
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const idx = y * W + x;
-      const r = Math.max(0, Math.min(255, Math.round(work[idx * 3])));
-      const g = Math.max(0, Math.min(255, Math.round(work[idx * 3 + 1])));
-      const b = Math.max(0, Math.min(255, Math.round(work[idx * 3 + 2])));
+  // Apply dithering via applyGlobalDither (supports all methods)
+  if (dithering !== 'none') {
+    applyGlobalDither(dithering, work, W, H, palette);
+  }
 
-      const palIdx = findNearest(r, g, b);
-      pixels[idx] = palIdx;
-
-      if (useDither) {
-        const er = r - palette[palIdx][0];
-        const eg = g - palette[palIdx][1];
-        const eb = b - palette[palIdx][2];
-        // Floyd-Steinberg error diffusion
-        if (x + 1 < W) {
-          const n = idx + 1;
-          work[n * 3] += er * 7 / 16;
-          work[n * 3 + 1] += eg * 7 / 16;
-          work[n * 3 + 2] += eb * 7 / 16;
-        }
-        if (y + 1 < H) {
-          if (x > 0) {
-            const n = idx + W - 1;
-            work[n * 3] += er * 3 / 16;
-            work[n * 3 + 1] += eg * 3 / 16;
-            work[n * 3 + 2] += eb * 3 / 16;
-          }
-          {
-            const n = idx + W;
-            work[n * 3] += er * 5 / 16;
-            work[n * 3 + 1] += eg * 5 / 16;
-            work[n * 3 + 2] += eb * 5 / 16;
-          }
-          if (x + 1 < W) {
-            const n = idx + W + 1;
-            work[n * 3] += er * 1 / 16;
-            work[n * 3 + 1] += eg * 1 / 16;
-            work[n * 3 + 2] += eb * 1 / 16;
-          }
-        }
-      }
-    }
+  // Map dithered pixels to palette indices
+  for (let i = 0; i < W * H; i++) {
+    const r = Math.max(0, Math.min(255, Math.round(work[i * 3])));
+    const g = Math.max(0, Math.min(255, Math.round(work[i * 3 + 1])));
+    const b = Math.max(0, Math.min(255, Math.round(work[i * 3 + 2])));
+    pixels[i] = findNearest(r, g, b);
   }
 
   return { palette, paletteR3: palR3, paletteG3: palG3, paletteB3: palB3, pixels };
@@ -7997,9 +8597,12 @@ function quantizeNextPixels(sourceCanvas, dithering, brightness, contrast, satur
  * @param {number} balanceG
  * @param {number} balanceB
  * @param {boolean} optimizePalette
+ * @param {boolean} [monoOutput=false] - true: force B&W palette (index 0=black, rest=white)
  * @returns {{palette: number[][], paletteR3: Uint8Array, paletteG3: Uint8Array, paletteB3: Uint8Array, pixels: Uint8Array}}
  */
-function quantizeNextPixelsExt(sourceCanvas, W, H, paletteSize, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, optimizePalette) {
+function quantizeNextPixelsExt(sourceCanvas, W, H, paletteSize, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, optimizePalette, monoOutput = false) {
+  // Map cell-aware methods to global equivalents (pixel-based formats have no cells)
+  dithering = mapCellDithering(dithering);
   const ctx = sourceCanvas.getContext('2d');
   if (!ctx) return { palette: [], paletteR3: new Uint8Array(paletteSize), paletteG3: new Uint8Array(paletteSize), paletteB3: new Uint8Array(paletteSize), pixels: new Uint8Array(W * H) };
 
@@ -8007,6 +8610,14 @@ function quantizeNextPixelsExt(sourceCanvas, W, H, paletteSize, dithering, brigh
   const src = imageData.data;
 
   applyImageAdjustments(src, W, H, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
+
+  // Mono output: force grayscale if not already applied
+  if (monoOutput && !grayscale) {
+    for (let i = 0; i < W * H; i++) {
+      const gray = Math.round(src[i * 4] * 0.2126 + src[i * 4 + 1] * 0.7152 + src[i * 4 + 2] * 0.0722);
+      src[i * 4] = gray; src[i * 4 + 1] = gray; src[i * 4 + 2] = gray;
+    }
+  }
 
   const palette = new Array(paletteSize);
   const palR3 = new Uint8Array(paletteSize);
@@ -8047,6 +8658,17 @@ function quantizeNextPixelsExt(sourceCanvas, W, H, paletteSize, dithering, brigh
     }
   }
 
+  // Mono output: override palette to black and white only
+  if (monoOutput) {
+    for (let i = 0; i < paletteSize; i++) {
+      if (i === 0) {
+        palette[i] = [0, 0, 0]; palR3[i] = 0; palG3[i] = 0; palB3[i] = 0;
+      } else {
+        palette[i] = [255, 255, 255]; palR3[i] = 7; palG3[i] = 7; palB3[i] = 7;
+      }
+    }
+  }
+
   function findNearest(r, g, b) {
     let bestIdx = 0, bestDist = Infinity;
     for (let i = 0; i < paletteSize; i++) {
@@ -8067,49 +8689,21 @@ function quantizeNextPixelsExt(sourceCanvas, W, H, paletteSize, dithering, brigh
   }
 
   const pixels = new Uint8Array(W * H);
-  const useDither = dithering !== 'none' && dithering !== 'ordered' && dithering !== 'ordered8';
 
+  // Apply dithering via applyGlobalDither (supports all methods: error diffusion,
+  // ordered, blue-noise, pattern, a-dither, noise, etc.)
+  if (dithering !== 'none') {
+    applyGlobalDither(dithering, work, W, H, palette);
+  }
+
+  // Map dithered pixels to palette indices
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const idx = y * W + x;
       const r = Math.max(0, Math.min(255, Math.round(work[idx * 3])));
       const g = Math.max(0, Math.min(255, Math.round(work[idx * 3 + 1])));
       const b = Math.max(0, Math.min(255, Math.round(work[idx * 3 + 2])));
-
-      const palIdx = findNearest(r, g, b);
-      pixels[idx] = palIdx;
-
-      if (useDither) {
-        const er = r - palette[palIdx][0];
-        const eg = g - palette[palIdx][1];
-        const eb = b - palette[palIdx][2];
-        if (x + 1 < W) {
-          const n = idx + 1;
-          work[n * 3] += er * 7 / 16;
-          work[n * 3 + 1] += eg * 7 / 16;
-          work[n * 3 + 2] += eb * 7 / 16;
-        }
-        if (y + 1 < H) {
-          if (x > 0) {
-            const n = idx + W - 1;
-            work[n * 3] += er * 3 / 16;
-            work[n * 3 + 1] += eg * 3 / 16;
-            work[n * 3 + 2] += eb * 3 / 16;
-          }
-          {
-            const n = idx + W;
-            work[n * 3] += er * 5 / 16;
-            work[n * 3 + 1] += eg * 5 / 16;
-            work[n * 3 + 2] += eb * 5 / 16;
-          }
-          if (x + 1 < W) {
-            const n = idx + W + 1;
-            work[n * 3] += er * 1 / 16;
-            work[n * 3 + 1] += eg * 1 / 16;
-            work[n * 3 + 2] += eb * 1 / 16;
-          }
-        }
-      }
+      pixels[idx] = findNearest(r, g, b);
     }
   }
 
@@ -8132,11 +8726,12 @@ function quantizeNextPixelsExt(sourceCanvas, W, H, paletteSize, dithering, brigh
  * @param {number} balanceR
  * @param {number} balanceG
  * @param {number} balanceB
+ * @param {boolean} [monoOutput=false] - true: force B&W palette
  * @returns {Uint8Array} NXI data (82432 bytes)
  */
-function convertToNxi320(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB) {
+function convertToNxi320(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput = false) {
   const W = 320, H = 256;
-  const q = quantizeNextPixelsExt(sourceCanvas, W, H, 256, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, true);
+  const q = quantizeNextPixelsExt(sourceCanvas, W, H, 256, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, true, monoOutput);
 
   const nxi = new Uint8Array(512 + W * H);
   // Write palette (256 entries, RGB333)
@@ -8170,11 +8765,12 @@ function convertToNxi320(sourceCanvas, dithering, brightness, contrast, saturati
  * @param {number} balanceR
  * @param {number} balanceG
  * @param {number} balanceB
+ * @param {boolean} [monoOutput=false] - true: force B&W palette
  * @returns {Uint8Array} SL2 data (81920 bytes)
  */
-function convertToSl2_320(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB) {
+function convertToSl2_320(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput = false) {
   const W = 320, H = 256;
-  const q = quantizeNextPixelsExt(sourceCanvas, W, H, 256, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, false);
+  const q = quantizeNextPixelsExt(sourceCanvas, W, H, 256, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, false, monoOutput);
 
   const sl2 = new Uint8Array(W * H);
   for (let x = 0; x < W; x++) {
@@ -8201,11 +8797,12 @@ function convertToSl2_320(sourceCanvas, dithering, brightness, contrast, saturat
  * @param {number} balanceR
  * @param {number} balanceG
  * @param {number} balanceB
+ * @param {boolean} [monoOutput=false] - true: force B&W palette
  * @returns {Uint8Array} NXI data (81952 bytes)
  */
-function convertToNxi640(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB) {
+function convertToNxi640(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput = false) {
   const W = 640, H = 256;
-  const q = quantizeNextPixelsExt(sourceCanvas, W, H, 16, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, true);
+  const q = quantizeNextPixelsExt(sourceCanvas, W, H, 16, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, true, monoOutput);
 
   const PALETTE_SIZE = 32; // 16 entries × 2 bytes
   const PIXEL_DATA_SIZE = (W / 2) * H; // 81920
@@ -8244,11 +8841,22 @@ function convertToNxi640(sourceCanvas, dithering, brightness, contrast, saturati
  * @param {number} balanceR
  * @param {number} balanceG
  * @param {number} balanceB
+ * @param {boolean} [monoOutput=false] - true: force B&W palette
  * @returns {Uint8Array} SL2 data (81920 bytes)
  */
-function convertToSl2_640(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB) {
+function convertToSl2_640(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput = false) {
   const W = 640, H = 256;
-  const q = quantizeNextPixelsExt(sourceCanvas, W, H, 16, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, false);
+  const q = quantizeNextPixelsExt(sourceCanvas, W, H, 16, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, true, monoOutput);
+
+  // Store optimized palette for preview rendering and viewer
+  importSl2_640Palette = new Array(16);
+  for (let i = 0; i < 16; i++) {
+    importSl2_640Palette[i] = [
+      Math.round(q.paletteR3[i] * 255 / 7),
+      Math.round(q.paletteG3[i] * 255 / 7),
+      Math.round(q.paletteB3[i] * 255 / 7)
+    ];
+  }
 
   const sl2 = new Uint8Array((W / 2) * H);
   for (let x = 0; x < W; x += 2) {
@@ -8280,11 +8888,12 @@ function convertToSl2_640(sourceCanvas, dithering, brightness, contrast, saturat
  * @param {number} balanceR
  * @param {number} balanceG
  * @param {number} balanceB
+ * @param {boolean} [monoOutput=false] - true: force B&W palette
  * @returns {Uint8Array} NXI data (49664 bytes: 512 palette + 49152 pixels)
  */
-function convertToNxi(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB) {
+function convertToNxi(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput = false) {
   const W = 256, H = 192;
-  const q = quantizeNextPixels(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, true);
+  const q = quantizeNextPixels(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, true, monoOutput);
 
   // Build NXI output: 512-byte palette (RGB333) + 49152 pixel bytes
   const nxi = new Uint8Array(512 + W * H);
@@ -8318,19 +8927,21 @@ function convertToNxi(sourceCanvas, dithering, brightness, contrast, saturation,
  * @param {number} balanceR
  * @param {number} balanceG
  * @param {number} balanceB
+ * @param {boolean} [monoOutput=false] - true: force B&W palette
  * @returns {Uint8Array} SL2 data (49152 bytes: raw pixels only)
  */
-function convertToSl2(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB) {
-  const q = quantizeNextPixels(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, false);
+function convertToSl2(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput = false) {
+  const q = quantizeNextPixels(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, false, monoOutput);
   return q.pixels;
 }
 
 /**
  * Convert source image to LoRes 128×96 256-color (raw pixel bytes, default palette).
  * Uses quantizeNextPixelsExt with W=128, H=96, 256 colors.
+ * @param {boolean} [monoOutput=false] - true: force B&W palette
  */
-function convertToLores(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB) {
-  const q = quantizeNextPixelsExt(sourceCanvas, 128, 96, 256, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, false);
+function convertToLores(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput = false) {
+  const q = quantizeNextPixelsExt(sourceCanvas, 128, 96, 256, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, false, monoOutput);
   return q.pixels;
 }
 
@@ -8388,19 +8999,26 @@ function renderLoresToCanvas(data, canvas, zoom = 2) {
 /**
  * Convert source image to LoRes Radastan 128×96 16-color 4bpp (packed nibbles).
  * Uses quantizeNextPixelsExt with W=128, H=96, 16 colors, then packs to 4bpp.
+ * @param {boolean} [monoOutput=false] - true: force B&W palette
  */
-function convertToLoresRad(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB) {
-  const q = quantizeNextPixelsExt(sourceCanvas, 128, 96, 16, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, false);
-  // Pack 1-byte-per-pixel into 4bpp nibbles (high nibble = left, low nibble = right)
-  const packed = new Uint8Array(LORES_RAD.PIXEL_DATA_SIZE);
+function convertToLoresRad(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput = false) {
+  const q = quantizeNextPixelsExt(sourceCanvas, 128, 96, 16, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, true, monoOutput);
+  // Pack 1-byte-per-pixel into 4bpp nibbles + 32-byte RGB333 palette
+  const output = new Uint8Array(LORES_RAD.TOTAL_SIZE_WITH_PAL);
   for (let y = 0; y < 96; y++) {
     for (let x = 0; x < 128; x += 2) {
       const left = q.pixels[y * 128 + x] & 0x0F;
       const right = q.pixels[y * 128 + x + 1] & 0x0F;
-      packed[y * LORES_RAD.BYTES_PER_ROW + (x >> 1)] = (left << 4) | right;
+      output[y * LORES_RAD.BYTES_PER_ROW + (x >> 1)] = (left << 4) | right;
     }
   }
-  return packed;
+  // Append RGB333 palette (16 entries × 2 bytes)
+  for (let i = 0; i < 16; i++) {
+    const r3 = q.paletteR3[i], g3 = q.paletteG3[i], b3 = q.paletteB3[i];
+    output[LORES_RAD.PIXEL_DATA_SIZE + i * 2] = (r3 << 5) | (g3 << 2) | (b3 >> 1);
+    output[LORES_RAD.PIXEL_DATA_SIZE + i * 2 + 1] = b3 & 1;
+  }
+  return output;
 }
 
 /**
@@ -8420,8 +9038,15 @@ function renderLoresRadToCanvas(data, canvas, zoom = 2) {
   const imageData = ctx.createImageData(W, H);
   const pix = imageData.data;
 
-  // First 16 entries of default RGB332 palette
-  const palette = typeof generateDefaultNext4bppPalette === 'function' ? generateDefaultNext4bppPalette() : null;
+  // Parse embedded palette if present, otherwise use default
+  let palette;
+  if (data.length === LORES_RAD.TOTAL_SIZE_WITH_PAL) {
+    palette = parseNxi4bppPalette(data.slice(LORES_RAD.PIXEL_DATA_SIZE));
+  } else if (data.length === LORES_RAD.TOTAL_SIZE_WITH_GRB_PAL) {
+    palette = parseGrb332Palette(data.slice(LORES_RAD.PIXEL_DATA_SIZE), 16);
+  } else {
+    palette = typeof generateDefaultNext4bppPalette === 'function' ? generateDefaultNext4bppPalette() : null;
+  }
   if (!palette) return;
 
   for (let y = 0; y < H; y++) {
@@ -8590,6 +9215,8 @@ function renderNxi640ToCanvas(nxiData, canvas, zoom = 2, isSl2 = false) {
       const r3 = (byte0 >> 5) & 7, g3 = (byte0 >> 2) & 7, b3 = ((byte0 & 3) << 1) | (byte1 & 1);
       palette[i] = [Math.round(r3 * 255 / 7), Math.round(g3 * 255 / 7), Math.round(b3 * 255 / 7)];
     }
+  } else if (isSl2 && importSl2_640Palette) {
+    for (let i = 0; i < 16; i++) palette[i] = importSl2_640Palette[i];
   } else {
     for (let i = 0; i < 16; i++) {
       const r3 = (i >> 5) & 7, g3 = (i >> 2) & 7, b2 = i & 3, b3 = (b2 << 1) | (b2 >> 1);
@@ -9093,6 +9720,91 @@ class GifDecoder {
 }
 
 /**
+ * Apply crop/fit transform to a GIF frame, returning 256×192 RGBA pixels.
+ * Uses an offscreen canvas with the same logic as applyCropAndFit().
+ * @param {ImageData} frameImageData - Full GIF frame ImageData
+ * @param {{x:number,y:number,w:number,h:number}} crop - Source crop rect
+ * @param {string} fitMode - 'stretch'|'fit'|'fill'|'fit-width'|'fit-height'
+ * @param {{x:number,y:number}} offset - Destination offset
+ * @param {{w:number,h:number}} size - Destination size
+ * @param {string} align - Alignment string (e.g. 'center', 'top-left')
+ * @returns {Uint8ClampedArray} 256×192×4 RGBA pixel data
+ */
+function applyFrameCropAndFit(frameImageData, crop, fitMode, offset, size, align) {
+  const canvasW = 256, canvasH = 192;
+
+  // Put frame into an offscreen canvas so we can use drawImage with crop/fit
+  // Force all pixels to fully opaque — GIF composite frames may have alpha=0 for
+  // untouched regions, which causes canvas drawImage to produce wrong colors via
+  // premultiplied alpha blending during scaling
+  const opaqueData = new ImageData(
+    new Uint8ClampedArray(frameImageData.data),
+    frameImageData.width, frameImageData.height
+  );
+  for (let i = 3; i < opaqueData.data.length; i += 4) {
+    opaqueData.data[i] = 255;
+  }
+  const srcCanvas = document.createElement('canvas');
+  srcCanvas.width = frameImageData.width;
+  srcCanvas.height = frameImageData.height;
+  const srcCtx = srcCanvas.getContext('2d');
+  srcCtx.putImageData(opaqueData, 0, 0);
+
+  // Destination canvas
+  const dstCanvas = document.createElement('canvas');
+  dstCanvas.width = canvasW;
+  dstCanvas.height = canvasH;
+  const ctx = dstCanvas.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvasW, canvasH);
+
+  const srcX = crop.x, srcY = crop.y, srcW = crop.w, srcH = crop.h;
+  const availW = Math.min(size.w, canvasW - offset.x);
+  const availH = Math.min(size.h, canvasH - offset.y);
+
+  let destX = offset.x, destY = offset.y, destW = availW, destH = availH;
+  const srcAspect = srcW / srcH;
+  const alignH = align.includes('left') ? 0 : align.includes('right') ? 1 : 0.5;
+  const alignV = align.includes('top') ? 0 : align.includes('bottom') ? 1 : 0.5;
+
+  if (fitMode === 'stretch') {
+    destX = offset.x; destY = offset.y; destW = availW; destH = availH;
+  } else if (fitMode === 'fit') {
+    const destAspect = availW / availH;
+    if (srcAspect > destAspect) {
+      destW = availW; destH = availW / srcAspect;
+      destX = offset.x; destY = offset.y + (availH - destH) * alignV;
+    } else {
+      destH = availH; destW = availH * srcAspect;
+      destX = offset.x + (availW - destW) * alignH; destY = offset.y;
+    }
+  } else if (fitMode === 'fill') {
+    const destAspect = availW / availH;
+    if (srcAspect > destAspect) {
+      destH = availH; destW = availH * srcAspect;
+      destX = offset.x + (availW - destW) * alignH; destY = offset.y;
+    } else {
+      destW = availW; destH = availW / srcAspect;
+      destX = offset.x; destY = offset.y + (availH - destH) * alignV;
+    }
+  } else if (fitMode === 'fit-width') {
+    destW = availW; destH = availW / srcAspect;
+    if (destH > availH) { destH = availH; destW = availH * srcAspect; }
+    destX = offset.x + (availW - destW) * alignH;
+    destY = offset.y + (availH - destH) * alignV;
+  } else if (fitMode === 'fit-height') {
+    destH = availH; destW = availH * srcAspect;
+    if (destW > availW) { destW = availW; destH = availW / srcAspect; }
+    destX = offset.x + (availW - destW) * alignH;
+    destY = offset.y + (availH - destH) * alignV;
+  }
+
+  ctx.drawImage(srcCanvas, srcX, srcY, srcW, srcH, destX, destY, destW, destH);
+  return ctx.getImageData(0, 0, canvasW, canvasH).data;
+}
+
+/**
  * Check if a GIF file is animated. If so, decode all frames and import as SCA animation.
  * If single-frame, fall back to the standard image import dialog.
  * @param {File} file - The GIF file
@@ -9117,8 +9829,9 @@ async function importAnimatedGifOrFallback(file) {
  * Decode an animated GIF and load it as an SCA animation.
  * @param {Uint8Array} data - Raw GIF file bytes
  * @param {string} fileName - Original file name
+ * @param {{crop:{x:number,y:number,w:number,h:number},fitMode:string,offset:{x:number,y:number},size:{w:number,h:number},align:string}|null} [fitSettings] - Optional crop/fit settings from import dialog
  */
-async function importAnimatedGif(data, fileName) {
+async function importAnimatedGif(data, fileName, fitSettings) {
   let gif;
   try {
     gif = new GifDecoder(data).decode();
@@ -9143,7 +9856,7 @@ async function importAnimatedGif(data, fileName) {
   scaBinary[0] = 0x53; // 'S'
   scaBinary[1] = 0x43; // 'C'
   scaBinary[2] = 0x41; // 'A'
-  scaBinary[3] = 0;    // version 0
+  scaBinary[3] = 1;    // version 1
   scaBinary[4] = 0;    // width low (256 & 0xFF = 0)
   scaBinary[5] = 1;    // width high (256 >> 8 = 1)
   scaBinary[6] = 0xC0; // height low (192 & 0xFF = 0xC0)
@@ -9163,32 +9876,11 @@ async function importAnimatedGif(data, fileName) {
     scaBinary[headerSize + i] = scaDelay;
   }
 
-  // Convert each frame to SCR using fast batch path
-  // Build RGB→palette index LUT once (avoids per-pixel colorDistance in inner loop)
+  // Convert each frame to SCR
   const palette = getCombinedPalette();
   const fullPalette = [...palette.regular, ...palette.bright];
-  // 32×32×32 quantized LUT (32768 entries) — map each 5-bit-quantized RGB to nearest palette index
-  const palLut = new Uint8Array(32768);
-  for (let ri = 0; ri < 32; ri++) {
-    const r = (ri << 3) | 4; // center of bin
-    for (let gi = 0; gi < 32; gi++) {
-      const g = (gi << 3) | 4;
-      for (let bi = 0; bi < 32; bi++) {
-        const b = (bi << 3) | 4;
-        let bestDist = Infinity;
-        let bestIdx = 0;
-        for (let p = 0; p < fullPalette.length; p++) {
-          const pc = fullPalette[p];
-          const dr = r - pc[0], dg = g - pc[1], db = b - pc[2];
-          const dist = dr * dr + dg * dg + db * db; // fast squared RGB distance for LUT
-          if (dist < bestDist) { bestDist = dist; bestIdx = p; }
-        }
-        palLut[(ri << 10) | (gi << 5) | bi] = bestIdx;
-      }
-    }
-  }
 
-  const nativeSize = (gif.width === 256 && gif.height === 192);
+  const nativeSize = (gif.width === 256 && gif.height === 192) && !fitSettings;
 
   const frameDataStart = headerSize + frameCount;
 
@@ -9198,7 +9890,11 @@ async function importAnimatedGif(data, fileName) {
     // Get 256×192 RGBA pixels
     /** @type {Uint8ClampedArray} */
     let rgba;
-    if (nativeSize) {
+    if (fitSettings) {
+      // Apply crop/fit settings from the import dialog
+      rgba = applyFrameCropAndFit(frame.imageData, fitSettings.crop, fitSettings.fitMode,
+        fitSettings.offset, fitSettings.size, fitSettings.align);
+    } else if (nativeSize) {
       rgba = frame.imageData.data;
     } else {
       const srcData = frame.imageData.data;
@@ -9219,66 +9915,54 @@ async function importAnimatedGif(data, fileName) {
       }
     }
 
-    // Fast SCR conversion: for each 8×8 cell, find best ink/paper and build bitmap
+    // SCR conversion: for each 8×8 cell, find best ink/paper pair (brute-force
+    // optimal search over all 128 combinations, same approach as findCellColors)
     const linearBmp = new Uint8Array(6144);
     const frameAttrs = new Uint8Array(768);
 
     for (let cellY = 0; cellY < 24; cellY++) {
       for (let cellX = 0; cellX < 32; cellX++) {
-        // Collect palette indices for 64 pixels in cell via LUT
-        const cellIndices = new Uint8Array(64);
+        // Collect cell RGB values
+        const cellRgb = new Uint8Array(64 * 3);
         for (let dy = 0; dy < 8; dy++) {
           const py = cellY * 8 + dy;
           for (let dx = 0; dx < 8; dx++) {
-            const px = cellX * 8 + dx;
-            const si = (py * 256 + px) * 4;
-            const ri = rgba[si] >> 3;
-            const gi = rgba[si + 1] >> 3;
-            const bi = rgba[si + 2] >> 3;
-            cellIndices[dy * 8 + dx] = palLut[(ri << 10) | (gi << 5) | bi];
+            const si = (py * 256 + (cellX * 8 + dx)) * 4;
+            const ci = (dy * 8 + dx) * 3;
+            cellRgb[ci]     = rgba[si];
+            cellRgb[ci + 1] = rgba[si + 1];
+            cellRgb[ci + 2] = rgba[si + 2];
           }
         }
 
-        // Count occurrences of each palette color in this cell
-        const counts = new Uint8Array(16);
-        for (let j = 0; j < 64; j++) counts[cellIndices[j]]++;
-
-        // Find the two most common palette indices
-        let best1 = 0, best2 = 0;
-        let max1 = 0, max2 = 0;
-        for (let p = 0; p < 16; p++) {
-          if (counts[p] > max1) {
-            max2 = max1; best2 = best1;
-            max1 = counts[p]; best1 = p;
-          } else if (counts[p] > max2) {
-            max2 = counts[p]; best2 = p;
+        // Try all ink/paper combinations for both brightness levels
+        let bestInk = 0, bestPaper = 0, bestBright = false, bestError = Infinity;
+        for (let br = 0; br <= 1; br++) {
+          const palOff = br ? 8 : 0;
+          for (let ink = 0; ink < 8; ink++) {
+            const ic = fullPalette[palOff + ink];
+            for (let paper = 0; paper < 8; paper++) {
+              const pc = fullPalette[palOff + paper];
+              let totalError = 0;
+              for (let j = 0; j < 64; j++) {
+                const ci = j * 3;
+                const r = cellRgb[ci], g = cellRgb[ci + 1], b = cellRgb[ci + 2];
+                const di = (r - ic[0]) ** 2 + (g - ic[1]) ** 2 + (b - ic[2]) ** 2;
+                const dp = (r - pc[0]) ** 2 + (g - pc[1]) ** 2 + (b - pc[2]) ** 2;
+                totalError += Math.min(di, dp);
+              }
+              if (totalError < bestError) {
+                bestError = totalError;
+                bestInk = ink; bestPaper = paper; bestBright = br === 1;
+              }
+            }
           }
         }
 
-        // Both must be from same brightness group
-        // best1 and best2 are indices in fullPalette (0-7 regular, 8-15 bright)
-        const bright1 = best1 >= 8;
-        const bright2 = best2 >= 8;
-        let inkIdx, paperIdx, bright;
-        if (bright1 === bright2) {
-          bright = bright1;
-          inkIdx = best1 % 8;
-          paperIdx = best2 % 8;
-        } else {
-          // Use the brightness of the more common color
-          bright = bright1;
-          inkIdx = best1 % 8;
-          paperIdx = best2 >= 8 === bright ? best2 % 8 : best1 % 8;
-          if (inkIdx === paperIdx) paperIdx = (paperIdx + 1) % 8;
-        }
-
-        const inkPalIdx = bright ? 8 + inkIdx : inkIdx;
-        const paperPalIdx = bright ? 8 + paperIdx : paperIdx;
+        const inkColor = fullPalette[bestBright ? 8 + bestInk : bestInk];
+        const paperColor = fullPalette[bestBright ? 8 + bestPaper : bestPaper];
 
         // Build bitmap: for each pixel, pick ink or paper (whichever is closer)
-        const inkColor = fullPalette[inkPalIdx];
-        const paperColor = fullPalette[paperPalIdx];
-
         for (let dy = 0; dy < 8; dy++) {
           let byte = 0;
           const py = cellY * 8 + dy;
@@ -9290,12 +9974,11 @@ async function importAnimatedGif(data, fileName) {
             const dPaper = (r - paperColor[0]) ** 2 + (g - paperColor[1]) ** 2 + (b - paperColor[2]) ** 2;
             if (dInk < dPaper) byte |= (0x80 >> dx);
           }
-          // Write to linear bitmap (row-major)
           linearBmp[py * 32 + cellX] = byte;
         }
 
         // Write attribute
-        frameAttrs[cellY * 32 + cellX] = (paperIdx << 3) | inkIdx | (bright ? 0x40 : 0);
+        frameAttrs[cellY * 32 + cellX] = (bestPaper << 3) | bestInk | (bestBright ? 0x40 : 0);
       }
     }
 
@@ -9360,8 +10043,9 @@ async function importAnimatedGif(data, fileName) {
  * so the ZX Spectrum alternates ink↔paper to simulate two frames.
  * @param {Uint8Array} data - Raw GIF file bytes
  * @param {string} fileName - Original file name
+ * @param {{crop:{x:number,y:number,w:number,h:number},fitMode:string,offset:{x:number,y:number},size:{w:number,h:number},align:string}|null} [fitSettings] - Optional crop/fit settings from import dialog
  */
-async function importGifAsFlash(data, fileName) {
+async function importGifAsFlash(data, fileName, fitSettings) {
   let gif;
   try {
     gif = new GifDecoder(data).decode();
@@ -9381,7 +10065,7 @@ async function importGifAsFlash(data, fileName) {
   const fullPalette = [...palette.regular, ...palette.bright];
 
   // Resize helper: get 256×192 RGBA from a frame
-  const nativeSize = (gif.width === 256 && gif.height === 192);
+  const nativeSize = (gif.width === 256 && gif.height === 192) && !fitSettings;
 
   /**
    * @param {number} frameIdx
@@ -9389,6 +10073,10 @@ async function importGifAsFlash(data, fileName) {
    */
   function getFrameRgba(frameIdx) {
     const frame = gif.frames[frameIdx];
+    if (fitSettings) {
+      return applyFrameCropAndFit(frame.imageData, fitSettings.crop, fitSettings.fitMode,
+        fitSettings.offset, fitSettings.size, fitSettings.align);
+    }
     if (nativeSize) return frame.imageData.data;
     const srcData = frame.imageData.data;
     const srcW = frame.imageData.width;
@@ -9744,6 +10432,69 @@ let importUlaPlusSavedEditorPalette = null;
 /** @type {Uint8Array|null} - Last auto-generated ULA+ palette from preview render */
 let lastImportUlaPlusAutoPalette = null;
 
+/** @type {number[][]|null} - Optimized 16-color palette from SL2 640x256 conversion */
+let importSl2_640Palette = null;
+
+// ============================================================================
+// Dither Regions — per-region dithering via lasso tool
+// ============================================================================
+
+/** @type {Uint8Array|null} - Per-pixel region mask (0=default, 1/2/3=region) */
+let ditherRegionMask = null;
+
+/** @type {number} - Mask width (matches format dimensions) */
+let ditherRegionWidth = 0;
+
+/** @type {number} - Mask height */
+let ditherRegionHeight = 0;
+
+/** @type {{x:number,y:number}[]} - Lasso polygon vertices in mask coordinates */
+let ditherLassoVertices = [];
+
+/** @type {boolean} - Currently drawing a lasso polygon */
+let ditherLassoActive = false;
+
+/** @type {number} - Which region (0=erase, 1/2/3) is selected for painting */
+let ditherActiveRegion = 1;
+
+/** @type {string[]} - Dithering method for each region (index 0→region1, etc.) */
+const DITHER_REGION_DEFAULTS = ['floyd-steinberg', 'ordered2', 'riemersma'];
+let ditherRegionMethods = DITHER_REGION_DEFAULTS.slice();
+
+/** @type {number[]} - Dither strength for each region (0-100 integers) */
+const DITHER_REGION_STRENGTH_DEFAULTS = [100, 100, 100];
+let ditherRegionStrengths = DITHER_REGION_STRENGTH_DEFAULTS.slice();
+
+/** @type {Array<[number,number,number]>} - Available overlay colors [R, G, B] */
+const DITHER_REGION_COLOR_PALETTE = [
+  [255, 0, 0],       // Red
+  [0, 255, 0],       // Green
+  [0, 128, 255],     // Blue
+  [255, 255, 0],     // Yellow
+  [255, 0, 255],     // Magenta
+  [0, 255, 255],     // Cyan
+  [255, 128, 0],     // Orange
+  [128, 0, 255],     // Purple
+  [255, 255, 255],   // White
+  [0, 0, 0],         // Black
+];
+
+/** @type {number[]} - Index into DITHER_REGION_COLOR_PALETTE for each region */
+const DITHER_REGION_COLOR_DEFAULTS = [0, 1, 2]; // Red, Green, Blue
+let ditherRegionColorIndices = DITHER_REGION_COLOR_DEFAULTS.slice();
+
+/** @type {ImageData|null} - Cached clean preview canvas content (before overlay compositing) */
+let ditherPreviewCleanCache = null;
+
+/** @type {HTMLCanvasElement|null} - Offscreen overlay canvas for region visualization */
+let ditherRegionOverlayCanvas = null;
+
+/** @type {string|null} - Which canvas the current lasso started on ('source'|'preview') */
+let ditherLassoStartCanvas = null;
+
+/** @type {{x:number,y:number}|null} - Current mouse position in mask coords for rubber-band */
+let ditherLassoMousePos = null;
+
 /**
  * Cached DOM elements for import dialog - populated in initImageImport()
  */
@@ -9760,6 +10511,7 @@ const importElements = {
   /** @type {HTMLSelectElement|null} */ palette: null,
   /** @type {HTMLSelectElement|null} */ pattern53c: null,
   /** @type {HTMLSelectElement|null} */ zoom: null,
+  /** @type {HTMLSelectElement|null} */ sourceZoom: null,
   /** @type {HTMLSelectElement|null} */ fitMode: null,
   /** @type {HTMLSelectElement|null} */ align: null,
   /** @type {HTMLSelectElement|null} */ paperRule: null,
@@ -9852,6 +10604,1459 @@ function getImportFormatDimensions(format) {
   if (format === 'gmx') return { w: 640, h: 200 };
   if (format === 'gmx160') return { w: 320, h: 200 };
   return { w: 256, h: 192 };
+}
+
+// ============================================================================
+// Dither Regions — functions
+// ============================================================================
+
+/**
+ * Ensure the dither region mask exists and matches the current format dimensions.
+ * Resets mask if dimensions changed.
+ */
+function ensureDitherRegionMask() {
+  const format = importElements?.format?.value || 'scr';
+  const dims = getImportFormatDimensions(format);
+  if (ditherRegionMask && ditherRegionWidth === dims.w && ditherRegionHeight === dims.h) return;
+  ditherRegionWidth = dims.w;
+  ditherRegionHeight = dims.h;
+  ditherRegionMask = new Uint8Array(dims.w * dims.h);
+  ditherLassoVertices = [];
+  ditherLassoActive = false;
+  ditherLassoMousePos = null;
+  if (!ditherRegionOverlayCanvas) {
+    ditherRegionOverlayCanvas = document.createElement('canvas');
+  }
+  ditherRegionOverlayCanvas.width = dims.w;
+  ditherRegionOverlayCanvas.height = dims.h;
+}
+
+/**
+ * Reset dither region mask completely.
+ */
+function resetDitherRegionMask() {
+  ditherRegionMask = null;
+  ditherRegionWidth = 0;
+  ditherRegionHeight = 0;
+  ditherLassoVertices = [];
+  ditherLassoActive = false;
+  ditherLassoMousePos = null;
+}
+
+/**
+ * Check if any dither region pixels are set.
+ * @returns {boolean}
+ */
+function hasDitherRegions() {
+  if (!ditherRegionMask) return false;
+  for (let i = 0; i < ditherRegionMask.length; i++) {
+    if (ditherRegionMask[i] !== 0) return true;
+  }
+  return false;
+}
+
+/**
+ * Map source canvas coordinates to mask coordinates.
+ * @param {number} clientX
+ * @param {number} clientY
+ * @returns {{x: number, y: number}|null}
+ */
+function sourceCanvasToMask(clientX, clientY) {
+  if (!importOriginalCanvas || !ditherRegionMask) return null;
+  const rect = importOriginalCanvas.getBoundingClientRect();
+  const canvasX = clientX - rect.left;
+  const canvasY = clientY - rect.top;
+  const scale = getOriginalCanvasScale();
+  const imageX = canvasX / scale;
+  const imageY = canvasY / scale;
+  // Map from image pixel (full-image space) to mask (which covers format dims within crop)
+  const mx = (imageX - importCrop.x) / importCrop.w * ditherRegionWidth;
+  const my = (imageY - importCrop.y) / importCrop.h * ditherRegionHeight;
+  if (mx < 0 || my < 0 || mx >= ditherRegionWidth || my >= ditherRegionHeight) return null;
+  return { x: Math.floor(mx), y: Math.floor(my) };
+}
+
+/**
+ * Map preview canvas coordinates to mask coordinates.
+ * @param {number} clientX
+ * @param {number} clientY
+ * @returns {{x: number, y: number}|null}
+ */
+function previewCanvasToMask(clientX, clientY) {
+  if (!importPreviewCanvas || !ditherRegionMask) return null;
+  const rect = importPreviewCanvas.getBoundingClientRect();
+  const canvasX = (clientX - rect.left) * (importPreviewCanvas.width / rect.width);
+  const canvasY = (clientY - rect.top) * (importPreviewCanvas.height / rect.height);
+  const format = importElements?.format?.value || 'scr';
+  const zoom = getEffectivePreviewZoom(parseInt(importElements?.zoom?.value || '2', 10));
+  const hScale = (format === 'gmx160') ? 2 : 1;
+  // Formats with doubled rows
+  const doubled = format === 'lores' || format === 'lores_rad';
+  const vScale = doubled ? 2 : 1;
+  const mx = canvasX / (zoom * hScale);
+  const my = canvasY / (zoom * vScale);
+  if (mx < 0 || my < 0 || mx >= ditherRegionWidth || my >= ditherRegionHeight) return null;
+  return { x: Math.floor(mx), y: Math.floor(my) };
+}
+
+/**
+ * Scanline polygon fill — writes region value into mask.
+ * @param {{x:number,y:number}[]} vertices - Polygon vertices in mask coordinates
+ * @param {number} regionValue - Region index (0=erase, 1/2/3)
+ */
+function fillPolygonInMask(vertices, regionValue) {
+  if (!ditherRegionMask || vertices.length < 3) return;
+  const n = vertices.length;
+  let minY = ditherRegionHeight, maxY = 0;
+  for (let i = 0; i < n; i++) {
+    if (vertices[i].y < minY) minY = vertices[i].y;
+    if (vertices[i].y > maxY) maxY = vertices[i].y;
+  }
+  minY = Math.max(0, Math.floor(minY));
+  maxY = Math.min(ditherRegionHeight - 1, Math.floor(maxY));
+
+  for (let y = minY; y <= maxY; y++) {
+    const intersections = [];
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const y0 = vertices[i].y, y1 = vertices[j].y;
+      if ((y0 <= y && y1 > y) || (y1 <= y && y0 > y)) {
+        const t = (y - y0) / (y1 - y0);
+        intersections.push(vertices[i].x + t * (vertices[j].x - vertices[i].x));
+      }
+    }
+    intersections.sort((a, b) => a - b);
+    for (let k = 0; k + 1 < intersections.length; k += 2) {
+      const x0 = Math.max(0, Math.ceil(intersections[k]));
+      const x1 = Math.min(ditherRegionWidth - 1, Math.floor(intersections[k + 1]));
+      for (let x = x0; x <= x1; x++) {
+        ditherRegionMask[y * ditherRegionWidth + x] = regionValue;
+      }
+    }
+  }
+}
+
+/**
+ * Render dither region overlay to offscreen canvas.
+ */
+function drawDitherRegionOverlay() {
+  if (!ditherRegionOverlayCanvas || !ditherRegionMask) return;
+  const ctx = ditherRegionOverlayCanvas.getContext('2d');
+  if (!ctx) return;
+  const w = ditherRegionWidth, h = ditherRegionHeight;
+  ditherRegionOverlayCanvas.width = w;
+  ditherRegionOverlayCanvas.height = h;
+  const imgData = ctx.createImageData(w, h);
+  const d = imgData.data;
+  const colors = [
+    null,
+    [...DITHER_REGION_COLOR_PALETTE[ditherRegionColorIndices[0]], 80],
+    [...DITHER_REGION_COLOR_PALETTE[ditherRegionColorIndices[1]], 80],
+    [...DITHER_REGION_COLOR_PALETTE[ditherRegionColorIndices[2]], 80]
+  ];
+  for (let i = 0; i < ditherRegionMask.length; i++) {
+    const r = ditherRegionMask[i];
+    if (r > 0 && r <= 3) {
+      const c = colors[r];
+      d[i * 4] = c[0]; d[i * 4 + 1] = c[1]; d[i * 4 + 2] = c[2]; d[i * 4 + 3] = c[3];
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+
+  // Draw lasso polygon outline + rubber-band
+  if (ditherLassoVertices.length > 0) {
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(ditherLassoVertices[0].x, ditherLassoVertices[0].y);
+    for (let i = 1; i < ditherLassoVertices.length; i++) {
+      ctx.lineTo(ditherLassoVertices[i].x, ditherLassoVertices[i].y);
+    }
+    if (ditherLassoMousePos) {
+      ctx.lineTo(ditherLassoMousePos.x, ditherLassoMousePos.y);
+    }
+    ctx.stroke();
+    // Draw vertex dots
+    ctx.fillStyle = '#ff0';
+    ctx.setLineDash([]);
+    for (const v of ditherLassoVertices) {
+      ctx.fillRect(v.x - 2, v.y - 2, 4, 4);
+    }
+  }
+}
+
+/**
+ * Composite dither region overlay onto the source (original) canvas.
+ */
+function compositeOverlayOnSource() {
+  if (!importOriginalCanvas || !ditherRegionOverlayCanvas || !ditherRegionMask) return;
+  const show = document.getElementById('ditherRegionShow');
+  const val = show ? /** @type {HTMLSelectElement} */ (show).value : 'source';
+  if (val !== 'source' && val !== 'both') return;
+  const ctx = importOriginalCanvas.getContext('2d');
+  if (!ctx) return;
+  const scale = getOriginalCanvasScale();
+  const dx = importCrop.x * scale;
+  const dy = importCrop.y * scale;
+  const dw = importCrop.w * scale;
+  const dh = importCrop.h * scale;
+  ctx.drawImage(ditherRegionOverlayCanvas, 0, 0, ditherRegionWidth, ditherRegionHeight, dx, dy, dw, dh);
+}
+
+/**
+ * Composite dither region overlay onto the preview canvas.
+ */
+function compositeOverlayOnPreview() {
+  if (!importPreviewCanvas || !ditherRegionOverlayCanvas || !ditherRegionMask) return;
+  const show = document.getElementById('ditherRegionShow');
+  const val = show ? /** @type {HTMLSelectElement} */ (show).value : 'source';
+  if (val !== 'preview' && val !== 'both') return;
+  const ctx = importPreviewCanvas.getContext('2d');
+  if (!ctx) return;
+  ctx.drawImage(ditherRegionOverlayCanvas, 0, 0, ditherRegionWidth, ditherRegionHeight,
+    0, 0, importPreviewCanvas.width, importPreviewCanvas.height);
+}
+
+/**
+ * Refresh dither region overlay and composite it onto visible canvases.
+ */
+function refreshDitherRegionOverlay() {
+  if (!ditherRegionMask) return;
+  drawDitherRegionOverlay();
+  compositeOverlayOnSource();
+  compositeOverlayOnPreview();
+}
+
+/**
+ * Get compound dither key for a region (method:strength).
+ * @param {number} regionIndex - 0-based region index
+ * @returns {string}
+ */
+function getRegionDitherKey(regionIndex) {
+  return ditherRegionMethods[regionIndex] + ':' + ditherRegionStrengths[regionIndex];
+}
+
+/**
+ * Get compound dither key for the default (global) dithering.
+ * @param {string} dithering - Method name
+ * @returns {string}
+ */
+function getDefaultDitherKey(dithering) {
+  return dithering + ':' + Math.round(ditherStrength * 100);
+}
+
+/**
+ * Run a conversion function with a temporary ditherStrength override derived from a compound key.
+ * @param {string} key - Compound key "method:strength"
+ * @param {Function} convertFn - Conversion function to call
+ * @param {HTMLCanvasElement} sourceCanvas
+ * @param {Array} extraArgs - Additional arguments after dithering method
+ * @returns {*} - Result from convertFn
+ */
+function runConvertWithStrength(key, convertFn, sourceCanvas, extraArgs) {
+  const colonIdx = key.indexOf(':');
+  const method = key.substring(0, colonIdx);
+  const strength = parseInt(key.substring(colonIdx + 1), 10) / 100;
+  const savedStrength = ditherStrength;
+  ditherStrength = strength;
+  try {
+    return convertFn(sourceCanvas, method, ...extraArgs);
+  } finally {
+    ditherStrength = savedStrength;
+  }
+}
+
+/**
+ * Build cell-to-method mapping from the region mask.
+ * For each cell, determines which region has the most pixels. Ties broken by higher region number.
+ * Returns compound keys (method:strength) for deduplication-aware lookups.
+ * @param {number} charCols - Number of character columns
+ * @param {number} charRows - Number of character rows
+ * @param {number} cellW - Cell width in pixels (usually 8)
+ * @param {number} cellH - Cell height in pixels (usually 8, or 1 for some formats)
+ * @param {string} defaultDithering - Default dithering method (compound key)
+ * @returns {string[]} - Array of compound key strings, one per cell
+ */
+function buildCellMethodMap(charCols, charRows, cellW, cellH, defaultDithering, maskOffsetX = 0, maskOffsetY = 0) {
+  const map = new Array(charCols * charRows);
+  for (let cr = 0; cr < charRows; cr++) {
+    for (let cc = 0; cc < charCols; cc++) {
+      const counts = [0, 0, 0, 0]; // count per region (0=default,1,2,3)
+      const py0 = cr * cellH + maskOffsetY;
+      const py1 = Math.min(py0 + cellH, ditherRegionHeight);
+      const px0 = cc * cellW + maskOffsetX;
+      const px1 = Math.min(px0 + cellW, ditherRegionWidth);
+      for (let py = py0; py < py1; py++) {
+        for (let px = px0; px < px1; px++) {
+          counts[ditherRegionMask[py * ditherRegionWidth + px]]++;
+        }
+      }
+      // Find dominant region (ties: higher region wins)
+      let bestRegion = 0, bestCount = counts[0];
+      for (let r = 1; r <= 3; r++) {
+        if (counts[r] >= bestCount && counts[r] > 0) {
+          bestRegion = r;
+          bestCount = counts[r];
+        }
+      }
+      map[cr * charCols + cc] = bestRegion === 0 ? defaultDithering : getRegionDitherKey(bestRegion - 1);
+    }
+  }
+  return map;
+}
+
+/**
+ * Get which unique dithering compound keys are actually needed across all regions.
+ * @param {string} defaultKey - Default compound key (method:strength)
+ * @returns {Set<string>}
+ */
+function getUniqueDitherMethods(defaultKey) {
+  const methods = new Set();
+  methods.add(defaultKey);
+  for (let r = 0; r < 3; r++) {
+    methods.add(getRegionDitherKey(r));
+  }
+  return methods;
+}
+
+/**
+ * Copy one 8×cellH cell (bitmap + attrs) from source SCR-shaped buffer to destination.
+ * Handles ZX Spectrum's interleaved bitmap addressing.
+ * @param {Uint8Array} dst
+ * @param {Uint8Array} src
+ * @param {number} cellX - Cell column (0-31)
+ * @param {number} cellY - Cell row (0-23)
+ * @param {number} bitmapSize - Size of bitmap section (e.g. 6144 for SCR)
+ * @param {number} cellH - Cell height in pixels (8 for SCR, 1 for some formats)
+ * @param {number} totalCols - Total columns (32 for SCR)
+ */
+function copyScrCell(dst, src, cellX, cellY, bitmapSize, cellH, totalCols) {
+  // Copy bitmap bytes for this cell
+  if (cellH === 8 && totalCols === 32 && bitmapSize === 6144) {
+    // Standard SCR interleaved addressing
+    const third = Math.floor(cellY / 8);
+    const thirdRow = cellY % 8;
+    for (let line = 0; line < 8; line++) {
+      const addr = third * 2048 + line * 256 + thirdRow * 32 + cellX;
+      dst[addr] = src[addr];
+    }
+  } else {
+    // Linear bitmap (for simpler formats or different cell sizes)
+    for (let line = 0; line < cellH; line++) {
+      const row = cellY * cellH + line;
+      const addr = row * totalCols + cellX;
+      if (addr < bitmapSize) dst[addr] = src[addr];
+    }
+  }
+  // Copy attribute byte
+  const attrAddr = bitmapSize + cellY * totalCols + cellX;
+  if (attrAddr < dst.length) dst[attrAddr] = src[attrAddr];
+}
+
+/**
+ * Get the bitmap byte address for a pixel at (x, y) in an SCR-shaped buffer.
+ * Handles ZX Spectrum's interleaved addressing for standard SCR and linear for others.
+ * @param {number} x - Pixel X coordinate
+ * @param {number} y - Pixel Y coordinate
+ * @param {number} charCols - Character columns (byte columns)
+ * @param {number} bitmapSize - Size of bitmap section
+ * @param {boolean} isInterleaved - Whether to use SCR interleaved addressing
+ * @returns {number} Byte address in the bitmap
+ */
+function getBitmapByteAddr(x, y, charCols, bitmapSize, isInterleaved) {
+  const byteCol = x >> 3;
+  if (isInterleaved) {
+    const third = Math.floor(y / 64);
+    const line = y & 7;
+    const charRow = (y >> 3) & 7;
+    return third * 2048 + line * 256 + charRow * 32 + byteCol;
+  }
+  return y * charCols + byteCol;
+}
+
+/**
+ * Multi-pass cell-based conversion with per-region dithering.
+ * Runs the convert function once per unique method, then composites with
+ * PIXEL-LEVEL precision: individual bitmap bits are picked from the mask,
+ * while attrs use cell-level selection (any pixel in mask → region's attr).
+ * @param {Function} convertFn - e.g. convertToScr
+ * @param {HTMLCanvasElement} sourceCanvas
+ * @param {string} defaultDithering
+ * @param {Array} extraArgs - Additional args after dithering for the convertFn
+ * @param {number} charCols - Number of character columns (byte columns)
+ * @param {number} charRows - Number of character rows
+ * @param {number} cellW - Cell width in pixels (always 8)
+ * @param {number} cellH - Cell height in pixels
+ * @param {number} bitmapSize - Size of bitmap section
+ * @param {number} [maskOffsetX=0] - Offset from mask coords to bitmap coords (for BSC border)
+ * @param {number} [maskOffsetY=0] - Offset from mask coords to bitmap coords (for BSC border)
+ * @returns {Uint8Array}
+ */
+function convertCellBasedWithRegions(convertFn, sourceCanvas, defaultDithering, extraArgs, charCols, charRows, cellW, cellH, bitmapSize, maskOffsetX = 0, maskOffsetY = 0) {
+  const defaultKey = getDefaultDitherKey(defaultDithering);
+  const cellMethodMap = buildCellMethodMap(charCols, charRows, cellW, cellH, defaultKey, maskOffsetX, maskOffsetY);
+
+  // Collect unique compound keys actually used
+  const uniqueKeys = new Set();
+  for (const k of cellMethodMap) uniqueKeys.add(k);
+
+  // Run conversion for each unique compound key
+  const results = {};
+  for (const key of uniqueKeys) {
+    results[key] = runConvertWithStrength(key, convertFn, sourceCanvas, extraArgs);
+  }
+
+  // If only default key is used, return immediately
+  if (uniqueKeys.size === 1 && uniqueKeys.has(defaultKey)) {
+    return results[defaultKey];
+  }
+
+  // Start with default result
+  const output = new Uint8Array(results[defaultKey].length);
+  output.set(results[defaultKey]);
+
+  const width = charCols * cellW;
+  const height = charRows * cellH;
+  const isInterleaved = (cellH === 8 && charCols === 32 && bitmapSize === 6144);
+
+  // Cell-level attr compositing: for cells touched by a region, copy the attr
+  for (let cr = 0; cr < charRows; cr++) {
+    for (let cc = 0; cc < charCols; cc++) {
+      const key = cellMethodMap[cr * charCols + cc];
+      if (key !== defaultKey && results[key]) {
+        const attrAddr = bitmapSize + cr * charCols + cc;
+        if (attrAddr < output.length) {
+          output[attrAddr] = results[key][attrAddr];
+        }
+      }
+    }
+  }
+
+  // Pixel-level bitmap compositing: for each pixel, pick the bit from the
+  // conversion result that the mask says to use
+  for (let y = 0; y < height; y++) {
+    const maskY = y + maskOffsetY;
+    if (maskY < 0 || maskY >= ditherRegionHeight) continue;
+
+    for (let byteCol = 0; byteCol < charCols; byteCol++) {
+      const addr = getBitmapByteAddr(byteCol * cellW, y, charCols, bitmapSize, isInterleaved);
+      if (addr >= bitmapSize) continue;
+
+      // Check if any pixel in this byte is in a region
+      const x0 = byteCol * cellW;
+      let hasRegion = false;
+      for (let bit = 0; bit < cellW; bit++) {
+        const maskX = x0 + bit + maskOffsetX;
+        if (maskX >= 0 && maskX < ditherRegionWidth) {
+          if (ditherRegionMask[maskY * ditherRegionWidth + maskX] > 0) {
+            hasRegion = true;
+            break;
+          }
+        }
+      }
+
+      if (!hasRegion) continue; // entire byte is default — already set
+
+      // Build the byte bit by bit
+      let outputByte = 0;
+      for (let bit = 0; bit < cellW; bit++) {
+        const maskX = x0 + bit + maskOffsetX;
+        const bitMask = 0x80 >> bit;
+        let srcData = results[defaultKey];
+
+        if (maskX >= 0 && maskX < ditherRegionWidth) {
+          const reg = ditherRegionMask[maskY * ditherRegionWidth + maskX];
+          if (reg > 0 && reg <= 3) {
+            const key = getRegionDitherKey(reg - 1);
+            if (results[key]) {
+              srcData = results[key];
+            }
+          }
+        }
+
+        outputByte |= srcData[addr] & bitMask;
+      }
+      output[addr] = outputByte;
+    }
+  }
+
+  return output;
+}
+
+/**
+ * Multi-pass pixel-based conversion with per-region dithering.
+ * For formats like NXI, SL2, LoRes where each pixel is independent.
+ * @param {Function} convertFn
+ * @param {HTMLCanvasElement} sourceCanvas
+ * @param {string} defaultDithering
+ * @param {Array} extraArgs
+ * @param {number} width - Output width in pixels
+ * @param {number} height - Output height in pixels
+ * @param {number} bytesPerPixel - Bytes per pixel in output (1 for 8-bit, 2 for 16-bit palette)
+ * @returns {Uint8Array}
+ */
+function convertPixelBasedWithRegions(convertFn, sourceCanvas, defaultDithering, extraArgs, width, height, bytesPerPixel, pixelDataOffset = 0, columnMajor = false) {
+  const defaultKey = getDefaultDitherKey(defaultDithering);
+  // Build per-pixel compound key lookup
+  const pixelMethods = new Uint8Array(width * height); // 0=default key index
+  const keyList = [defaultKey];
+  const keyIndex = { [defaultKey]: 0 };
+  for (let r = 0; r < 3; r++) {
+    const k = getRegionDitherKey(r);
+    if (!(k in keyIndex)) {
+      keyIndex[k] = keyList.length;
+      keyList.push(k);
+    }
+  }
+  // Assign key indices to pixels
+  let hasNonDefault = false;
+  for (let i = 0; i < ditherRegionMask.length && i < width * height; i++) {
+    const reg = ditherRegionMask[i];
+    if (reg > 0 && reg <= 3) {
+      const k = getRegionDitherKey(reg - 1);
+      pixelMethods[i] = keyIndex[k] || 0;
+      if (pixelMethods[i] !== 0) hasNonDefault = true;
+    }
+  }
+  if (!hasNonDefault) {
+    return convertFn(sourceCanvas, defaultDithering, ...extraArgs);
+  }
+
+  // Run conversion for each unique compound key
+  const results = [];
+  for (const key of keyList) {
+    results.push(runConvertWithStrength(key, convertFn, sourceCanvas, extraArgs));
+  }
+
+  // Composite pixel-by-pixel
+  const output = new Uint8Array(results[0].length);
+  output.set(results[0]);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const mi = pixelMethods[y * width + x];
+      if (mi !== 0) {
+        // Column-major formats (NXI320, SL2_320) store as x * height + y
+        // Row-major formats (NXI, SL2, LoRes) store as y * width + x
+        const off = pixelDataOffset + (columnMajor ? x * height + y : y * width + x) * bytesPerPixel;
+        for (let b = 0; b < bytesPerPixel; b++) {
+          output[off + b] = results[mi][off + b];
+        }
+      }
+    }
+  }
+  return output;
+}
+
+/**
+ * Multi-pass pixel-based conversion for nibble-packed formats (4bpp, 2 pixels per byte).
+ * NXI640/SL2_640: column-major, byte at (x/2)*256+y, high nibble=even x, low nibble=odd x
+ * LoRes_RAD: row-major, byte at y*64+(x/2), high nibble=even x, low nibble=odd x
+ * @param {Function} convertFn
+ * @param {HTMLCanvasElement} sourceCanvas
+ * @param {string} defaultDithering
+ * @param {Array} extraArgs
+ * @param {number} width - Pixel width (640 or 128)
+ * @param {number} height - Pixel height (256 or 96)
+ * @param {number} pixelDataOffset - Byte offset to pixel data start (e.g. 32 for NXI640 palette)
+ * @param {boolean} columnMajor - true for NXI640/SL2_640, false for LoRes_RAD
+ * @param {number} rowBytes - Bytes per row for row-major, or height for column-major
+ */
+function convertNibblePackedWithRegions(convertFn, sourceCanvas, defaultDithering, extraArgs, width, height, pixelDataOffset, columnMajor, rowBytes) {
+  const defaultKey = getDefaultDitherKey(defaultDithering);
+  const pixelMethods = new Uint8Array(width * height);
+  const keyList = [defaultKey];
+  const keyIndex = { [defaultKey]: 0 };
+  for (let r = 0; r < 3; r++) {
+    const k = getRegionDitherKey(r);
+    if (!(k in keyIndex)) {
+      keyIndex[k] = keyList.length;
+      keyList.push(k);
+    }
+  }
+  let hasNonDefault = false;
+  for (let i = 0; i < ditherRegionMask.length && i < width * height; i++) {
+    const reg = ditherRegionMask[i];
+    if (reg > 0 && reg <= 3) {
+      const k = getRegionDitherKey(reg - 1);
+      pixelMethods[i] = keyIndex[k] || 0;
+      if (pixelMethods[i] !== 0) hasNonDefault = true;
+    }
+  }
+  if (!hasNonDefault) {
+    return convertFn(sourceCanvas, defaultDithering, ...extraArgs);
+  }
+
+  const results = [];
+  for (const key of keyList) {
+    results.push(runConvertWithStrength(key, convertFn, sourceCanvas, extraArgs));
+  }
+
+  const output = new Uint8Array(results[0].length);
+  output.set(results[0]);
+
+  // Composite nibble-by-nibble
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x += 2) {
+      const mi0 = pixelMethods[y * width + x];
+      const mi1 = (x + 1 < width) ? pixelMethods[y * width + x + 1] : 0;
+      if (mi0 === 0 && mi1 === 0) continue;
+
+      // Compute byte address in output data
+      let byteAddr;
+      if (columnMajor) {
+        byteAddr = pixelDataOffset + (x >> 1) * height + y;
+      } else {
+        byteAddr = pixelDataOffset + y * rowBytes + (x >> 1);
+      }
+
+      // Get high nibble (even x) from appropriate result
+      const src0 = results[mi0];
+      const src1 = results[mi1];
+      const hiNibble = (src0[byteAddr] & 0xF0);
+      const loNibble = (src1[byteAddr] & 0x0F);
+      output[byteAddr] = hiNibble | loNibble;
+    }
+  }
+  return output;
+}
+
+/**
+ * Wrapper to call appropriate region-aware or standard conversion.
+ * Returns true if regions were active and conversion was handled.
+ * @param {string} format
+ * @param {HTMLCanvasElement} sourceCanvas
+ * @param {string} dithering
+ * @param {Array} adjustArgs - [brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput]
+ * @returns {Uint8Array|null} - Converted data, or null if no region handling needed
+ */
+function convertWithDitherRegions(format, sourceCanvas, dithering, adjustArgs) {
+  if (!hasDitherRegions()) return null;
+  ensureDitherRegionMask();
+
+  const defaultKey = getDefaultDitherKey(dithering);
+
+  // Handle RGB3 specially — 3 separate bitmaps (R, G, B), no attrs
+  if (format === 'rgb3') {
+    const uniqueKeys = getUniqueDitherMethods(defaultKey);
+    const results = {};
+    for (const key of uniqueKeys) {
+      results[key] = runConvertWithStrength(key, convertToRgb3, sourceCanvas, adjustArgs);
+    }
+    if (uniqueKeys.size === 1) return results[defaultKey];
+    const output = new Uint8Array(results[defaultKey].length);
+    output.set(results[defaultKey]);
+    // Pixel-level compositing for all 3 channels
+    const channelOffsets = [0, 6144, 12288]; // R, G, B
+    for (const chOff of channelOffsets) {
+      for (let y = 0; y < 192; y++) {
+        for (let byteCol = 0; byteCol < 32; byteCol++) {
+          const x0 = byteCol * 8;
+          let hasRegion = false;
+          for (let bit = 0; bit < 8; bit++) {
+            if (ditherRegionMask[y * ditherRegionWidth + x0 + bit] > 0) { hasRegion = true; break; }
+          }
+          if (!hasRegion) continue;
+          // SCR interleaved addressing
+          const third = Math.floor(y / 64);
+          const line = y & 7;
+          const charRow = (y >> 3) & 7;
+          const addr = chOff + third * 2048 + line * 256 + charRow * 32 + byteCol;
+          let outputByte = 0;
+          for (let bit = 0; bit < 8; bit++) {
+            const px = x0 + bit;
+            const bitMask = 0x80 >> bit;
+            let srcData = results[defaultKey];
+            const reg = ditherRegionMask[y * ditherRegionWidth + px];
+            if (reg > 0 && reg <= 3) {
+              const key = getRegionDitherKey(reg - 1);
+              if (results[key]) srcData = results[key];
+            }
+            outputByte |= srcData[addr] & bitMask;
+          }
+          output[addr] = outputByte;
+        }
+      }
+    }
+    return output;
+  }
+
+  // Handle GMX640 specially — per-row attrs at offset 16384, linear bitmap
+  if (format === 'gmx') {
+    const uniqueKeys = getUniqueDitherMethods(defaultKey);
+    const results = {};
+    for (const key of uniqueKeys) {
+      results[key] = runConvertWithStrength(key, convertToGmx640, sourceCanvas, adjustArgs);
+    }
+    if (uniqueKeys.size === 1) return results[defaultKey];
+    const output = new Uint8Array(results[defaultKey].length);
+    output.set(results[defaultKey]);
+    const GMX_ATTR_OFF = 16384;
+    for (let y = 0; y < 200; y++) {
+      for (let byteCol = 0; byteCol < 80; byteCol++) {
+        const x0 = byteCol * 8;
+        let hasRegion = false;
+        for (let bit = 0; bit < 8; bit++) {
+          if (x0 + bit < ditherRegionWidth && y < ditherRegionHeight && ditherRegionMask[y * ditherRegionWidth + x0 + bit] > 0) {
+            hasRegion = true; break;
+          }
+        }
+        if (!hasRegion) continue;
+        // Pixel-level bitmap compositing
+        const bmpAddr = y * 80 + byteCol;
+        let outputByte = 0;
+        let regionKey = null;
+        for (let bit = 0; bit < 8; bit++) {
+          const px = x0 + bit;
+          const bitMask = 0x80 >> bit;
+          let srcData = results[defaultKey];
+          if (px < ditherRegionWidth && y < ditherRegionHeight) {
+            const reg = ditherRegionMask[y * ditherRegionWidth + px];
+            if (reg > 0 && reg <= 3) {
+              const k = getRegionDitherKey(reg - 1);
+              if (results[k]) { srcData = results[k]; regionKey = k; }
+            }
+          }
+          outputByte |= srcData[bmpAddr] & bitMask;
+        }
+        output[bmpAddr] = outputByte;
+        // Attr: if any pixel in this column/row is in a region, use region's attr
+        if (regionKey) {
+          const attrAddr = GMX_ATTR_OFF + y * 80 + byteCol;
+          output[attrAddr] = results[regionKey][attrAddr];
+        }
+      }
+    }
+    return output;
+  }
+
+  // Cell-based formats (bitmap + attrs, standard layout)
+  // BSC/BSP/BMC4 core is still standard SCR (32×24 cells, 6144 bitmap, 768 attrs)
+  // — the border region uses separate bytes not affected by dithering
+  const cellFormats = {
+    'scr':        { fn: convertToScr,        cols: 32, rows: 24, cw: 8, ch: 8, bmp: 6144 },
+    'ifl':        { fn: convertToIfl,         cols: 32, rows: 24, cw: 8, ch: 8, bmp: 6144 },
+    'mlt':        { fn: convertToMlt,         cols: 32, rows: 24, cw: 8, ch: 8, bmp: 6144 },
+    'bsc':        { fn: convertToBsc,         cols: 32, rows: 24, cw: 8, ch: 8, bmp: 6144 },
+    'bsp':        { fn: convertToBsc,         cols: 32, rows: 24, cw: 8, ch: 8, bmp: 6144 },
+    'bmc4':       { fn: convertToBmc4,        cols: 32, rows: 24, cw: 8, ch: 8, bmp: 6144 },
+  };
+
+  // Handle gigascreen variants
+  if (format === 'gigascreen' || format === 'mg8' || format === 'mg4' || format === 'mg2' || format === 'mg1') {
+    const cellH = format === 'mg4' ? 4 : format === 'mg2' ? 2 : format === 'mg1' ? 1 : 8;
+    const charRows = Math.ceil(192 / cellH);
+    const cellMethodMap = buildCellMethodMap(32, charRows, 8, cellH, defaultKey);
+    const uniqueKeys = new Set();
+    for (const k of cellMethodMap) uniqueKeys.add(k);
+    // adjustArgs = [brightness, contrast, ..., monoOutput]. Gigascreen expects cellH before monoOutput.
+    const monoOutput = adjustArgs[adjustArgs.length - 1];
+    const adjWithoutMono = adjustArgs.slice(0, -1);
+    const gsExtraArgs = [...adjWithoutMono, cellH, monoOutput];
+    const results = {};
+    for (const key of uniqueKeys) {
+      results[key] = runConvertWithStrength(key, convertToGigascreen, sourceCanvas, gsExtraArgs);
+    }
+    // Composite — gigascreen produces two frames, pixel-level bitmap compositing
+    if (uniqueKeys.size === 1 && uniqueKeys.has(defaultKey)) {
+      return results[defaultKey];
+    }
+    const output = new Uint8Array(results[defaultKey].length);
+    output.set(results[defaultKey]);
+    const totalSize = output.length;
+    const frameSize = totalSize / 2;
+    const bmpSize = 6144;
+
+    // Cell-level attr compositing for both frames
+    for (let cr = 0; cr < charRows; cr++) {
+      for (let cc = 0; cc < 32; cc++) {
+        const key = cellMethodMap[cr * 32 + cc];
+        if (key !== defaultKey && results[key]) {
+          for (let frame = 0; frame < 2; frame++) {
+            const attrAddr = frame * frameSize + bmpSize + cr * 32 + cc;
+            if (attrAddr < totalSize) output[attrAddr] = results[key][attrAddr];
+          }
+        }
+      }
+    }
+
+    // Pixel-level bitmap compositing for both frames
+    for (let y = 0; y < 192; y++) {
+      for (let byteCol = 0; byteCol < 32; byteCol++) {
+        // Check if any pixel in this byte is in a region
+        const x0 = byteCol * 8;
+        let hasRegion = false;
+        for (let bit = 0; bit < 8; bit++) {
+          const px = x0 + bit;
+          if (px < ditherRegionWidth && y < ditherRegionHeight) {
+            if (ditherRegionMask[y * ditherRegionWidth + px] > 0) {
+              hasRegion = true;
+              break;
+            }
+          }
+        }
+        if (!hasRegion) continue;
+
+        // SCR interleaved addressing
+        const third = Math.floor(y / 64);
+        const line = y & 7;
+        const charRow = (y >> 3) & 7;
+        const bmpAddr = third * 2048 + line * 256 + charRow * 32 + byteCol;
+
+        for (let frame = 0; frame < 2; frame++) {
+          const addr = frame * frameSize + bmpAddr;
+          let outputByte = 0;
+          for (let bit = 0; bit < 8; bit++) {
+            const px = x0 + bit;
+            const bitMask = 0x80 >> bit;
+            let srcData = results[defaultKey];
+            if (px < ditherRegionWidth && y < ditherRegionHeight) {
+              const reg = ditherRegionMask[y * ditherRegionWidth + px];
+              if (reg > 0 && reg <= 3) {
+                const key = getRegionDitherKey(reg - 1);
+                if (results[key]) srcData = results[key];
+              }
+            }
+            outputByte |= srcData[addr] & bitMask;
+          }
+          output[addr] = outputByte;
+        }
+      }
+    }
+    return output;
+  }
+
+  // ULA+ format: SCR-interleaved bitmap (6144) + attrs (768) + 64-byte palette
+  // convertToUlaPlus returns { data, palette } — unwrap .data for compositing
+  if (format === 'ulaplus') {
+    const cellMethodMap = buildCellMethodMap(32, 24, 8, 8, defaultKey);
+    const uniqueKeys = new Set();
+    for (const k of cellMethodMap) uniqueKeys.add(k);
+    // adjustArgs = [brightness, ..., balanceB, monoOutput]
+    // convertToUlaPlus signature: (canvas, dithering, brightness, ..., balanceB, externalPalette, monoOutput)
+    const monoOutput = adjustArgs[adjustArgs.length - 1];
+    const adjWithoutMono = adjustArgs.slice(0, -1);
+    const ulaExtraArgs = [...adjWithoutMono, importUlaPlusPalette, monoOutput];
+    const results = {};
+    for (const key of uniqueKeys) {
+      results[key] = runConvertWithStrength(key, convertToUlaPlus, sourceCanvas, ulaExtraArgs);
+    }
+    if (uniqueKeys.size === 1 && uniqueKeys.has(defaultKey)) {
+      return results[defaultKey];
+    }
+    // Composite .data arrays at cell level, same as SCR (interleaved bitmap + attrs)
+    const dataResults = {};
+    for (const key of uniqueKeys) {
+      dataResults[key] = results[key].data;
+    }
+    const output = new Uint8Array(dataResults[defaultKey].length);
+    output.set(dataResults[defaultKey]);
+    // Attr compositing
+    for (let cr = 0; cr < 24; cr++) {
+      for (let cc = 0; cc < 32; cc++) {
+        const key = cellMethodMap[cr * 32 + cc];
+        if (key !== defaultKey && dataResults[key]) {
+          const attrAddr = 6144 + cr * 32 + cc;
+          output[attrAddr] = dataResults[key][attrAddr];
+        }
+      }
+    }
+    // Bitmap compositing (pixel-level, SCR interleaved)
+    for (let y = 0; y < 192; y++) {
+      if (y >= ditherRegionHeight) continue;
+      for (let byteCol = 0; byteCol < 32; byteCol++) {
+        const x0 = byteCol * 8;
+        let hasRegion = false;
+        for (let bit = 0; bit < 8; bit++) {
+          if (x0 + bit < ditherRegionWidth && ditherRegionMask[y * ditherRegionWidth + x0 + bit] > 0) {
+            hasRegion = true; break;
+          }
+        }
+        if (!hasRegion) continue;
+        const third = Math.floor(y / 64);
+        const line = y & 7;
+        const charRow = (y >> 3) & 7;
+        const addr = third * 2048 + line * 256 + charRow * 32 + byteCol;
+        let outputByte = 0;
+        for (let bit = 0; bit < 8; bit++) {
+          const px = x0 + bit;
+          const bitMask = 0x80 >> bit;
+          let srcData = dataResults[defaultKey];
+          if (px < ditherRegionWidth) {
+            const reg = ditherRegionMask[y * ditherRegionWidth + px];
+            if (reg > 0 && reg <= 3) {
+              const k = getRegionDitherKey(reg - 1);
+              if (dataResults[k]) srcData = dataResults[k];
+            }
+          }
+          outputByte |= srcData[addr] & bitMask;
+        }
+        output[addr] = outputByte;
+      }
+    }
+    // Palette bytes (6912..6975) are same across all passes — already set from default
+    return { data: output, palette: results[defaultKey].palette };
+  }
+
+  // MLT ULA+ format: MLT bitmap (6144) + attrs (6144) + 64-byte palette, 8×1 cells
+  if (format === 'mlt_ula') {
+    const cellMethodMap = buildCellMethodMap(32, 192, 8, 1, defaultKey);
+    const uniqueKeys = new Set();
+    for (const k of cellMethodMap) uniqueKeys.add(k);
+    // adjustArgs = [brightness, ..., balanceB, monoOutput]
+    // convertToMltUla signature: (canvas, dithering, brightness, ..., balanceB, externalPalette)
+    const adjWithoutMono = adjustArgs.slice(0, -1);
+    const mltUlaExtraArgs = [...adjWithoutMono, importUlaPlusPalette];
+    const results = {};
+    for (const key of uniqueKeys) {
+      results[key] = runConvertWithStrength(key, convertToMltUla, sourceCanvas, mltUlaExtraArgs);
+    }
+    if (uniqueKeys.size === 1 && uniqueKeys.has(defaultKey)) {
+      return results[defaultKey];
+    }
+    const dataResults = {};
+    for (const key of uniqueKeys) {
+      dataResults[key] = results[key].data;
+    }
+    const output = new Uint8Array(dataResults[defaultKey].length);
+    output.set(dataResults[defaultKey]);
+    // MLT layout: bitmap at 0..6143 (SCR interleaved), attrs at 6144..12287 (linear)
+    // Attr compositing (8×1 cells: each row has its own attr byte)
+    for (let cr = 0; cr < 192; cr++) {
+      for (let cc = 0; cc < 32; cc++) {
+        const key = cellMethodMap[cr * 32 + cc];
+        if (key !== defaultKey && dataResults[key]) {
+          const attrAddr = 6144 + cr * 32 + cc;
+          output[attrAddr] = dataResults[key][attrAddr];
+        }
+      }
+    }
+    // Bitmap compositing (pixel-level, SCR interleaved)
+    for (let y = 0; y < 192; y++) {
+      if (y >= ditherRegionHeight) continue;
+      for (let byteCol = 0; byteCol < 32; byteCol++) {
+        const x0 = byteCol * 8;
+        let hasRegion = false;
+        for (let bit = 0; bit < 8; bit++) {
+          if (x0 + bit < ditherRegionWidth && ditherRegionMask[y * ditherRegionWidth + x0 + bit] > 0) {
+            hasRegion = true; break;
+          }
+        }
+        if (!hasRegion) continue;
+        const third = Math.floor(y / 64);
+        const line = y & 7;
+        const charRow = (y >> 3) & 7;
+        const addr = third * 2048 + line * 256 + charRow * 32 + byteCol;
+        let outputByte = 0;
+        for (let bit = 0; bit < 8; bit++) {
+          const px = x0 + bit;
+          const bitMask = 0x80 >> bit;
+          let srcData = dataResults[defaultKey];
+          if (px < ditherRegionWidth) {
+            const reg = ditherRegionMask[y * ditherRegionWidth + px];
+            if (reg > 0 && reg <= 3) {
+              const k = getRegionDitherKey(reg - 1);
+              if (dataResults[k]) srcData = dataResults[k];
+            }
+          }
+          outputByte |= srcData[addr] & bitMask;
+        }
+        output[addr] = outputByte;
+      }
+    }
+    return { data: output, palette: results[defaultKey].palette };
+  }
+
+  // ZXP ULA+ format: linear bitmap + attrs + 64-byte palette, variable dimensions
+  if (format === 'zxp' && importSourceCanvasZxp && importElements?.zxpPaletteType?.value === 'ulaplus') {
+    const w = importSourceCanvasZxp.width;
+    const h = importSourceCanvasZxp.height;
+    const cols = w >> 3;
+    const attrRows = Math.ceil(h / 8);
+    const bitmapSize = cols * h;
+    const attrSize = cols * attrRows;
+
+    const cellMethodMap = buildCellMethodMap(cols, attrRows, 8, 8, defaultKey);
+    const uniqueKeys = new Set();
+    for (const k of cellMethodMap) uniqueKeys.add(k);
+    const adjWithoutMono = adjustArgs.slice(0, -1);
+    const zxpExtraArgs = [...adjWithoutMono, importUlaPlusPalette];
+    const results = {};
+    for (const key of uniqueKeys) {
+      results[key] = runConvertWithStrength(key, convertToZxpUlaPlus, importSourceCanvasZxp, zxpExtraArgs);
+    }
+    if (uniqueKeys.size === 1 && uniqueKeys.has(defaultKey)) {
+      return results[defaultKey];
+    }
+    const dataResults = {};
+    for (const key of uniqueKeys) {
+      dataResults[key] = results[key].data;
+    }
+    const output = new Uint8Array(dataResults[defaultKey].length);
+    output.set(dataResults[defaultKey]);
+    // Attr compositing
+    for (let cr = 0; cr < attrRows; cr++) {
+      for (let cc = 0; cc < cols; cc++) {
+        const key = cellMethodMap[cr * cols + cc];
+        if (key !== defaultKey && dataResults[key]) {
+          const attrAddr = bitmapSize + cr * cols + cc;
+          output[attrAddr] = dataResults[key][attrAddr];
+        }
+      }
+    }
+    // Bitmap compositing (pixel-level, linear addressing)
+    for (let y = 0; y < h; y++) {
+      if (y >= ditherRegionHeight) continue;
+      for (let byteCol = 0; byteCol < cols; byteCol++) {
+        const x0 = byteCol * 8;
+        let hasRegion = false;
+        for (let bit = 0; bit < 8; bit++) {
+          if (x0 + bit < ditherRegionWidth && ditherRegionMask[y * ditherRegionWidth + x0 + bit] > 0) {
+            hasRegion = true; break;
+          }
+        }
+        if (!hasRegion) continue;
+        const addr = y * cols + byteCol; // linear bitmap addressing
+        let outputByte = 0;
+        for (let bit = 0; bit < 8; bit++) {
+          const px = x0 + bit;
+          const bitMask = 0x80 >> bit;
+          let srcData = dataResults[defaultKey];
+          if (px < ditherRegionWidth) {
+            const reg = ditherRegionMask[y * ditherRegionWidth + px];
+            if (reg > 0 && reg <= 3) {
+              const k = getRegionDitherKey(reg - 1);
+              if (dataResults[k]) srcData = dataResults[k];
+            }
+          }
+          outputByte |= srcData[addr] & bitMask;
+        }
+        output[addr] = outputByte;
+      }
+    }
+    return { data: output, palette: results[defaultKey].palette };
+  }
+
+  if (format in cellFormats) {
+    const cfg = cellFormats[format];
+    const useBscCanvas = (format === 'bsc' || format === 'bsp' || format === 'bmc4');
+    const canvas = useBscCanvas ? importSourceCanvasBsc : sourceCanvas;
+    // BSC/BSP/BMC4: mask is 384×304, SCR core starts at pixel (64, 64)
+    const mox = useBscCanvas ? 64 : 0;
+    const moy = useBscCanvas ? 64 : 0;
+    return convertCellBasedWithRegions(cfg.fn, canvas, dithering, adjustArgs, cfg.cols, cfg.rows, cfg.cw, cfg.ch, cfg.bmp, mox, moy);
+  }
+
+  // Pixel-based formats
+  if (format === 'nxi' || format === 'sl2') {
+    const fn = format === 'nxi' ? convertToNxi : convertToSl2;
+    const headerSize = format === 'nxi' ? 512 : 0;
+    return convertPixelBasedWithRegions(fn, sourceCanvas, dithering, adjustArgs, 256, 192, 1, headerSize);
+  }
+  if (format === 'nxi320' || format === 'sl2_320') {
+    const fn = format === 'nxi320' ? convertToNxi320 : convertToSl2_320;
+    const headerSize = format === 'nxi320' ? 512 : 0;
+    return convertPixelBasedWithRegions(fn, sourceCanvas, dithering, adjustArgs, 320, 256, 1, headerSize, true);
+  }
+  if (format === 'nxi640' || format === 'sl2_640') {
+    const fn = format === 'nxi640' ? convertToNxi640 : convertToSl2_640;
+    const headerSize = format === 'nxi640' ? 32 : 0;
+    return convertNibblePackedWithRegions(fn, sourceCanvas, dithering, adjustArgs, 640, 256, headerSize, true, 256);
+  }
+  if (format === 'lores') {
+    return convertPixelBasedWithRegions(convertToLores, sourceCanvas, dithering, adjustArgs, 128, 96, 1);
+  }
+  if (format === 'lores_rad') {
+    return convertNibblePackedWithRegions(convertToLoresRad, sourceCanvas, dithering, adjustArgs, 128, 96, 0, false, 64);
+  }
+  // gmx160 has complex internal structure — skip region support for now
+  // Mono formats use interleaved bitmap addressing — skip region support
+
+  return null;
+}
+
+/**
+ * Run format-specific conversion + render to a target canvas with a specific dithering method.
+ * Used by pixel-level dither region compositing to produce alternate-dithered renders.
+ * @param {string} format
+ * @param {string} ditherMethod - Dithering method to use
+ * @param {HTMLCanvasElement} targetCanvas - Canvas to render to
+ * @param {number} zoom - Preview zoom level
+ * @param {object} params - Adjustment parameters object
+ */
+function renderFormatToCanvas(format, ditherMethod, targetCanvas, zoom, params) {
+  const { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput } = params;
+  if (format === '53c') {
+    const pattern = importElements?.pattern53c?.value || 'checker';
+    render53cToCanvas(convertTo53c(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, pattern, monoOutput), targetCanvas, zoom, pattern);
+  } else if (format === 'specscii') {
+    const charset = importElements?.specsciiCharset?.value || 'full';
+    const r = convertToSpecscii(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, charset, monoOutput);
+    renderSpecsciiToCanvas(r.charGrid, r.attrGrid, targetCanvas, zoom);
+  } else if ((format === 'bsc' || format === 'bsp') && importSourceCanvasBsc) {
+    renderBscToCanvas(convertToBsc(importSourceCanvasBsc, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom);
+  } else if (format === 'ifl') {
+    renderIflToCanvas(convertToIfl(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom);
+  } else if (format === 'mlt') {
+    renderMltToCanvas(convertToMlt(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom);
+  } else if (format === 'mlt_ula') {
+    const r = convertToMltUla(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette);
+    renderMltUlaToCanvas(r.data, r.palette, targetCanvas, zoom);
+  } else if (format === 'gmx') {
+    renderGmxToCanvas(convertToGmx640(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom, false);
+  } else if (format === 'gmx160') {
+    renderGmxToCanvas(convertToGmx160(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom, true);
+  } else if (format === 'bmc4' && importSourceCanvasBsc) {
+    renderBmc4ToCanvas(convertToBmc4(importSourceCanvasBsc, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom);
+  } else if (format === 'rgb3') {
+    renderRgb3ToCanvas(convertToRgb3(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom);
+  } else if (format === 'gigascreen' || format === 'mg8' || format === 'mg4' || format === 'mg2' || format === 'mg1') {
+    const cellH = format === 'mg4' ? 4 : format === 'mg2' ? 2 : format === 'mg1' ? 1 : 8;
+    renderGigascreenToCanvas(convertToGigascreen(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, cellH, monoOutput), targetCanvas, zoom, cellH);
+  } else if (format === 'hlr') {
+    const hlrPattern = getSelectedImportHlrPattern();
+    renderGigascreenToCanvas(convertToHlr(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, hlrPattern, monoOutput), targetCanvas, zoom, 8);
+  } else if (format === 'stl') {
+    renderGigascreenToCanvas(convertToStl(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom, 4);
+  } else if (format === 'mono_full') {
+    renderMonoToCanvas(convertToMono(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 3), targetCanvas, zoom, 3);
+  } else if (format === 'mono_2_3') {
+    renderMonoToCanvas(convertToMono(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 2), targetCanvas, zoom, 2);
+  } else if (format === 'mono_1_3') {
+    renderMonoToCanvas(convertToMono(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 1), targetCanvas, zoom, 1);
+  } else if (format === 'ulaplus') {
+    const r = convertToUlaPlus(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette, monoOutput);
+    renderUlaPlusToCanvas(r.data, targetCanvas, zoom);
+  } else if (format === 'zxp' && importSourceCanvasZxp) {
+    if (importElements?.zxpPaletteType?.value === 'ulaplus') {
+      const r = convertToZxpUlaPlus(importSourceCanvasZxp, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette);
+      renderZxpUlaPlusToCanvas(r.data, targetCanvas, zoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
+    } else {
+      renderZxpToCanvas(convertToZxp(importSourceCanvasZxp, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
+    }
+  } else if (format === 'ch$' && importSourceCanvasZxp) {
+    if (importElements?.chrMode?.value === 'gigascreen') {
+      renderZxpGigascreenToCanvas(convertToZxpGigascreen(importSourceCanvasZxp, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB), targetCanvas, zoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
+    } else {
+      renderZxpToCanvas(convertToZxp(importSourceCanvasZxp, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
+    }
+  } else if ((format === 'btile' || format === 'wtile') && importSourceCanvasZxp) {
+    renderZxpToCanvas(convertToNirvanaTile(importSourceCanvasZxp, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height, 2);
+  } else if (format === 'nxi') {
+    renderNxiToCanvas(convertToNxi(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom, false);
+  } else if (format === 'nxi320') {
+    renderNxi320ToCanvas(convertToNxi320(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom, false);
+  } else if (format === 'nxi640') {
+    renderNxi640ToCanvas(convertToNxi640(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom, false);
+  } else if (format === 'sl2') {
+    renderNxiToCanvas(convertToSl2(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom, true);
+  } else if (format === 'sl2_320') {
+    renderNxi320ToCanvas(convertToSl2_320(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom, true);
+  } else if (format === 'sl2_640') {
+    renderNxi640ToCanvas(convertToSl2_640(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom, true);
+  } else if (format === 'lores') {
+    renderLoresToCanvas(convertToLores(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom);
+  } else if (format === 'lores_rad') {
+    renderLoresRadToCanvas(convertToLoresRad(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom);
+  } else {
+    renderScrToCanvas(convertToScr(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom);
+  }
+}
+
+/**
+ * Get the display scaling factors for a format (how native pixels map to display pixels before zoom).
+ * @param {string} format
+ * @returns {{ scaleX: number, scaleY: number }}
+ */
+function getFormatDisplayScale(format) {
+  if (format === 'gmx') return { scaleX: 1, scaleY: 2 };      // 640×200 → 640×400
+  if (format === 'gmx160') return { scaleX: 2, scaleY: 2 };    // 320×200 → 640×400
+  return { scaleX: 1, scaleY: 1 };
+}
+
+/**
+ * Pixel-level compositing of dither regions on the preview canvas.
+ * Runs conversion+render for each unique non-default method to temp canvases,
+ * then composites pixel-by-pixel using the mask.
+ * @param {string} format
+ * @param {string} defaultDithering
+ * @param {number} zoom
+ * @param {object} params - Adjustment parameters
+ */
+function compositeDitherRegionsOnPreview(format, defaultDithering, zoom, params) {
+  if (!ditherRegionMask || !hasDitherRegions()) return;
+  ensureDitherRegionMask();
+
+  const defaultKey = getDefaultDitherKey(defaultDithering);
+
+  // Collect unique non-default compound keys from regions that have mask pixels
+  const activeRegionKeys = {};
+  for (let i = 0; i < ditherRegionMask.length; i++) {
+    const reg = ditherRegionMask[i];
+    if (reg > 0 && reg <= 3) {
+      const k = getRegionDitherKey(reg - 1);
+      if (k !== defaultKey) {
+        activeRegionKeys[reg] = k;
+      }
+    }
+  }
+
+  // Get unique keys (deduplicate)
+  const uniqueKeys = [...new Set(Object.values(activeRegionKeys))];
+  if (uniqueKeys.length === 0) return;
+
+  const previewCtx = importPreviewCanvas.getContext('2d');
+  if (!previewCtx) return;
+
+  const canvasW = importPreviewCanvas.width;
+  const canvasH = importPreviewCanvas.height;
+
+  // Get display scale for this format
+  const ds = getFormatDisplayScale(format);
+
+  // Render each unique compound key to a temp canvas and store its ImageData
+  const keyImageData = {};
+  for (const key of uniqueKeys) {
+    const colonIdx = key.indexOf(':');
+    const method = key.substring(0, colonIdx);
+    const strength = parseInt(key.substring(colonIdx + 1), 10) / 100;
+    const savedStrength = ditherStrength;
+    ditherStrength = strength;
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = canvasW;
+    tempCanvas.height = canvasH;
+    renderFormatToCanvas(format, method, tempCanvas, zoom, params);
+    ditherStrength = savedStrength;
+    const tempCtx = tempCanvas.getContext('2d');
+    keyImageData[key] = tempCtx.getImageData(0, 0, canvasW, canvasH);
+  }
+
+  // Read current preview pixels
+  const mainImageData = previewCtx.getImageData(0, 0, canvasW, canvasH);
+  const mainPixels = mainImageData.data;
+
+  // Compute pixel block size: each mask pixel corresponds to this many canvas pixels
+  const blockW = ds.scaleX * zoom;
+  const blockH = ds.scaleY * zoom;
+
+  // Composite pixel-by-pixel using the mask
+  for (let my = 0; my < ditherRegionHeight; my++) {
+    for (let mx = 0; mx < ditherRegionWidth; mx++) {
+      const reg = ditherRegionMask[my * ditherRegionWidth + mx];
+      if (reg <= 0 || reg > 3) continue;
+      const key = activeRegionKeys[reg];
+      if (!key) continue;
+      const srcData = keyImageData[key];
+      if (!srcData) continue;
+      const srcPixels = srcData.data;
+
+      // Canvas pixel range for this mask pixel
+      const cx0 = Math.round(mx * blockW);
+      const cy0 = Math.round(my * blockH);
+      const cx1 = Math.min(Math.round((mx + 1) * blockW), canvasW);
+      const cy1 = Math.min(Math.round((my + 1) * blockH), canvasH);
+
+      for (let cy = cy0; cy < cy1; cy++) {
+        for (let cx = cx0; cx < cx1; cx++) {
+          const idx = (cy * canvasW + cx) * 4;
+          mainPixels[idx]     = srcPixels[idx];
+          mainPixels[idx + 1] = srcPixels[idx + 1];
+          mainPixels[idx + 2] = srcPixels[idx + 2];
+          mainPixels[idx + 3] = srcPixels[idx + 3];
+        }
+      }
+    }
+  }
+
+  previewCtx.putImageData(mainImageData, 0, 0);
+}
+
+/**
+ * Initialize lasso mouse handlers on a canvas.
+ * @param {HTMLCanvasElement} canvas
+ * @param {string} canvasType - 'source' or 'preview'
+ * @param {Function} toMaskFn - Coordinate mapping function
+ * @param {Function} onUpdate - Called after mask changes
+ */
+function initLassoHandlers(canvas, canvasType, toMaskFn, onUpdate) {
+  /** Check if the Dither tab is currently active */
+  const isDitherTabActive = () => {
+    const panel = document.getElementById('importPanelDither');
+    return panel && panel.style.visibility === 'visible';
+  };
+
+  canvas.addEventListener('mousedown', (e) => {
+    // Only handle left button, only when Adjustments tab is active
+    if (e.button !== 0) return;
+    if (!ditherLassoActive && !isDitherTabActive()) return;
+    if (!ditherRegionMask) {
+      ensureDitherRegionMask();
+    }
+    const pos = toMaskFn(e.clientX, e.clientY);
+    if (!pos) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (!ditherLassoActive) {
+      // Start new polygon
+      ditherLassoActive = true;
+      ditherLassoStartCanvas = canvasType;
+      ditherLassoVertices = [pos];
+      ditherLassoMousePos = pos;
+    } else {
+      // Double-click (detail >= 2) closes the polygon immediately
+      if (e.detail >= 2 && ditherLassoVertices.length >= 2) {
+        fillPolygonInMask(ditherLassoVertices, ditherActiveRegion);
+        ditherLassoVertices = [];
+        ditherLassoActive = false;
+        ditherLassoMousePos = null;
+        onUpdate();
+        return;
+      }
+      // Check if close to first vertex (close polygon)
+      const first = ditherLassoVertices[0];
+      const dx = pos.x - first.x, dy = pos.y - first.y;
+      if (Math.sqrt(dx * dx + dy * dy) < 8) {
+        // Close polygon
+        fillPolygonInMask(ditherLassoVertices, ditherActiveRegion);
+        ditherLassoVertices = [];
+        ditherLassoActive = false;
+        ditherLassoMousePos = null;
+        onUpdate();
+        return;
+      }
+      // Add vertex
+      ditherLassoVertices.push(pos);
+    }
+    // Redraw overlay with lasso outline
+    drawDitherRegionOverlay();
+    compositeOverlayOnSource();
+    compositeOverlayOnPreview();
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    if (!ditherLassoActive) return;
+    const pos = toMaskFn(e.clientX, e.clientY);
+    if (!pos) return;
+    ditherLassoMousePos = pos;
+    // Redraw overlay with updated rubber-band
+    renderOriginalWithCrop();
+    drawDitherRegionOverlay();
+    compositeOverlayOnSource();
+    compositeOverlayOnPreview();
+  });
+
+  canvas.addEventListener('dblclick', (e) => {
+    if (!ditherLassoActive || ditherLassoVertices.length < 3) return;
+    e.preventDefault();
+    e.stopPropagation();
+    // Close polygon
+    fillPolygonInMask(ditherLassoVertices, ditherActiveRegion);
+    ditherLassoVertices = [];
+    ditherLassoActive = false;
+    ditherLassoMousePos = null;
+    onUpdate();
+  });
+
+  canvas.addEventListener('contextmenu', (e) => {
+    if (ditherLassoActive) {
+      e.preventDefault();
+      // Cancel current polygon
+      ditherLassoVertices = [];
+      ditherLassoActive = false;
+      ditherLassoMousePos = null;
+      renderOriginalWithCrop();
+      refreshDitherRegionOverlay();
+    }
+  });
+}
+
+/**
+ * Populate a region dithering dropdown by cloning options from the main dropdown.
+ * @param {HTMLSelectElement} regionSelect
+ * @param {HTMLSelectElement} mainSelect
+ */
+function populateRegionDitherDropdown(regionSelect, mainSelect) {
+  regionSelect.innerHTML = '';
+  for (const opt of mainSelect.options) {
+    const clone = /** @type {HTMLOptionElement} */ (opt.cloneNode(true));
+    clone.selected = false;
+    regionSelect.appendChild(clone);
+  }
+  // Also clone optgroups
+  regionSelect.innerHTML = mainSelect.innerHTML;
+  regionSelect.value = 'none';
+}
+
+/**
+ * Restore dither region methods and strengths from localStorage (or use defaults).
+ * Updates both the ditherRegionMethods/ditherRegionStrengths arrays and the UI.
+ * @param {HTMLSelectElement|null} sel1
+ * @param {HTMLSelectElement|null} sel2
+ * @param {HTMLSelectElement|null} sel3
+ */
+function restoreDitherRegionMethods(sel1, sel2, sel3) {
+  let saved = DITHER_REGION_DEFAULTS.slice();
+  try {
+    const raw = localStorage.getItem('ditherRegionMethods');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length === 3) saved = parsed;
+    }
+  } catch (e) {}
+  ditherRegionMethods[0] = saved[0] || DITHER_REGION_DEFAULTS[0];
+  ditherRegionMethods[1] = saved[1] || DITHER_REGION_DEFAULTS[1];
+  ditherRegionMethods[2] = saved[2] || DITHER_REGION_DEFAULTS[2];
+  if (sel1) sel1.value = ditherRegionMethods[0];
+  if (sel2) sel2.value = ditherRegionMethods[1];
+  if (sel3) sel3.value = ditherRegionMethods[2];
+
+  // Restore strengths
+  let savedStr = DITHER_REGION_STRENGTH_DEFAULTS.slice();
+  try {
+    const raw = localStorage.getItem('ditherRegionStrengths');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length === 3) savedStr = parsed;
+    }
+  } catch (e) {}
+  for (let i = 0; i < 3; i++) {
+    const v = typeof savedStr[i] === 'number' ? Math.max(0, Math.min(100, savedStr[i])) : DITHER_REGION_STRENGTH_DEFAULTS[i];
+    ditherRegionStrengths[i] = v;
+    const slider = /** @type {HTMLInputElement|null} */ (document.getElementById('ditherRegion' + (i + 1) + 'Strength'));
+    const label = document.getElementById('ditherRegion' + (i + 1) + 'StrengthVal');
+    if (slider) slider.value = String(v);
+    if (label) label.textContent = String(v);
+  }
+
+  // Restore region overlay colors
+  let savedColors = DITHER_REGION_COLOR_DEFAULTS.slice();
+  try {
+    const raw = localStorage.getItem('ditherRegionColors');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length === 3) savedColors = parsed;
+    }
+  } catch (e) {}
+  for (let i = 0; i < 3; i++) {
+    const idx = typeof savedColors[i] === 'number' && savedColors[i] >= 0 && savedColors[i] < DITHER_REGION_COLOR_PALETTE.length
+      ? savedColors[i] : DITHER_REGION_COLOR_DEFAULTS[i];
+    ditherRegionColorIndices[i] = idx;
+    updateRegionColorSwatch(i);
+  }
+}
+
+/**
+ * Update the visual appearance of a region color swatch element.
+ * @param {number} regionIndex - 0-based region index
+ */
+function updateRegionColorSwatch(regionIndex) {
+  const el = document.getElementById('ditherRegion' + (regionIndex + 1) + 'Color');
+  if (!el) return;
+  const c = DITHER_REGION_COLOR_PALETTE[ditherRegionColorIndices[regionIndex]];
+  el.style.background = 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',0.5)';
+  el.style.borderColor = 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
 }
 
 /**
@@ -10159,10 +12364,8 @@ function renderOriginalWithCrop() {
   const w = importImage.naturalWidth;
   const h = importImage.naturalHeight;
 
-  // Calculate scale to fit in canvas while showing full image (fixed at x2, independent of preview zoom)
-  const originalZoom = 2;
-  const maxSize = 256 * originalZoom;
-  const scale = Math.min(maxSize / w, maxSize / h, originalZoom);
+  // Calculate scale based on source zoom level
+  const scale = getOriginalCanvasScale();
 
   importOriginalCanvas.width = Math.round(w * scale);
   importOriginalCanvas.height = Math.round(h * scale);
@@ -10267,6 +12470,12 @@ function renderOriginalWithCrop() {
       ctx.restore();
     }
   }
+
+  // Composite dither region overlay on source canvas
+  if (ditherRegionMask) {
+    drawDitherRegionOverlay();
+    compositeOverlayOnSource();
+  }
 }
 
 // ============================================================================
@@ -10288,10 +12497,13 @@ let cropDragInitial = { x: 0, y: 0, w: 0, h: 0 };
  */
 function getOriginalCanvasScale() {
   if (!importImage || !importOriginalCanvas) return 1;
-  const w = importImage.naturalWidth;
-  const originalZoom = 2;
-  const maxSize = 256 * originalZoom;
-  return Math.min(maxSize / w, maxSize / importImage.naturalHeight, originalZoom);
+  if (importSourceZoom === 0) {
+    const w = importImage.naturalWidth;
+    const h = importImage.naturalHeight;
+    const maxW = 512, maxH = 384;
+    return Math.min(maxW / w, maxH / h, 2);
+  }
+  return importSourceZoom;
 }
 
 /**
@@ -10355,6 +12567,11 @@ function initCropMouseHandlers() {
   if (!importOriginalCanvas) return;
 
   importOriginalCanvas.addEventListener('mousedown', (e) => {
+    // When Dither tab is active, all mouse interaction goes to lasso, not crop
+    const ditherPanel = document.getElementById('importPanelDither');
+    const ditherTabActive = ditherPanel && ditherPanel.style.visibility === 'visible';
+    if (ditherTabActive) return;
+
     const rect = importOriginalCanvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
@@ -10373,6 +12590,13 @@ function initCropMouseHandlers() {
     const y = e.clientY - rect.top;
 
     if (cropDragMode === 'none') {
+      const ditherPanel = document.getElementById('importPanelDither');
+      const ditherActive = ditherPanel && ditherPanel.style.visibility === 'visible';
+      if (ditherActive) {
+        // On Dither tab, show crosshair for lasso drawing
+        importOriginalCanvas.style.cursor = 'crosshair';
+        return;
+      }
       // Update cursor based on hover position
       const zone = getCropHitZone(x, y);
       importOriginalCanvas.style.cursor = getCropCursor(zone);
@@ -10524,24 +12748,21 @@ function drawImportPreviewGrid(canvas, zoom, format) {
   if (!ctx) return;
 
   // Determine dimensions based on format
-  let width, height;
-  if (format === 'bsc' || format === 'bsp' || format === 'bmc4') {
-    width = 384;
-    height = 304;
-  } else if (format === 'mono_2_3') {
-    width = 256;
-    height = 128;
-  } else if (format === 'mono_1_3') {
-    width = 256;
-    height = 64;
-  } else {
-    width = 256;
-    height = 192;
-  }
+  const dims = getImportFormatDimensions(format);
+  const width = dims.w;
+  const height = dims.h;
 
-  const cellSize = 8 * zoom;
-  const canvasW = width * zoom;
-  const canvasH = height * zoom;
+  // Formats with doubled rows: canvas height is 2x logical height
+  const doubledRows = (format === 'gmx' || format === 'gmx160' ||
+                       format === 'nxi640' || format === 'sl2_640');
+  const vScale = doubledRows ? 2 : 1;
+  // GMX160 pixels are doubled horizontally (320→640 display)
+  const hScale = (format === 'gmx160') ? 2 : 1;
+
+  const cellSizeH = 8 * hScale * zoom;
+  const cellSizeV = 8 * vScale * zoom;
+  const canvasW = width * hScale * zoom;
+  const canvasH = height * vScale * zoom;
 
   ctx.save();
   ctx.strokeStyle = 'rgba(255, 165, 0, 0.6)';
@@ -10549,7 +12770,7 @@ function drawImportPreviewGrid(canvas, zoom, format) {
 
   // Vertical lines
   ctx.beginPath();
-  for (let x = cellSize; x < canvasW; x += cellSize) {
+  for (let x = cellSizeH; x < canvasW; x += cellSizeH) {
     ctx.moveTo(x + 0.5, 0);
     ctx.lineTo(x + 0.5, canvasH);
   }
@@ -10557,11 +12778,22 @@ function drawImportPreviewGrid(canvas, zoom, format) {
 
   // Horizontal lines
   ctx.beginPath();
-  for (let y = cellSize; y < canvasH; y += cellSize) {
+  for (let y = cellSizeV; y < canvasH; y += cellSizeV) {
     ctx.moveTo(0, y + 0.5);
     ctx.lineTo(canvasW, y + 0.5);
   }
   ctx.stroke();
+
+  // Border formats: draw paper area rectangle
+  if (format === 'bsc' || format === 'bsp' || format === 'bmc4') {
+    ctx.strokeStyle = 'rgba(0, 180, 255, 0.8)';
+    ctx.lineWidth = 2;
+    const bx = BSC_CONST.BORDER_LEFT_PX * zoom;
+    const by = BSC_CONST.BORDER_TOP_PX * zoom;
+    const bw = 256 * zoom;
+    const bh = 192 * zoom;
+    ctx.strokeRect(bx + 0.5, by + 0.5, bw, bh);
+  }
 
   ctx.restore();
 }
@@ -10691,6 +12923,7 @@ function initImageImport() {
   importElements.contrast = /** @type {HTMLInputElement} */ (document.getElementById('importContrast'));
   importElements.brightness = /** @type {HTMLInputElement} */ (document.getElementById('importBrightness'));
   importElements.zoom = /** @type {HTMLSelectElement} */ (document.getElementById('importZoom'));
+  importElements.sourceZoom = /** @type {HTMLSelectElement} */ (document.getElementById('importSourceZoom'));
   importElements.palette = /** @type {HTMLSelectElement} */ (document.getElementById('importPalette'));
   importElements.format = /** @type {HTMLSelectElement} */ (document.getElementById('importFormat'));
   importElements.pattern53c = /** @type {HTMLSelectElement} */ (document.getElementById('import53cPattern'));
@@ -10756,25 +12989,24 @@ function initImageImport() {
   // Tab switching
   const tabImage = document.getElementById('importTabImage');
   const tabAdjust = document.getElementById('importTabAdjust');
+  const tabDither = document.getElementById('importTabDither');
   const panelImage = document.getElementById('importPanelImage');
   const panelAdjust = document.getElementById('importPanelAdjust');
+  const panelDither = document.getElementById('importPanelDither');
 
   const switchTab = (tab) => {
-    if (tab === 'image') {
-      tabImage.style.background = 'var(--bg-primary)';
-      tabAdjust.style.background = 'var(--bg-secondary)';
-      panelImage.style.visibility = 'visible';
-      panelAdjust.style.visibility = 'hidden';
-    } else {
-      tabImage.style.background = 'var(--bg-secondary)';
-      tabAdjust.style.background = 'var(--bg-primary)';
-      panelImage.style.visibility = 'hidden';
-      panelAdjust.style.visibility = 'visible';
+    const tabs = [tabImage, tabAdjust, tabDither];
+    const panels = [panelImage, panelAdjust, panelDither];
+    const activeIdx = tab === 'image' ? 0 : tab === 'adjust' ? 1 : 2;
+    for (let i = 0; i < tabs.length; i++) {
+      if (tabs[i]) tabs[i].style.background = i === activeIdx ? 'var(--bg-secondary)' : 'var(--bg-primary)';
+      if (panels[i]) panels[i].style.visibility = i === activeIdx ? 'visible' : 'hidden';
     }
   };
 
   tabImage?.addEventListener('click', () => switchTab('image'));
   tabAdjust?.addEventListener('click', () => switchTab('adjust'));
+  tabDither?.addEventListener('click', () => switchTab('dither'));
 
   // Local references for closure (from cached elements)
   const ditheringSelect = importElements.dithering;
@@ -10827,6 +13059,8 @@ function initImageImport() {
 
   // Debounce timer for preview updates
   let previewDebounceTimer = null;
+  // When true, skip expensive multi-pass dither-region compositing during continuous slider drags
+  let importInteractionActive = false;
 
   // Update preview on control change (debounced to prevent rapid recalculations)
   const updatePreviewImmediate = () => {
@@ -10877,15 +13111,15 @@ function initImageImport() {
     const balanceB = parseInt(balanceBSlider?.value || '0', 10);
     const format = formatSelect?.value || 'scr';
     // Read zoom directly from element to ensure latest value for all formats
-    const currentZoom = parseInt(importElements.zoom?.value || '2', 10);
+    const currentZoom = getEffectivePreviewZoom(parseInt(importElements.zoom?.value || '2', 10));
 
     if (format === '53c') {
       const pattern = importElements.pattern53c?.value || 'checker';
-      const attrData = convertTo53c(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, pattern);
+      const attrData = convertTo53c(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, pattern, monoOutput);
       render53cToCanvas(attrData, importPreviewCanvas, currentZoom, pattern);
     } else if (format === 'specscii') {
       const specsciiCharset = importElements.specsciiCharset?.value || 'full';
-      const result = convertToSpecscii(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, specsciiCharset);
+      const result = convertToSpecscii(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, specsciiCharset, monoOutput);
       renderSpecsciiToCanvas(result.charGrid, result.attrGrid, importPreviewCanvas, currentZoom);
     } else if ((format === 'bsc' || format === 'bsp') && importSourceCanvasBsc) {
       const bscData = convertToBsc(importSourceCanvasBsc, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
@@ -10904,24 +13138,24 @@ function initImageImport() {
       const gmxData = convertToGmx640(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderGmxToCanvas(gmxData, importPreviewCanvas, currentZoom, false);
     } else if (format === 'gmx160') {
-      const gmx160Data = convertToGmx160(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      const gmx160Data = convertToGmx160(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderGmxToCanvas(gmx160Data, importPreviewCanvas, currentZoom, true);
     } else if (format === 'bmc4' && importSourceCanvasBsc) {
       const bmc4Data = convertToBmc4(importSourceCanvasBsc, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderBmc4ToCanvas(bmc4Data, importPreviewCanvas, currentZoom);
     } else if (format === 'rgb3') {
-      const rgb3Data = convertToRgb3(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      const rgb3Data = convertToRgb3(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderRgb3ToCanvas(rgb3Data, importPreviewCanvas, currentZoom);
     } else if (format === 'gigascreen' || format === 'mg8' || format === 'mg4' || format === 'mg2' || format === 'mg1') {
       const cellH = format === 'mg4' ? 4 : format === 'mg2' ? 2 : format === 'mg1' ? 1 : 8;
-      const gigaData = convertToGigascreen(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, cellH);
+      const gigaData = convertToGigascreen(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, cellH, monoOutput);
       renderGigascreenToCanvas(gigaData, importPreviewCanvas, currentZoom, cellH);
     } else if (format === 'hlr') {
       const hlrPattern = getSelectedImportHlrPattern();
-      const hlrData = convertToHlr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, hlrPattern);
+      const hlrData = convertToHlr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, hlrPattern, monoOutput);
       renderGigascreenToCanvas(hlrData, importPreviewCanvas, currentZoom, 8);
     } else if (format === 'stl') {
-      const stlData = convertToStl(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      const stlData = convertToStl(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderGigascreenToCanvas(stlData, importPreviewCanvas, currentZoom, 4);
     } else if (format === 'mono_full') {
       const monoData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 3);
@@ -10933,7 +13167,7 @@ function initImageImport() {
       const monoData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 1);
       renderMonoToCanvas(monoData, importPreviewCanvas, currentZoom, 1);
     } else if (format === 'ulaplus') {
-      const result = convertToUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette);
+      const result = convertToUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette, monoOutput);
       renderUlaPlusToCanvas(result.data, importPreviewCanvas, currentZoom);
       if (!importUlaPlusPalette) lastImportUlaPlusAutoPalette = result.palette;
     } else if (format === 'zxp' && importSourceCanvasZxp) {
@@ -10961,32 +13195,43 @@ function initImageImport() {
       const tileData = convertToNirvanaTile(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderZxpToCanvas(tileData, importPreviewCanvas, currentZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height, 2);
     } else if (format === 'nxi') {
-      const nxiData = convertToNxi(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      const nxiData = convertToNxi(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderNxiToCanvas(nxiData, importPreviewCanvas, currentZoom, false);
     } else if (format === 'nxi320') {
-      const nxiData = convertToNxi320(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      const nxiData = convertToNxi320(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderNxi320ToCanvas(nxiData, importPreviewCanvas, currentZoom, false);
     } else if (format === 'nxi640') {
-      const nxiData = convertToNxi640(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      const nxiData = convertToNxi640(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderNxi640ToCanvas(nxiData, importPreviewCanvas, currentZoom, false);
     } else if (format === 'sl2') {
-      const sl2Data = convertToSl2(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      const sl2Data = convertToSl2(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderNxiToCanvas(sl2Data, importPreviewCanvas, currentZoom, true);
     } else if (format === 'sl2_320') {
-      const sl2Data = convertToSl2_320(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      const sl2Data = convertToSl2_320(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderNxi320ToCanvas(sl2Data, importPreviewCanvas, currentZoom, true);
     } else if (format === 'sl2_640') {
-      const sl2Data = convertToSl2_640(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      const sl2Data = convertToSl2_640(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderNxi640ToCanvas(sl2Data, importPreviewCanvas, currentZoom, true);
     } else if (format === 'lores') {
-      const loresData = convertToLores(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      const loresData = convertToLores(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderLoresToCanvas(loresData, importPreviewCanvas, currentZoom);
     } else if (format === 'lores_rad') {
-      const radData = convertToLoresRad(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      const radData = convertToLoresRad(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderLoresRadToCanvas(radData, importPreviewCanvas, currentZoom);
     } else {
       const scrData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderScrToCanvas(scrData, importPreviewCanvas, currentZoom);
+    }
+
+    // --- Dither Regions: pixel-level compositing ---
+    // After the normal render (default dithering), composite region-specific dithering
+    // at pixel level for precise mask boundaries.
+    // Skipped during continuous slider drags for responsiveness; full render on release.
+    if (!importInteractionActive && hasDitherRegions()) {
+      compositeDitherRegionsOnPreview(format, dithering, currentZoom, {
+        brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing,
+        blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput
+      });
     }
 
     // Update preview size label to reflect actual output dimensions
@@ -10999,6 +13244,14 @@ function initImageImport() {
       drawImportPreviewGrid(importPreviewCanvas, currentZoom, format);
     }
 
+    // Cache clean preview before overlay, then composite
+    if (ditherRegionMask) {
+      const pctx = importPreviewCanvas.getContext('2d');
+      if (!importInteractionActive && pctx) ditherPreviewCleanCache = pctx.getImageData(0, 0, importPreviewCanvas.width, importPreviewCanvas.height);
+      drawDitherRegionOverlay();
+      compositeOverlayOnPreview();
+    }
+
     // Restore state after tile preview
     if (tileSavedCrop) {
       importCrop = tileSavedCrop;
@@ -11006,18 +13259,26 @@ function initImageImport() {
       importOffset = tileSavedOffset;
       importSize = tileSavedSize;
     }
+
   };
 
-  // Debounced wrapper - allows UI to update before heavy calculation
-  const updatePreview = () => {
+  // Cancel any pending debounce timer
+  const cancelPreviewDebounce = () => {
     if (previewDebounceTimer) {
       clearTimeout(previewDebounceTimer);
+      previewDebounceTimer = null;
     }
-    // Small delay allows checkbox/UI to update visually before blocking calculation
+  };
+
+  // Debounced wrapper — during active slider drag use a longer delay so the browser
+  // can process input events and repaint the slider thumb between heavy renders.
+  // Otherwise use a short delay so pending UI updates (e.g. overlay paint) flush first.
+  const updatePreview = () => {
+    cancelPreviewDebounce();
     previewDebounceTimer = setTimeout(() => {
       previewDebounceTimer = null;
       updatePreviewImmediate();
-    }, 50);
+    }, importInteractionActive ? 150 : 16);
   };
 
   // Set global reference for mouse handlers
@@ -11028,10 +13289,7 @@ function initImageImport() {
     updateTileInfo();
     renderOriginalWithCrop();
     // Force immediate update to ensure changes are applied
-    if (previewDebounceTimer) {
-      clearTimeout(previewDebounceTimer);
-      previewDebounceTimer = null;
-    }
+    cancelPreviewDebounce();
     updatePreviewImmediate();
   };
 
@@ -11194,6 +13452,12 @@ function initImageImport() {
   // Sync globals with UI defaults on dialog init
   syncDitherControls();
   ditherStrengthSlider?.addEventListener('input', () => {
+    importInteractionActive = true;
+    syncDitherControls();
+    updatePreview();
+  });
+  ditherStrengthSlider?.addEventListener('change', () => {
+    importInteractionActive = false;
     syncDitherControls();
     updatePreview();
   });
@@ -11206,6 +13470,15 @@ function initImageImport() {
     importPaperRule = this.value;
     updatePreview();
   });
+  // Hide dither regions section for formats that don't support dithering
+  const ditherRegionSection = document.getElementById('importDitherRegionsSection');
+  const updateDitherRegionVisibility = () => {
+    const fmt = formatSelect?.value || 'scr';
+    const hide = fmt === '53c' || fmt === 'hlr' || fmt === 'stl' || fmt === 'specscii';
+    if (ditherRegionSection) ditherRegionSection.style.display = hide ? 'none' : '';
+  };
+  updateDitherRegionVisibility();
+
   formatSelect?.addEventListener('change', () => {
     // Update size defaults based on format
     const format = formatSelect?.value || 'scr';
@@ -11256,7 +13529,7 @@ function initImageImport() {
     if (ditheringRow) {
       // HLR/STL have a fixed bitmap, so dithering does nothing — hide the row.
       // SPECSCII uses character shape matching instead of dithering.
-      ditheringRow.style.display = (format === '53c' || format === 'hlr' || format === 'stl' || format === 'specscii' || format === 'gmx160') ? 'none' : 'flex';
+      ditheringRow.style.display = (format === '53c' || format === 'hlr' || format === 'stl' || format === 'specscii') ? 'none' : 'flex';
     }
     // Hide cell-aware dithering for formats without attribute cells (RGB3, Mono)
     // and for HLR (bitmap is fixed so cell-aware methods don't apply either).
@@ -11306,6 +13579,9 @@ function initImageImport() {
       hideImportPaletteGrid();
       if (importElements.ulaPlusPaletteReset) importElements.ulaPlusPaletteReset.style.display = 'none';
     }
+    // Reset dither region mask on format change (dimensions may differ)
+    resetDitherRegionMask();
+    updateDitherRegionVisibility();
     updateTileInfo();
     updatePreview();
   });
@@ -11338,37 +13614,67 @@ function initImageImport() {
   importElements.chrMode?.addEventListener('change', updatePreview);
   importElements.specsciiCharset?.addEventListener('change', updatePreview);
   contrastSlider?.addEventListener('input', function() {
+    importInteractionActive = true;
     const contrastLabel = document.getElementById('importContrastValue');
     if (contrastLabel) contrastLabel.textContent = this.value;
     updatePreview();
   });
+  contrastSlider?.addEventListener('change', () => {
+    importInteractionActive = false;
+    updatePreview();
+  });
   brightnessSlider?.addEventListener('input', function() {
+    importInteractionActive = true;
     const brightnessLabel = document.getElementById('importBrightnessValue');
     if (brightnessLabel) brightnessLabel.textContent = this.value;
     updatePreview();
   });
+  brightnessSlider?.addEventListener('change', () => {
+    importInteractionActive = false;
+    updatePreview();
+  });
   saturationSlider?.addEventListener('input', function() {
+    importInteractionActive = true;
     if (importElements.saturationValue) {
       importElements.saturationValue.textContent = this.value;
     }
     updatePreview();
   });
+  saturationSlider?.addEventListener('change', () => {
+    importInteractionActive = false;
+    updatePreview();
+  });
   gammaSlider?.addEventListener('input', function() {
+    importInteractionActive = true;
     if (importElements.gammaValue) {
       importElements.gammaValue.textContent = (parseInt(this.value, 10) / 100).toFixed(1);
     }
     updatePreview();
   });
+  gammaSlider?.addEventListener('change', () => {
+    importInteractionActive = false;
+    updatePreview();
+  });
   sharpnessSlider?.addEventListener('input', function() {
+    importInteractionActive = true;
     if (importElements.sharpnessValue) {
       importElements.sharpnessValue.textContent = this.value;
     }
     updatePreview();
   });
+  sharpnessSlider?.addEventListener('change', () => {
+    importInteractionActive = false;
+    updatePreview();
+  });
   smoothingSlider?.addEventListener('input', function() {
+    importInteractionActive = true;
     if (importElements.smoothingValue) {
       importElements.smoothingValue.textContent = this.value;
     }
+    updatePreview();
+  });
+  smoothingSlider?.addEventListener('change', () => {
+    importInteractionActive = false;
     updatePreview();
   });
 
@@ -11381,11 +13687,21 @@ function initImageImport() {
     }
   };
   blackPointSlider?.addEventListener('input', function() {
+    importInteractionActive = true;
     updateLevelsLabel();
     updatePreview();
   });
+  blackPointSlider?.addEventListener('change', () => {
+    importInteractionActive = false;
+    updatePreview();
+  });
   whitePointSlider?.addEventListener('input', function() {
+    importInteractionActive = true;
     updateLevelsLabel();
+    updatePreview();
+  });
+  whitePointSlider?.addEventListener('change', () => {
+    importInteractionActive = false;
     updatePreview();
   });
 
@@ -11399,15 +13715,30 @@ function initImageImport() {
     }
   };
   balanceRSlider?.addEventListener('input', function() {
+    importInteractionActive = true;
     updateColorBalanceLabel();
+    updatePreview();
+  });
+  balanceRSlider?.addEventListener('change', () => {
+    importInteractionActive = false;
     updatePreview();
   });
   balanceGSlider?.addEventListener('input', function() {
+    importInteractionActive = true;
     updateColorBalanceLabel();
     updatePreview();
   });
+  balanceGSlider?.addEventListener('change', () => {
+    importInteractionActive = false;
+    updatePreview();
+  });
   balanceBSlider?.addEventListener('input', function() {
+    importInteractionActive = true;
     updateColorBalanceLabel();
+    updatePreview();
+  });
+  balanceBSlider?.addEventListener('change', () => {
+    importInteractionActive = false;
     updatePreview();
   });
 
@@ -11466,11 +13797,15 @@ function initImageImport() {
   zoomSelect?.addEventListener('change', function() {
     importZoom = parseInt(this.value, 10);
     // Force immediate update to ensure zoom changes are applied
-    if (previewDebounceTimer) {
-      clearTimeout(previewDebounceTimer);
-      previewDebounceTimer = null;
-    }
+    cancelPreviewDebounce();
     updatePreviewImmediate();
+  });
+
+  // Source zoom control (only affects original image display)
+  const sourceZoomSelect = importElements.sourceZoom;
+  sourceZoomSelect?.addEventListener('change', function() {
+    importSourceZoom = parseInt(this.value, 10);
+    renderOriginalWithCrop();
   });
 
   // Grid checkbox
@@ -11521,6 +13856,7 @@ function initImageImport() {
 
     openImportUlaPlusColorPicker(bestIndex);
   });
+
 
   // Offset controls
   const onOffsetChange = () => {
@@ -11772,14 +14108,142 @@ function initImageImport() {
     updatePreview();
   });
 
+  // ---- Dither Regions wiring ----
+  const ditherRegion1Select = /** @type {HTMLSelectElement|null} */ (document.getElementById('ditherRegion1Method'));
+  const ditherRegion2Select = /** @type {HTMLSelectElement|null} */ (document.getElementById('ditherRegion2Method'));
+  const ditherRegion3Select = /** @type {HTMLSelectElement|null} */ (document.getElementById('ditherRegion3Method'));
+  const ditherRegionShowSelect = /** @type {HTMLSelectElement|null} */ (document.getElementById('ditherRegionShow'));
+  const ditherRegionClearAllBtn = document.getElementById('ditherRegionClearAll');
+  const ditherRegionRadios = document.querySelectorAll('input[name="ditherRegion"]');
+
+  // Populate region dropdowns from main dithering dropdown, restore saved methods
+  if (ditheringSelect && ditherRegion1Select && ditherRegion2Select && ditherRegion3Select) {
+    populateRegionDitherDropdown(ditherRegion1Select, ditheringSelect);
+    populateRegionDitherDropdown(ditherRegion2Select, ditheringSelect);
+    populateRegionDitherDropdown(ditherRegion3Select, ditheringSelect);
+    restoreDitherRegionMethods(ditherRegion1Select, ditherRegion2Select, ditherRegion3Select);
+  }
+
+  // Radio buttons — select active region
+  ditherRegionRadios.forEach(radio => {
+    radio.addEventListener('change', () => {
+      ditherActiveRegion = parseInt(/** @type {HTMLInputElement} */ (radio).value, 10);
+    });
+  });
+
+  // Region dropdown/strength changes → update method + save to localStorage + refresh preview
+  const onRegionMethodChange = () => {
+    ditherRegionMethods[0] = ditherRegion1Select?.value || 'none';
+    ditherRegionMethods[1] = ditherRegion2Select?.value || 'none';
+    ditherRegionMethods[2] = ditherRegion3Select?.value || 'none';
+    for (let i = 0; i < 3; i++) {
+      const slider = /** @type {HTMLInputElement|null} */ (document.getElementById('ditherRegion' + (i + 1) + 'Strength'));
+      const label = document.getElementById('ditherRegion' + (i + 1) + 'StrengthVal');
+      const v = slider ? parseInt(slider.value, 10) : 100;
+      ditherRegionStrengths[i] = v;
+      if (label) label.textContent = String(v);
+    }
+    try { localStorage.setItem('ditherRegionMethods', JSON.stringify(ditherRegionMethods)); } catch (e) {}
+    try { localStorage.setItem('ditherRegionStrengths', JSON.stringify(ditherRegionStrengths)); } catch (e) {}
+    updatePreview();
+  };
+  ditherRegion1Select?.addEventListener('change', onRegionMethodChange);
+  ditherRegion2Select?.addEventListener('change', onRegionMethodChange);
+  ditherRegion3Select?.addEventListener('change', onRegionMethodChange);
+  // Strength slider listeners
+  for (let i = 1; i <= 3; i++) {
+    const slider = document.getElementById('ditherRegion' + i + 'Strength');
+    if (slider) {
+      slider.addEventListener('input', () => {
+        importInteractionActive = true;
+        onRegionMethodChange();
+      });
+      slider.addEventListener('change', () => {
+        importInteractionActive = false;
+        onRegionMethodChange();
+      });
+    }
+  }
+
+  // Region color swatch click — cycle through palette
+  for (let i = 1; i <= 3; i++) {
+    const swatch = document.getElementById('ditherRegion' + i + 'Color');
+    if (swatch) {
+      swatch.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const idx = i - 1;
+        ditherRegionColorIndices[idx] = (ditherRegionColorIndices[idx] + 1) % DITHER_REGION_COLOR_PALETTE.length;
+        updateRegionColorSwatch(idx);
+        try { localStorage.setItem('ditherRegionColors', JSON.stringify(ditherRegionColorIndices)); } catch (err) {}
+        // Redraw source from original (fast) + overlay
+        renderOriginalWithCrop();
+        drawDitherRegionOverlay();
+        compositeOverlayOnSource();
+        // Restore clean preview from cache + re-composite overlay (no re-conversion)
+        if (ditherPreviewCleanCache && importPreviewCanvas) {
+          const pctx = importPreviewCanvas.getContext('2d');
+          if (pctx) pctx.putImageData(ditherPreviewCleanCache, 0, 0);
+          compositeOverlayOnPreview();
+        }
+      });
+    }
+  }
+
+  // Show dropdown — just repaint overlay, no re-conversion needed
+  ditherRegionShowSelect?.addEventListener('change', () => {
+    renderOriginalWithCrop();
+    drawDitherRegionOverlay();
+    compositeOverlayOnSource();
+    // Restore clean preview from cache and re-composite overlay
+    if (ditherPreviewCleanCache && importPreviewCanvas) {
+      const pctx = importPreviewCanvas.getContext('2d');
+      if (pctx) pctx.putImageData(ditherPreviewCleanCache, 0, 0);
+    }
+    compositeOverlayOnPreview();
+  });
+
+  // Clear All button
+  ditherRegionClearAllBtn?.addEventListener('click', () => {
+    if (ditherRegionMask) ditherRegionMask.fill(0);
+    ditherLassoVertices = [];
+    ditherLassoActive = false;
+    ditherLassoMousePos = null;
+    renderOriginalWithCrop();
+    refreshDitherRegionOverlay();
+    updatePreview();
+  });
+
+  // Lasso handlers on both canvases
+  const lassoUpdate = () => {
+    renderOriginalWithCrop();
+    refreshDitherRegionOverlay();
+    updatePreview();
+  };
+  if (importOriginalCanvas) {
+    initLassoHandlers(importOriginalCanvas, 'source', sourceCanvasToMask, lassoUpdate);
+  }
+  if (importPreviewCanvas) {
+    initLassoHandlers(importPreviewCanvas, 'preview', previewCanvasToMask, lassoUpdate);
+  }
+
   // Cancel button
   cancelBtn?.addEventListener('click', () => {
     closeImportDialog();
   });
 
-  // ESC key to close dialog
+  // ESC key to close dialog or cancel lasso
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && importElements.dialog && importElements.dialog.style.display !== 'none') {
+      if (ditherLassoActive) {
+        // Cancel current lasso polygon
+        ditherLassoVertices = [];
+        ditherLassoActive = false;
+        ditherLassoMousePos = null;
+        renderOriginalWithCrop();
+        refreshDitherRegionOverlay();
+        return;
+      }
       closeImportDialog();
     }
   });
@@ -11792,14 +14256,22 @@ function initImageImport() {
     if (mode === 'flash' || mode === 'animation') {
       if (!importFile) return;
       const file = importFile;
+      // Capture crop/fit settings before dialog closes (closeImportDialog may reset state)
+      const fitSettings = {
+        crop: { x: importCrop.x, y: importCrop.y, w: importCrop.w, h: importCrop.h },
+        fitMode: importFitMode,
+        offset: { x: importOffset.x, y: importOffset.y },
+        size: { w: importSize.w, h: importSize.h },
+        align: importAlign
+      };
       closeImportDialog();
       try {
         const arrayBuffer = await file.arrayBuffer();
         const data = new Uint8Array(arrayBuffer);
         if (mode === 'flash') {
-          await importGifAsFlash(data, file.name);
+          await importGifAsFlash(data, file.name, fitSettings);
         } else {
-          await importAnimatedGif(data, file.name);
+          await importAnimatedGif(data, file.name, fitSettings);
         }
       } catch (e) {
         const label = mode === 'flash' ? 'Flash' : 'Animated';
@@ -11929,11 +14401,11 @@ function initImageImport() {
 
           if (tileFormat === '53c') {
             const pattern = importElements.pattern53c?.value || 'checker';
-            tileData = convertTo53c(importSourceCanvas, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, pattern);
+            tileData = convertTo53c(importSourceCanvas, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, pattern, tileMonoOutput);
             tileOutputFormat = FORMAT.ATTR_53C;
           } else if (tileFormat === 'specscii') {
             const tileSpecsciiCharset = importElements.specsciiCharset?.value || 'full';
-            const specsciiResult = convertToSpecscii(importSourceCanvas, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileSpecsciiCharset);
+            const specsciiResult = convertToSpecscii(importSourceCanvas, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileSpecsciiCharset, tileMonoOutput);
             tileData = specsciiResult.stream;
             tileOutputFormat = FORMAT.SPECSCII;
           } else if (tileFormat === 'bsc' && importSourceCanvasBsc) {
@@ -11958,24 +14430,24 @@ function initImageImport() {
             tileData = convertToGmx640(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileMonoOutput);
             tileOutputFormat = FORMAT.GMX;
           } else if (tileFormat === 'gmx160') {
-            tileData = convertToGmx160(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB);
+            tileData = convertToGmx160(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileMonoOutput);
             tileOutputFormat = FORMAT.GMX160;
           } else if (tileFormat === 'bmc4' && importSourceCanvasBsc) {
             tileData = convertToBmc4(importSourceCanvasBsc, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileMonoOutput);
             tileOutputFormat = FORMAT.BMC4;
           } else if (tileFormat === 'rgb3') {
-            tileData = convertToRgb3(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB);
+            tileData = convertToRgb3(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileMonoOutput);
             tileOutputFormat = FORMAT.RGB3;
           } else if (tileFormat === 'gigascreen' || tileFormat === 'mg8' || tileFormat === 'mg4' || tileFormat === 'mg2' || tileFormat === 'mg1') {
             const cellH = tileFormat === 'mg4' ? 4 : tileFormat === 'mg2' ? 2 : tileFormat === 'mg1' ? 1 : 8;
-            tileData = convertToGigascreen(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, cellH);
+            tileData = convertToGigascreen(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, cellH, tileMonoOutput);
             tileOutputFormat = (tileFormat === 'gigascreen') ? FORMAT.GIGASCREEN : FORMAT.MGH;
           } else if (tileFormat === 'hlr') {
             const hlrPattern = getSelectedImportHlrPattern();
-            tileData = convertToHlr(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, hlrPattern);
+            tileData = convertToHlr(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, hlrPattern, tileMonoOutput);
             tileOutputFormat = FORMAT.HLR;
           } else if (tileFormat === 'stl') {
-            tileData = convertToStl(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB);
+            tileData = convertToStl(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileMonoOutput);
             tileOutputFormat = FORMAT.STL;
           } else if (tileFormat === 'mono_full') {
             tileData = convertToMono(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, 3);
@@ -11987,7 +14459,7 @@ function initImageImport() {
             tileData = convertToMono(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, 1);
             tileOutputFormat = FORMAT.MONO_1_3;
           } else if (tileFormat === 'ulaplus') {
-            const result = convertToUlaPlus(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileUlaPlusPalette);
+            const result = convertToUlaPlus(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileUlaPlusPalette, tileMonoOutput);
             tileData = result.data;
             tileOutputFormat = FORMAT.SCR_ULAPLUS;
             // Defer ULA+ palette from first tile
@@ -12017,10 +14489,10 @@ function initImageImport() {
             }
             tileOutputFormat = FORMAT.CHR;
           } else if (tileFormat === 'nxi') {
-            tileData = convertToNxi(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB);
+            tileData = convertToNxi(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileMonoOutput);
             tileOutputFormat = FORMAT.NXI;
           } else if (tileFormat === 'sl2') {
-            tileData = convertToSl2(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB);
+            tileData = convertToSl2(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileMonoOutput);
             tileOutputFormat = FORMAT.SL2;
           } else {
             tileData = convertToScr(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileMonoOutput);
@@ -12240,70 +14712,72 @@ function initImageImport() {
       resetUlaPlusMode();
     }
 
+    // --- Dither Regions: try multi-pass conversion for import ---
+    const importAdjustArgs = [brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput];
+    const regionImportResult = convertWithDitherRegions(format, importSourceCanvas, dithering, importAdjustArgs);
+
     if (format === '53c') {
       const pattern = importElements.pattern53c?.value || 'checker';
-      outputData = convertTo53c(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, pattern);
+      outputData = convertTo53c(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, pattern, monoOutput);
       outputFormat = FORMAT.ATTR_53C;
       fileExt = '.53c';
     } else if (format === 'specscii') {
       const saveSpecsciiCharset = importElements.specsciiCharset?.value || 'full';
-      const specsciiResult = convertToSpecscii(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, saveSpecsciiCharset);
+      const specsciiResult = convertToSpecscii(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, saveSpecsciiCharset, monoOutput);
       outputData = specsciiResult.stream;
       outputFormat = FORMAT.SPECSCII;
       fileExt = '.specscii';
     } else if (format === 'bsc' && importSourceCanvasBsc) {
-      outputData = convertToBsc(importSourceCanvasBsc, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      outputData = regionImportResult || convertToBsc(importSourceCanvasBsc, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.BSC;
       fileExt = '.bsc';
     } else if (format === 'bsp' && importSourceCanvasBsc) {
-      // BSP uses same conversion as BSC (384x304 with border)
-      // screenData stays in BSC layout for rendering; BSP header is only used at save time
-      outputData = convertToBsc(importSourceCanvasBsc, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      outputData = regionImportResult || convertToBsc(importSourceCanvasBsc, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.BSP;
       fileExt = '.bsp';
     } else if (format === 'ifl') {
-      outputData = convertToIfl(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      outputData = regionImportResult || convertToIfl(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.IFL;
       fileExt = '.ifl';
     } else if (format === 'mlt') {
-      outputData = convertToMlt(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      outputData = regionImportResult || convertToMlt(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.MLT;
       fileExt = '.mlt';
     } else if (format === 'mlt_ula') {
-      const result = convertToMltUla(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette);
+      const result = regionImportResult || convertToMltUla(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette);
       outputData = result.data;
       outputFormat = FORMAT.MLT;
       fileExt = '.mlt';
       deferredUlaPlusPalette = result.palette;
       deferredIsUlaPlusMode = true;
     } else if (format === 'gmx') {
-      outputData = convertToGmx640(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      outputData = regionImportResult || convertToGmx640(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.GMX;
       fileExt = '.c';
     } else if (format === 'gmx160') {
-      outputData = convertToGmx160(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputData = regionImportResult || convertToGmx160(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.GMX160;
       fileExt = '.c';
     } else if (format === 'bmc4' && importSourceCanvasBsc) {
-      outputData = convertToBmc4(importSourceCanvasBsc, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      outputData = regionImportResult || convertToBmc4(importSourceCanvasBsc, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.BMC4;
       fileExt = '.bmc4';
     } else if (format === 'rgb3') {
-      outputData = convertToRgb3(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputData = regionImportResult || convertToRgb3(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.RGB3;
       fileExt = '.3';
     } else if (format === 'gigascreen' || format === 'mg8' || format === 'mg4' || format === 'mg2' || format === 'mg1') {
       const cellH = format === 'mg4' ? 4 : format === 'mg2' ? 2 : format === 'mg1' ? 1 : 8;
-      outputData = convertToGigascreen(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, cellH);
+      outputData = regionImportResult || convertToGigascreen(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, cellH, monoOutput);
       outputFormat = (format === 'gigascreen') ? FORMAT.GIGASCREEN : FORMAT.MGH;
       fileExt = format === 'gigascreen' ? '.img' : '.' + format;
     } else if (format === 'hlr') {
       const hlrPattern = getSelectedImportHlrPattern();
-      outputData = convertToHlr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, hlrPattern);
+      outputData = convertToHlr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, hlrPattern, monoOutput);
       outputFormat = FORMAT.HLR;
       fileExt = '.hlr';
     } else if (format === 'stl') {
-      outputData = convertToStl(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputData = convertToStl(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.STL;
       fileExt = '.stl';
     } else if (format === 'mono_full') {
@@ -12320,7 +14794,7 @@ function initImageImport() {
       fileExt = '.scr';
     } else if (format === 'ulaplus') {
       // ULA+ format: SCR + 64-byte optimal palette
-      const result = convertToUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette);
+      const result = regionImportResult || convertToUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette, monoOutput);
       outputData = result.data;
       outputFormat = FORMAT.SCR_ULAPLUS;
       fileExt = '.scr';
@@ -12329,7 +14803,7 @@ function initImageImport() {
       deferredIsUlaPlusMode = true;
     } else if (format === 'zxp' && importSourceCanvasZxp) {
       if (importElements.zxpPaletteType?.value === 'ulaplus') {
-        const result = convertToZxpUlaPlus(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette);
+        const result = regionImportResult || convertToZxpUlaPlus(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette);
         outputData = result.data;
         // Defer ULA+ mode until after addPicture saves previous picture state
         deferredUlaPlusPalette = result.palette.slice();
@@ -12356,39 +14830,39 @@ function initImageImport() {
       outputFormat = FORMAT.ZXP;
       fileExt = format === 'btile' ? '.btile' : '.wtile';
     } else if (format === 'nxi') {
-      outputData = convertToNxi(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputData = regionImportResult || convertToNxi(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.NXI;
       fileExt = '.nxi';
     } else if (format === 'nxi320') {
-      outputData = convertToNxi320(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputData = regionImportResult || convertToNxi320(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.NXI;
       fileExt = '.nxi';
     } else if (format === 'nxi640') {
-      outputData = convertToNxi640(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputData = convertToNxi640(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.NXI;
       fileExt = '.nxi';
     } else if (format === 'sl2') {
-      outputData = convertToSl2(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputData = regionImportResult || convertToSl2(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.SL2;
       fileExt = '.sl2';
     } else if (format === 'sl2_320') {
-      outputData = convertToSl2_320(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputData = regionImportResult || convertToSl2_320(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.SL2;
       fileExt = '.sl2';
     } else if (format === 'sl2_640') {
-      outputData = convertToSl2_640(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputData = convertToSl2_640(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.SL2;
       fileExt = '.sl2';
     } else if (format === 'lores') {
-      outputData = convertToLores(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputData = regionImportResult || convertToLores(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.LORES;
       fileExt = '.slr';
     } else if (format === 'lores_rad') {
-      outputData = convertToLoresRad(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
+      outputData = convertToLoresRad(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.LORES_RAD;
       fileExt = '.rad';
     } else {
-      outputData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      outputData = regionImportResult || convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.SCR;
       fileExt = '.scr';
     }
@@ -12616,6 +15090,24 @@ function initImageImport() {
       currentPicture = newInternalPicture;
     }
 
+    // Propagate dither source pixels to the picture for dither brush tool
+    if (lastConvertedSourcePixels) {
+      if (typeof openPictures !== 'undefined' && typeof activePictureIndex !== 'undefined' &&
+          activePictureIndex >= 0 && activePictureIndex < openPictures.length) {
+        openPictures[activePictureIndex].ditherSourcePixels = lastConvertedSourcePixels;
+      }
+      if (typeof ditherSourcePixels !== 'undefined') {
+        ditherSourcePixels = lastConvertedSourcePixels;
+      }
+      if (typeof buildDitherCellColorsCache === 'function') {
+        buildDitherCellColorsCache();
+      }
+      if (typeof updateDitherBrushAvailability === 'function') {
+        updateDitherBrushAvailability();
+      }
+      lastConvertedSourcePixels = null;
+    }
+
     // Apply deferred ULA+ state now that addPicture() has saved previous picture
     if (deferredIsUlaPlusMode && deferredUlaPlusPalette) {
       ulaPlusPalette = deferredUlaPlusPalette;
@@ -12644,7 +15136,7 @@ function initImageImport() {
       } else if (format === 'nxi' || format === 'nxi320') {
         nxiResolvedPalette = typeof parseNxiPalette === 'function' ? parseNxiPalette(outputData) : generateDefaultNextPalette();
       } else if (format === 'sl2_640') {
-        nxiResolvedPalette = typeof generateDefaultNext4bppPalette === 'function' ? generateDefaultNext4bppPalette() : generateDefaultNextPalette();
+        nxiResolvedPalette = importSl2_640Palette || (typeof generateDefaultNext4bppPalette === 'function' ? generateDefaultNext4bppPalette() : generateDefaultNextPalette());
       } else {
         nxiResolvedPalette = generateDefaultNextPalette();
       }
@@ -12654,8 +15146,17 @@ function initImageImport() {
     if (outputFormat === FORMAT.LORES && typeof generateDefaultNextPalette === 'function') {
       nxiResolvedPalette = generateDefaultNextPalette();
     }
-    if (outputFormat === FORMAT.LORES_RAD && typeof generateDefaultNext4bppPalette === 'function') {
-      nxiResolvedPalette = generateDefaultNext4bppPalette();
+    if (outputFormat === FORMAT.LORES_RAD) {
+      if (outputData.length === LORES_RAD.TOTAL_SIZE_WITH_PAL && typeof parseNxi4bppPalette === 'function') {
+        nxiResolvedPalette = parseNxi4bppPalette(outputData.slice(LORES_RAD.PIXEL_DATA_SIZE));
+        radPaletteSize = 32;
+      } else if (outputData.length === LORES_RAD.TOTAL_SIZE_WITH_GRB_PAL && typeof parseGrb332Palette === 'function') {
+        nxiResolvedPalette = parseGrb332Palette(outputData.slice(LORES_RAD.PIXEL_DATA_SIZE), 16);
+        radPaletteSize = 16;
+      } else {
+        nxiResolvedPalette = typeof generateDefaultNext4bppPalette === 'function' ? generateDefaultNext4bppPalette() : generateDefaultNextPalette();
+        radPaletteSize = 0;
+      }
     }
 
     // Close dialog and render
@@ -12851,6 +15352,8 @@ function openImportDialog(file) {
   if (importElements.brightness) importElements.brightness.value = '0';
   if (importElements.zoom) importElements.zoom.value = '2';
   importZoom = 2;
+  if (importElements.sourceZoom) importElements.sourceZoom.value = '0';
+  importSourceZoom = 0;
 
   // Reset saturation, gamma, sharpness, and grayscale
   if (importElements.saturation) importElements.saturation.value = '0';
@@ -12884,6 +15387,18 @@ function openImportDialog(file) {
   // Set palette to current display palette
   if (importElements.palette) importElements.palette.value = currentPaletteId;
   applyImportPalette(currentPaletteId);
+
+  // Reset dither regions (restore saved methods from localStorage)
+  resetDitherRegionMask();
+  ditherActiveRegion = 1;
+  const dr1 = /** @type {HTMLSelectElement|null} */ (document.getElementById('ditherRegion1Method'));
+  const dr2 = /** @type {HTMLSelectElement|null} */ (document.getElementById('ditherRegion2Method'));
+  const dr3 = /** @type {HTMLSelectElement|null} */ (document.getElementById('ditherRegion3Method'));
+  restoreDitherRegionMethods(dr1, dr2, dr3);
+  const drRadio = /** @type {HTMLInputElement|null} */ (document.querySelector('input[name="ditherRegion"][value="1"]'));
+  if (drRadio) drRadio.checked = true;
+  const drShow = /** @type {HTMLSelectElement|null} */ (document.getElementById('ditherRegionShow'));
+  if (drShow) drShow.value = 'source';
 
   // Reset fit mode, alignment, and paper rule
   if (importElements.fitMode) importElements.fitMode.value = 'stretch';
@@ -12989,64 +15504,65 @@ function openImportDialog(file) {
     const monoOutput = importElements.monoOutput?.checked || false;
 
     // Render initial preview based on format
+    const effectiveZoom = getEffectivePreviewZoom(importZoom);
     if (format === 'ulaplus') {
-      const result = convertToUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette);
-      renderUlaPlusToCanvas(result.data, importPreviewCanvas, importZoom);
+      const result = convertToUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette, monoOutput);
+      renderUlaPlusToCanvas(result.data, importPreviewCanvas, effectiveZoom);
       if (!importUlaPlusPalette) lastImportUlaPlusAutoPalette = result.palette;
     } else if (format === '53c') {
       const pattern = importElements.pattern53c?.value || 'checker';
-      const attrData = convertTo53c(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, pattern);
-      render53cToCanvas(attrData, importPreviewCanvas, importZoom, pattern);
+      const attrData = convertTo53c(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, pattern, monoOutput);
+      render53cToCanvas(attrData, importPreviewCanvas, effectiveZoom, pattern);
     } else if (format === 'specscii') {
       const liveSpecsciiCharset = importElements.specsciiCharset?.value || 'full';
-      const specsciiResult = convertToSpecscii(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, liveSpecsciiCharset);
-      renderSpecsciiToCanvas(specsciiResult.charGrid, specsciiResult.attrGrid, importPreviewCanvas, importZoom);
+      const specsciiResult = convertToSpecscii(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, liveSpecsciiCharset, monoOutput);
+      renderSpecsciiToCanvas(specsciiResult.charGrid, specsciiResult.attrGrid, importPreviewCanvas, effectiveZoom);
     } else if (format === 'ifl') {
       const iflData = convertToIfl(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
-      renderIflToCanvas(iflData, importPreviewCanvas, importZoom);
+      renderIflToCanvas(iflData, importPreviewCanvas, effectiveZoom);
     } else if (format === 'mlt') {
       const mltData = convertToMlt(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
-      renderMltToCanvas(mltData, importPreviewCanvas, importZoom);
+      renderMltToCanvas(mltData, importPreviewCanvas, effectiveZoom);
     } else if (format === 'mlt_ula') {
       const result = convertToMltUla(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette);
-      renderMltUlaToCanvas(result.data, result.palette, importPreviewCanvas, importZoom);
+      renderMltUlaToCanvas(result.data, result.palette, importPreviewCanvas, effectiveZoom);
       if (!importUlaPlusPalette) lastImportUlaPlusAutoPalette = result.palette;
     } else if (format === 'gmx') {
       const gmxData = convertToGmx640(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
-      renderGmxToCanvas(gmxData, importPreviewCanvas, importZoom, false);
+      renderGmxToCanvas(gmxData, importPreviewCanvas, effectiveZoom, false);
     } else if (format === 'gmx160') {
-      const gmx160Data = convertToGmx160(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
-      renderGmxToCanvas(gmx160Data, importPreviewCanvas, importZoom, true);
+      const gmx160Data = convertToGmx160(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      renderGmxToCanvas(gmx160Data, importPreviewCanvas, effectiveZoom, true);
     } else if (format === 'bmc4' && importSourceCanvasBsc) {
       const bmc4Data = convertToBmc4(importSourceCanvasBsc, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
-      renderBmc4ToCanvas(bmc4Data, importPreviewCanvas, importZoom);
+      renderBmc4ToCanvas(bmc4Data, importPreviewCanvas, effectiveZoom);
     } else if (format === 'rgb3') {
-      const rgb3Data = convertToRgb3(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
-      renderRgb3ToCanvas(rgb3Data, importPreviewCanvas, importZoom);
+      const rgb3Data = convertToRgb3(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      renderRgb3ToCanvas(rgb3Data, importPreviewCanvas, effectiveZoom);
     } else if (format === 'mono_full') {
       const monoData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 3);
-      renderMonoToCanvas(monoData, importPreviewCanvas, importZoom, 3);
+      renderMonoToCanvas(monoData, importPreviewCanvas, effectiveZoom, 3);
     } else if (format === 'mono_2_3') {
       const monoData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 2);
-      renderMonoToCanvas(monoData, importPreviewCanvas, importZoom, 2);
+      renderMonoToCanvas(monoData, importPreviewCanvas, effectiveZoom, 2);
     } else if (format === 'mono_1_3') {
       const monoData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 1);
-      renderMonoToCanvas(monoData, importPreviewCanvas, importZoom, 1);
+      renderMonoToCanvas(monoData, importPreviewCanvas, effectiveZoom, 1);
     } else if (format === 'hlr') {
       const hlrPattern = getSelectedImportHlrPattern();
-      const hlrData = convertToHlr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, hlrPattern);
-      renderGigascreenToCanvas(hlrData, importPreviewCanvas, importZoom, 8);
+      const hlrData = convertToHlr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, hlrPattern, monoOutput);
+      renderGigascreenToCanvas(hlrData, importPreviewCanvas, effectiveZoom, 8);
     } else if (format === 'stl') {
-      const stlData = convertToStl(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
-      renderGigascreenToCanvas(stlData, importPreviewCanvas, importZoom, 4);
+      const stlData = convertToStl(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      renderGigascreenToCanvas(stlData, importPreviewCanvas, effectiveZoom, 4);
     } else if (format === 'zxp' && importSourceCanvasZxp) {
       if (importElements.zxpPaletteType?.value === 'ulaplus') {
         const result = convertToZxpUlaPlus(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette);
-        renderZxpUlaPlusToCanvas(result.data, importPreviewCanvas, importZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
+        renderZxpUlaPlusToCanvas(result.data, importPreviewCanvas, effectiveZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
         if (!importUlaPlusPalette) lastImportUlaPlusAutoPalette = result.palette;
       } else {
         const zxpData = convertToZxp(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
-        renderZxpToCanvas(zxpData, importPreviewCanvas, importZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
+        renderZxpToCanvas(zxpData, importPreviewCanvas, effectiveZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
       }
     } else if (format === 'ch$' && importSourceCanvasZxp) {
       // chr$ uses the same linear bitmap+attrs layout as ZXP. Cell-interleaved
@@ -13054,17 +15570,17 @@ function openImportDialog(file) {
       const chrGiga = importElements.chrMode?.value === 'gigascreen';
       if (chrGiga) {
         const chrData = convertToZxpGigascreen(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB);
-        renderZxpGigascreenToCanvas(chrData, importPreviewCanvas, importZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
+        renderZxpGigascreenToCanvas(chrData, importPreviewCanvas, effectiveZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
       } else {
         const chrData = convertToZxp(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
-        renderZxpToCanvas(chrData, importPreviewCanvas, importZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
+        renderZxpToCanvas(chrData, importPreviewCanvas, effectiveZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height);
       }
     } else if ((format === 'btile' || format === 'wtile') && importSourceCanvasZxp) {
       const tileData = convertToNirvanaTile(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
-      renderZxpToCanvas(tileData, importPreviewCanvas, importZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height, 2);
+      renderZxpToCanvas(tileData, importPreviewCanvas, effectiveZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height, 2);
     } else {
       const scrData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
-      renderScrToCanvas(scrData, importPreviewCanvas, importZoom);
+      renderScrToCanvas(scrData, importPreviewCanvas, effectiveZoom);
     }
 
     // Show dialog

@@ -4333,7 +4333,7 @@ function getUlaPlusPaletteIndex(attr, isInk) {
 // ============================================================================
 
 /** @type {string[]} - List of supported file extensions */
-const SUPPORTED_EXTENSIONS = ['scr', 'rcs', '53c', 'atr', 'bsc', 'bsp', 'ifl', 'bmc4', 'mlt', 'mc', '3', 'img', 'mem', 'specscii', 'sca', 'sna', 'z80', 'btile', 'wtile', 'zxp', 'ch$', 'chr$', 'ch-', 'mg1', 'mg2', 'mg4', 'mg8', 'hlr', 'stl', 'nxi', 'sl2', 'slr', 'rad', 'zx7', 'zx7b', 'zx0', 'zx0b'];
+const SUPPORTED_EXTENSIONS = ['scr', 'rcs', '53c', 'atr', 'bsc', 'bsp', 'ifl', 'bmc4', 'mlt', 'mc', '3', 'img', 'mem', 'specscii', 'sca', 'sna', 'z80', 'btile', 'wtile', 'zxp', 'ch$', 'chr$', 'ch-', 'mg1', 'mg2', 'mg4', 'mg8', 'hlr', 'stl', 'nxi', 'sl2', 'slr', 'rad', 'zx7', 'zx7b', 'zx0', 'zx0b', 'lc', 'upk'];
 const IMAGE_EXTENSIONS = ['png', 'gif', 'jpg', 'jpeg', 'webp', 'bmp'];
 
 /** @type {JSZip|null} - Current loaded ZIP archive */
@@ -6347,6 +6347,16 @@ function detectFormat(fileName, fileSize) {
 
   if (ext === 'zx0' || ext === 'zx0b') {
     // ZX0 compressed — actual format determined after decompression in loadScreenFile
+    return FORMAT.SCR;
+  }
+
+  if (ext === 'lc') {
+    // LC compressed — actual format determined after decompression in loadScreenFile
+    return FORMAT.SCR;
+  }
+
+  if (ext === 'upk') {
+    // upkr compressed — actual format determined after decompression in loadScreenFile
     return FORMAT.SCR;
   }
 
@@ -8925,6 +8935,30 @@ function loadScreenFile(file) {
         if (innerExt === 'rcs' && format === FORMAT.SCR && typeof reorderRcsToScr === 'function') {
           data = reorderRcsToScr(data);
         }
+      }
+
+      // LC compressed files — decompress before further processing
+      if (fileExt === 'lc' && typeof LC !== 'undefined') {
+        try {
+          data = LC.decompressScreen(data);
+        } catch (e) {
+          alert('Failed to decompress LC file: ' + e.message);
+          return;
+        }
+        const innerName = fileName.replace(/\.lc$/i, '');
+        format = detectFormat(innerName, data.length);
+      }
+
+      // upkr compressed files — decompress before further processing
+      if (fileExt === 'upk' && typeof UPKR !== 'undefined') {
+        try {
+          data = UPKR.decompress(data, UPKR.configZ80());
+        } catch (e) {
+          alert('Failed to decompress upkr file: ' + e.message);
+          return;
+        }
+        const innerName = fileName.replace(/\.upk$/i, '');
+        format = detectFormat(innerName, data.length);
       }
 
       // RCS files are SCR data with reordered bitmap bytes — reverse on load

@@ -1,5 +1,148 @@
 # SpectraLab Version History
 
+## v2.14
+- **Dither Regions** — draw lasso regions on the source or preview canvas during image import to assign different dithering algorithms to different areas. Up to 3 color-coded regions (red, green, blue), each with its own dithering method dropdown and **strength slider** (0–100%). Switch to the **Dither** tab to enable lasso drawing (Image tab is for crop, Adjustments tab is for color/levels). Click to place polygon vertices, double-click or click near the first vertex to close. Right-click or Escape to cancel. Erase mode and Clear All button to manage regions. Show overlay on Source, Preview, Both, or None. Last used dithering methods and strengths are saved to localStorage (defaults: Floyd-Steinberg, Ordered 2×2, Riemersma; all 100%). Supported for cell-based formats (SCR, IFL, MLT, BSC, BMC4, RGB3, Gigascreen/MG, GMX 640, ULA+, MLT+ULA+, ZXP ULA+) and pixel-based formats (NXI 256, NXI 320, NXI 640, SL2 256, SL2 320, SL2 640, LoRes, LoRes RAD). Multi-pass conversion runs each unique dithering method+strength combination separately and composites results per cell or per pixel using the region mask. Tooltip hints added to all dither region controls.
+- **Faster import preview during slider drags** — dragging brightness, contrast, saturation, gamma, sharpness, smoothing, levels, color balance, or dither strength sliders now skips multi-pass dither-region compositing and uses throttled debounce (150 ms). Full-quality render with all dither regions runs on slider release. Switching the **Show** dropdown (Source/Preview/Both/None) no longer triggers a full re-conversion — only the overlay is repainted from cache.
+- Fixed all global dithering methods (Jarvis, Stucki, Burkes, Sierra, Atkinson, Riemersma, Blue Noise, Pattern, A-Dither, Noise, etc.) producing identical Floyd-Steinberg output for NXI 320/640, SL2 320/640, LoRes, and LoRes RAD formats — `quantizeNextPixelsExt` had hardcoded Floyd-Steinberg error diffusion for all non-ordered methods instead of dispatching to the correct algorithm
+- Fixed ULA+ and ZXP ULA+ formats not supporting global dithering methods at all — non-cell-aware methods fell back to nearest-color mapping with no dithering. Now applies `applyGlobalDither` before cell processing, matching the approach used by all other cell-based formats
+- Fixed dither region import compositing producing vertical stripe artifacts on NXI 320 and SL2 320 formats — byte offset calculation assumed row-major storage but these formats use column-major pixel order (`address = x × 256 + y`)
+
+## v2.13
+- Fixed GMX 160×200 import preview displaying at wrong aspect ratio — was 320×400 (too narrow). Now displays at 640×400 (pixels doubled horizontally), matching GMX 640×200 display and real hardware output
+
+## v2.12
+- Fixed import preview grid not covering full canvas for formats with doubled rows (GMX 640×200, GMX 160×200, NXI 640×256, SL2 640×256)
+- Fixed SL2 640×256 import producing near-blue image — was quantizing to the first 16 entries of the RGB332 identity palette (mostly blues). Now uses optimized palette (16 most frequent RGB333 colors from the image)
+
+## v2.11
+- Fixed import preview grid only covering 256×192 area for non-SCR formats (SL2, GMX, BSC, etc.) — grid now covers the full format dimensions
+- Fixed BSC/BSP/BMC4 border conversion producing strokes shorter than 24px (hardware minimum). Interior runs in top/bottom/side borders now enforce the 3-segment (24px) minimum, matching real ZX Spectrum timing (12 T-states per OUT to port $FE)
+- Added paper area rectangle overlay in BSC/BSP/BMC4 import preview grid
+- Fixed ordered dithering (2×2, 4×4, 8×8) not working for NXI/SL2/LoRes formats — Bayer threshold was never applied, and strength slider had no effect. Also fixed strength slider not scaling Floyd-Steinberg error diffusion for these formats
+- Fixed NXI/SL2/LoRes non-FS error diffusion methods (Atkinson, Sierra-2, Serpentine, Riemersma, Blue Noise, Pattern) silently falling through to Floyd-Steinberg — replaced inline dithering with unified `applyGlobalDither` dispatch
+- Fixed BMC4 cell-aware dithering completely broken — all methods mapped to "none" (no dithering). Now correctly dispatches all 10 cell dither methods
+- Fixed IFL cell-aware dithering missing most methods — only Floyd-Steinberg and Ordered 4×4 worked, other 8 methods fell through to "none". All methods now supported
+- Added Ordered 2×2 and Ordered 8×8 cell-aware dithering to all formats (SCR, MLT, Gigascreen, IFL, BMC4, GMX, ULA+, ZXP)
+- Fixed dither strength slider having no effect on cell-aware dithering — all cell/block dither functions (Floyd-Steinberg, Atkinson, Sierra-2, Serpentine, Riemersma, Ordered, Blue Noise, Pattern) now respect the strength parameter
+- Added attribute-level dithering for GMX 160×200 format — all dithering methods now work on the 160×200 half-cell color grid, improving gradient and color transition quality
+- Fixed RAD 128×96 (16c) import using wrong palette — the first 16 entries of RGB332 only contain dark blue/green shades with no reds or bright colors. Now uses optimized palette (16 most frequent RGB333 colors from the image) and embeds the 32-byte palette in the output .rad file
+- Widened Format and Palette dropdowns in import dialog to prevent label clipping
+- Moved zoom/grid controls to the top header area of each canvas in the import dialog — source image has its own zoom (x1–x4), preview has zoom (x1–x5) and grid toggle. Both canvases now support scrollbars when zoomed image exceeds the available space
+- Added "Fit" option to import dialog zoom controls — source defaults to Fit (scales to fill available space up to x2), preview defaults to x2
+- Fixed "Mono output" checkbox not working for most formats — Gigascreen/MG, HLR, STL, RGB3, ULA+, GMX 160×200, 53c, Specscii, NXI, SL2, LoRes, and LoRes RAD now correctly produce monochrome (black & white) output when the checkbox is checked
+- Reorganized import dialog layout — moved LAB colors/Grayscale/Mono output checkboxes into the Source group; fixed Image/Adjustments tab highlight being inverted
+
+## v2.10
+- **Dither Brush tool (W)** — re-dither individual cells or regions with a different dithering algorithm. After importing an image, source pixels are stored automatically; select the Dither Brush tool and paint over cells to apply a new method (Floyd-Steinberg, Atkinson, Ordered 4x4, Sierra-2, Serpentine, Riemersma, Blue Noise, Pattern, None). Round pixel-accurate brush with diameter 3–16 px, strength slider. Use **Shift+W** or the ▩ button to re-dither the current selection at once.
+- Fixed SCA files created from animated GIF import having version 0 in the header instead of version 1, which made them unplayable in external players
+
+## v2.9
+- **Ellipse drawing** — new `Ellip` and `EllipF` toolbar buttons for ellipse outline and fill. Four new opcodes: `ellipse_outline_abs cx, cy, rx, ry` (0x89), `ellipse_fill_abs cx, cy, rx, ry` (0x8A), `ellipse_outline_chain rx, ry` (0x8B), `ellipse_fill_chain rx, ry` (0x8C). Centre coordinates are 7-bit logical (0–127), radii are 8-bit unsigned. JS VM uses midpoint ellipse algorithm with 4-way symmetry; fill variant pre-computes per-scanline half-widths to avoid XOR artifacts. Full assembler/disassembler roundtrip, nudge support for `_abs` variants, and rubber-band overlay preview.
+- **`ZGS_USE_ELLIPSES` conditional flag** — new conditional compilation flag (~800 bytes) for ellipse outline/fill opcodes (0x89–0x8C). Auto-detected from scene content like text flags. Z80 ASM player includes full midpoint ellipse routines with 16-bit arithmetic for error terms, 4-way symmetry point plotting, and span-based fill via `draw_hspan`. IFDEF-guarded with stub handlers when disabled.
+- **Shape modifier keys** — hold modifier keys while dragging to constrain shapes:
+  - **Ctrl** — constrain to 1:1 ratio (square for Rect/RectF, circle for Ellip/EllipF)
+  - **Alt** — draw from center instead of corner
+  - **Ctrl+Alt** — both combined
+  - Applies to: Rect, RectF, Circle, CircleF, Ellip, EllipF. Modifiers update the rubber-band preview in real-time.
+- **Zoom x4/x5** — preview canvas zoom selector now includes x4 and x5 options in addition to x1/x2/x3.
+- Fixed flood fill in Z80 ASM player corrupting pattern fills: rewritten to use a column-level visited bitmap (768 bytes) instead of relying on the screen buffer as a visited marker. The old two-phase approach (solid 0xFF fill, then pattern mask) failed to apply patterns to edge bytes of spans. Now matches `viewer.asm` approach: pattern is applied directly during fill, visited bitmap prevents re-entering filled columns. `ZGS_USE_FLOOD` size updated to ~2300 bytes (512-byte stack + 768-byte visited bitmap).
+- Fixed `wait_key` blocking preview rendering: instant render now skips `wait_key` so all drawing commands after it are visible. During animated playback (Play button), `wait_key` properly pauses and waits for a keypress or canvas click before continuing.
+- Default playback speed increased by 25% (50ms → 37ms per step).
+- Fixed animated GIF import ignoring crop/fit settings from the import dialog — fill/crop mode was stretching the full image to 256×192 instead of cropping. Now captures crop, fit mode, offset, size, and alignment before closing the dialog and applies them to each frame via an offscreen canvas. Same fix applied to flash GIF import.
+- Fixed animated GIF SCR conversion producing wrong colors — replaced the broken "two most frequent colors + brightness group merge" heuristic with a brute-force optimal search over all 128 ink/paper/brightness combinations per cell (same algorithm as the standard image import). The old code had operator precedence bugs in brightness merging and could assign arbitrary wrong colors when the two most frequent colors came from different brightness groups.
+
+## v2.8
+- **Nudge selection with Alt+Arrows** — select lines in the source textarea and press Alt+Arrow keys to shift absolute coordinates by ±1 logical unit. Coordinates clamped to 0–127. Undoable with Ctrl+Z:
+  - All `_abs` instructions: `move_abs`, `dot_abs`, `hline_abs`, `vline_abs`, `rect_outline_abs`, `rect_fill_abs`, `circle_outline_abs`, `circle_fill_abs`, `flood_abs`, `stamp_abs`
+  - Batch/polygon instructions: `dot_batch`, `rect_outline_batch`, `rect_fill_batch`, `polygon_outline`, `polygon_fill`
+  - Relative/delta instructions, comments, and non-coordinate lines are left untouched
+- **Reference image overlay** — per-scene reference image for tracing/drawing. Load any image file, adjust opacity (5–80%), position (X/Y offset), and display size (W/H, auto defaults to 256×192). Each scene stores its own reference image and settings independently. New scenes inherit the current scene's reference image. Collapsible UI panel below playback controls; panel state persists via localStorage.
+- **Project format v2 (.zgp)** — `.zgp` files now save reference images with deduplication: shared images are stored once in a `referenceImages` array, scenes reference by index. Backward-compatible — v1 `.zgp` files load normally (scenes have no reference).
+- **Smart New button** — the New button now adds a new blank scene tab when the project has existing content (loaded or edited scenes). Resets the whole project only when all scenes are still empty/default.
+- Fixed Ctrl+Z / Ctrl+Y (undo/redo) not working when a non-English keyboard layout is active (e.g. Russian). Shortcuts now use physical key codes instead of character values.
+
+## v2.7
+- Fixed ZGS disassembler producing duplicate `end` commands when loading a .zgs file that was previously saved (assembler unconditionally appended a second END opcode; disassembler parsed all bytes past the first END). Assembler now only appends END if not already present; disassembler stops at the first END opcode.
+- **NXI → SL2 palette handling** — converting NXI to SL2 now shows a dialog when the palette differs from the default RGB332, offering three options: **Keep palette** (embed palette after pixel data in the SL2 file), **Quantize to default** (remap pixel indices to the closest default RGB332 colors), or **Strip palette** (remove palette, keep pixel indices unchanged for use with an external palette file). When the palette matches the default, conversion proceeds silently as before.
+- **SL2 save with palette** — saving an SL2 file with a non-default palette now automatically embeds the palette after pixel data (producing 49664/82432/81952-byte files), instead of warning about palette loss. Files with the default palette are saved as raw pixels only.
+
+## v2.6
+- Fixed `zgs_clear_screen` corrupting last bitmap byte (bottom-right cell) with the attribute value
+- Fixed flood fill in Z80 ASM player: rewritten with two-phase approach (solid fill, then pattern mask); removed 768-byte visited bitmap
+- Fixed scenes not always terminated with END opcode, causing Z80 VM to read past scene data into garbage
+- Fixed `show_from_addr`/`show_by_num` jumping to undefined address after `zgs_wait_key` returns; now halts properly
+- Fixed opening .zgs/.zgt file not setting project name, causing ASM export to propose "untitled.zip"
+- **42-col and 64-col text modes** — new text printing modes with narrower character widths: 42 chars/line (6px wide) and 64 chars/line (4px wide). Six new opcodes: `set_cursor_42 col, row` (0x83), `print_text_42 "str"` (0x84), `print_packed_42 "str"` (0x85), `set_cursor_64 col, row` (0x86), `print_text_64 "str"` (0x87), `print_packed_64 "str"` (0x88). Each mode has independent cursor position tracking. Two new DEFINE flags: `ZGS_USE_TEXT_42` (~200 bytes + 768-byte font), `ZGS_USE_TEXT_64` (~200 bytes + 768-byte font). Config block updated: `zgs_font_42_addr` at ORG+0x14, `zgs_font_64_addr` at ORG+0x16, `scene_count` shifted to ORG+0x18, `scene_table` to ORG+0x19. Text mode dropdown added to ZGS Editor text toolbar (32/42/64 selection). 4×8 and 6×8 fonts are derived from the 8×8 ROM font: 6×8 uses top 6 bits (mask 0xFC), 4×8 is generated by OR-ing column pairs (bit[n] = bit[2n] | bit[2n+1]).
+- **Separate font binaries for ASM export** — fonts are now exported as separate binary files included via `incbin` instead of inline `db` data. Three font files: `font_8x8.bin` (standard 8×8 ROM font for 32-col), `font_6x8.bin` (6-pixel-wide font for 42-col), `font_4x8.bin` (4-pixel-wide condensed font for 64-col). Each is 768 bytes (96 chars × 8 bytes). Users can replace any font binary with a custom design for each text mode independently. All three files are included in the ZIP export alongside the `.asm` and `.zgs` files.
+- **Auto-detection of text DEFINE flags** — `ZGS_USE_TEXT`, `ZGS_USE_TEXT_42`, and `ZGS_USE_TEXT_64` are now automatically enabled/disabled based on which text opcodes appear in the scene source. Font binaries are IFDEF-guarded: `font_8x8.bin` is only included when `ZGS_USE_TEXT` is defined, `font_6x8.bin` when `ZGS_USE_TEXT_42`, `font_4x8.bin` when `ZGS_USE_TEXT_64`. Scenes that don't use text save up to 2304 bytes of font data.
+- **42/64-col support in viewer.asm** — the standalone Z80 viewer now includes full 42-col and 64-col text rendering: cross-byte 6px renderer for 42-col, nibble-based 4px renderer for 64-col, refactored packed text with SMC dispatch for all three modes. Font binaries loaded via `incbin`, all IFDEF-guarded.
+- **42/64-col support in zgsvm.py** — the Python pygame-based viewer now supports all six new text opcodes (0x83–0x88) with correct font rendering and independent cursor tracking per mode.
+
+## v2.5
+- **Multi-scene ZGS projects** — the ZGS Editor now supports multiple scenes in a single project. A tabbed interface allows creating, switching, renaming, and deleting scenes. Each scene has its own source text, undo/redo history, and compiled binary. Add scenes with the + button; double-click a tab to rename; close button removes a scene (minimum 1).
+- **Project save/load (.zgp)** — save and restore multi-scene projects as `.zgp` files (JSON format). Preserves all scene names, source text, and the active scene index. Open `.zgp` files via the Open button or drag-and-drop.
+- **New ASM config block** — the exported Z80 assembly now features a 4-JP entry point config block at fixed addresses: `show_from_addr` (ORG+0x00), `show_by_num` (ORG+0x03), `zgs_clear_screen` (ORG+0x06), `zgs_wait_key` (ORG+0x09). Followed by patchable config fields: `zgs_font_addr` (ORG+0x0C), `zgs_scene_addr` (ORG+0x0E), `zgs_dict_addr` (ORG+0x10), `scene_num` (ORG+0x12), `clear_color` (ORG+0x13), `scene_count` (ORG+0x14), and `scene_table` (ORG+0x15). The `show_by_num` routine looks up a scene address from the table by index, enabling programmatic scene selection.
+- **Clear screen with color** — `zgs_clear_screen` now reads the `clear_color` config field instead of always clearing to black. Bitmap bytes are set to 0, attribute bytes are filled with the `clear_color` value. This applies to both the JS ASM player library and `viewer.asm`.
+- **ZIP export** — ASM export now packages all files into a single `.zip` download via JSZip: the `.asm` file, all compiled `.zgs` scene binaries, and the packed text dictionary (`.zdict`). Falls back to individual file downloads if JSZip is unavailable.
+- **Dict serializer** — new `zgsSerializeDictBinary()` function serializes a dictionary object to the `.zdict` binary format (inverse of `zgsLoadZdict()`), used for ZIP export.
+- **Save dropdown** — the Save button is now a single dropdown menu offering four formats: Save .zgs (binary), Save .zgt (text), Save .zgp (project), and Export .asm (assembly+ZIP).
+- **Open into new tab** — opening a `.zgs` or `.zgt` file creates a new scene tab instead of replacing the current one. Empty scenes or scenes with default example text are replaced in-place.
+- Fixed canvas rendering artifacts (non-uniform pattern lines) caused by the global `box-sizing: border-box` rule interacting with the canvas border.
+- `viewer.asm` updated with the same 4-JP config block, `show_from_addr`/`show_by_num` routines, and `clear_color`-aware `zgs_clear_screen`. Text overlay config fields removed (handled via ZGS opcodes).
+
+## v2.4
+- **Conditional compilation for ZGS ASM player** — the exported Z80 assembly now includes `IFDEF`-based feature selection. Eight `DEFINE` flags control which opcode groups are compiled in. Comment out unused DEFINEs to reduce the binary size. When a feature is disabled, its handler labels collapse to `or 1 : ret` stubs, and all exclusive subroutines, data tables, and variables are excluded. Approximate byte savings per feature: `ZGS_USE_LINES` ~443, `ZGS_USE_RECTS` ~636, `ZGS_USE_CIRCLES` ~612, `ZGS_USE_POLYGONS` ~666, `ZGS_USE_FLOOD` ~2300 (includes 512-byte stack + 768-byte visited bitmap), `ZGS_USE_TEXT` ~180, `ZGS_USE_PACKED_TEXT` ~724 (includes ~520 byte dictionary), `ZGS_USE_STAMPS` ~146. When only text features are defined and all drawing features are disabled, the coordinate system (dot/move handlers, `plot_pixel`, math helpers, pattern/mask tables) is automatically excluded via the auto-derived `ZGS_HAS_DRAWING` flag. Dependencies: `ZGS_USE_PACKED_TEXT` requires `ZGS_USE_TEXT`; rect/polygon outlines require `ZGS_USE_LINES`.
+
+## v2.3
+- **Text opcodes** — two new ZGS opcodes for rendering text using the ZX Spectrum ROM font (8×8, characters 32–127):
+  - `set_cursor col, row` (0x80) — set the text cursor to character cell coordinates (col 0–31, row 0–23)
+  - `print_text "string"` (0x81) — print ASCII text at the cursor position using the current attribute; cursor advances after each character and wraps at column 32
+  - `print_packed "string"` (0x82) — dictionary-compressed text, 30–50% smaller than `print_text` for English prose. Uses a three-tier encoding: word tokens (codes 1–31), literal ASCII (32–127), bigram tokens (128–223), and trigram tokens (224–255). Dictionary is external (.zdict format) with built-in lowercase/uppercase English variants, plus custom user dictionaries loaded from `.zdict` files. `.dict` directive selects the encoding dictionary (`lower`, `upper`, or `user`).
+- **Text drawing tool** — new Text tool in the ZGS Editor shape toolbar. Click the canvas to place a `set_cursor` command at the clicked character cell. Type text in the toolbar input and click Print to insert a `print_text` command. Cursor placement and text insertion are separate operations, allowing interleaved drawing between text commands.
+- **ROM font embedded** — the standard ZX Spectrum ROM font (768 bytes, 96 characters) is embedded in both the JS VM and the Z80 ASM player. The Z80 player uses the ROM address `0x3D00` by default, configurable via the `zgs_font_addr` variable.
+- **ASM export restructured** — the exported Z80 assembly now uses a poke-friendly `jr start` config block at the top with `zgs_font_addr` and `zgs_scene_addr` at fixed addresses. Removed `di` and `ld sp` instructions for BASIC compatibility.
+- Z80 ASM player: text cursor state, `op_set_cursor` and `op_print_text` handlers with full ZX Spectrum screen address calculation, SET/XOR draw mode support, and attribute setting.
+- ZGS format specification updated with text opcodes (0x80, 0x81) and text mnemonics (`set_cursor`, `print_text`).
+- Showcase example updated with text printing demo.
+
+## v2.2
+- **Grid overlay** — Grid checkbox in the controls bar shows an 8×8 character cell grid (subtle orange lines) over the preview canvas with brighter screen third separators at y=64/128. Persists via localStorage.
+- **Theme toggle** — moon/sun button (☾/☀) in the header bar toggles light/dark theme, synced with main SpectraLab and Font Editor via the shared `spectraLabTheme` localStorage key.
+
+## v2.1
+- **Save .asm** — export a complete sjasmplus Z80 assembly file containing the ZGS player library (`zgs_draw`, `zgs_clear_screen`, `zgs_wait_key`) and the current scene as `incbin`. Downloads both `.asm` and `.zgs` files; assemble with `sjasmplus` to produce a working `.sna` snapshot. The player library is a self-contained Z80 VM that renders ZGS bytecode directly to ZX Spectrum screen memory.
+- **Polyline drawing** — right-drag with the Line tool to draw multi-segment polylines. After the first segment is committed, a rubber band continuously tracks the mouse from the last endpoint. Right-click/drag again to add more segments. Left click or Escape to finish.
+- Command toolbar dropdowns (Ink, Paper, Pattern) now show the currently selected value in the dropdown label (e.g., "Ink: red", "Paper: blue", "Pat: checker").
+- ZGS player (`viewer.asm`): restructured with a clean public API — `zgs_draw(HL)` entry point that accepts a ZGS binary address, resets VM state, and renders the scene. New `zgs_base` variable replaces hardcoded `scene_data` references in `parse_header`. Labels renamed: `clear_screen` → `zgs_clear_screen`, `wait_key` → `zgs_wait_key`.
+
+## v2.0
+- ZGS Editor — standalone tool (`zgs_editor.html`) for editing ZGS (ZX Graphics Script) vector scenes. Features a text editor for `.zgt` assembly with live preview, assembler (text→binary), disassembler (binary→text), and a full bytecode VM (256×192 pixel buffer, 32×24 attribute cells, 35 opcodes: lines, rectangles, circles, polygons, flood fill, pattern fills, sprites, repeat loops, subroutine calls, LZ decompression). Open `.zgs` binary files (auto-disassembled to text) or `.zgt` text files. Auto-render with 500ms debounce, animated step-by-step playback with adjustable speed, save as `.zgs` (binary) or `.zgt` (text). Drag-and-drop file support. Zoom selector (x1/x2/x3) with localStorage persistence. Accessible via **ZGS Editor** link in the Tools tab.
+- XOR draw mode — `set_mode xor` / `set_mode set` instruction (opcode `0x1B`) toggles pixels instead of always setting them. Useful for blinking highlights and cursor animation in adventure game UIs.
+- Disassembler now emits version number in the header comment (`; ZGS text format v1`).
+- Interactive canvas — hover over the preview canvas to see logical coordinates (tooltip + status bar). Right-click or left-click with the Cursor tool to copy coordinates to clipboard.
+- Shape drawing tools — Dot, Line, Rect, RectF, Circle, CircleF, Flood, ClearR. Select a tool from the toolbar and click/drag on the canvas to draw. The generated ZGS instruction is inserted before the `end` statement and the preview re-renders instantly. Rubber-band overlay shows shape preview during drag. ClearR snaps to the 8×8 character cell grid.
+- Command toolbar — dropdown selects for Ink, Paper (with Bright checkbox), and Pattern insert `set_ink`, `set_paper`, `set_pattern` commands. Buttons for XOR, SET, Clear, WaitKey, End insert the corresponding instructions.
+- Pen crosshair — semi-transparent green crosshair on the overlay canvas shows the VM pen position after render/step/play. Toggle with the Pen checkbox.
+- Source line sync — during Step playback, the corresponding source line is highlighted in the textarea. Built on an assembler source map that tracks byte offsets to line numbers.
+- Assembler now stops parsing after scene-level `end`, so trailing text (comments, notes) does not cause errors.
+
+## v1.100
+- Cell Invert tool: right-click inverts all cells on the screen that share the same attribute as the clicked cell. Left-click retains existing single-cell behavior with drag support.
+
+## v1.99
+- upkr compression — built-in upkr (rANS entropy coding) compression for SCR format with Z80-optimized settings. Export dropdown adds `.scr.upk (upkr level 1)` and `.scr.upk (upkr level 9)`. The **Compare compressions...** dialog includes two upkr rows (level 1 and level 9) with depacker size 450 bytes (130 code + 320 probs array). **Create ASM** generates a sjasmplus example with the upkr Z80 unpacker by Peter "Ped" Helcmanovsky. Open `.scr.upk` files directly — decompression is automatic on load.
+- Compression Compare dialog: the dialog now stays open after saving, allowing multiple formats to be exported without re-running compression.
+- Compression Compare dialog: format settings (⚙ gear icon) — enable/disable individual format families (ZX7, ZX0, RCS, LC, upkr) and choose depacker variant (upkr compact 450B vs fast 475B). Settings persist in localStorage across sessions.
+
+## v1.98
+- LC compression — built-in Laser Compact 5.2.1 compression for SCR format. Export dropdown adds `.scr.lc (LC compressed)`. The **Compare compressions...** dialog now includes an LC row alongside ZX7/ZX0 variants, using `compressScreen` with native segment support (start/end/attrs options map to the Data+Segment selections). **Create ASM** generates a sjasmplus example with the Laser Compact 5.2 depacker by Hrumer that decompresses LCMP5 data directly to screen memory. Open `.scr.lc` files directly — decompression is automatic on load.
+- Compression Compare dialog: two new columns — **Depacker** shows the Z80 depacker size in bytes (ZX7=69, ZX0=68–69, RCS+ZX7=110, RCS+ZX0=112–113 using [smart integrated decoders](https://github.com/einar-saukas/RCS) with no temp buffer, LC=209), **Total** shows real saving (saved bytes minus depacker overhead). Negative totals (compression+depacker larger than original) are highlighted in red.
+
+## v1.97
+- Compression Compare dialog: estimates now run on demand — click the **Compare** button to start compression (the dialog no longer auto-compresses on open). Two new checkboxes: **Clean hidden cells** and **Optimize attributes** apply pre-compression optimizations to a temporary working copy before comparing, without affecting the original image or undo history.
+- Compression Compare dialog: new **Data** and **Segment** options. Data mode selects between Full SCR (6912 bytes, bitmap+attributes) and Bitmap only (6144 bytes). When Bitmap only is selected, the Segment dropdown lets you compare individual thirds (2048 bytes each), pairs of thirds (4096 bytes), or the whole bitmap. RCS variants are only shown for whole-segment modes; segment slices show plain + ZX7/ZX0 forward/backward only. ASM generation is available only for Full SCR + Whole mode.
+- Monochrome bitmap loading: when opening a monochrome file (full, 2/3, or 1/3) and the current editor ink and paper colors are identical, ink is automatically adjusted so the bitmap is visible (white on black if paper is black, black otherwise).
+
 ## v1.96
 - Palette sort by usage for NXI/SL2/LoRes formats — "Sort by usage" button in the Next palette section reorders palette entries so that used colors come first (sorted by pixel frequency, descending), followed by unused colors. Pixel indices are automatically remapped so the image remains visually identical. Undoable with Ctrl+Z.
 - Fix: creating a new NXI/SL2/LoRes picture no longer overwrites the palette of the previously loaded picture.

@@ -1057,7 +1057,9 @@ The byte for pixel column pair (x, x+1) at row y is at offset `32 + (x/2) * 256 
 
 ### SL2 (ZX Spectrum Next Layer 2 Raw)
 
-Same pixel format as NXI but **without an embedded palette**. SL2 files use the Spectrum Next's default identity RGB332 palette where the pixel byte value directly encodes the color.
+Same pixel format as NXI but with the palette **appended after pixel data** (optional). When no palette is present, the file uses the default identity RGB332 palette where the pixel byte value directly encodes the color.
+
+Both NXI and SL2 use the same RGB333 palette encoding (2 bytes per entry: `byte0 = RRRGGGBB`, `byte1 = 0000000B`). The key difference is **layout order**: NXI stores palette first then pixels; SL2 stores pixels first with an optional palette appended at the tail.
 
 ```
 Variant A — raw pixels, 256×192 (49152 bytes):
@@ -1069,9 +1071,24 @@ Offset  Size    Content
 0       128     Header (contents unspecified)
 128     49152   Pixel data (256 × 192, 1 byte per pixel, linear row-major)
 
-Variant C — extended mode (81920 bytes):
+Variant C — with palette, 256×192 (49664 bytes):
+Offset  Size    Content
+0       49152   Pixel data (256 × 192, 1 byte per pixel, linear row-major)
+49152   512     Palette (256 entries × 2 bytes, RGB333 — same encoding as NXI)
+
+Variant D — extended mode, no palette (81920 bytes):
 Offset  Size    Content
 0       81920   Pixel data, column-major (AMBIGUOUS — see below)
+
+Variant E — extended 320×256 with palette (82432 bytes):
+Offset  Size    Content
+0       81920   Pixel data (320 × 256, 8bpp, column-major)
+81920   512     Palette (256 entries × 2 bytes, RGB333)
+
+Variant F — extended 640×256 with palette (81952 bytes):
+Offset  Size    Content
+0       81920   Pixel data (640 × 256, 4bpp, column-major)
+81920   32      Palette (16 entries × 2 bytes, RGB333)
 ```
 
 - File extension: `.sl2`
@@ -1118,10 +1135,18 @@ The 256×192 variants use linear row-major layout, same as NXI 256×192. The pix
 
 The extended 81920-byte variant uses column-major layout as described above: `x * 256 + y` for 320×256 or `(x/2) * 256 + y` for 640×256.
 
-#### NXI ↔ SL2 Conversion
+#### NXI vs SL2 Palette Layout
 
-- **NXI → SL2**: Strip the palette header, keeping only the pixel data. The palette information is lost; the image will display using the default RGB332 palette.
-- **SL2 → NXI**: Prepend a palette. Either generate the default RGB332 palette in RGB333 encoding, or embed a custom palette. Note: conversion is only straightforward for 256×192 mode.
+Both formats use identical pixel data and the same 2-byte RGB333 palette encoding. The only structural difference is the palette position:
+
+| Format | Layout                          |
+|--------|---------------------------------|
+| NXI    | `[palette] [pixels]` — palette always present, before pixel data |
+| SL2    | `[pixels] [palette]?` — pixels first, palette optionally appended at the tail |
+
+When an SL2 file has no embedded palette, the hardware uses the default RGB332 identity mapping. When a custom palette is needed, it can be appended after the pixel data — the file size distinguishes the variants (e.g. 49152 = raw, 49664 = with palette for 256×192).
+
+Note that NXI palettes use full 9-bit RGB333 (512 possible colors), while the default SL2 identity palette is limited to 8-bit RGB332 (256 fixed colors, with only 2 bits for blue). Converting from a custom NXI palette to the default SL2 palette is therefore lossy.
 
 ---
 
@@ -2080,10 +2105,10 @@ Quick-reference table for identifying formats by file size when no file extensio
 | 32768        | GMX          | Scorpion 640×200 hi-res            |
 | 49152        | SL2          | Next Layer 2 256×192 raw pixels    |
 | 49280        | SL2          | Next Layer 2 256×192 + 128b header |
-| 49664        | NXI          | Next Layer 2 256×192 + palette     |
+| 49664        | NXI / SL2    | Next Layer 2 256×192 + palette     |
 | 81920        | SL2          | Next Layer 2 extended (ambiguous)  |
-| 81952        | NXI          | Next Layer 2 640×256 + palette     |
-| 82432        | NXI          | Next Layer 2 320×256 + palette     |
+| 81952        | NXI / SL2    | Next Layer 2 640×256 + palette     |
+| 82432        | NXI / SL2    | Next Layer 2 320×256 + palette     |
 
 **Note**: ULANext files overlap in size range with ULA+ (6976 bytes). ULA+ is detected first by exact size match; ULANext is then checked for the broader range (6945–7426) with mask byte validation. SCA, SPECSCII, ZXP, and chr$ files are variable-size, text-based, or extension-only and cannot be reliably detected by size alone. SCA files are identified by the `"SCA"` signature at offset 0. chr$ files are identified by the `chr$` signature (bytes `63 68 72 24`) at offset 0. ZXP files are text-based and identified by the `"ZX-Paintbrush extended image"` header line. MGH files are identified by the `"MGH"` signature at offset 0. NXI sizes (49664, 82432, 81952) are unique and don't collide with classic formats. SL2 256×192 sizes (49152, 49280) are also unique. SL2 extended size (81920) is ambiguous between 320×256 8bpp and 640×256 4bpp modes. SLR (Next LoRes) at 12288 bytes collides with MLT — the `.slr` extension is required to distinguish them. RAD (Radastan) at 6144 bytes collides with monochrome full-screen — the `.rad` extension or `.slr` extension with 6144-byte size is required to distinguish them.
 

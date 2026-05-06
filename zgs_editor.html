@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<!-- SpectraLab ZGS Editor -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SpectraLab ZGS Editor</title>
+<script>
+// FOUC prevention — apply saved theme before first paint
+(function() {
+  const t = localStorage.getItem('spectraLabTheme');
+  if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+})();
+</script>
+<style>
+:root {
+  --bg-primary: #1a1a1a;
+  --bg-secondary: #252525;
+  --bg-tertiary: #2a2a2a;
+  --text-primary: #e0e0e0;
+  --text-secondary: #a0a0a0;
+  --text-tertiary: #707070;
+  --border-primary: #444;
+  --border-secondary: #333;
+  --accent-color: #4a9eff;
+  --accent-hover: #264f78;
+  --accent-text: #fff;
+  --danger-color: #ff4444;
+  --warning-color: #ff9900;
+  --selected-bg: #264f78;
+  --selected-text: #fff;
+  --shadow-color: rgba(0,0,0,0.4);
+  --bg-hover: #333;
+  --bg-active: #3a3a3a;
+}
+[data-theme="light"] {
+  --bg-primary: #f0f0f0;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #e8e8e8;
+  --text-primary: #1a1a1a;
+  --text-secondary: #555555;
+  --text-tertiary: #888888;
+  --border-primary: #bbb;
+  --border-secondary: #ddd;
+  --accent-color: #2979ff;
+  --accent-hover: #1565c0;
+  --accent-text: #fff;
+  --danger-color: #d32f2f;
+  --warning-color: #ef6c00;
+  --selected-bg: #bbdefb;
+  --selected-text: #1a1a1a;
+  --shadow-color: rgba(0,0,0,0.15);
+  --bg-hover: #e0e0e0;
+  --bg-active: #d0d0d0;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 12px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+button {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 12px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  cursor: pointer;
+}
+button:hover { background: var(--bg-hover); }
+button:active { background: var(--bg-active); }
+input[type="range"] { cursor: pointer; }
+
+.zgs-header {
+  display: flex;
+  align-items: center;
+  padding: 8px 15px;
+  border-bottom: 1px solid var(--border-secondary);
+  gap: 10px;
+  flex-shrink: 0;
+}
+.zgs-header-title {
+  flex: 1;
+  font-size: 13px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.zgs-main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+.zgs-textarea {
+  flex: 1;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.4;
+  padding: 10px;
+  border: none;
+  border-right: 1px solid var(--border-secondary);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  resize: none;
+  outline: none;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+}
+.zgs-preview {
+  flex: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 15px;
+  gap: 10px;
+  overflow-y: auto;
+}
+.zgs-canvas-container {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.zgs-canvas-container canvas {
+  box-sizing: content-box;           /* override global border-box so border doesn't shrink content */
+  image-rendering: -moz-crisp-edges; /* Firefox < 93 fallback */
+  image-rendering: pixelated;        /* standard nearest-neighbor — must be last */
+}
+#zgsPreviewCanvas {
+  width: 512px;  /* default x2, changed by zoom dropdown */
+  height: 384px;
+  border: 1px solid var(--border-secondary);
+  background: #000;
+  display: block;
+}
+#zgsOverlayCanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 512px;
+  height: 384px;
+  pointer-events: none;
+  border: 1px solid transparent;
+}
+.zgs-coord-tooltip {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 11px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.65);
+  padding: 2px 6px;
+  border-radius: 3px;
+  pointer-events: none;
+  display: none;
+  z-index: 2;
+}
+.zgs-toolbar {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.zgs-tool-btn {
+  padding: 3px 8px;
+  font-size: 11px;
+  min-width: 0;
+}
+.zgs-tool-btn.active {
+  background: var(--accent-color);
+  color: var(--accent-text);
+  border-color: var(--accent-color);
+}
+.zgs-cmd-select {
+  font-size: 11px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  padding: 2px 4px;
+  cursor: pointer;
+  width: 90px;
+}
+.zgs-palette {
+  display: flex;
+  gap: 1px;
+  align-items: center;
+}
+.zgs-palette-cell {
+  width: 18px;
+  height: 18px;
+  border: 2px solid transparent;
+  border-radius: 2px;
+  cursor: pointer;
+  position: relative;
+  box-sizing: border-box;
+}
+.zgs-palette-cell:hover { border-color: rgba(255,255,255,0.5); }
+.zgs-palette-cell.ink-selected { border-color: #fff; border-style: solid; }
+.zgs-palette-cell.paper-selected { border-color: #fff; border-style: dashed; }
+.zgs-palette-cell.ink-selected.paper-selected { border-color: #fff; border-style: solid; }
+.zgs-palette-marker {
+  position: absolute;
+  font-size: 8px;
+  font-weight: bold;
+  line-height: 1;
+  pointer-events: none;
+  text-shadow: 0 0 2px #000, 0 0 2px #000;
+  color: #fff;
+}
+.zgs-palette-marker.ink-marker { top: 0; left: 1px; }
+.zgs-palette-marker.paper-marker { bottom: 0; right: 1px; }
+.zgs-attr-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+}
+.zgs-cmd-btn {
+  padding: 3px 8px;
+  font-size: 11px;
+  min-width: 0;
+}
+.zgs-cmd-btn.toggled {
+  background: var(--accent-color);
+  color: var(--accent-text);
+  border-color: var(--accent-color);
+}
+.zgs-controls {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+.zgs-status {
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 4px 15px;
+  border-top: 1px solid var(--border-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+.zgs-tabbar {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--border-secondary);
+  background: var(--bg-primary);
+  flex-shrink: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  padding: 0 4px;
+  gap: 1px;
+  min-height: 28px;
+}
+.zgs-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  font-size: 11px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-secondary);
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  user-select: none;
+}
+.zgs-tab:hover { background: var(--bg-hover); }
+.zgs-tab.active {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border-color: var(--border-primary);
+  font-weight: bold;
+  position: relative;
+}
+.zgs-tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--bg-secondary);
+}
+.zgs-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  font-size: 10px;
+  line-height: 1;
+  border-radius: 3px;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  padding: 0;
+}
+.zgs-tab-close:hover {
+  background: var(--danger-color);
+  color: #fff;
+}
+.zgs-tab-add {
+  padding: 2px 8px;
+  font-size: 13px;
+  font-weight: bold;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.zgs-tab-add:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-secondary);
+}
+.zgs-save-group {
+  position: relative;
+  display: inline-flex;
+}
+.zgs-save-menu {
+  display: none;
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 100;
+  min-width: 180px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  box-shadow: 0 4px 12px var(--shadow-color);
+  padding: 4px 0;
+  margin-top: 2px;
+}
+.zgs-save-menu.open { display: block; }
+.zgs-save-menu-item {
+  display: block;
+  width: 100%;
+  padding: 5px 12px;
+  font-size: 12px;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.zgs-save-menu-item:hover {
+  background: var(--accent-color);
+  color: var(--accent-text);
+}
+.zgs-save-menu-sep {
+  height: 1px;
+  background: var(--border-secondary);
+  margin: 4px 8px;
+}
+</style>
+</head>
+<body>
+
+<div class="zgs-header">
+  <span style="font-weight: bold; font-size: 13px;">ZGS Editor</span>
+  <span class="zgs-header-title" id="zgsFileName">untitled</span>
+  <button id="zgsOpenBtn">Open</button>
+  <button id="zgsNewBtn">New</button>
+  <div class="zgs-save-group" id="zgsSaveGroup">
+    <button id="zgsSaveBtn" title="Save">Save</button>
+    <div class="zgs-save-menu" id="zgsSaveMenu">
+      <button class="zgs-save-menu-item" data-format="zgs">Save .zgs — scene binary</button>
+      <button class="zgs-save-menu-item" data-format="zgt">Save .zgt — scene text</button>
+      <div class="zgs-save-menu-sep"></div>
+      <button class="zgs-save-menu-item" data-format="zgp">Save .zgp — project</button>
+      <button class="zgs-save-menu-item" data-format="asm">Save .asm — Z80 assembly + ZIP</button>
+    </div>
+  </div>
+  <button id="zgsThemeBtn" style="padding: 2px 6px; font-size: 10px;" title="Toggle theme">☾</button>
+</div>
+
+<div class="zgs-tabbar" id="zgsTabBar">
+  <!-- tabs rendered by JS -->
+  <button class="zgs-tab-add" id="zgsAddSceneBtn" title="Add scene">+</button>
+</div>
+
+<div class="zgs-main">
+  <textarea id="zgsTextarea" class="zgs-textarea" spellcheck="false" placeholder="; Type ZGS assembly here..."></textarea>
+  <div class="zgs-preview">
+    <div class="zgs-toolbar">
+      <button class="zgs-tool-btn active" data-tool="dot" title="Dot">Dot</button>
+      <button class="zgs-tool-btn" data-tool="line" title="Line">Line</button>
+      <button class="zgs-tool-btn" data-tool="rect" title="Rectangle outline">Rect</button>
+      <button class="zgs-tool-btn" data-tool="rectfill" title="Rectangle fill">RectF</button>
+      <button class="zgs-tool-btn" data-tool="circle" title="Circle outline">Circle</button>
+      <button class="zgs-tool-btn" data-tool="circlefill" title="Circle fill">CircleF</button>
+      <button class="zgs-tool-btn" data-tool="ellipse" title="Ellipse outline">Ellip</button>
+      <button class="zgs-tool-btn" data-tool="ellipsefill" title="Ellipse fill">EllipF</button>
+      <button class="zgs-tool-btn" data-tool="flood" title="Flood fill">Flood</button>
+      <button class="zgs-tool-btn" data-tool="clearrect" title="Clear region (drag to select character cells)">ClearR</button>
+      <button class="zgs-tool-btn" data-tool="text" title="Text (click to place)">Text</button>
+      <span style="width: 10px;"></span>
+      <button class="zgs-cmd-btn" id="zgsInsertWaitKey" title="Insert wait_key">WaitKey</button>
+      <button class="zgs-cmd-btn" id="zgsInsertEnd" title="Insert end">End</button>
+    </div>
+    <div class="zgs-toolbar">
+      <div id="zgsColorPalette" class="zgs-palette" title="Left-click = set ink, Right-click = set paper"></div>
+      <label class="zgs-attr-label"><input type="checkbox" id="zgsBrightCheck"> Bright</label>
+      <label class="zgs-attr-label"><input type="checkbox" id="zgsFlashCheck"> Flash</label>
+      <select id="zgsInsertPattern" class="zgs-cmd-select" title="Insert set_pattern">
+        <option value="">Pattern...</option>
+        <option value="solid">Solid</option><option value="dots75">Dots75</option>
+        <option value="checker">Checker</option><option value="dots25">Dots25</option>
+        <option value="dots12">Dots12</option><option value="horizontal">Horiz</option>
+        <option value="vertical">Vert</option><option value="diagonal">Diag</option>
+      </select>
+      <button class="zgs-cmd-btn" id="zgsInsertXor" title="Toggle XOR / SET draw mode">XOR</button>
+      <button class="zgs-cmd-btn" id="zgsInsertClear" title="Insert clear_region">Clear</button>
+    </div>
+    <div id="zgsTextToolbar" class="zgs-toolbar" style="display: none;">
+      <span class="zgs-attr-label" id="zgsTextCursorInfo">Click canvas to set cursor</span>
+      <select id="zgsTextModeSelect" title="Text column mode" style="font-size: 11px; padding: 1px 3px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-primary); border-radius: 3px;">
+        <option value="32">32 col</option>
+        <option value="42">42 col</option>
+        <option value="64">64 col</option>
+      </select>
+      <input type="text" id="zgsTextInput" style="font-family: monospace; font-size: 12px; width: 220px; padding: 2px 4px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-primary); border-radius: 3px;" placeholder="Type text here...">
+      <button class="zgs-cmd-btn" id="zgsInsertText" title="Insert print_text (plain ASCII, 1 byte/char)">Print</button>
+      <button class="zgs-cmd-btn" id="zgsInsertPacked" title="Insert print_packed (dictionary-compressed, ~50% smaller)">Packed</button>
+      <select id="zgsDictSelect" title="Dictionary for print_packed encoding" style="font-size: 11px; padding: 1px 3px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-primary); border-radius: 3px;">
+        <option value="lower">Dict: lower</option>
+        <option value="upper">Dict: upper</option>
+        <option value="user">Dict: user</option>
+      </select>
+      <button class="zgs-cmd-btn" id="zgsDictLoad" title="Load a .zdict dictionary file" style="font-size: 10px; display: none;">Load .zdict</button>
+      <input type="file" id="zgsDictFileInput" accept=".zdict" style="display: none;">
+    </div>
+    <div id="zgsCanvasContainer" class="zgs-canvas-container">
+      <canvas id="zgsPreviewCanvas" width="256" height="192"></canvas>
+      <canvas id="zgsOverlayCanvas" width="256" height="192"></canvas>
+      <div id="zgsCoordTooltip" class="zgs-coord-tooltip"></div>
+    </div>
+    <div class="zgs-controls">
+      <button id="zgsRenderBtn">Render</button>
+      <button id="zgsPlayBtn">Play</button>
+      <button id="zgsStepBtn">Step</button>
+      <label style="font-size: 11px; color: var(--text-secondary);">Speed:
+        <input id="zgsSpeedSlider" type="range" min="5" max="500" value="37" style="width: 80px; vertical-align: middle;">
+      </label>
+      <label style="font-size: 11px; color: var(--text-secondary);">Zoom:
+        <select id="zgsZoomSelect" style="font-size: 11px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-primary); border-radius: 3px; padding: 2px 4px;">
+          <option value="1">x1</option>
+          <option value="2" selected>x2</option>
+          <option value="3">x3</option>
+          <option value="4">x4</option>
+          <option value="5">x5</option>
+        </select>
+      </label>
+      <label style="font-size: 11px; color: var(--text-secondary);"><input type="checkbox" id="zgsShowPen" checked style="vertical-align: middle;"> Pen</label>
+      <label style="font-size: 11px; color: var(--text-secondary);"><input type="checkbox" id="zgsShowGrid" style="vertical-align: middle;"> Grid</label>
+    </div>
+    <div style="width: 100%;">
+      <div id="zgsRefHeader" style="cursor: pointer; font-size: 11px; color: var(--text-secondary); user-select: none; padding: 2px 0;" title="Toggle reference image controls">&#9654; Reference Image</div>
+      <div id="zgsRefPanel" style="display: none;">
+        <div class="zgs-controls" style="margin-bottom: 4px;">
+          <button class="zgs-cmd-btn" id="zgsRefLoadBtn">Load</button>
+          <button class="zgs-cmd-btn" id="zgsRefClearBtn">Clear</button>
+          <label style="font-size: 11px; color: var(--text-secondary);"><input type="checkbox" id="zgsRefShowCb" checked style="vertical-align: middle;"> Show</label>
+        </div>
+        <div class="zgs-controls" style="margin-bottom: 4px;">
+          <label style="font-size: 11px; color: var(--text-secondary);">Opacity:
+            <input id="zgsRefOpacity" type="range" min="5" max="80" value="30" style="width: 80px; vertical-align: middle;">
+            <span id="zgsRefOpacityVal">30%</span>
+          </label>
+        </div>
+        <div class="zgs-controls">
+          <label style="font-size: 11px; color: var(--text-secondary);">X: <input id="zgsRefX" type="number" value="0" style="width: 50px; font-size: 11px; padding: 1px 3px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-primary); border-radius: 3px;"></label>
+          <label style="font-size: 11px; color: var(--text-secondary);">Y: <input id="zgsRefY" type="number" value="0" style="width: 50px; font-size: 11px; padding: 1px 3px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-primary); border-radius: 3px;"></label>
+          <label style="font-size: 11px; color: var(--text-secondary);">W: <input id="zgsRefW" type="number" min="1" placeholder="auto" style="width: 50px; font-size: 11px; padding: 1px 3px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-primary); border-radius: 3px;"></label>
+          <label style="font-size: 11px; color: var(--text-secondary);">H: <input id="zgsRefH" type="number" min="1" placeholder="auto" style="width: 50px; font-size: 11px; padding: 1px 3px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-primary); border-radius: 3px;"></label>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="zgsStatus" class="zgs-status">Ready</div>
+<input type="file" id="zgsFileInput" accept=".zgs,.zgt,.zgp" style="display:none;">
+<input type="file" id="zgsRefFileInput" accept="image/*" style="display:none;">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="js/zgs_asm_player.js"></script>
+<script src="js/zgs_editor.js?v=5"></script>
+</body>
+</html>

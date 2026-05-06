@@ -326,6 +326,8 @@ The undo history is preserved as long as the picture is open. Creating a new pic
 
 When you load a `.png`, `.gif`, `.jpg`, `.webp`, or `.bmp` file, the Image Import dialog opens automatically.
 
+The dialog shows two canvases side by side — ORIGINAL (source) and PREVIEW (converted result). Each has a zoom dropdown (Fit, x1–x4 for source; Fit, x1–x5 for preview). The preview also has a **Grid** checkbox to overlay 8×8 attribute boundaries. Scrollbars appear when zoomed images exceed the available space.
+
 ### Choose Target Format
 
 In the **Output** section, select the target ZX Spectrum format (SCR, ULA+, IFL, MLT, MLT+ULA+, Gigascreen, HLR, STL, GMX 640×200, GMX 160×200, SPECSCII, ZXP, btile, wtile, etc.).
@@ -565,7 +567,7 @@ When editing NXI, SL2, LoRes, or LoRes Radastan files, the palette grid supports
 - **Click the same cell** or press **Escape** to cancel
 - All operations support undo (Ctrl+Z)
 
-> **Note:** NXI files embed the palette, so palette edits are always saved. SL2, LoRes, and Radastan files without an embedded palette do not store the palette — if you edit colors, a warning will appear on save. Radastan files loaded with an embedded palette (6160 or 6176 bytes) will preserve palette changes.
+> **Note:** NXI files embed the palette in the file header — palette edits are always saved. SL2 files with a non-default palette automatically embed the palette after the pixel data on save; files with the default RGB332 palette are saved as raw pixels only. LoRes and Radastan files without an embedded palette do not store the palette — if you edit colors, a warning will appear on save. Radastan files loaded with an embedded palette (6160 or 6176 bytes) will preserve palette changes.
 
 ---
 
@@ -682,7 +684,7 @@ Press **Ctrl+S** or click the **Save** button. The file is downloaded in its ori
 2. Use the **Convert to...** dropdown
 3. Select the target format — the picture is converted in place
 
-Conversions include lossless transformations (e.g. NXI ↔ SL2 strips or adds the palette header) and lossy ones (e.g. SCR → NXI 320×256 renders and upscales the image, NXI/SL2 → SCR downscales and quantizes to ZX attributes). Cross-mode NXI/SL2 conversions between 256×192, 320×256, and 640×256 are also available. SCR → SPECSCII conversion matches each 8×8 cell bitmap to the best ROM font character or block graphic, preserving attributes.
+Conversions include lossless transformations (e.g. NXI ↔ SL2 moves the palette between header and tail) and lossy ones (e.g. SCR → NXI 320×256 renders and upscales the image, NXI/SL2 → SCR downscales and quantizes to ZX attributes). When converting NXI → SL2 with a custom palette, a dialog offers three options: keep palette (embed in SL2), quantize to default RGB332 (lossy), or strip palette (keep pixel indices unchanged). Cross-mode NXI/SL2 conversions between 256×192, 320×256, and 640×256 are also available. SCR → SPECSCII conversion matches each 8×8 cell bitmap to the best ROM font character or block graphic, preserving attributes.
 
 ### Optimize Attributes (SCR)
 
@@ -957,7 +959,158 @@ The Font Editor lets you create and modify ZX Spectrum bitmap fonts — both fix
 
 ---
 
-## 21. Tips and Hidden Features
+## 21. ZGS Scene Editor
+
+The ZGS Editor lets you create and preview ZGS (ZX Graphics Script) vector scenes — a bytecode format used in ZX Spectrum adventure games for compact, resolution-independent graphics.
+
+### Opening the ZGS Editor
+
+1. In the Tools tab, click the **ZGS Editor** link
+2. The editor opens in a new browser tab with a template scene
+3. The preview canvas shows the rendered result immediately
+
+### Creating a Scene from Scratch
+
+1. Click **New** to start with a template
+2. Edit the text in the left panel using ZGS assembly syntax:
+   ```
+   ; Set colors
+   set_paper blue
+   set_ink white bright
+   clear_region 0, 0, 32, 24, 0x09
+
+   ; Draw a house
+   move_abs 30, 60
+   rect_fill_abs 30, 60, 30, 25
+   polygon_fill 30 60, 45 45, 60 60
+
+   ; Done
+   end
+   ```
+3. The preview auto-updates 500ms after you stop typing
+4. Click **Render** to force an immediate re-render
+
+### Working with ZGS Assembly
+
+ZGS assembly uses logical coordinates (0–127 for X, 0–95 for Y) that map to screen pixels at 2x scale (256x192). Key instructions:
+
+- **Colors:** `set_ink <color> [bright]`, `set_paper <color> [bright]`, `set_attr 0xNN`
+  - Colors: `black`, `blue`, `red`, `magenta`, `green`, `cyan`, `yellow`, `white`
+- **Patterns:** `set_pattern <name>` — `solid`, `empty`, `checker`, `dots25`, `dots12`, `horizontal`, `vertical`, `diagonal`
+- **Draw mode:** `set_mode xor` (toggle pixels instead of setting), `set_mode set` (default — always set pixels)
+- **Movement:** `move_abs x, y` (absolute), `move_short dx, dy` (small delta), `move_dmed dx, dy` (medium delta)
+- **Lines:** `line_dmed dx, dy`, `hline_chain length`, `vline_abs x, y, length`
+- **Shapes:** `rect_fill_abs x, y, w, h`, `circle_fill_abs cx, cy, r`, `polygon_fill x1 y1, x2 y2, ...`
+- **Fill:** `flood_abs x, y` (flood fill from point), `flood_chain` (from current pen)
+- **Regions:** `clear_region col, row, w, h, attr` (clear character cells)
+- **Assets:** define reusable shape scripts (`.sub`/`.endsub`) and sprites (`.sprite`/`.endsprite`), invoke with `call N` or `stamp_abs N, x, y`
+- **Text:** `set_cursor col, row` (set text cursor to character cell), `print_text "string"` (print ASCII text using ROM font), `print_packed "string"` (dictionary-compressed text, 30–50% smaller)
+- **Loops:** `.repeat count, stride_x, stride_y` ... `.endrepeat`
+- **Control:** `wait_key` (pause), `end` (halt)
+
+### Adding Text to Scenes
+
+ZGS supports printing text using the ZX Spectrum ROM font (8×8, characters 32–127). The text cursor uses character cell coordinates (col 0–31, row 0–23):
+
+```
+; Set colors for text
+set_attr 0x47          ; white ink on black paper
+
+; Place cursor and print
+set_cursor 5, 10
+print_text "Hello, Spectrum!"
+
+; Print more text at a different position
+set_ink yellow bright
+set_cursor 5, 12
+print_text "ZGS Text Demo"
+```
+
+The cursor advances after each character. When it reaches column 32, it wraps to the beginning of the next row. Text uses the current attribute for coloring.
+
+### Mixing Text Modes (32-col, 42-col, 64-col)
+
+ZGS supports three text widths for different density requirements. Each mode uses independent cursor tracking:
+
+```
+; Standard 32-column (8px wide)
+set_cursor 0, 0
+print_text "32-col: Standard width"
+
+; 42-column (6px wide) for more text per line
+set_cursor_42 0, 2
+print_text_42 "42-col: Narrower characters, 42 per line"
+
+; 64-column (4px wide) for maximum density
+set_cursor_64 0, 4
+print_text_64 "64-col: Very narrow, 64 chars/line, ideal for data tables"
+```
+
+Each text mode uses a separate font binary: `font_8x8.bin` (32-col), `font_6x8.bin` (42-col, top 6 bits of 8×8), `font_4x8.bin` (64-col, derived by OR-ing column pairs). You can replace any font binary with a custom design for each mode independently. Each mode has its own cursor position, so you can freely mix modes in one scene.
+
+### Packed Text (Compressed)
+
+For longer text passages (adventure game descriptions, dialogue), use `print_packed` to save space:
+
+```
+set_cursor 0, 0
+print_packed "You are in a dark room. There is a door to the north."
+```
+
+`print_packed` looks identical to `print_text` when rendered, but the bytecode is 30–50% smaller for English text. It uses a dictionary of common bigrams (2-char pairs), trigrams (3-char sequences), and whole words. The `.dict` directive selects the dictionary:
+
+```
+.dict lower              ; lowercase English (default)
+.dict upper              ; uppercase English
+.dict user               ; custom dictionary loaded from .zdict file
+```
+
+To use a custom dictionary optimized for your game's text, select "Dict: user" from the dropdown and click "Load .zdict". You can generate custom dictionaries with `zgs_mkdict.py`:
+
+```
+python zgs_mkdict.py mytexts/*.zgt -o mygame.zdict
+```
+
+### Animated Playback
+
+1. Click **Play** to watch the scene being drawn step by step (one opcode per tick)
+2. Adjust the **Speed** slider to control animation speed (5ms = fast, 500ms = slow)
+3. Click **Step** to execute a single opcode manually
+4. Click **Pause** to stop the animation
+
+### Using a Reference Image
+
+You can load a reference image to trace or use as a drawing guide:
+
+1. Click the **Reference Image** header below the playback controls to expand the panel
+2. Click **Load** and select any image file (PNG, JPG, etc.)
+3. The image appears semi-transparent over the preview canvas at 30% opacity
+4. Adjust **Opacity** (5–80%), position (**X/Y**), and display size (**W/H**) as needed
+5. Toggle **Show** to hide/reveal the reference without removing it
+6. Click **Clear** to remove the reference image entirely
+
+Each scene stores its own reference image. When you add a new scene, it inherits the current scene's reference image and settings. Reference images are saved in `.zgp` project files.
+
+### Opening Existing Files
+
+- Click **Open** to load a `.zgs` (binary) or `.zgt` (text) file
+- Binary `.zgs` files are automatically disassembled to editable text
+- Drag and drop a file onto the page to open it
+
+### Saving Your Work
+
+Click the **Save** button to open a dropdown menu with format choices:
+
+- **Save .zgs** — assemble the text to binary ZGS format (reports errors if assembly fails)
+- **Save .zgt** — save the text source as-is
+
+### Error Handling
+
+Assembler errors appear in the status bar with line numbers (e.g., "Line 15: Unknown mnemonic: rect_filll"). Fix the error and the preview updates automatically. The VM has a safety limit of 1M opcodes to prevent infinite loops.
+
+---
+
+## 22. Tips and Hidden Features
 
 ### Workspace Save/Load
 Save all your open pictures at once with **Save Workspace** in the Xform tab. Load them back later — preserving layers, sprites, settings, and reference images. Workspace buttons are always available in the Xform tab, even without a loaded picture.
@@ -976,6 +1129,9 @@ For BSC/BSP/BMC4 border formats, use barcode slots to capture and stamp border s
 
 ### Gradient Tool Dither Patterns
 The Gradient tool (D) supports 6 gradient types (Linear, Radial, Diamond, Conical, Square, Spiral) with Bayer or Blue Noise dithering. Great for backgrounds.
+
+### Dither Brush Tool
+After importing an image, press **W** to activate the Dither Brush. Paint over cells to re-dither them with a different algorithm — useful for mixing dithering styles in one picture (e.g. ordered dithering for sky, Floyd-Steinberg for detailed areas). Choose the method, brush diameter (3–16 px), and strength in the settings panel. The brush is round and pixel-accurate. To re-dither a rectangular region at once, select an area first and press **Shift+W**.
 
 ### Tileset Brush Mode
 Load a `.768` font file into the brush system to get a tileset tab. Each character becomes a stampable brush — ideal for tile-based game screens.
@@ -1024,3 +1180,129 @@ Click the moon/sun button (☽/☀) next to the Help button to toggle between li
 
 ### Display Filters
 Apply CRT-style post-processing effects from the Display Filters section in the View tab. Choose from presets (CRT TV, Composite, VHS, Arcade) or customize individual effects. Filters are preserved in workspace files.
+
+---
+
+## ZGS Editor — Drawing Vector Scenes
+
+The ZGS Editor lets you create vector graphics scenes using ZGS (ZX Graphics Script) — a compact bytecode format for ZX Spectrum. Open it from the **Tools** tab → **ZGS Editor**.
+
+### Quick Start: Drawing a Simple Scene
+
+1. Click **New** — you get a template with a blue background and a white rectangle.
+
+2. **Set colors visually:** Use the **Ink...** dropdown on the command toolbar to pick `Yellow`, then check **Brt** for bright mode. This inserts `set_ink yellow bright` into the source.
+
+3. **Draw a rectangle:** Click the **RectF** tool in the shape toolbar. Drag on the canvas to define a filled rectangle. A yellow rubber-band shows the preview. On release, `rect_fill_abs x, y, w, h` is inserted and the canvas updates instantly.
+
+4. **Draw a circle:** Click **Circle**, drag from center outward. Release to insert `circle_outline_abs cx, cy, r`.
+
+5. **Add a line:** Click **Line**, left-drag from start to end. This inserts `move_abs x0, y0` followed by `line_dmed dx, dy`. For multi-segment polylines, **right-drag** instead — after releasing, a rubber band continues from the endpoint; right-drag again to add more segments, left click or Esc to finish.
+
+6. **Place dots:** Click **Dot**, then click individual points on the canvas.
+
+7. **Clear a region:** Click **ClearR**, drag over the area you want to clear. The selection snaps to 8×8 character cells (shown as a red dashed rectangle). This inserts `clear_region col, row, w, h, attr`.
+
+8. **Add text:** Click **Text**, then click a character cell on the canvas to place `set_cursor col, row`. Type your text in the toolbar input field and click **Print** to insert `print_text "..."`. Text is rendered using the ZX Spectrum ROM font (8×8). Cursor placement and text printing are separate commands, so you can draw between them.
+
+### Using the Command Toolbar
+
+The second toolbar row provides quick insertion of non-drawing commands:
+
+- Pick **Ink** or **Paper** from the dropdowns to change colors. Check **Brt** for bright variants. The dropdown label updates to show the current selection (e.g., "Ink: red").
+- Pick a **Pattern** (Solid, Empty, Checker, Dots25, Dots12, Horiz, Vert, Diag) for pattern-filled shapes.
+- Click **XOR** to switch to XOR drawing mode (pixels toggle instead of being set). Click **SET** to go back.
+- Click **Clear** to insert a full-screen clear with the current attribute.
+- Click **WaitKey** to pause playback until a key is pressed (useful for multi-scene animations).
+
+### Coordinate Picking
+
+Hover over the canvas to see coordinates in the tooltip (top-right) and status bar. When you need to type coordinates manually:
+
+- **Left-click** with the **Cursor** tool copies `lx, ly` to your clipboard
+- **Right-click** anywhere also copies coordinates to clipboard
+
+Paste them into your source code wherever needed.
+
+### Step-by-Step Debugging
+
+Click **Step** to execute one opcode at a time. The editor highlights the current source line in the textarea, and the pen crosshair (green, semi-transparent) shows where the pen is on the canvas.
+
+Use **Play** for continuous animated playback. Adjust the **Speed** slider to control the delay between steps.
+
+### Grid Overlay
+
+Check the **Grid** checkbox to show an 8×8 character cell grid over the canvas. Thin orange lines mark every character cell boundary. Two brighter lines at y=64 and y=128 mark the screen third boundaries (important for ZX Spectrum screen memory layout). The grid state persists across sessions.
+
+### Theme Toggle
+
+Click the **☾/☀** button in the header bar to switch between dark and light themes. The theme syncs with the main SpectraLab and Font Editor — changing it in one place updates all editors.
+
+### Multi-Scene Projects
+
+The ZGS Editor supports multiple scenes in a single project. Use the tab bar below the header to manage scenes:
+
+1. Click the **+** button to add a new scene
+2. Click a tab to switch between scenes — each scene has its own source text, undo/redo history, and preview
+3. Double-click a tab name to rename it
+4. Click the **×** button on a tab to delete it (at least one scene must remain)
+
+Save your multi-scene project by clicking **Save** and choosing **Save .zgp** to preserve all scenes. Load it later by opening a `.zgp` file or by dragging it onto the page.
+
+### Saving Your Work
+
+Click the **Save** button to open a dropdown menu with format choices:
+
+- **Save .zgs** — assemble and save the active scene as compact binary (for use in ZX Spectrum programs)
+- **Save .zgt** — save the active scene as human-readable text source (for continued editing)
+- **Save .zgp** — save the entire multi-scene project for later editing
+- **Save .asm** — export all scenes as a complete sjasmplus Z80 assembly file with the ZGS player library. Downloads a `.zip` containing the `.asm` file, compiled `.zgs` binaries for each scene, and a packed text dictionary. Run `sjasmplus project.asm` to produce a ready-to-run `.sna` snapshot
+
+The exported `.asm` file uses a config block with 4 JP entry points at fixed addresses. You can programmatically select which scene to display by poking the scene index into `scene_num` (ORG+0x12) and calling `show_by_num` (ORG+0x03). The `clear_color` field (ORG+0x13) controls the attribute byte used when clearing the screen.
+
+### Conditional Compilation
+
+The exported `.asm` file includes `DEFINE` flags at the top for each optional feature group. All are enabled by default. Comment out any `DEFINE` line to exclude that feature from the binary, reducing size. Each comment shows the approximate byte savings:
+
+| DEFINE | ~Bytes | Feature |
+|--------|-------:|---------|
+| `ZGS_USE_LINES` | 443 | Line, hline, vline drawing |
+| `ZGS_USE_RECTS` | 636 | Rectangle outline/fill, clear_region |
+| `ZGS_USE_CIRCLES` | 612 | Circle outline/fill |
+| `ZGS_USE_POLYGONS` | 666 | Polygon outline/fill |
+| `ZGS_USE_FLOOD` | 2166 | Flood fill (includes 1280 bytes of buffers) |
+| `ZGS_USE_TEXT` | 180 | set_cursor, print_text (+ 768-byte font_8x8.bin) |
+| `ZGS_USE_PACKED_TEXT` | 724 | print_packed (includes ~520 byte dictionary) |
+| `ZGS_USE_TEXT_42` | 968 | 42-col text (+ 768-byte font_6x8.bin) |
+| `ZGS_USE_TEXT_64` | 968 | 64-col text (+ 768-byte font_4x8.bin) |
+| `ZGS_USE_STAMPS` | 146 | Stamp (sprite blit) |
+
+`ZGS_USE_TEXT`, `ZGS_USE_TEXT_42`, and `ZGS_USE_TEXT_64` are auto-detected from the scene source — they are enabled only when the corresponding text opcodes are used. Other DEFINEs are active by default. Each text mode includes its font binary via `incbin`; you can replace any `font_*.bin` with a custom font.
+
+For example, if your scene only uses lines and 42-col text:
+
+```asm
+    DEFINE ZGS_USE_LINES
+;   DEFINE ZGS_USE_RECTS
+;   DEFINE ZGS_USE_CIRCLES
+;   DEFINE ZGS_USE_POLYGONS
+;   DEFINE ZGS_USE_FLOOD
+;   DEFINE ZGS_USE_TEXT
+    DEFINE ZGS_USE_PACKED_TEXT
+    DEFINE ZGS_USE_TEXT_42
+;   DEFINE ZGS_USE_TEXT_64
+;   DEFINE ZGS_USE_STAMPS
+```
+
+If you disable all drawing features (lines, rects, circles, polygons, flood, stamps) and keep only text, the coordinate system — dot/move handlers, `plot_pixel`, math helpers, and pattern/mask tables — is automatically excluded via the internal `ZGS_HAS_DRAWING` flag, saving additional space.
+
+Dependencies: `ZGS_USE_PACKED_TEXT` requires `ZGS_USE_TEXT`. Rect outlines and polygon outlines call `draw_line`, so if you use those, keep `ZGS_USE_LINES` enabled too. The user is responsible for ensuring disabled opcodes don't appear in the scene data.
+
+After assembling, the output shows `size: NNNN` — the total binary size in bytes, so you can see the effect of disabling features.
+
+### Tips
+
+- All drawing tools insert instructions **before** the `end` statement automatically.
+- You can freely mix visual drawing with manual text editing — the text is always the source of truth.
+- Lines after `end` are ignored by the assembler, so you can add notes there.
+- The preview auto-renders 500 ms after you stop typing.

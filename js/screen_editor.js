@@ -160,7 +160,8 @@ const EDITOR = {
   TOOL_AIRBRUSH: 'airbrush',
   TOOL_GRADIENT: 'gradient',
   TOOL_COLOR_PICKER: 'colorpicker',
-  TOOL_CELL_INVERT: 'cellinvert'
+  TOOL_CELL_INVERT: 'cellinvert',
+  TOOL_DITHER_BRUSH: 'ditherbrush'
 };
 
 const GRADIENT_TYPE = {
@@ -299,6 +300,15 @@ let ditherMethod = DITHER_METHOD.BAYER;
 
 /** @type {boolean} - Gradient direction: false = ink to paper, true = paper to ink */
 let gradientReverse = false;
+
+/** @type {Float32Array|null} - Source pixels for dither brush (RGB float, 3 per pixel, 256×192) */
+let ditherSourcePixels = null;
+
+/** @type {Array<{ink:number,paper:number,bright:boolean,inkRgb:number[],paperRgb:number[]}>|null} - Cached per-cell best colors (32×24 = 768 entries) */
+let ditherCellColorsCache = null;
+
+/** @type {Set<string>} - Tracks cells painted in current dither brush stroke */
+let ditherBrushVisited = new Set();
 
 // ============================================================================
 // Gigascreen Editor State
@@ -2860,6 +2870,9 @@ function saveCurrentPictureState() {
   pic.specsciiAttrGrid = specsciiAttrGrid ? new Uint8Array(specsciiAttrGrid) : null;
   pic.specsciiMask = specsciiMask ? new Uint8Array(specsciiMask) : null;
   pic.specsciiInverseGrid = specsciiInverseGrid ? new Uint8Array(specsciiInverseGrid) : null;
+  // Save dither brush source pixels (reference only — not cloned, ~576KB per picture)
+  pic.ditherSourcePixels = ditherSourcePixels;
+  pic.ditherCellColorsCache = ditherCellColorsCache;
 }
 
 /**
@@ -2920,6 +2933,7 @@ function loadPictureState(index) {
     showTextToolSection(false);
     showAirbrushSection(false);
     showGradientSection(false);
+    showDitherBrushSection(false);
     currentTool = pic.currentTool;
     (editorToolButtons || document.querySelectorAll('.editor-tool-btn[data-tool]')).forEach(btn => {
       btn.classList.toggle('selected', /** @type {HTMLElement} */(btn).dataset.tool === currentTool);
@@ -2928,6 +2942,7 @@ function loadPictureState(index) {
     if (currentTool === EDITOR.TOOL_TEXT) showTextToolSection(true);
     else if (currentTool === EDITOR.TOOL_AIRBRUSH) showAirbrushSection(true);
     else if (currentTool === EDITOR.TOOL_GRADIENT) showGradientSection(true);
+    else if (currentTool === EDITOR.TOOL_DITHER_BRUSH) showDitherBrushSection(true);
 
     // Update brush UI using existing functions
     setBrushSize(pic.brushSize);
@@ -2992,6 +3007,12 @@ function loadPictureState(index) {
     specsciiMask = null;
     specsciiInverseGrid = null;
   }
+
+  // Restore dither brush source pixels
+  ditherSourcePixels = pic.ditherSourcePixels || null;
+  ditherCellColorsCache = pic.ditherCellColorsCache || null;
+  if (ditherSourcePixels && !ditherCellColorsCache) buildDitherCellColorsCache();
+  updateDitherBrushAvailability();
 }
 
 /**
@@ -3045,8 +3066,10 @@ function addPicture(fileName, format, data, internalPicture, skipSave) {
     layersEnabled: false,
     modified: false,
     zoom: inheritedZoom,
-    // Use current editor settings (not hardcoded defaults)
-    inkColor: editorInkColor,
+    // Use current editor settings (not hardcoded defaults).
+    // For mono formats, ensure ink !== paper so the bitmap is visible.
+    inkColor: (format === FORMAT.MONO_FULL || format === FORMAT.MONO_2_3 || format === FORMAT.MONO_1_3) && editorInkColor === editorPaperColor
+      ? (editorPaperColor === 0 ? 7 : 0) : editorInkColor,
     paperColor: editorPaperColor,
     bright: editorBright,
     flash: editorFlash,
@@ -8050,6 +8073,89 @@ function cellInvert(x, y) {
 }
 
 /**
+ * Inverts all cells on the screen that share the same attribute as the clicked cell.
+ * Right-click action for the Cell Invert tool.
+ * @param {number} x - pixel X coordinate of the clicked cell
+ * @param {number} y - pixel Y coordinate of the clicked cell
+ */
+function cellInvertAllSameAttr(x, y) {
+  if (!screenData) return;
+
+  // Unsupported formats — same exclusions as cellInvert
+  if (currentFormat === FORMAT.MONO_FULL || currentFormat === FORMAT.MONO_2_3 || currentFormat === FORMAT.MONO_1_3 ||
+      currentFormat === FORMAT.RGB3 || currentFormat === FORMAT.SPECSCII || currentFormat === FORMAT.ATTR_53C ||
+      currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 || currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD ||
+      currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) return;
+
+  if (currentFormat === FORMAT.SCR || currentFormat === FORMAT.SCR_ULAPLUS || currentFormat === FORMAT.BSC) {
+    const charCol = Math.floor(x / 8);
+    const charRow = Math.floor(y / 8);
+    const clickedAttr = screenData[SCREEN.BITMAP_SIZE + charRow * SCREEN.CHAR_COLS + charCol];
+    for (let r = 0; r < SCREEN.CHAR_ROWS; r++) {
+      for (let c = 0; c < SCREEN.CHAR_COLS; c++) {
+        if (screenData[SCREEN.BITMAP_SIZE + r * SCREEN.CHAR_COLS + c] === clickedAttr) {
+          cellInvert(c * 8, r * 8);
+        }
+      }
+    }
+    return;
+  }
+
+  if (currentFormat === FORMAT.MLT) {
+    const charCol = Math.floor(x / 8);
+    const clickedAttr = screenData[getMltAttributeAddress(x, y)];
+    for (let py = 0; py < SCREEN.HEIGHT; py++) {
+      for (let c = 0; c < SCREEN.CHAR_COLS; c++) {
+        if (screenData[getMltAttributeAddress(c * 8, py)] === clickedAttr) {
+          cellInvert(c * 8, py);
+        }
+      }
+    }
+    return;
+  }
+
+  if (currentFormat === FORMAT.IFL) {
+    const charCol = Math.floor(x / 8);
+    const clickedAttr = screenData[getIflAttributeAddress(x, y)];
+    for (let py = 0; py < SCREEN.HEIGHT; py += 2) {
+      for (let c = 0; c < SCREEN.CHAR_COLS; c++) {
+        if (screenData[getIflAttributeAddress(c * 8, py)] === clickedAttr) {
+          cellInvert(c * 8, py);
+        }
+      }
+    }
+    return;
+  }
+
+  if (currentFormat === FORMAT.BMC4) {
+    const charCol = Math.floor(x / 8);
+    const clickedAttr = screenData[getBmc4AttributeAddress(x, y)];
+    for (let py = 0; py < SCREEN.HEIGHT; py += 4) {
+      for (let c = 0; c < SCREEN.CHAR_COLS; c++) {
+        if (screenData[getBmc4AttributeAddress(c * 8, py)] === clickedAttr) {
+          cellInvert(c * 8, py);
+        }
+      }
+    }
+    return;
+  }
+
+  if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) {
+    const clickedAttr = screenData[getAttributeAddress(x, y)];
+    const cols = (currentFormat === FORMAT.GMX) ? 40 : 80;
+    const rows = (currentFormat === FORMAT.GMX) ? 192 : 160;
+    for (let py = 0; py < rows; py++) {
+      for (let c = 0; c < cols; c++) {
+        if (screenData[getAttributeAddress(c * 8, py)] === clickedAttr) {
+          cellInvert(c * 8, py);
+        }
+      }
+    }
+    return;
+  }
+}
+
+/**
  * Recolors a cell's attribute without modifying bitmap data
  * SCR: 8×8 cell
  * IFL: 8×2 block
@@ -9742,10 +9848,16 @@ function _handleEditorMouseDownCoords(event, coords) {
       break;
 
     case EDITOR.TOOL_CELL_INVERT: {
-      cellInvertVisited.clear();
-      const cellKey = cellInvertKey(coords.x, coords.y);
-      cellInvertVisited.add(cellKey);
-      cellInvert(coords.x, coords.y);
+      if (event.button === 2) {
+        // Right-click: invert all cells with same attribute
+        cellInvertAllSameAttr(coords.x, coords.y);
+      } else {
+        // Left-click: invert single cell (draggable)
+        cellInvertVisited.clear();
+        const cellKey = cellInvertKey(coords.x, coords.y);
+        cellInvertVisited.add(cellKey);
+        cellInvert(coords.x, coords.y);
+      }
       editorRender();
       break;
     }
@@ -9767,6 +9879,17 @@ function _handleEditorMouseDownCoords(event, coords) {
           scheduleRender();
         }
       }, 50);
+      break;
+
+    case EDITOR.TOOL_DITHER_BRUSH:
+      if (!ditherSourcePixels) {
+        const infoEl = document.getElementById('editorPositionInfo');
+        if (infoEl) infoEl.innerHTML = 'No dither source — import image or use "Set source..."';
+        break;
+      }
+      ditherBrushVisited.clear();
+      ditherBrushPaint(coords.x, coords.y);
+      editorRender();
       break;
   }
 
@@ -10083,6 +10206,11 @@ function _handleEditorMouseMoveCoords(event, coords) {
       airbrushCurrentPos = { x: snapped.x, y: snapped.y, isInk };
       drawAirbrush(snapped.x, snapped.y, isInk, lastDrawnPixel);
       lastDrawnPixel = snapped;
+      scheduleRender();
+      break;
+
+    case EDITOR.TOOL_DITHER_BRUSH:
+      ditherBrushPaint(coords.x, coords.y);
       scheduleRender();
       break;
   }
@@ -12550,13 +12678,17 @@ function saveScrFile(filename) {
     // NXI: palette is synced to screenData via writeNxiPaletteToScreenData — save as-is
     saveData = new Uint8Array(screenData);
   } else if (currentFormat === FORMAT.SL2) {
-    // SL2: raw pixels only — palette is not embedded in the file
-    if (checkNextPaletteModified(256)) {
-      if (!confirm('SL2 format does not store a palette. Your custom palette colors will be lost on reload (default palette will be used instead).\n\nSave without palette anyway?')) {
-        return;
-      }
+    // SL2: embed palette after pixel data when palette differs from default
+    const is4bpp = nxiLayer2Mode === '640x256';
+    const palEntries = is4bpp ? 16 : 256;
+    if (checkNextPaletteModified(palEntries) && nxiResolvedPalette) {
+      const palBytes = encodePaletteToRgb333(nxiResolvedPalette, palEntries);
+      saveData = new Uint8Array(screenData.length + palBytes.length);
+      saveData.set(screenData);
+      saveData.set(palBytes, screenData.length);
+    } else {
+      saveData = new Uint8Array(screenData);
     }
-    saveData = new Uint8Array(screenData);
   } else if (currentFormat === FORMAT.LORES) {
     // LoRes: 12288 bytes pixel data, no palette
     if (checkNextPaletteModified(256)) {
@@ -13880,6 +14012,10 @@ function setEditorTool(tool) {
   if (currentTool === EDITOR.TOOL_GRADIENT && tool !== EDITOR.TOOL_GRADIENT) {
     showGradientSection(false);
   }
+  // Hide dither brush section when switching away
+  if (currentTool === EDITOR.TOOL_DITHER_BRUSH && tool !== EDITOR.TOOL_DITHER_BRUSH) {
+    showDitherBrushSection(false);
+  }
   currentTool = tool;
   (editorToolButtons || document.querySelectorAll('.editor-tool-btn[data-tool]')).forEach(btn => {
     btn.classList.toggle('selected', /** @type {HTMLElement} */(btn).dataset.tool === tool);
@@ -13895,6 +14031,10 @@ function setEditorTool(tool) {
   // Show gradient section when switching to gradient
   if (tool === EDITOR.TOOL_GRADIENT) {
     showGradientSection(true);
+  }
+  // Show dither brush section when switching to dither brush
+  if (tool === EDITOR.TOOL_DITHER_BRUSH) {
+    showDitherBrushSection(true);
   }
   editorRender();
 
@@ -19040,6 +19180,8 @@ function setEditorEnabled(active, force) {
     }
     // Show Export ASM button for BSC, Gigascreen, and RGB3 formats
     updateExportAsmButton();
+    // Re-apply dither brush visibility (format branches reset all tool buttons)
+    updateDitherBrushAvailability();
 
     // Gigascreen: initialize virtual palette and show virtual color picker
     if (isGigascreenEditable()) {
@@ -21738,6 +21880,9 @@ function updateExportAsmButton() {
     options.push({ value: 'rcs_zx7', label: '.rcs.zx7 (RCS + ZX7)' });
     options.push({ value: 'zx0', label: '.scr.zx0 (ZX0 compressed)' });
     options.push({ value: 'rcs_zx0', label: '.rcs.zx0 (RCS + ZX0)' });
+    options.push({ value: 'lc', label: '.scr.lc (LC compressed)' });
+    options.push({ value: 'upkr1', label: '.scr.upk (upkr level 1)' });
+    options.push({ value: 'upkr9', label: '.scr.upk (upkr level 9)' });
     options.push({ value: 'compare', label: 'Compare compressions...' });
   }
 
@@ -22659,34 +22804,63 @@ function convertGigascreenToBsp() {
 }
 
 /**
- * Convert NXI to SL2 - strip 512-byte palette, keep pixel data
+ * Encode a resolved palette array into RGB333 byte pairs (2 bytes per entry).
+ * @param {number[][]} palette - array of [r,g,b] entries (0-255 each)
+ * @param {number} count - number of entries to encode (16 or 256)
+ * @returns {Uint8Array} encoded palette bytes (count * 2 bytes)
  */
-function convertNxiToSl2() {
-  if (!screenData || screenData.length < NXI.TOTAL_SIZE) {
-    alert('No valid NXI data to convert');
-    return;
+function encodePaletteToRgb333(palette, count) {
+  const bytes = new Uint8Array(count * 2);
+  for (let i = 0; i < count; i++) {
+    const rgb = palette[i] || [0, 0, 0];
+    const r3 = Math.round(rgb[0] * 7 / 255);
+    const g3 = Math.round(rgb[1] * 7 / 255);
+    const b3 = Math.round(rgb[2] * 7 / 255);
+    bytes[i * 2] = (r3 << 5) | (g3 << 2) | (b3 >> 1);
+    bytes[i * 2 + 1] = b3 & 1;
   }
+  return bytes;
+}
 
-  saveUndoState();
+/**
+ * Build a pixel index remap table from the current NXI palette to the default
+ * Next palette. For each NXI palette entry, finds the closest default entry
+ * by Euclidean distance in RGB space.
+ * @param {number[][]} srcPalette - source palette (current NXI palette)
+ * @param {number} count - number of entries (16 or 256)
+ * @returns {number[]} remap table: remap[oldIndex] = newIndex
+ */
+function buildQuantizeToDefaultMap(srcPalette, count) {
+  const defPal = count <= 16 ? generateDefaultNext4bppPalette() : generateDefaultNextPalette();
+  const map = new Array(count);
+  for (let i = 0; i < count; i++) {
+    const src = srcPalette[i] || [0, 0, 0];
+    let bestDist = Infinity;
+    let bestIdx = 0;
+    for (let j = 0; j < defPal.length; j++) {
+      const dr = src[0] - defPal[j][0];
+      const dg = src[1] - defPal[j][1];
+      const db = src[2] - defPal[j][2];
+      const dist = dr * dr + dg * dg + db * db;
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestIdx = j;
+        if (dist === 0) break;
+      }
+    }
+    map[i] = bestIdx;
+  }
+  return map;
+}
 
-  // Extract pixel data (49152 bytes after 512-byte palette)
-  const sl2Data = new Uint8Array(SL2.RAW_SIZE);
-  sl2Data.set(screenData.slice(NXI.PIXEL_OFFSET, NXI.TOTAL_SIZE));
-
-  screenData = sl2Data;
-  currentFormat = FORMAT.SL2;
-  nxiLayer2Mode = '256x192';
-  currentFileName = currentFileName.replace(/\.[^.]+$/, '.sl2');
+/**
+ * Common tail for all NXI→SL2 conversions: update state, UI, render.
+ */
+function finishNxiToSl2Conversion() {
   currentPicture = null;
-
-  // Keep nxiResolvedPalette in memory for current session rendering
-
   markPictureModified();
   saveCurrentPictureState();
-
-  if (typeof toggleFormatControlsVisibility === 'function') {
-    toggleFormatControlsVisibility();
-  }
+  if (typeof toggleFormatControlsVisibility === 'function') toggleFormatControlsVisibility();
   updateEditorColorPickers();
   updateExportAsmButton();
   updateConvertOptions();
@@ -22694,6 +22868,111 @@ function convertNxiToSl2() {
   updatePictureTabBar();
   renderScreen();
   editorRender();
+}
+
+/**
+ * Convert NXI 256×192 to SL2.
+ * If the palette differs from default, asks the user whether to embed it or quantize.
+ */
+function convertNxiToSl2() {
+  if (!screenData || screenData.length < NXI.TOTAL_SIZE) {
+    alert('No valid NXI data to convert');
+    return;
+  }
+
+  const palCount = 256;
+  const hasCustomPalette = checkNextPaletteModified(palCount);
+
+  if (hasCustomPalette) {
+    showNxiToSl2Dialog(palCount, NXI.PIXEL_OFFSET, SL2.RAW_SIZE, '256x192');
+  } else {
+    // Default palette — just strip it
+    saveUndoState();
+    const sl2Data = new Uint8Array(SL2.RAW_SIZE);
+    sl2Data.set(screenData.slice(NXI.PIXEL_OFFSET, NXI.PIXEL_OFFSET + SL2.RAW_SIZE));
+    screenData = sl2Data;
+    currentFormat = FORMAT.SL2;
+    nxiLayer2Mode = '256x192';
+    currentFileName = currentFileName.replace(/\.[^.]+$/, '.sl2');
+    finishNxiToSl2Conversion();
+  }
+}
+
+/**
+ * Show dialog asking user how to handle NXI palette during NXI→SL2 conversion.
+ * @param {number} palCount - palette entries (16 or 256)
+ * @param {number} pixelOffset - byte offset of pixel data in current screenData
+ * @param {number} rawSize - pixel-only SL2 size (49152 or 81920)
+ * @param {'256x192'|'320x256'|'640x256'} mode - Layer 2 mode
+ */
+function showNxiToSl2Dialog(palCount, pixelOffset, rawSize, mode) {
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:10000;display:flex;align-items:center;justify-content:center';
+  const dialog = document.createElement('div');
+  dialog.style.cssText = 'background:var(--bg-secondary,#2a2a2a);color:var(--text-primary,#eee);border:1px solid var(--border-color,#555);border-radius:8px;padding:20px 24px;max-width:520px;font-family:inherit';
+  dialog.innerHTML =
+    '<div style="font-weight:bold;margin-bottom:12px">NXI → SL2: palette handling</div>' +
+    '<div style="margin-bottom:16px;line-height:1.5">This NXI file has a custom palette that differs from the default RGB332. How should the SL2 file store colors?</div>' +
+    '<div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap">' +
+      '<button id="nxiSl2Cancel" style="padding:6px 14px;cursor:pointer">Cancel</button>' +
+      '<button id="nxiSl2Strip" style="padding:6px 14px;cursor:pointer" title="Remove palette, keep pixel indices unchanged (use when you have the palette in a separate file)">Strip palette</button>' +
+      '<button id="nxiSl2Quantize" style="padding:6px 14px;cursor:pointer" title="Remap pixel indices to the closest default palette colors">Quantize to default</button>' +
+      '<button id="nxiSl2KeepPal" style="padding:6px 14px;cursor:pointer;font-weight:bold" title="Append palette bytes after pixel data (SL2 with embedded palette)">Keep palette</button>' +
+    '</div>';
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+
+  const close = () => document.body.removeChild(overlay);
+
+  dialog.querySelector('#nxiSl2Cancel').onclick = close;
+  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+
+  dialog.querySelector('#nxiSl2Strip').onclick = () => {
+    close();
+    saveUndoState();
+    // Strip palette, keep pixel indices as-is (user has palette externally)
+    const sl2Data = new Uint8Array(rawSize);
+    sl2Data.set(screenData.slice(pixelOffset, pixelOffset + rawSize));
+    screenData = sl2Data;
+    currentFormat = FORMAT.SL2;
+    nxiLayer2Mode = mode;
+    currentFileName = currentFileName.replace(/\.[^.]+$/, '.sl2');
+    nxiResolvedPalette = palCount <= 16 ? generateDefaultNext4bppPalette() : generateDefaultNextPalette();
+    finishNxiToSl2Conversion();
+  };
+
+  dialog.querySelector('#nxiSl2KeepPal').onclick = () => {
+    close();
+    saveUndoState();
+    // Store raw pixels only (consistent with SL2 loader); palette stays in nxiResolvedPalette.
+    // The save path will embed the palette when it detects a non-default palette.
+    const sl2Data = new Uint8Array(rawSize);
+    sl2Data.set(screenData.slice(pixelOffset, pixelOffset + rawSize));
+    screenData = sl2Data;
+    currentFormat = FORMAT.SL2;
+    nxiLayer2Mode = mode;
+    currentFileName = currentFileName.replace(/\.[^.]+$/, '.sl2');
+    // nxiResolvedPalette already holds the NXI palette — keep it
+    finishNxiToSl2Conversion();
+  };
+
+  dialog.querySelector('#nxiSl2Quantize').onclick = () => {
+    close();
+    saveUndoState();
+    // First remap pixel indices while still in NXI layout
+    const map = buildQuantizeToDefaultMap(nxiResolvedPalette, palCount);
+    remapNxiPixelIndices(map);
+    // Now strip palette, keep raw pixels
+    const sl2Data = new Uint8Array(rawSize);
+    sl2Data.set(screenData.slice(pixelOffset, pixelOffset + rawSize));
+    screenData = sl2Data;
+    currentFormat = FORMAT.SL2;
+    nxiLayer2Mode = mode;
+    currentFileName = currentFileName.replace(/\.[^.]+$/, '.sl2');
+    // Reset palette to default since pixels now use default indices
+    nxiResolvedPalette = palCount <= 16 ? generateDefaultNext4bppPalette() : generateDefaultNextPalette();
+    finishNxiToSl2Conversion();
+  };
 }
 
 /**
@@ -22762,31 +23041,30 @@ function convertSl2ToNxi() {
 // ============================================================================
 
 /**
- * Convert NXI 320×256 to SL2 320×256 - strip 512-byte palette header
+ * Convert NXI 320×256 to SL2 320×256.
+ * If the palette differs from default, asks the user whether to embed it or quantize.
  */
 function convertNxi320ToSl2() {
   if (!screenData || screenData.length < NXI.TOTAL_SIZE_320 || nxiLayer2Mode !== '320x256') {
     alert('No valid NXI 320×256 data to convert');
     return;
   }
-  saveUndoState();
-  const sl2Data = new Uint8Array(SL2.EXT_SIZE);
-  sl2Data.set(screenData.slice(NXI.PIXEL_OFFSET, NXI.PIXEL_OFFSET + NXI.PIXEL_DATA_SIZE_EXT));
-  screenData = sl2Data;
-  currentFormat = FORMAT.SL2;
-  nxiLayer2Mode = '320x256';
-  currentFileName = currentFileName.replace(/\.[^.]+$/, '.sl2');
-  currentPicture = null;
-  markPictureModified();
-  saveCurrentPictureState();
-  if (typeof toggleFormatControlsVisibility === 'function') toggleFormatControlsVisibility();
-  updateEditorColorPickers();
-  updateExportAsmButton();
-  updateConvertOptions();
-  updateFileInfo();
-  updatePictureTabBar();
-  renderScreen();
-  editorRender();
+
+  const palCount = 256;
+  const hasCustomPalette = checkNextPaletteModified(palCount);
+
+  if (hasCustomPalette) {
+    showNxiToSl2Dialog(palCount, NXI.PIXEL_OFFSET, SL2.EXT_SIZE, '320x256');
+  } else {
+    saveUndoState();
+    const sl2Data = new Uint8Array(SL2.EXT_SIZE);
+    sl2Data.set(screenData.slice(NXI.PIXEL_OFFSET, NXI.PIXEL_OFFSET + NXI.PIXEL_DATA_SIZE_EXT));
+    screenData = sl2Data;
+    currentFormat = FORMAT.SL2;
+    nxiLayer2Mode = '320x256';
+    currentFileName = currentFileName.replace(/\.[^.]+$/, '.sl2');
+    finishNxiToSl2Conversion();
+  }
 }
 
 /**
@@ -22833,31 +23111,30 @@ function convertSl2_320ToNxi() {
 }
 
 /**
- * Convert NXI 640×256 to SL2 640×256 - strip 32-byte palette header
+ * Convert NXI 640×256 to SL2 640×256.
+ * If the palette differs from default, asks the user whether to embed it or quantize.
  */
 function convertNxi640ToSl2() {
   if (!screenData || screenData.length < NXI.TOTAL_SIZE_640 || nxiLayer2Mode !== '640x256') {
     alert('No valid NXI 640×256 data to convert');
     return;
   }
-  saveUndoState();
-  const sl2Data = new Uint8Array(SL2.EXT_SIZE);
-  sl2Data.set(screenData.slice(NXI.PIXEL_OFFSET_4BPP, NXI.PIXEL_OFFSET_4BPP + NXI.PIXEL_DATA_SIZE_EXT));
-  screenData = sl2Data;
-  currentFormat = FORMAT.SL2;
-  nxiLayer2Mode = '640x256';
-  currentFileName = currentFileName.replace(/\.[^.]+$/, '.sl2');
-  currentPicture = null;
-  markPictureModified();
-  saveCurrentPictureState();
-  if (typeof toggleFormatControlsVisibility === 'function') toggleFormatControlsVisibility();
-  updateEditorColorPickers();
-  updateExportAsmButton();
-  updateConvertOptions();
-  updateFileInfo();
-  updatePictureTabBar();
-  renderScreen();
-  editorRender();
+
+  const palCount = 16;
+  const hasCustomPalette = checkNextPaletteModified(palCount);
+
+  if (hasCustomPalette) {
+    showNxiToSl2Dialog(palCount, NXI.PIXEL_OFFSET_4BPP, SL2.EXT_SIZE, '640x256');
+  } else {
+    saveUndoState();
+    const sl2Data = new Uint8Array(SL2.EXT_SIZE);
+    sl2Data.set(screenData.slice(NXI.PIXEL_OFFSET_4BPP, NXI.PIXEL_OFFSET_4BPP + NXI.PIXEL_DATA_SIZE_EXT));
+    screenData = sl2Data;
+    currentFormat = FORMAT.SL2;
+    nxiLayer2Mode = '640x256';
+    currentFileName = currentFileName.replace(/\.[^.]+$/, '.sl2');
+    finishNxiToSl2Conversion();
+  }
 }
 
 /**
@@ -24076,6 +24353,280 @@ function showGradientSection(show) {
 }
 
 // ============================================================================
+// Dither Brush Tool
+// ============================================================================
+
+/**
+ * Shows/hides the dither brush settings section
+ * @param {boolean} show
+ */
+function showDitherBrushSection(show) {
+  const section = document.getElementById('editorDitherBrushSection');
+  if (section) {
+    section.style.display = show ? '' : 'none';
+  }
+}
+
+/**
+ * Updates the dither brush source status label
+ */
+/**
+ * Shows/hides the dither brush toolbar button based on source availability.
+ * If source is gone and tool is active, switches to pixel tool.
+ */
+function updateDitherBrushAvailability() {
+  const show = !!ditherSourcePixels;
+  const btn = document.querySelector('.editor-tool-btn[data-tool="ditherbrush"]');
+  if (btn) /** @type {HTMLElement} */ (btn).style.display = show ? '' : 'none';
+  const reditherBtn = document.getElementById('editorReditherBtn');
+  if (reditherBtn) reditherBtn.style.display = show ? '' : 'none';
+  // If tool is active but source was removed (e.g. picture switch), deselect
+  if (!show && currentTool === EDITOR.TOOL_DITHER_BRUSH) {
+    setEditorTool(EDITOR.TOOL_PIXEL);
+  }
+}
+
+/**
+ * Pre-computes best ink/paper/bright for all 768 cells from ditherSourcePixels.
+ * Called once when source pixels are set; reditherCell() uses the cache.
+ */
+function buildDitherCellColorsCache() {
+  if (!ditherSourcePixels) { ditherCellColorsCache = null; return; }
+  const palette = {
+    regular: ZX_PALETTE_RGB.REGULAR.slice(),
+    bright: ZX_PALETTE_RGB.BRIGHT.slice()
+  };
+  const cache = new Array(32 * 24);
+  for (let cy = 0; cy < 24; cy++) {
+    for (let cx = 0; cx < 32; cx++) {
+      cache[cy * 32 + cx] = findCellColors(ditherSourcePixels, cx, cy, 256, palette);
+    }
+  }
+  ditherCellColorsCache = cache;
+}
+
+/**
+ * Gets the ZX Spectrum bitmap offset for a given Y coordinate.
+ * Mirrors getBitmapOffset() from image_import.js.
+ * @param {number} y - Pixel Y coordinate (0-191)
+ * @returns {number} Byte offset in the 6144-byte bitmap area
+ */
+function getEditorBitmapOffset(y) {
+  const third = Math.floor(y / 64);
+  const charRow = Math.floor((y % 64) / 8);
+  const line = y % 8;
+  return third * 2048 + line * 256 + charRow * 32;
+}
+
+/**
+ * Re-dithers a single 8x8 cell using the dither brush source pixels.
+ * When brushCenterX/Y and brushR2 are provided, only pixels inside the
+ * circular brush are overwritten; pixels outside keep their old bitmap bits.
+ * @param {number} cellX - Cell X (0-31)
+ * @param {number} cellY - Cell Y (0-23)
+ * @param {string} method - Dither method (e.g. 'cell-floyd-steinberg')
+ * @param {number} strength - Strength 0.0-1.0
+ * @param {number} [brushCenterX] - Brush center pixel X (omit for full-cell mode)
+ * @param {number} [brushCenterY] - Brush center pixel Y
+ * @param {number} [brushR2] - Brush radius squared (pixels)
+ */
+function reditherCell(cellX, cellY, method, strength, brushCenterX, brushCenterY, brushR2) {
+  if (!ditherSourcePixels) return;
+  if (cellX < 0 || cellX > 31 || cellY < 0 || cellY > 23) return;
+  if (currentFormat !== FORMAT.SCR) return;
+  if (!screenData || screenData.length < SCREEN.TOTAL_SIZE) return;
+
+  const hasBrushMask = (typeof brushCenterX === 'number');
+
+  // Use cached cell colors (pre-computed), fall back to live computation
+  const colors = (ditherCellColorsCache && ditherCellColorsCache[cellY * 32 + cellX]) ||
+    findCellColors(ditherSourcePixels, cellX, cellY, 256, {
+      regular: ZX_PALETTE_RGB.REGULAR.slice(),
+      bright: ZX_PALETTE_RGB.BRIGHT.slice()
+    });
+
+  // Dispatch to cell dither function
+  let bitmap;
+  const ditherMethod = method.replace('cell-', '');
+  switch (ditherMethod) {
+    case 'floyd-steinberg':
+      bitmap = ditherCellFloydSteinberg(ditherSourcePixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+      break;
+    case 'atkinson':
+      bitmap = ditherCellAtkinson(ditherSourcePixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+      break;
+    case 'ordered':
+      bitmap = ditherCellOrdered(ditherSourcePixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+      break;
+    case 'sierra2':
+      bitmap = ditherCellSierra2(ditherSourcePixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+      break;
+    case 'serpentine':
+      bitmap = ditherCellSerpentine(ditherSourcePixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+      break;
+    case 'riemersma':
+      bitmap = ditherCellRiemersma(ditherSourcePixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+      break;
+    case 'bluenoise':
+      bitmap = ditherCellBlueNoise(ditherSourcePixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+      break;
+    case 'pattern':
+      bitmap = ditherCellPattern(ditherSourcePixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+      break;
+    case 'none':
+      bitmap = ditherCellNone(ditherSourcePixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+      break;
+    default:
+      bitmap = ditherCellFloydSteinberg(ditherSourcePixels, cellX, cellY, 256, colors.inkRgb, colors.paperRgb);
+      break;
+  }
+
+  // Apply paper rule normalization
+  const ruled = applyPaperRule(colors, bitmap);
+
+  // Write bitmap bytes — per-pixel circular mask when brush is active
+  const cellPxX = cellX * 8;
+  const cellPxY = cellY * 8;
+
+  for (let line = 0; line < 8; line++) {
+    const y = cellPxY + line;
+    const offset = getEditorBitmapOffset(y) + cellX;
+    const oldByte = screenData[offset];
+    let newByte = ruled.bitmap[line];
+    let result = oldByte;
+
+    if (hasBrushMask) {
+      // Per-pixel: only overwrite bits inside the brush circle
+      const dy = y - /** @type {number} */ (brushCenterY);
+      const dy2 = dy * dy;
+      for (let bit = 0; bit < 8; bit++) {
+        const pixX = cellPxX + bit;
+        const dx = pixX - /** @type {number} */ (brushCenterX);
+        if (dx * dx + dy2 <= /** @type {number} */ (brushR2)) {
+          const mask = 0x80 >> bit;
+          // Apply strength: probabilistic blend per pixel
+          if (strength < 1.0 && Math.random() >= strength) {
+            // keep old bit
+          } else {
+            result = (result & ~mask) | (newByte & mask);
+          }
+        }
+      }
+    } else if (strength < 1.0) {
+      // Full-cell mode with reduced strength
+      result = 0;
+      for (let bit = 0; bit < 8; bit++) {
+        const mask = 0x80 >> bit;
+        result |= (Math.random() < strength) ? (newByte & mask) : (oldByte & mask);
+      }
+    } else {
+      result = newByte;
+    }
+
+    screenData[offset] = result;
+  }
+
+  // Write attribute byte (always full-cell — ZX Spectrum hardware constraint)
+  const attrOffset = SCREEN.BITMAP_SIZE + cellY * 32 + cellX;
+  let attr = (ruled.colors.paper << 3) | ruled.colors.ink;
+  if (ruled.colors.bright) attr |= 0x40;
+  screenData[attrOffset] = attr;
+}
+
+/**
+ * Paints dither brush over cells at the given pixel coordinate.
+ * @param {number} px - Pixel X (0-255)
+ * @param {number} py - Pixel Y (0-191)
+ */
+function ditherBrushPaint(px, py) {
+  if (!ditherSourcePixels) return;
+
+  const methodEl = document.getElementById('ditherBrushMethod');
+  const strengthEl = document.getElementById('ditherBrushStrength');
+  const sizeEl = document.getElementById('ditherBrushSize');
+
+  const method = methodEl ? /** @type {HTMLSelectElement} */ (methodEl).value : 'cell-floyd-steinberg';
+  const strength = strengthEl ? parseInt(/** @type {HTMLInputElement} */ (strengthEl).value, 10) / 100 : 1.0;
+  const diameterPx = sizeEl ? parseInt(/** @type {HTMLSelectElement} */ (sizeEl).value, 10) : 8;
+
+  const radiusPx = diameterPx / 2;
+  const r2 = radiusPx * radiusPx;
+
+  // Determine cell range: any cell that overlaps the brush circle
+  const halfCells = Math.ceil(radiusPx / 8) + 1;
+  const cursorCellX = Math.floor(px / 8);
+  const cursorCellY = Math.floor(py / 8);
+
+  for (let dy = -halfCells; dy <= halfCells; dy++) {
+    for (let dx = -halfCells; dx <= halfCells; dx++) {
+      const cx = cursorCellX + dx;
+      const cy = cursorCellY + dy;
+      if (cx < 0 || cx > 31 || cy < 0 || cy > 23) continue;
+
+      // Check if any corner of this cell's 8x8 box could be within the brush.
+      // Use nearest-point-on-rect to circle-center distance for overlap test.
+      const cellLeft = cx * 8;
+      const cellTop = cy * 8;
+      const nearestX = Math.max(cellLeft, Math.min(cellLeft + 7, px));
+      const nearestY = Math.max(cellTop, Math.min(cellTop + 7, py));
+      const ndx = nearestX - px;
+      const ndy = nearestY - py;
+      if (ndx * ndx + ndy * ndy > r2) continue;
+
+      const key = cx + ',' + cy;
+      if (ditherBrushVisited.has(key)) continue;
+      ditherBrushVisited.add(key);
+
+      reditherCell(cx, cy, method, strength, px, py, r2);
+    }
+  }
+}
+
+/**
+ * Re-dithers all cells in the current selection.
+ */
+function reditherSelection() {
+  if (!ditherSourcePixels) {
+    const infoEl = document.getElementById('editorPositionInfo');
+    if (infoEl) infoEl.innerHTML = 'No dither source — import image or use "Set source..."';
+    return;
+  }
+  if (currentFormat !== FORMAT.SCR) {
+    const infoEl = document.getElementById('editorPositionInfo');
+    if (infoEl) infoEl.innerHTML = 'Re-dither only works with SCR format';
+    return;
+  }
+
+  const rect = getSelectionRect();
+  if (!rect) {
+    const infoEl = document.getElementById('editorPositionInfo');
+    if (infoEl) infoEl.innerHTML = 'No selection — use Select tool first';
+    return;
+  }
+
+  const methodEl = document.getElementById('ditherBrushMethod');
+  const strengthEl = document.getElementById('ditherBrushStrength');
+  const method = methodEl ? /** @type {HTMLSelectElement} */ (methodEl).value : 'cell-floyd-steinberg';
+  const strength = strengthEl ? parseInt(/** @type {HTMLInputElement} */ (strengthEl).value, 10) / 100 : 1.0;
+
+  saveUndoState();
+
+  // Convert pixel rect to cell range
+  const startCellX = Math.floor(rect.left / 8);
+  const startCellY = Math.floor(rect.top / 8);
+  const endCellX = Math.floor((rect.left + rect.width - 1) / 8);
+  const endCellY = Math.floor((rect.top + rect.height - 1) / 8);
+
+  for (let cy = startCellY; cy <= endCellY; cy++) {
+    for (let cx = startCellX; cx <= endCellX; cx++) {
+      reditherCell(cx, cy, method, strength);
+    }
+  }
+
+  editorRender();
+}
+
+// ============================================================================
 // QR Code Generation
 // ============================================================================
 
@@ -24294,70 +24845,440 @@ function initQrDialog() {
 let compareVariants = null;
 let compareBaseName = '';
 
+// ---------------------------------------------------------------------------
+// Compare Settings — persisted to localStorage
+// ---------------------------------------------------------------------------
+const COMPARE_SETTINGS_KEY = 'spectralab_compare_settings';
+
+/** @returns {{zx7:boolean, zx0:boolean, rcs:boolean, lc:boolean, upkr:boolean, upkrDepacker:string}} */
+function loadCompareSettings() {
+  const defaults = { zx7: false, zx0: true, rcs: true, lc: true, upkr: false, upkrDepacker: 'compact' };
+  try {
+    const raw = localStorage.getItem(COMPARE_SETTINGS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return Object.assign(defaults, parsed);
+    }
+  } catch (e) { /* ignore */ }
+  return defaults;
+}
+
+/** @param {{zx7:boolean, zx0:boolean, rcs:boolean, lc:boolean, upkr:boolean, upkrDepacker:string}} s */
+function saveCompareSettings(s) {
+  try { localStorage.setItem(COMPARE_SETTINGS_KEY, JSON.stringify(s)); } catch (e) { /* ignore */ }
+}
+
+/** Read current state from the settings panel checkboxes */
+function readCompareSettingsFromUI() {
+  return {
+    zx7: /** @type {HTMLInputElement} */ (document.getElementById('cmpFmtZx7'))?.checked ?? true,
+    zx0: /** @type {HTMLInputElement} */ (document.getElementById('cmpFmtZx0'))?.checked ?? true,
+    rcs: /** @type {HTMLInputElement} */ (document.getElementById('cmpFmtRcs'))?.checked ?? true,
+    lc: /** @type {HTMLInputElement} */ (document.getElementById('cmpFmtLc'))?.checked ?? true,
+    upkr: /** @type {HTMLInputElement} */ (document.getElementById('cmpFmtUpkr'))?.checked ?? true,
+    upkrDepacker: /** @type {HTMLSelectElement} */ (document.getElementById('cmpUpkrDepacker'))?.value ?? 'compact',
+  };
+}
+
+/** Apply settings object to the settings panel UI */
+function applyCompareSettingsToUI(s) {
+  const el = (id) => document.getElementById(id);
+  if (el('cmpFmtZx7'))  /** @type {HTMLInputElement} */ (el('cmpFmtZx7')).checked = s.zx7;
+  if (el('cmpFmtZx0'))  /** @type {HTMLInputElement} */ (el('cmpFmtZx0')).checked = s.zx0;
+  if (el('cmpFmtRcs'))  /** @type {HTMLInputElement} */ (el('cmpFmtRcs')).checked = s.rcs;
+  if (el('cmpFmtLc'))   /** @type {HTMLInputElement} */ (el('cmpFmtLc')).checked = s.lc;
+  if (el('cmpFmtUpkr')) /** @type {HTMLInputElement} */ (el('cmpFmtUpkr')).checked = s.upkr;
+  if (el('cmpUpkrDepacker')) /** @type {HTMLSelectElement} */ (el('cmpUpkrDepacker')).value = s.upkrDepacker;
+}
+
+// Module-level table UI state shared between showCompareDialog and runCompareCompressions
+/** @type {Array<{label:string, ext:string, type:string, depacker:number, compress: (() => {data:Uint8Array})|null}>} */
+let compareJobs = [];
+/** @type {HTMLTableRowElement[]} */
+let compareRows = [];
+/** @type {HTMLTableCellElement[]} */
+let compareSizeCells = [];
+/** @type {HTMLTableCellElement[]} */
+let compareSavedCells = [];
+/** @type {HTMLTableCellElement[]} */
+let comparePctCells = [];
+/** @type {HTMLTableCellElement[]} */
+let compareDepackerCells = [];
+/** @type {HTMLTableCellElement[]} */
+let compareTotalCells = [];
+/** @type {HTMLTableCellElement[]} */
+let compareLabelCells = [];
+/** @type {HTMLInputElement[]} */
+let compareRadios = [];
+let compareRunning = false;
+let compareBaseSize = SCREEN.TOTAL_SIZE;
+
 /**
- * Show compression comparison dialog with all ZX7 and ZX0 variants.
- * The dialog appears immediately with "Compressing..." placeholders;
- * each variant is computed asynchronously so the UI stays responsive.
+ * Clean hidden cells on a raw 6912-byte SCR buffer (working copy).
+ * For each 8×8 cell where ink===paper and bitmap is non-trivial,
+ * fills bitmap with 0x00 or 0xFF based on neighbor bitmap density.
+ * @param {Uint8Array} buf - 6912-byte SCR buffer (modified in place)
+ * @returns {number} Number of cells cleaned
+ */
+function cleanHiddenOnBuffer(buf) {
+  let cleaned = 0;
+
+  /** SCR bitmap address for a given char column and pixel row */
+  function bmpAddr(charCol, y) {
+    const third = y >> 6;
+    const charRowInThird = (y & 63) >> 3;
+    const pixelLine = y & 7;
+    return third * 2048 + pixelLine * 256 + charRowInThird * 32 + charCol;
+  }
+
+  /** popcount for a byte */
+  function popcount8(v) {
+    v = v - ((v >> 1) & 0x55);
+    v = (v & 0x33) + ((v >> 2) & 0x33);
+    return (v + (v >> 4)) & 0x0F;
+  }
+
+  /** Count set bits in a neighbor cell's bitmap area */
+  function neighborBits(ar, col) {
+    if (ar < 0 || ar >= SCREEN.CHAR_ROWS || col < 0 || col >= SCREEN.CHAR_COLS) return -1;
+    let bits = 0;
+    for (let line = 0; line < 8; line++) {
+      bits += popcount8(buf[bmpAddr(col, ar * 8 + line)]);
+    }
+    return bits;
+  }
+
+  for (let charRow = 0; charRow < SCREEN.CHAR_ROWS; charRow++) {
+    for (let charCol = 0; charCol < SCREEN.CHAR_COLS; charCol++) {
+      const attrAddr = SCREEN.BITMAP_SIZE + charRow * SCREEN.CHAR_COLS + charCol;
+      const attr = buf[attrAddr];
+      const ink = ATTR.ink(attr);
+      const paper = ATTR.paper(attr);
+      if (ink !== paper) continue;
+
+      // Check if bitmap is non-trivial
+      let allZero = true, allFF = true;
+      for (let line = 0; line < 8; line++) {
+        const b = buf[bmpAddr(charCol, charRow * 8 + line)];
+        if (b !== 0x00) allZero = false;
+        if (b !== 0xFF) allFF = false;
+        if (!allZero && !allFF) break;
+      }
+      if (allZero || allFF) continue;
+
+      // Count set bits in neighbor cells
+      let totalNeighborBits = 0;
+      let totalNeighborTotal = 0;
+      const neighbors = [
+        neighborBits(charRow - 1, charCol),
+        neighborBits(charRow + 1, charCol),
+        neighborBits(charRow, charCol - 1),
+        neighborBits(charRow, charCol + 1)
+      ];
+      for (let i = 0; i < 4; i++) {
+        if (neighbors[i] >= 0) {
+          totalNeighborBits += neighbors[i];
+          totalNeighborTotal += 64;
+        }
+      }
+
+      const fillValue = (totalNeighborTotal > 0 && totalNeighborBits > totalNeighborTotal / 2) ? 0xFF : 0x00;
+      for (let line = 0; line < 8; line++) {
+        buf[bmpAddr(charCol, charRow * 8 + line)] = fillValue;
+      }
+      cleaned++;
+    }
+  }
+  return cleaned;
+}
+
+/**
+ * Optimize attributes on a raw 6912-byte SCR buffer (working copy).
+ * "Minimize ink bits" mode: if set bits > clear bits, invert bitmap and swap ink↔paper.
+ * @param {Uint8Array} buf - 6912-byte SCR buffer (modified in place)
+ * @returns {number} Number of cells flipped
+ */
+function optimizeAttrsOnBuffer(buf) {
+  let flipped = 0;
+
+  for (let charRow = 0; charRow < SCREEN.CHAR_ROWS; charRow++) {
+    for (let charCol = 0; charCol < SCREEN.CHAR_COLS; charCol++) {
+      const attrAddr = SCREEN.BITMAP_SIZE + charRow * SCREEN.CHAR_COLS + charCol;
+      const attr = buf[attrAddr];
+      const ink = ATTR.ink(attr);
+      const paper = ATTR.paper(attr);
+      const bright = ATTR.bright(attr);
+      const flash = ATTR.flash(attr);
+
+      if (ink === paper) continue;
+      if (flash) continue;
+
+      // Count set bits in the 8 bitmap rows
+      let setBits = 0;
+      const bitmapAddrs = [];
+      for (let line = 0; line < 8; line++) {
+        const y = charRow * 8 + line;
+        const third = y >> 6;
+        const charRowInThird = (y & 63) >> 3;
+        const pixelLine = y & 7;
+        const addr = third * 2048 + pixelLine * 256 + charRowInThird * 32 + charCol;
+        bitmapAddrs.push(addr);
+        let v = buf[addr];
+        v = v - ((v >> 1) & 0x55);
+        v = (v & 0x33) + ((v >> 2) & 0x33);
+        setBits += (v + (v >> 4)) & 0x0F;
+      }
+
+      if (setBits > 32) { // 32 = 64/2, "minimize" mode
+        for (let i = 0; i < 8; i++) {
+          buf[bitmapAddrs[i]] ^= 0xFF;
+        }
+        buf[attrAddr] = ATTR.make(paper, ink, bright, flash);
+        flipped++;
+      }
+    }
+  }
+  return flipped;
+}
+
+/**
+ * Reset compare table — clear tbody and all module arrays.
+ */
+function resetCompareTable() {
+  const tbody = document.getElementById('compareBody');
+  if (tbody) tbody.innerHTML = '';
+  compareJobs = [];
+  compareVariants = [];
+  compareRows = [];
+  compareSizeCells = [];
+  compareSavedCells = [];
+  comparePctCells = [];
+  compareDepackerCells = [];
+  compareTotalCells = [];
+  compareLabelCells = [];
+  compareRadios = [];
+  const saveBtn = document.getElementById('compareSaveBtn');
+  if (saveBtn) saveBtn.disabled = true;
+}
+
+/**
+ * Show compression comparison dialog — Phase 1 (open with empty table).
+ * No compression runs until the user clicks Compare.
  */
 function showCompareDialog() {
   if (typeof ZX7 === 'undefined' && typeof ZX0 === 'undefined') return;
   if (layersEnabled) flattenLayersToScreen();
 
-  const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
-  const rcsBytes = reorderScrToRcs(scrBytes);
   compareBaseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
 
-  // Build the list of jobs: plain SCR is ready, compression rows start pending
-  /** @type {Array<{label:string, ext:string, type:string, compress: (() => {data:Uint8Array})|null}>} */
+  // Reset table to empty state
+  resetCompareTable();
+
+  // Wire Compare button
+  const runBtn = document.getElementById('compareRunBtn');
+  if (runBtn) {
+    runBtn.onclick = runCompareCompressions;
+    runBtn.disabled = false;
+    runBtn.textContent = 'Compare';
+  }
+
+  // Wire checkboxes — reset table when toggled (results become stale)
+  const cleanCb = document.getElementById('compareCleanHiddenCb');
+  const optCb = document.getElementById('compareOptimizeAttrsCb');
+  if (cleanCb) cleanCb.onchange = resetCompareTable;
+  if (optCb) optCb.onchange = resetCompareTable;
+
+  // Wire Data mode select
+  const dataModeSel = /** @type {HTMLSelectElement|null} */ (document.getElementById('compareDataMode'));
+  const segmentSel = /** @type {HTMLSelectElement|null} */ (document.getElementById('compareSegment'));
+  if (dataModeSel) {
+    dataModeSel.onchange = () => {
+      if (dataModeSel.value === 'full') {
+        if (segmentSel) { segmentSel.disabled = true; segmentSel.value = 'whole'; }
+      } else {
+        if (segmentSel) segmentSel.disabled = false;
+      }
+      resetCompareTable();
+    };
+  }
+  if (segmentSel) segmentSel.onchange = resetCompareTable;
+
+  // Show dialog
+  const dlg = document.getElementById('compareDialog');
+  if (dlg) dlg.style.display = '';
+}
+
+/**
+ * Phase 2: run compressions on a working copy of screenData.
+ * Triggered by the Compare button.
+ */
+function runCompareCompressions() {
+  if (compareRunning) return;
+  compareRunning = true;
+
+  const runBtn = document.getElementById('compareRunBtn');
+  const saveBtn = document.getElementById('compareSaveBtn');
+  if (runBtn) { runBtn.disabled = true; runBtn.textContent = 'Compressing\u2026'; }
+  if (saveBtn) saveBtn.disabled = true;
+
+  // Build working copy
+  const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
+
+  // Apply pre-compression optimizations to the working copy
+  const cleanCb = /** @type {HTMLInputElement|null} */ (document.getElementById('compareCleanHiddenCb'));
+  const optCb = /** @type {HTMLInputElement|null} */ (document.getElementById('compareOptimizeAttrsCb'));
+  if (cleanCb && cleanCb.checked) cleanHiddenOnBuffer(scrBytes);
+  if (optCb && optCb.checked) optimizeAttrsOnBuffer(scrBytes);
+
+  // Read Data mode + Segment
+  const dataModeSel = /** @type {HTMLSelectElement|null} */ (document.getElementById('compareDataMode'));
+  const segmentSel = /** @type {HTMLSelectElement|null} */ (document.getElementById('compareSegment'));
+  const dataMode = dataModeSel ? dataModeSel.value : 'full';
+  const segment = segmentSel ? segmentSel.value : 'whole';
+
+  // Extract data to compress based on Data mode + Segment
+  let dataToCompress;
+  if (dataMode === 'full') {
+    dataToCompress = scrBytes; // 6912
+  } else if (segment === 'whole') {
+    dataToCompress = scrBytes.slice(0, SCREEN.BITMAP_SIZE); // 6144
+  } else if (segment === '1') {
+    dataToCompress = scrBytes.slice(0, 2048);
+  } else if (segment === '2') {
+    dataToCompress = scrBytes.slice(2048, 4096);
+  } else if (segment === '3') {
+    dataToCompress = scrBytes.slice(4096, SCREEN.BITMAP_SIZE);
+  } else if (segment === '12') {
+    dataToCompress = scrBytes.slice(0, 4096);
+  } else { // '23'
+    dataToCompress = scrBytes.slice(2048, SCREEN.BITMAP_SIZE);
+  }
+
+  compareBaseSize = dataToCompress.length;
+  const includeRcs = (segment === 'whole');
+
+  // Build RCS data if needed
+  let rcsData = null;
+  if (includeRcs) {
+    const rcsFullBytes = reorderScrToRcs(scrBytes);
+    if (dataMode === 'full') {
+      rcsData = rcsFullBytes; // 6912
+    } else {
+      rcsData = rcsFullBytes.slice(0, SCREEN.BITMAP_SIZE); // 6144
+    }
+  }
+
+  // Determine plain row label and extensions
+  let plainLabel, plainExt, compExt;
+  if (dataMode === 'full' && segment === 'whole') {
+    plainLabel = 'Plain SCR'; plainExt = '.scr'; compExt = '.scr';
+  } else if (dataMode === 'bitmap' && segment === 'whole') {
+    plainLabel = 'Bitmap'; plainExt = '.bin'; compExt = '.bin';
+  } else if (segment === '1') {
+    plainLabel = 'Third 1'; plainExt = '.bin'; compExt = '.bin';
+  } else if (segment === '2') {
+    plainLabel = 'Third 2'; plainExt = '.bin'; compExt = '.bin';
+  } else if (segment === '3') {
+    plainLabel = 'Third 3'; plainExt = '.bin'; compExt = '.bin';
+  } else if (segment === '12') {
+    plainLabel = 'Thirds 1+2'; plainExt = '.bin'; compExt = '.bin';
+  } else {
+    plainLabel = 'Thirds 2+3'; plainExt = '.bin'; compExt = '.bin';
+  }
+
+  // Build jobs list
+  // Depacker sizes (Z80 bytes): ZX7=69, ZX7b=69, ZX0=68, ZX0b=69,
+  // RCS "smart" integrated decoders (no temp buffer): RCS+ZX7=110, RCS+ZX7b=110, RCS+ZX0=112, RCS+ZX0b=113
+  // LC=209 (decompresses directly to screen, no extra buffer)
+  // upkr=~130 code + 320 probs array = ~450
+  // Read format settings
+  const cmpSettings = readCompareSettingsFromUI();
+  saveCompareSettings(cmpSettings);
+
+  const DEPACKER_ZX7 = 69;
+  const DEPACKER_ZX7B = 69;
+  const DEPACKER_ZX0 = 68;
+  const DEPACKER_ZX0B = 69;
+  const DEPACKER_RCS_ZX7 = 110;   // dzx7_smartRCS
+  const DEPACKER_RCS_ZX7B = 110;  // dzx7_smartRCS_back
+  const DEPACKER_RCS_ZX0 = 112;   // dzx0_smartRCS
+  const DEPACKER_RCS_ZX0B = 113;  // dzx0_smartRCS_back
+  const DEPACKER_LC = 209;        // depacker (decompresses directly to screen, no extra buffer)
+  const DEPACKER_UPKR = cmpSettings.upkrDepacker === 'fast' ? (155 + 320) : (130 + 320);
+
+  /** @type {Array<{label:string, ext:string, type:string, depacker:number, compress: (() => {data:Uint8Array})|null}>} */
   const jobs = [
-    { label: 'Plain SCR', ext: '.scr', type: 'plain', compress: null },
+    { label: plainLabel, ext: plainExt, type: 'plain', depacker: 0, compress: null },
   ];
-  if (typeof ZX7 !== 'undefined') {
+  if (cmpSettings.zx7 && typeof ZX7 !== 'undefined') {
     jobs.push(
-      { label: 'ZX7',                 ext: '.scr.zx7',  type: 'zx7_fwd',     compress: () => ZX7.compress(scrBytes) },
-      { label: 'ZX7 backwards',       ext: '.scr.zx7b', type: 'zx7_bwd',     compress: () => ZX7.compressBackwards(scrBytes) },
-      { label: 'RCS + ZX7',           ext: '.rcs.zx7',  type: 'rcs_zx7_fwd', compress: () => ZX7.compress(rcsBytes) },
-      { label: 'RCS + ZX7 backwards', ext: '.rcs.zx7b', type: 'rcs_zx7_bwd', compress: () => ZX7.compressBackwards(rcsBytes) },
+      { label: 'ZX7',           ext: compExt + '.zx7',  type: 'zx7_fwd', depacker: DEPACKER_ZX7, compress: () => ZX7.compress(dataToCompress) },
+      { label: 'ZX7 backwards', ext: compExt + '.zx7b', type: 'zx7_bwd', depacker: DEPACKER_ZX7B, compress: () => ZX7.compressBackwards(dataToCompress) },
     );
+    if (includeRcs && rcsData && cmpSettings.rcs) {
+      jobs.push(
+        { label: 'RCS + ZX7',           ext: '.rcs.zx7',  type: 'rcs_zx7_fwd', depacker: DEPACKER_RCS_ZX7, compress: () => ZX7.compress(rcsData) },
+        { label: 'RCS + ZX7 backwards', ext: '.rcs.zx7b', type: 'rcs_zx7_bwd', depacker: DEPACKER_RCS_ZX7B, compress: () => ZX7.compressBackwards(rcsData) },
+      );
+    }
   }
-  if (typeof ZX0 !== 'undefined') {
+  if (cmpSettings.zx0 && typeof ZX0 !== 'undefined') {
     jobs.push(
-      { label: 'ZX0',                 ext: '.scr.zx0',  type: 'zx0_fwd',     compress: () => ZX0.compress(scrBytes) },
-      { label: 'ZX0 backwards',       ext: '.scr.zx0b', type: 'zx0_bwd',     compress: () => ZX0.compress(scrBytes, 0, true) },
-      { label: 'RCS + ZX0',           ext: '.rcs.zx0',  type: 'rcs_zx0_fwd', compress: () => ZX0.compress(rcsBytes) },
-      { label: 'RCS + ZX0 backwards', ext: '.rcs.zx0b', type: 'rcs_zx0_bwd', compress: () => ZX0.compress(rcsBytes, 0, true) },
+      { label: 'ZX0',           ext: compExt + '.zx0',  type: 'zx0_fwd', depacker: DEPACKER_ZX0, compress: () => ZX0.compress(dataToCompress) },
+      { label: 'ZX0 backwards', ext: compExt + '.zx0b', type: 'zx0_bwd', depacker: DEPACKER_ZX0B, compress: () => ZX0.compress(dataToCompress, 0, true) },
+    );
+    if (includeRcs && rcsData && cmpSettings.rcs) {
+      jobs.push(
+        { label: 'RCS + ZX0',           ext: '.rcs.zx0',  type: 'rcs_zx0_fwd', depacker: DEPACKER_RCS_ZX0, compress: () => ZX0.compress(rcsData) },
+        { label: 'RCS + ZX0 backwards', ext: '.rcs.zx0b', type: 'rcs_zx0_bwd', depacker: DEPACKER_RCS_ZX0B, compress: () => ZX0.compress(rcsData, 0, true) },
+      );
+    }
+  }
+  if (cmpSettings.lc && typeof LC !== 'undefined') {
+    const lcOpts = { header: true };
+    if (dataMode === 'full' && segment === 'whole') {
+      lcOpts.start = 0; lcOpts.end = 6144; lcOpts.attrs = true;
+    } else if (dataMode === 'bitmap' && segment === 'whole') {
+      lcOpts.start = 0; lcOpts.end = 6144; lcOpts.attrs = false;
+    } else if (segment === '1') {
+      lcOpts.start = 0; lcOpts.end = 2048; lcOpts.attrs = false;
+    } else if (segment === '2') {
+      lcOpts.start = 2048; lcOpts.end = 4096; lcOpts.attrs = false;
+    } else if (segment === '3') {
+      lcOpts.start = 4096; lcOpts.end = 6144; lcOpts.attrs = false;
+    } else if (segment === '12') {
+      lcOpts.start = 0; lcOpts.end = 4096; lcOpts.attrs = false;
+    } else if (segment === '23') {
+      lcOpts.start = 2048; lcOpts.end = 6144; lcOpts.attrs = false;
+    }
+    jobs.push({
+      label: 'LC', ext: '.scr.lc', type: 'lc', depacker: DEPACKER_LC,
+      compress: () => LC.compressScreen(scrBytes, lcOpts)
+    });
+  }
+  if (cmpSettings.upkr && typeof UPKR !== 'undefined') {
+    const upkrCfg = UPKR.configZ80();
+    jobs.push(
+      { label: 'upkr (level 1)', ext: compExt + '.upk', type: 'upkr1', depacker: DEPACKER_UPKR, compress: () => ({ data: UPKR.compress(dataToCompress, 1, upkrCfg) }) },
+      { label: 'upkr (level 9)', ext: compExt + '.upk', type: 'upkr9', depacker: DEPACKER_UPKR, compress: () => ({ data: UPKR.compress(dataToCompress, 9, upkrCfg) }) },
     );
   }
 
-  // Initialize compareVariants with plain SCR filled in, rest pending
-  compareVariants = jobs.map((job, i) => ({
-    label: job.label,
-    size: i === 0 ? scrBytes.length : 0,
-    data: i === 0 ? scrBytes : new Uint8Array(0),
-    ext: job.ext,
-    type: job.type,
-  }));
+  compareJobs = jobs;
 
-  // Build table rows immediately
+  // Build table rows
   const tbody = document.getElementById('compareBody');
   if (!tbody) return;
   tbody.innerHTML = '';
 
-  /** @type {HTMLTableRowElement[]} */
-  const rows = [];
-  /** @type {HTMLTableCellElement[]} */
-  const sizeCells = [];
-  /** @type {HTMLTableCellElement[]} */
-  const savedCells = [];
-  /** @type {HTMLTableCellElement[]} */
-  const pctCells = [];
-  /** @type {HTMLTableCellElement[]} */
-  const labelCells = [];
-  /** @type {HTMLInputElement[]} */
-  const radios = [];
-
-  const saveBtn = document.getElementById('compareSaveBtn');
-  if (saveBtn) saveBtn.disabled = true;
+  compareRows = [];
+  compareSizeCells = [];
+  compareSavedCells = [];
+  comparePctCells = [];
+  compareDepackerCells = [];
+  compareTotalCells = [];
+  compareLabelCells = [];
+  compareRadios = [];
 
   for (let i = 0; i < jobs.length; i++) {
     const tr = document.createElement('tr');
@@ -24374,55 +25295,82 @@ function showCompareDialog() {
     radio.value = String(i);
     tdRadio.appendChild(radio);
     tr.appendChild(tdRadio);
-    radios.push(radio);
+    compareRadios.push(radio);
 
     const tdLabel = document.createElement('td');
     tdLabel.style.padding = '4px 8px';
     tdLabel.textContent = jobs[i].label;
     tr.appendChild(tdLabel);
-    labelCells.push(tdLabel);
+    compareLabelCells.push(tdLabel);
 
     const tdSize = document.createElement('td');
     tdSize.style.cssText = 'text-align: right; padding: 4px 8px; font-variant-numeric: tabular-nums;';
     tr.appendChild(tdSize);
-    sizeCells.push(tdSize);
+    compareSizeCells.push(tdSize);
 
     const tdSaved = document.createElement('td');
     tdSaved.style.cssText = 'text-align: right; padding: 4px 8px; font-variant-numeric: tabular-nums;';
     tr.appendChild(tdSaved);
-    savedCells.push(tdSaved);
+    compareSavedCells.push(tdSaved);
 
     const tdPct = document.createElement('td');
     tdPct.style.cssText = 'text-align: right; padding: 4px 8px; font-variant-numeric: tabular-nums;';
     tr.appendChild(tdPct);
-    pctCells.push(tdPct);
+    comparePctCells.push(tdPct);
+
+    const tdDepacker = document.createElement('td');
+    tdDepacker.style.cssText = 'text-align: right; padding: 4px 8px; font-variant-numeric: tabular-nums; color: var(--text-secondary, #888);';
+    tr.appendChild(tdDepacker);
+    compareDepackerCells.push(tdDepacker);
+
+    const tdTotal = document.createElement('td');
+    tdTotal.style.cssText = 'text-align: right; padding: 4px 8px; font-variant-numeric: tabular-nums;';
+    tr.appendChild(tdTotal);
+    compareTotalCells.push(tdTotal);
 
     tr.addEventListener('click', (e) => {
       if (e.target !== radio) radio.checked = true;
     });
 
-    rows.push(tr);
+    compareRows.push(tr);
     tbody.appendChild(tr);
-
-    // Fill in plain SCR row immediately, others show "Compressing..."
-    if (i === 0) {
-      tdSize.textContent = scrBytes.length.toString();
-      tdSaved.textContent = '0';
-      tdPct.textContent = '100.0%';
-    } else {
-      tdSize.textContent = '';
-      tdSaved.textContent = '';
-      tdPct.textContent = 'Compressing\u2026';
-      tdPct.style.color = 'var(--text-secondary, #888)';
-    }
   }
 
-  // Show dialog immediately
-  const dlg = document.getElementById('compareDialog');
-  if (dlg) dlg.style.display = '';
+  // Init compareVariants
+  compareVariants = jobs.map((job, i) => ({
+    label: job.label,
+    size: i === 0 ? dataToCompress.length : 0,
+    data: i === 0 ? dataToCompress : new Uint8Array(0),
+    ext: job.ext,
+    type: job.type,
+  }));
+
+  // Fill in plain row immediately
+  compareSizeCells[0].textContent = dataToCompress.length.toString();
+  compareSizeCells[0].style.color = '';
+  compareSavedCells[0].textContent = '0';
+  compareSavedCells[0].style.color = '';
+  comparePctCells[0].textContent = '100.0%';
+  comparePctCells[0].style.color = '';
+  compareDepackerCells[0].textContent = '';
+  compareTotalCells[0].textContent = '0';
+  compareTotalCells[0].style.color = '';
+
+  // Mark compression rows as pending
+  for (let i = 1; i < jobs.length; i++) {
+    compareSizeCells[i].textContent = '';
+    compareSizeCells[i].style.color = '';
+    compareSavedCells[i].textContent = '';
+    compareSavedCells[i].style.color = '';
+    comparePctCells[i].textContent = 'Compressing\u2026';
+    comparePctCells[i].style.color = 'var(--text-secondary, #888)';
+    compareDepackerCells[i].textContent = jobs[i].depacker > 0 ? jobs[i].depacker.toString() : '';
+    compareTotalCells[i].textContent = '';
+    compareTotalCells[i].style.color = '';
+  }
 
   // Process compression jobs one at a time via setTimeout so UI can repaint
-  let jobIdx = 1; // skip plain SCR
+  let jobIdx = 1;
   function processNextJob() {
     if (jobIdx >= jobs.length) {
       // All done — highlight best and select it
@@ -24430,18 +25378,20 @@ function showCompareDialog() {
       for (let i = 2; i < compareVariants.length; i++) {
         if (compareVariants[i].size < compareVariants[bestIdx].size) bestIdx = i;
       }
-      for (let i = 0; i < rows.length; i++) {
+      for (let i = 0; i < compareRows.length; i++) {
         if (i === bestIdx) {
-          rows[i].style.background = 'var(--accent-bg, rgba(0, 128, 255, 0.15))';
-          rows[i].style.fontWeight = 'bold';
-          labelCells[i].textContent = compareVariants[i].label + ' *';
-          radios[i].checked = true;
+          compareRows[i].style.background = 'var(--accent-bg, rgba(0, 128, 255, 0.15))';
+          compareRows[i].style.fontWeight = 'bold';
+          compareLabelCells[i].textContent = compareVariants[i].label + ' *';
+          compareRadios[i].checked = true;
         } else {
-          rows[i].style.background = '';
-          rows[i].style.fontWeight = '';
+          compareRows[i].style.background = '';
+          compareRows[i].style.fontWeight = '';
         }
       }
       if (saveBtn) saveBtn.disabled = false;
+      if (runBtn) { runBtn.disabled = false; runBtn.textContent = 'Compare'; }
+      compareRunning = false;
       return;
     }
 
@@ -24452,18 +25402,22 @@ function showCompareDialog() {
       compareVariants[i].size = result.data.length;
       compareVariants[i].data = result.data;
     } catch (e) {
-      compareVariants[i].size = SCREEN.TOTAL_SIZE;
-      compareVariants[i].data = scrBytes;
+      console.error('Compression failed for', job.label, e);
+      compareVariants[i].size = compareBaseSize;
+      compareVariants[i].data = dataToCompress;
     }
 
-    // Update row cells
     const size = compareVariants[i].size;
-    const pct = ((size / SCREEN.TOTAL_SIZE) * 100).toFixed(1);
-    const saved = SCREEN.TOTAL_SIZE - size;
-    sizeCells[i].textContent = size.toString();
-    savedCells[i].textContent = saved > 0 ? '\u2212' + saved : '0';
-    pctCells[i].textContent = pct + '%';
-    pctCells[i].style.color = '';
+    const pct = ((size / compareBaseSize) * 100).toFixed(1);
+    const saved = compareBaseSize - size;
+    const depacker = job.depacker;
+    const total = saved - depacker;
+    compareSizeCells[i].textContent = size.toString();
+    compareSavedCells[i].textContent = saved > 0 ? '\u2212' + saved : '0';
+    comparePctCells[i].textContent = pct + '%';
+    comparePctCells[i].style.color = '';
+    compareTotalCells[i].textContent = total >= 0 ? '\u2212' + total : '+' + (-total);
+    compareTotalCells[i].style.color = total < 0 ? 'var(--color-error, #e44)' : '';
 
     jobIdx++;
     setTimeout(processNextJob, 0);
@@ -24488,21 +25442,27 @@ function compareSave() {
 
   downloadFile(new Blob([variant.data], { type: 'application/octet-stream' }), dataFileName);
 
-  // Generate ASM if checkbox is checked
+  // Generate ASM if checkbox is checked (only for full SCR + whole)
   const asmCb = /** @type {HTMLInputElement|null} */ (document.getElementById('compareCreateAsmCb'));
-  if (asmCb && asmCb.checked) {
-    const isZx0 = variant.type.startsWith('zx0') || variant.type.startsWith('rcs_zx0');
-    if (isZx0) {
-      const asmText = generateZx0Asm(variant.type, dataFileName);
-      downloadFile(new Blob([asmText], { type: 'text/plain' }), compareBaseName + '_zx0.asm');
+  if (asmCb && asmCb.checked && compareBaseSize === SCREEN.TOTAL_SIZE) {
+    if (variant.type === 'lc') {
+      const asmText = generateLcAsm(variant.type, dataFileName);
+      downloadFile(new Blob([asmText], { type: 'text/plain' }), compareBaseName + '_lc.asm');
+    } else if (variant.type.startsWith('upkr')) {
+      const asmText = generateUpkrAsm(variant.type, dataFileName);
+      downloadFile(new Blob([asmText], { type: 'text/plain' }), compareBaseName + '_upkr.asm');
     } else {
-      const asmText = generateZx7Asm(variant.type, dataFileName);
-      downloadFile(new Blob([asmText], { type: 'text/plain' }), compareBaseName + '_zx7.asm');
+      const isZx0 = variant.type.startsWith('zx0') || variant.type.startsWith('rcs_zx0');
+      if (isZx0) {
+        const asmText = generateZx0Asm(variant.type, dataFileName);
+        downloadFile(new Blob([asmText], { type: 'text/plain' }), compareBaseName + '_zx0.asm');
+      } else {
+        const asmText = generateZx7Asm(variant.type, dataFileName);
+        downloadFile(new Blob([asmText], { type: 'text/plain' }), compareBaseName + '_zx7.asm');
+      }
     }
   }
 
-  const dlg = document.getElementById('compareDialog');
-  if (dlg) dlg.style.display = 'none';
 }
 
 // ---------------------------------------------------------------------------
@@ -25017,6 +25977,412 @@ function generateZx0Asm(type, dataFile) {
   return lines.join('\n');
 }
 
+// ---------------------------------------------------------------------------
+// LC ASM generation — sjasmplus example with Laser Compact 5.2 depacker
+// ---------------------------------------------------------------------------
+
+/** Laser Compact 5.2 depacker by Hrumer — sjasmplus syntax, decompresses to screen $4000.
+ *  Input: HL = address of compressed data (with LCMP5 header).
+ *  Original: (C) Hrumer, 06.12.99, Hrumer@inbox.ru */
+const DLC52 = `; -----------------------------------------------------------------------------
+; Depacker Laser Compact 5.2
+; (C) Hrumer. 06.12.99. Hrumer@inbox.ru
+; IN: HL - Address of compressed screen (with LCMP5 header)
+; Decompresses directly to screen at $4000
+; -----------------------------------------------------------------------------
+
+ADR     equ     $4000
+
+dlc52:
+        ld      de, 7                   ; skip "LCMP5" & length
+        add     hl, de
+
+        ld      a, (hl)
+        inc     hl
+        ld      e, a
+        add     hl, de                  ; skip additional info
+
+        ld      a, (hl)
+        ld      e, a
+
+        and     3
+        rlca
+        rlca
+        rlca
+        or      ADR / 256
+
+        exx
+        ld      d, a
+        ld      e, 0
+        exx
+
+        ld      a, (hl)
+        inc     hl
+        xor     ADR / 256 + $18
+        and     $FC
+        ld      ixh, a
+
+.dlc1:  ld      a, (hl)
+        inc     hl
+        ld      ixl, $FF
+.dlc2:
+        exx
+        jr      nz, .dlc10
+        ld      b, 1
+
+.dlc3:  ex      af, af'
+        sla     d
+        jr      nz, $+6
+        ld      d, (hl)
+        inc     hl
+        defb    $CB, $32                ; sli d (undocumented SLL D)
+
+        djnz    .dlc7
+
+        jr      c, .dlc1
+
+        inc     b
+;-----------
+.dlc4:  ld      c, %01010110
+        ld      a, $FE
+.dlc5:  sla     d
+        jr      nz, $+6
+        ld      d, (hl)
+        inc     hl
+        rl      d
+        rla
+        sla     c
+        jr      z, .dlc6
+        jr      c, .dlc5
+        rrca
+        jr      nc, .dlc5
+        sub     8
+.dlc6:  add     a, 9
+;---------
+        djnz    .dlc3
+
+        cp      0 - 8 + 1
+        jr      nz, $+4
+        ld      a, (hl)
+        inc     hl
+
+        adc     a, $FF
+        ld      ixl, a
+        jr      c, .dlc4
+        ld      hl, $2758
+        exx
+        ret
+;-------------
+.dlc7:  ld      a, (hl)
+        inc     hl
+
+        exx
+        ld      l, a
+        ex      af, af'
+        ld      h, a
+        add     hl, de
+
+        cp      $FF - 2
+        jr      nc, .dlc8
+        dec     ixl
+.dlc8:
+        ld      a, h
+        cp      ixh
+        jr      nc, .dlc13
+        xor     l
+        and     $F8
+        xor     l
+        ld      b, a
+        xor     l
+        xor     h
+        rlca
+        rlca
+        ld      c, a
+
+.dlc9:  ex      af, af'
+        ld      a, (bc)
+.dlc10: ex      af, af'
+        ld      a, d
+        cp      ixh
+        jr      nc, .dlc14
+        xor     e
+        and     $F8
+        xor     e
+        ld      b, a
+        xor     e
+        xor     d
+        rlca
+        rlca
+        ld      c, a
+
+.dlc11: ex      af, af'
+        ld      (bc), a
+
+        inc     de
+        jr      nc, $+4
+        dec     hl
+        dec     hl
+        inc     hl
+        ex      af, af'
+        inc     ixl
+        jr      nz, .dlc8
+        jr      .dlc2
+
+.dlc13: scf
+.dlc14: push    af
+        exx
+        add     a, e
+        exx
+        ld      b, a
+        pop     af
+        ld      c, e
+        jr      nc, .dlc11
+        ld      c, l
+        jr      .dlc9
+
+; -----------------------------------------------------------------------------`;
+
+/**
+ * Generate a sjasmplus ASM file that decompresses LC data to the screen.
+ * @param {string} type - Variant type: 'lc'
+ * @param {string} dataFile - Filename of the binary data file to incbin
+ * @returns {string} Complete ASM source
+ */
+function generateLcAsm(type, dataFile) {
+  const snaName = dataFile.replace(/\.[^.]+(\.[^.]+)?$/, '') + '.sna';
+  const lines = [];
+
+  lines.push('; LC decompression example \u2014 sjasmplus');
+  lines.push('; Generated by SpectraLab');
+  lines.push('; Assemble: sjasmplus ' + dataFile.replace(/\.[^.]+(\.[^.]+)?$/, '') + '_lc.asm');
+  lines.push('');
+  lines.push('        device  zxspectrum48');
+  lines.push('        org     $8000');
+  lines.push('');
+  lines.push('start:');
+  lines.push('        di');
+  lines.push('        ld      sp, $8000');
+  lines.push('        ld      hl, compressedData');
+  lines.push('        call    dlc52');
+  lines.push('        jr      $');
+  lines.push('');
+  lines.push('compressedData:');
+  lines.push('        incbin  "' + dataFile + '"');
+  lines.push('');
+  lines.push(DLC52);
+  lines.push('');
+  lines.push('        savesna "' + snaName + '", start');
+  lines.push('');
+
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// upkr ASM generation — sjasmplus example with upkr Z80 decompressor
+// ---------------------------------------------------------------------------
+
+/** upkr Z80 unpacker by Peter "Ped" Helcmanovsky — sjasmplus syntax.
+ *  Input: IX = packed data, DE' (shadow DE) = destination.
+ *  Original: (C) 2022 Peter Helcmanovsky, licensed as "unlicensed" (same as upkr project). */
+const UPKR_UNPACK = `; -----------------------------------------------------------------------------
+; upkr Z80 unpacker by Peter "Ped" Helcmanovsky (C) 2022
+; https://github.com/exoticorn/upkr
+; sjasmplus syntax
+; IN: IX = packed data, DE' (shadow DE) = destination
+; OUT: IX = after packed data
+; modifies: all registers except IY, requires 10 bytes of stack space
+; -----------------------------------------------------------------------------
+
+    OPT push reset --syntax=abf
+    MODULE upkr
+
+NUMBER_BITS     EQU     16+15       ; context-bits per offset/length
+
+unpack:
+  ; ** reset probs to $80, also reset HL (state) to zero, and set BC to probs+context 0
+    ld      hl,probs.c>>1
+    ld      bc,probs.e
+    ld      a,$80
+.reset_probs:
+    dec     bc
+    ld      (bc),a
+    dec     bc
+    ld      (bc),a
+    dec     l
+    jr      nz,.reset_probs
+    ex      af,af'
+    ; BC = probs (context_index 0), state HL = 0, A' = $80
+
+  ; ** main loop to decompress data
+.decompress_data:
+    ld      c,0
+    call    decode_bit
+    jr      c,.copy_chunk
+
+  ; * extract byte from compressed data (literal)
+    inc     c
+.decode_byte:
+    call    decode_bit
+    rl      c
+    jr      nc,.decode_byte
+    ld      a,c
+    exx
+    ld      (de),a
+    inc     de
+    exx
+    ld      d,b
+    jr      .decompress_data
+
+  ; * copy chunk of already decompressed data (match)
+.copy_chunk:
+    ld      a,b
+    inc     b
+    cp      d
+    call    nc,decode_bit
+    jr      nc,.keep_offset
+    call    decode_number
+    dec     de
+    ld      a,d
+    or      e
+    ret     z
+    ld      (.offset),de
+.keep_offset:
+    ld      c,low(257 + NUMBER_BITS - 1)
+    call    decode_number
+    push    de
+    exx
+    ld      h,d
+    ld      l,e
+.offset+*:  ld  bc,0
+    sbc     hl,bc
+    pop     bc
+    ldir
+    exx
+    ld      d,b
+    djnz    .decompress_data
+
+inc_c_decode_bit:
+    inc     c
+decode_bit:
+    push    de
+    bit     7,h
+    jr      nz,.state_b15_set
+    ex      af,af'
+.state_b15_zero:
+    add     a,a
+    jr      nz,.has_bit
+    ld      a,(ix)
+    inc     ix
+    adc     a,a
+.has_bit:
+    adc     hl,hl
+    jp      p,.state_b15_zero
+    ex      af,af'
+.state_b15_set:
+    ld      a,(bc)
+    dec     a
+    cp      l
+    inc     a
+    push    bc
+    ld      c,l
+    push    af
+    jr      nc,.bit_is_0
+    neg
+.bit_is_0:
+    ld      d,0
+    ld      e,a
+    ld      l,d
+    ld      b,8
+.mulLoop:
+    add     hl,hl
+    jr      nc,.mul0
+    add     hl,de
+.mul0:
+    djnz    .mulLoop
+    add     hl,bc
+    pop     af
+    jr      nc,.bit_is_0_2
+    dec     d
+    add     hl,de
+.bit_is_0_2:
+    rra
+    and     $FC
+    rra
+    rra
+    rra
+    adc     a,-16
+    ld      e,a
+    pop     bc
+    ld      a,(bc)
+    sub     e
+    ld      (bc),a
+    add     a,d
+    pop     de
+    ret
+
+decode_number:
+    ld      de,$FFFF
+    or      a
+.loop:
+    call    c,inc_c_decode_bit
+    rr      d
+    rr      e
+    call    inc_c_decode_bit
+    jr      c,.loop
+.fix_bit_pos:
+    ccf
+    rr      d
+    rr      e
+    jr      c,.fix_bit_pos
+    ret
+
+probs:      EQU ($ + 255) & -$100
+.real_c:    EQU 1 + 255 + 1 + 2*NUMBER_BITS
+.c:         EQU (.real_c + 1) & -2
+.e:         EQU probs + .c
+
+    ENDMODULE
+    OPT pop
+
+; -----------------------------------------------------------------------------`;
+
+/**
+ * Generate a sjasmplus ASM file that decompresses upkr data to the screen.
+ * @param {string} type - Variant type: 'upkr1' or 'upkr9'
+ * @param {string} dataFile - Filename of the binary data file to incbin
+ * @returns {string} Complete ASM source
+ */
+function generateUpkrAsm(type, dataFile) {
+  const snaName = dataFile.replace(/\.[^.]+(\.[^.]+)?$/, '') + '.sna';
+  const lines = [];
+
+  lines.push('; upkr decompression example \u2014 sjasmplus');
+  lines.push('; Generated by SpectraLab');
+  lines.push('; Assemble: sjasmplus ' + dataFile.replace(/\.[^.]+(\.[^.]+)?$/, '') + '_upkr.asm');
+  lines.push('');
+  lines.push('        device  zxspectrum48');
+  lines.push('        org     $8000');
+  lines.push('');
+  lines.push('start:');
+  lines.push('        di');
+  lines.push('        ld      sp, $8000');
+  lines.push('        ld      de, $4000       ; destination (screen)');
+  lines.push('        exx');
+  lines.push('        ld      ix, compressedData');
+  lines.push('        call    upkr.unpack');
+  lines.push('        jr      $');
+  lines.push('');
+  lines.push('compressedData:');
+  lines.push('        incbin  "' + dataFile + '"');
+  lines.push('');
+  lines.push(UPKR_UNPACK);
+  lines.push('');
+  lines.push('        savesna "' + snaName + '", start');
+  lines.push('');
+
+  return lines.join('\n');
+}
+
 // ============================================================================
 // Initialization
 // ============================================================================
@@ -25129,6 +26495,21 @@ function initEditor() {
     gradientReverseCheckbox.addEventListener('change', (e) => {
       setGradientReverse(/** @type {HTMLInputElement} */ (e.target).checked);
     });
+  }
+
+  // Dither brush strength slider
+  const ditherBrushStrength = document.getElementById('ditherBrushStrength');
+  if (ditherBrushStrength) {
+    ditherBrushStrength.addEventListener('input', (e) => {
+      const label = document.getElementById('ditherBrushStrengthLabel');
+      if (label) label.textContent = /** @type {HTMLInputElement} */ (e.target).value + '%';
+    });
+  }
+
+  // Re-dither selection button
+  const reditherBtn = document.getElementById('editorReditherBtn');
+  if (reditherBtn) {
+    reditherBtn.addEventListener('click', reditherSelection);
   }
 
   // Load custom brushes from localStorage and render previews
@@ -25436,6 +26817,18 @@ function initEditor() {
     if (dlg) dlg.style.display = 'none';
   });
   document.getElementById('compareSaveBtn')?.addEventListener('click', compareSave);
+
+  // Compare settings panel — gear icon toggle
+  document.getElementById('compareSettingsBtn')?.addEventListener('click', () => {
+    const panel = document.getElementById('compareSettingsPanel');
+    if (panel) panel.style.display = panel.style.display === 'none' ? '' : 'none';
+  });
+  // Persist settings on any change
+  document.querySelectorAll('#compareSettingsPanel input, #compareSettingsPanel select').forEach(el => {
+    el.addEventListener('change', () => saveCompareSettings(readCompareSettingsFromUI()));
+  });
+  // Load saved settings on startup
+  applyCompareSettingsToUI(loadCompareSettings());
   document.getElementById('exportImageOkBtn')?.addEventListener('click', exportImageToFile);
   document.getElementById('exportImageGigaMode')?.addEventListener('change', updateExportImageDims);
   document.getElementById('exportImageFlashMode')?.addEventListener('change', updateExportImageDims);
@@ -25495,6 +26888,19 @@ function initEditor() {
       const compressed = ZX0.compress(rcsBytes);
       const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
       downloadFile(new Blob([compressed.data], { type: 'application/octet-stream' }), baseName + '.rcs.zx0');
+    } else if (value === 'lc') {
+      if (layersEnabled) flattenLayersToScreen();
+      const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
+      const compressed = LC.compressScreen(scrBytes);
+      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      downloadFile(new Blob([compressed.data], { type: 'application/octet-stream' }), baseName + '.scr.lc');
+    } else if (value === 'upkr1' || value === 'upkr9') {
+      if (layersEnabled) flattenLayersToScreen();
+      const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
+      const level = value === 'upkr9' ? 9 : 1;
+      const compressed = UPKR.compress(scrBytes, level, UPKR.configZ80());
+      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      downloadFile(new Blob([compressed], { type: 'application/octet-stream' }), baseName + '.scr.upk');
     } else if (value === 'compare') {
       showCompareDialog();
     }
@@ -26026,6 +27432,13 @@ function initEditorKeyboardShortcuts() {
         case 'KeyT': if (!isAttrEditor()) setEditorTool(EDITOR.TOOL_TEXT); break;
         case 'KeyK': setEditorTool(EDITOR.TOOL_COLOR_PICKER); break;
         case 'KeyJ': setEditorTool(EDITOR.TOOL_CELL_INVERT); break;
+        case 'KeyW':
+          if (e.shiftKey) {
+            reditherSelection();
+          } else if (!isAttrEditor()) {
+            setEditorTool(EDITOR.TOOL_DITHER_BRUSH);
+          }
+          break;
         case 'KeyN':
           if (selectionStartPoint && selectionEndPoint) {
             invertSelection();

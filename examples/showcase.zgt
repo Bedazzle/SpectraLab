@@ -1,0 +1,208 @@
+; ZGS text format v1
+
+.sub 0
+  set_ink yellow bright
+  hline_chain 2
+  move_short -1, -1
+  vline_chain 2
+  end
+.endsub
+
+.sprite 1
+  size 2, 16
+  db 0x01, 0x80
+  db 0x03, 0xc0
+  db 0x07, 0xe0
+  db 0x05, 0xa0
+  db 0x07, 0xe0
+  db 0x03, 0xc0
+  db 0x01, 0x80
+  db 0x07, 0xe0
+  db 0x0f, 0xf0
+  db 0x1b, 0xd8
+  db 0x1b, 0xd8
+  db 0x03, 0xc0
+  db 0x06, 0x60
+  db 0x06, 0x60
+  db 0x0c, 0x30
+  db 0x0c, 0x30
+.endsprite
+
+; scene
+set_paper blue
+set_attr 0x47
+set_ink white bright
+dot_abs 2, 2
+dot_batch 5 2, 8 2, 11 2, 14 2
+move_abs 17, 2
+dot_chain
+move_short 3, 0
+dot_chain
+move_dmed 3, 0
+dot_chain
+set_ink red bright
+move_abs 2, 6
+line_dshort 6, 0
+move_abs 12, 6
+line_dmed 10, 3
+set_ink green bright
+move_abs 27, 5
+line_batch 4 3, 4 -3, 4 3, 4 -3
+set_ink cyan bright
+hline_abs 48, 5, 10
+move_abs 48, 8
+hline_chain 10
+set_ink magenta bright
+vline_abs 62, 4, 7
+move_abs 65, 4
+vline_chain 7
+set_ink white bright
+rect_outline_abs 2, 16, 10, 7
+set_ink red bright
+set_pattern checker
+rect_fill_abs 15, 16, 10, 7
+set_pattern solid
+set_ink green bright
+move_abs 28, 16
+rect_outline_chain 10, 7
+set_ink cyan bright
+move_abs 41, 16
+rect_fill_chain 10, 7
+set_ink yellow bright
+rect_outline_batch 54 16 5 7, 61 16 5 7
+set_ink magenta bright
+set_pattern dots25
+rect_fill_batch 69 16 5 7, 76 16 5 7
+set_pattern solid
+set_ink white bright
+circle_outline_abs 90, 20, 5
+set_ink red bright
+set_pattern horizontal
+circle_fill_abs 103, 20, 5
+set_pattern solid
+set_ink green bright
+move_abs 116, 20
+circle_outline_chain 5
+set_ink cyan bright
+move_abs 116, 20
+circle_fill_chain 3
+set_ink white bright
+ellipse_outline_abs 90, 30, 8, 4
+set_ink red bright
+set_pattern horizontal
+ellipse_fill_abs 108, 30, 6, 4
+set_pattern solid
+set_ink green bright
+move_abs 90, 38
+ellipse_outline_chain 10, 3
+set_ink cyan bright
+move_abs 108, 38
+ellipse_fill_chain 5, 3
+set_ink yellow bright
+polygon_outline 86 50, 93 42, 100 50
+set_ink red bright
+set_pattern checker
+polygon_fill 102 50, 109 42, 116 50
+set_pattern solid
+set_ink magenta bright
+set_pattern vertical
+polygon_fill 119 44, 124 42, 127 44, 127 49, 124 51, 119 49
+set_pattern solid
+set_ink white bright
+rect_outline_abs 2, 40, 14, 10
+set_ink yellow bright
+set_pattern dots12
+move_abs 9, 45
+flood_chain
+set_pattern solid
+set_ink white bright
+rect_outline_abs 19, 40, 14, 10
+set_ink green bright
+set_pattern diagonal
+flood_abs 26, 45
+set_pattern solid
+set_ink white bright
+move_abs 38, 50
+.repeat 8, 3, 0
+  vline_chain -5
+.endrepeat
+set_ink yellow bright
+move_abs 38, 40
+.repeat 4, 6, 0
+  call 0
+.endrepeat
+set_ink white bright
+set_paper green
+rect_fill_abs 68, 40, 6, 6
+set_paper black
+set_ink cyan bright
+stamp_abs 1, 78, 40
+set_ink red bright
+move_abs 88, 40
+stamp_chain 1
+set_ink white bright
+set_pattern checker
+rect_fill_abs 2, 55, 7, 6
+set_pattern dots25
+rect_fill_abs 12, 55, 7, 6
+set_pattern dots12
+rect_fill_abs 22, 55, 7, 6
+set_pattern horizontal
+rect_fill_abs 32, 55, 7, 6
+set_pattern vertical
+rect_fill_abs 42, 55, 7, 6
+set_pattern diagonal
+rect_fill_abs 52, 55, 7, 6
+set_pattern solid
+set_attr 0x02
+rect_fill_abs 2, 64, 5, 4
+set_attr 0x06
+rect_fill_abs 8, 64, 5, 4
+set_attr 0x04
+rect_fill_abs 14, 64, 5, 4
+set_attr 0x05
+rect_fill_abs 20, 64, 5, 4
+set_attr 0x01
+rect_fill_abs 26, 64, 5, 4
+set_attr 0x03
+rect_fill_abs 32, 64, 5, 4
+set_attr 0x47
+rect_fill_abs 38, 64, 5, 4
+set_attr 0x46
+rect_fill_abs 44, 64, 5, 4
+set_attr 0x47
+set_pattern solid
+set_ink white bright
+rect_fill_abs 86, 55, 12, 10
+clear_region 12, 7, 4, 3, 0x1a
+move_abs 100, 60
+dot_chain
+set_ink white bright
+rect_fill_abs 68, 55, 15, 10
+set_mode xor
+rect_fill_abs 72, 57, 15, 6
+set_mode set
+set_ink yellow bright
+ellipse_fill_abs 108, 60, 8, 5
+set_mode xor
+ellipse_fill_abs 115, 60, 8, 5
+set_mode set
+set_attr 0x47
+set_cursor 1, 18
+print_text "Hello, Spectrum!"
+set_attr 0x45
+set_cursor 1, 19
+print_text "ZGS Text Demo"
+set_mode xor
+set_attr 0x46
+set_cursor 1, 20
+print_text "XOR mode text"
+set_mode set
+set_attr 0x44
+set_cursor_42 0, 21
+print_text_42 "42-col: six pixels wide, 42 chars/line"
+set_attr 0x43
+set_cursor_64 0, 22
+print_text_64 "64-col: four pixels wide, 64 characters per line -- maximum density"
+wait_key
+end
