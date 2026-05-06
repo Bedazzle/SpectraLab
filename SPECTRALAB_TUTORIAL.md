@@ -1306,3 +1306,129 @@ After assembling, the output shows `size: NNNN` — the total binary size in byt
 - You can freely mix visual drawing with manual text editing — the text is always the source of truth.
 - Lines after `end` are ignored by the assembler, so you can add notes there.
 - The preview auto-renders 500 ms after you stop typing.
+
+---
+
+## ZGS Editor — Drawing Vector Scenes
+
+The ZGS Editor lets you create vector graphics scenes using ZGS (ZX Graphics Script) — a compact bytecode format for ZX Spectrum. Open it from the **Tools** tab → **ZGS Editor**.
+
+### Quick Start: Drawing a Simple Scene
+
+1. Click **New** — you get a template with a blue background and a white rectangle.
+
+2. **Set colors visually:** Use the **Ink...** dropdown on the command toolbar to pick `Yellow`, then check **Brt** for bright mode. This inserts `set_ink yellow bright` into the source.
+
+3. **Draw a rectangle:** Click the **RectF** tool in the shape toolbar. Drag on the canvas to define a filled rectangle. A yellow rubber-band shows the preview. On release, `rect_fill_abs x, y, w, h` is inserted and the canvas updates instantly.
+
+4. **Draw a circle:** Click **Circle**, drag from center outward. Release to insert `circle_outline_abs cx, cy, r`.
+
+5. **Add a line:** Click **Line**, left-drag from start to end. This inserts `move_abs x0, y0` followed by `line_dmed dx, dy`. For multi-segment polylines, **right-drag** instead — after releasing, a rubber band continues from the endpoint; right-drag again to add more segments, left click or Esc to finish.
+
+6. **Place dots:** Click **Dot**, then click individual points on the canvas.
+
+7. **Clear a region:** Click **ClearR**, drag over the area you want to clear. The selection snaps to 8×8 character cells (shown as a red dashed rectangle). This inserts `clear_region col, row, w, h, attr`.
+
+8. **Add text:** Click **Text**, then click a character cell on the canvas to place `set_cursor col, row`. Type your text in the toolbar input field and click **Print** to insert `print_text "..."`. Text is rendered using the ZX Spectrum ROM font (8×8). Cursor placement and text printing are separate commands, so you can draw between them.
+
+### Using the Command Toolbar
+
+The second toolbar row provides quick insertion of non-drawing commands:
+
+- Pick **Ink** or **Paper** from the dropdowns to change colors. Check **Brt** for bright variants. The dropdown label updates to show the current selection (e.g., "Ink: red").
+- Pick a **Pattern** (Solid, Empty, Checker, Dots25, Dots12, Horiz, Vert, Diag) for pattern-filled shapes.
+- Click **XOR** to switch to XOR drawing mode (pixels toggle instead of being set). Click **SET** to go back.
+- Click **Clear** to insert a full-screen clear with the current attribute.
+- Click **WaitKey** to pause playback until a key is pressed (useful for multi-scene animations).
+
+### Coordinate Picking
+
+Hover over the canvas to see coordinates in the tooltip (top-right) and status bar. When you need to type coordinates manually:
+
+- **Left-click** with the **Cursor** tool copies `lx, ly` to your clipboard
+- **Right-click** anywhere also copies coordinates to clipboard
+
+Paste them into your source code wherever needed.
+
+### Step-by-Step Debugging
+
+Click **Step** to execute one opcode at a time. The editor highlights the current source line in the textarea, and the pen crosshair (green, semi-transparent) shows where the pen is on the canvas.
+
+Use **Play** for continuous animated playback. Adjust the **Speed** slider to control the delay between steps.
+
+### Grid Overlay
+
+Check the **Grid** checkbox to show an 8×8 character cell grid over the canvas. Thin orange lines mark every character cell boundary. Two brighter lines at y=64 and y=128 mark the screen third boundaries (important for ZX Spectrum screen memory layout). The grid state persists across sessions.
+
+### Theme Toggle
+
+Click the **☾/☀** button in the header bar to switch between dark and light themes. The theme syncs with the main SpectraLab and Font Editor — changing it in one place updates all editors.
+
+### Multi-Scene Projects
+
+The ZGS Editor supports multiple scenes in a single project. Use the tab bar below the header to manage scenes:
+
+1. Click the **+** button to add a new scene
+2. Click a tab to switch between scenes — each scene has its own source text, undo/redo history, and preview
+3. Double-click a tab name to rename it
+4. Click the **×** button on a tab to delete it (at least one scene must remain)
+
+Save your multi-scene project by clicking **Save** and choosing **Save .zgp** to preserve all scenes. Load it later by opening a `.zgp` file or by dragging it onto the page.
+
+### Saving Your Work
+
+Click the **Save** button to open a dropdown menu with format choices:
+
+- **Save .zgs** — assemble and save the active scene as compact binary (for use in ZX Spectrum programs)
+- **Save .zgt** — save the active scene as human-readable text source (for continued editing)
+- **Save .zgp** — save the entire multi-scene project for later editing
+- **Save .asm** — export all scenes as a complete sjasmplus Z80 assembly file with the ZGS player library. Downloads a `.zip` containing the `.asm` file, compiled `.zgs` binaries for each scene, and a packed text dictionary. Run `sjasmplus project.asm` to produce a ready-to-run `.sna` snapshot
+
+The exported `.asm` file uses a config block with 4 JP entry points at fixed addresses. You can programmatically select which scene to display by poking the scene index into `scene_num` (ORG+0x12) and calling `show_by_num` (ORG+0x03). The `clear_color` field (ORG+0x13) controls the attribute byte used when clearing the screen.
+
+### Conditional Compilation
+
+The exported `.asm` file includes `DEFINE` flags at the top for each optional feature group. All are enabled by default. Comment out any `DEFINE` line to exclude that feature from the binary, reducing size. Each comment shows the approximate byte savings:
+
+| DEFINE | ~Bytes | Feature |
+|--------|-------:|---------|
+| `ZGS_USE_LINES` | 443 | Line, hline, vline drawing |
+| `ZGS_USE_RECTS` | 636 | Rectangle outline/fill, clear_region |
+| `ZGS_USE_CIRCLES` | 612 | Circle outline/fill |
+| `ZGS_USE_POLYGONS` | 666 | Polygon outline/fill |
+| `ZGS_USE_FLOOD` | 2166 | Flood fill (includes 1280 bytes of buffers) |
+| `ZGS_USE_TEXT` | 180 | set_cursor, print_text (+ 768-byte font_8x8.bin) |
+| `ZGS_USE_PACKED_TEXT` | 724 | print_packed (includes ~520 byte dictionary) |
+| `ZGS_USE_TEXT_42` | 968 | 42-col text (+ 768-byte font_6x8.bin) |
+| `ZGS_USE_TEXT_64` | 968 | 64-col text (+ 768-byte font_4x8.bin) |
+| `ZGS_USE_STAMPS` | 146 | Stamp (sprite blit) |
+
+`ZGS_USE_TEXT`, `ZGS_USE_TEXT_42`, and `ZGS_USE_TEXT_64` are auto-detected from the scene source — they are enabled only when the corresponding text opcodes are used. Other DEFINEs are active by default. Each text mode includes its font binary via `incbin`; you can replace any `font_*.bin` with a custom font.
+
+For example, if your scene only uses lines and 42-col text:
+
+```asm
+    DEFINE ZGS_USE_LINES
+;   DEFINE ZGS_USE_RECTS
+;   DEFINE ZGS_USE_CIRCLES
+;   DEFINE ZGS_USE_POLYGONS
+;   DEFINE ZGS_USE_FLOOD
+;   DEFINE ZGS_USE_TEXT
+    DEFINE ZGS_USE_PACKED_TEXT
+    DEFINE ZGS_USE_TEXT_42
+;   DEFINE ZGS_USE_TEXT_64
+;   DEFINE ZGS_USE_STAMPS
+```
+
+If you disable all drawing features (lines, rects, circles, polygons, flood, stamps) and keep only text, the coordinate system — dot/move handlers, `plot_pixel`, math helpers, and pattern/mask tables — is automatically excluded via the internal `ZGS_HAS_DRAWING` flag, saving additional space.
+
+Dependencies: `ZGS_USE_PACKED_TEXT` requires `ZGS_USE_TEXT`. Rect outlines and polygon outlines call `draw_line`, so if you use those, keep `ZGS_USE_LINES` enabled too. The user is responsible for ensuring disabled opcodes don't appear in the scene data.
+
+After assembling, the output shows `size: NNNN` — the total binary size in bytes, so you can see the effect of disabling features.
+
+### Tips
+
+- All drawing tools insert instructions **before** the `end` statement automatically.
+- You can freely mix visual drawing with manual text editing — the text is always the source of truth.
+- Lines after `end` are ignored by the assembler, so you can add notes there.
+- The preview auto-renders 500 ms after you stop typing.

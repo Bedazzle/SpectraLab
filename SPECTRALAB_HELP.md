@@ -62,6 +62,9 @@ Click the **New** button to open the New Picture dialog. Select a format from th
 | Monochrome | .scr | 256×192, bitmap only (ink auto-adjusted if ink=paper) |
 | Monochrome 2/3 | .scr | 256×128, bitmap only (ink auto-adjusted if ink=paper) |
 | Monochrome 1/3 | .scr | 256×64, bitmap only (ink auto-adjusted if ink=paper) |
+| Monochrome | .scr | 256×192, bitmap only (ink auto-adjusted if ink=paper) |
+| Monochrome 2/3 | .scr | 256×128, bitmap only (ink auto-adjusted if ink=paper) |
+| Monochrome 1/3 | .scr | 256×64, bitmap only (ink auto-adjusted if ink=paper) |
 | Attributes | .atr | 32×24 color cells |
 | SPECSCII | .specscii | 32×24 text mode |
 | chr$ | .ch$ | Variable-size, interleaved 8×8 cells |
@@ -560,6 +563,10 @@ For **SCR** format, the Export dropdown includes built-in [ZX7](https://spectrum
 - **`.scr.upk (upkr level 1)`** — compresses the screen data with upkr (rANS entropy coding, Z80 settings, fast compression)
 - **`.scr.upk (upkr level 9)`** — compresses the screen data with upkr (rANS entropy coding, Z80 settings, best compression)
 - **`Compare compressions...`** — opens a dialog showing all twelve compression variants side-by-side:
+- **`.scr.lc (LC compressed)`** — compresses the screen data with Laser Compact 5.2.1 (includes LCMP5 header; reordering and segment handling are built-in)
+- **`.scr.upk (upkr level 1)`** — compresses the screen data with upkr (rANS entropy coding, Z80 settings, fast compression)
+- **`.scr.upk (upkr level 9)`** — compresses the screen data with upkr (rANS entropy coding, Z80 settings, best compression)
+- **`Compare compressions...`** — opens a dialog showing all twelve compression variants side-by-side:
   - Plain SCR (6912 bytes, uncompressed baseline)
   - ZX7 / ZX7 backwards
   - RCS + ZX7 / RCS + ZX7 backwards
@@ -592,9 +599,38 @@ For **SCR** format, the Export dropdown includes built-in [ZX7](https://spectrum
   **Depacker** column — shows the Z80 depacker size in bytes for each method, including code and any required buffer: ZX7 forward/backward = 69 bytes, ZX0 forward = 68, ZX0 backward = 69. RCS variants use [smart integrated decoders](https://github.com/einar-saukas/RCS) that decompress and decode directly to screen without a temp buffer: RCS+ZX7 = 110, RCS+ZX7 backwards = 110, RCS+ZX0 = 112, RCS+ZX0 backwards = 113. LC = 209 bytes (decompresses directly to screen, no extra buffer). upkr = 450 bytes (130 code + 320-byte probs array). Plain row has no depacker.
 
   **Total** column — shows real saving: saved bytes minus depacker overhead (saved − depacker). A positive value means compression is beneficial even accounting for the depacker. A negative value (highlighted in red) means the compressed data plus depacker exceeds the original size.
+  - LC (Laser Compact 5.2.1)
+  - upkr level 1 / upkr level 9
+
+  The dialog opens with an empty table (all sizes shown as "—"). Click the **Compare** button to run compressions — results appear one by one, the best variant is highlighted and pre-selected. The dialog stays open after saving, so you can export multiple formats without re-running compression.
+
+  **⚙ Format settings** (gear icon in the title bar) — toggle a settings panel to enable/disable format families (ZX7, ZX0, RCS variants, LC, upkr). Disabled formats are excluded from the comparison table. The upkr depacker variant can be switched between Compact (130B code + 320B probs = 450B total) and Fast (155B code + 320B probs = 475B total, unrolled multiply loop). All settings are saved to localStorage and persist across sessions.
+
+  **Data** dropdown — selects which portion of screen data to compress:
+  - **Full SCR** (default) — full 6912 bytes (bitmap + attributes)
+  - **Bitmap only** — 6144 bytes (bitmap without attributes)
+
+  **Segment** dropdown (enabled only when Data = "Bitmap only") — selects a bitmap segment:
+  - **Whole** — all 6144 bitmap bytes
+  - **Third 1 / 2 / 3** — individual 2048-byte thirds of the bitmap
+  - **Thirds 1+2 / 2+3** — two consecutive thirds (4096 bytes)
+
+  RCS variants are only shown when Segment is "Whole" (RCS reorders the full 6144 bitmap; slicing after reorder is meaningless). For segment slices, only plain + ZX7/ZX0 forward/backward rows are shown.
+
+  **Clean hidden cells** checkbox — when enabled, hidden cells (ink === paper with non-trivial bitmap) are cleaned on a temporary working copy before compression, using neighbor bitmap density to decide fill value. The original image is not modified.
+
+  **Optimize attributes** checkbox — when enabled, ink/paper are swapped and bitmap inverted in cells where set bits exceed clear bits ("minimize ink bits" mode) on the same temporary copy. Both optimizations can be combined; toggling either checkbox resets the table to "—" (stale results).
+
+  Changing any option (Data, Segment, checkboxes) resets the table — click Compare again to re-run.
+
+  **Depacker** column — shows the Z80 depacker size in bytes for each method, including code and any required buffer: ZX7 forward/backward = 69 bytes, ZX0 forward = 68, ZX0 backward = 69. RCS variants use [smart integrated decoders](https://github.com/einar-saukas/RCS) that decompress and decode directly to screen without a temp buffer: RCS+ZX7 = 110, RCS+ZX7 backwards = 110, RCS+ZX0 = 112, RCS+ZX0 backwards = 113. LC = 209 bytes (decompresses directly to screen, no extra buffer). upkr = 450 bytes (130 code + 320-byte probs array). Plain row has no depacker.
+
+  **Total** column — shows real saving: saved bytes minus depacker overhead (saved − depacker). A positive value means compression is beneficial even accounting for the depacker. A negative value (highlighted in red) means the compressed data plus depacker exceeds the original size.
 
 **Create ASM** checkbox — when enabled, saving also generates a sjasmplus `.asm` file alongside the compressed data. ASM generation is only available for Full SCR + Whole mode. The ASM file is a complete working example: it decompresses the data directly to screen memory at `$4000`, includes the appropriate ZX7, ZX0, LC, or upkr decompressor (forward or backward where applicable) and RCS-to-SCR reorder routine where needed, uses `device zxspectrum48` and `savesna` to produce a `.sna` snapshot. The LC variant uses the Laser Compact 5.2 depacker by Hrumer which decompresses LCMP5-headered data directly to screen. The upkr variant uses the Z80 unpacker by Peter Helcmanovsky (IX=packed data, DE'=destination via EXX).
+**Create ASM** checkbox — when enabled, saving also generates a sjasmplus `.asm` file alongside the compressed data. ASM generation is only available for Full SCR + Whole mode. The ASM file is a complete working example: it decompresses the data directly to screen memory at `$4000`, includes the appropriate ZX7, ZX0, LC, or upkr decompressor (forward or backward where applicable) and RCS-to-SCR reorder routine where needed, uses `device zxspectrum48` and `savesna` to produce a `.sna` snapshot. The LC variant uses the Laser Compact 5.2 depacker by Hrumer which decompresses LCMP5-headered data directly to screen. The upkr variant uses the Z80 unpacker by Peter Helcmanovsky (IX=packed data, DE'=destination via EXX).
 
+Forward-compressed files use `.zx7`/`.zx0` extensions, backward-compressed use `.zx7b`/`.zx0b`. LC compressed files use `.lc` extension. upkr compressed files use `.upk` extension. All variants can be opened directly — decompression (and RCS reordering reversal where needed) is automatic on load.
 Forward-compressed files use `.zx7`/`.zx0` extensions, backward-compressed use `.zx7b`/`.zx0b`. LC compressed files use `.lc` extension. upkr compressed files use `.upk` extension. All variants can be opened directly — decompression (and RCS reordering reversal where needed) is automatic on load.
 
 ### Format ASM Export
@@ -1443,6 +1479,8 @@ Drag a `.zgs`, `.zgt`, or `.zgp` file onto the page to open it.
 | .scr.zx0b | variable | ZX0 backward compressed screen (auto-decompressed on load) |
 | .rcs.zx0 | variable | RCS reordered + ZX0 compressed (auto-decompressed and un-reordered on load) |
 | .rcs.zx0b | variable | RCS reordered + ZX0 backward compressed (auto-decompressed and un-reordered on load) |
+| .scr.lc | variable | Laser Compact 5.2.1 compressed screen with LCMP5 header (auto-decompressed on load) |
+| .scr.upk | variable | upkr compressed screen with Z80 settings (auto-decompressed on load) |
 | .scr.lc | variable | Laser Compact 5.2.1 compressed screen with LCMP5 header (auto-decompressed on load) |
 | .scr.upk | variable | upkr compressed screen with Z80 settings (auto-decompressed on load) |
 | .scr | 6976 bytes | ULA+ (64-color palette) |
