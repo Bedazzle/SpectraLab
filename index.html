@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v2.14 -->
+<!-- SpectraLab v2.15 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -1475,7 +1475,6 @@
         <!-- File input -->
         <div class="control-group">
           <input type="file" id="inputFile" multiple accept=".scr,.rcs,.53c,.atr,.bsc,.bsp,.bmc4,.ifl,.mlt,.mc,.3,.img,.mg1,.mg2,.mg4,.mg8,.hlr,.stl,.nxi,.sl2,.slr,.rad,.c,.specscii,.sca,.zxp,.ch$,.chr$,.ch-,.slp,.slw,.sna,.z80,.btile,.wtile,.zx7,.zx7b,.zx0,.zx0b,.lc,.upk,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
-          <input type="file" id="inputFile" multiple accept=".scr,.rcs,.53c,.atr,.bsc,.bsp,.bmc4,.ifl,.mlt,.mc,.3,.img,.mg1,.mg2,.mg4,.mg8,.hlr,.stl,.nxi,.sl2,.slr,.rad,.c,.specscii,.sca,.zxp,.ch$,.chr$,.ch-,.slp,.slw,.sna,.z80,.btile,.wtile,.zx7,.zx7b,.zx0,.zx0b,.lc,.upk,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
         </div>
 
         <!-- New and Save buttons -->
@@ -2527,7 +2526,6 @@
             <div class="control-group-title">External Tools</div>
             <div style="display: flex; flex-direction: column; gap: 6px;">
               <a href="zgs_editor.html" target="_blank" style="font-size: 12px; color: var(--accent-color); text-decoration: none;" title="Open ZGS Scene Editor in a new tab">ZGS Editor</a>
-              <a href="zgs_editor.html" target="_blank" style="font-size: 12px; color: var(--accent-color); text-decoration: none;" title="Open ZGS Scene Editor in a new tab">ZGS Editor</a>
               <a href="font_editor.html" target="_blank" style="font-size: 12px; color: var(--accent-color); text-decoration: none;" title="Open Font Editor in a new tab">Font Editor</a>
             </div>
           </div>
@@ -3516,7 +3514,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 2.14</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 2.15</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">
@@ -4048,30 +4046,6 @@
         </select>
       </div>
     </div>
-  <div class="modal-dialog" style="min-width: 580px;">
-    <div class="modal-title" style="display: flex; align-items: center; justify-content: space-between;">
-      <span>Compression Compare</span>
-      <button id="compareSettingsBtn" title="Format settings" style="background: none; border: none; cursor: pointer; font-size: 16px; padding: 0 4px; opacity: 0.6;">&#9881;</button>
-    </div>
-    <!-- Settings popover -->
-    <div id="compareSettingsPanel" style="display: none; border: 1px solid var(--border-secondary); border-radius: 4px; padding: 8px 12px; margin-bottom: 10px; background: var(--bg-secondary, #f8f8f8); font-size: 11px;">
-      <div style="font-weight: bold; margin-bottom: 6px;">Enabled formats</div>
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2px 16px;">
-        <label style="cursor: pointer;"><input type="checkbox" id="cmpFmtZx7"> ZX7 (fwd/bwd)</label>
-        <label style="cursor: pointer;"><input type="checkbox" id="cmpFmtZx0" checked> ZX0 (fwd/bwd)</label>
-        <label style="cursor: pointer;"><input type="checkbox" id="cmpFmtRcs" checked> RCS variants</label>
-        <label style="cursor: pointer;"><input type="checkbox" id="cmpFmtLc" checked> LC</label>
-        <label style="cursor: pointer;"><input type="checkbox" id="cmpFmtUpkr"> upkr (level 1 &amp; 9)</label>
-      </div>
-      <div style="margin-top: 8px; font-weight: bold; margin-bottom: 6px;">Depacker options</div>
-      <div style="display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; align-items: center;">
-        <span>upkr:</span>
-        <select id="cmpUpkrDepacker" style="font-size: 11px; padding: 1px 2px;">
-          <option value="compact">Compact — 130B code + 320B probs (450B)</option>
-          <option value="fast">Fast — 155B code + 320B probs (475B)</option>
-        </select>
-      </div>
-    </div>
     <table id="compareTable" style="width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 12px;">
       <thead>
         <tr style="border-bottom: 1px solid var(--border-secondary);">
@@ -4115,39 +4089,11 @@
       </label>
       <button id="compareRunBtn" style="padding: 3px 12px; font-size: 11px; margin-left: auto;">Compare</button>
     </div>
-    <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 8px;">
-      <label style="font-size: 11px;">Data:
-        <select id="compareDataMode" style="font-size: 11px; padding: 1px 2px;">
-          <option value="full">Full SCR</option>
-          <option value="bitmap">Bitmap only</option>
-        </select>
-      </label>
-      <label style="font-size: 11px;">Segment:
-        <select id="compareSegment" style="font-size: 11px; padding: 1px 2px;" disabled>
-          <option value="whole">Whole</option>
-          <option value="1">Third 1</option>
-          <option value="2">Third 2</option>
-          <option value="3">Third 3</option>
-          <option value="12">Thirds 1+2</option>
-          <option value="23">Thirds 2+3</option>
-        </select>
-      </label>
-    </div>
-    <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 8px;">
-      <label style="font-size: 11px; cursor: pointer;">
-        <input type="checkbox" id="compareCleanHiddenCb"> Clean hidden cells
-      </label>
-      <label style="font-size: 11px; cursor: pointer;">
-        <input type="checkbox" id="compareOptimizeAttrsCb"> Optimize attributes
-      </label>
-      <button id="compareRunBtn" style="padding: 3px 12px; font-size: 11px; margin-left: auto;">Compare</button>
-    </div>
     <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; margin-bottom: 12px; cursor: pointer;">
       <input type="checkbox" id="compareCreateAsmCb">
       Create ASM (sjasmplus example with decompressor)
     </label>
     <div style="display: flex; gap: 8px; justify-content: flex-end;">
-      <button id="compareCancelBtn" style="padding: 5px 16px; font-size: 12px;">Close</button>
       <button id="compareCancelBtn" style="padding: 5px 16px; font-size: 12px;">Close</button>
       <button id="compareSaveBtn" style="padding: 5px 16px; font-size: 12px;">Save</button>
     </div>

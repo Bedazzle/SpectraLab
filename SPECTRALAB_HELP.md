@@ -62,9 +62,6 @@ Click the **New** button to open the New Picture dialog. Select a format from th
 | Monochrome | .scr | 256×192, bitmap only (ink auto-adjusted if ink=paper) |
 | Monochrome 2/3 | .scr | 256×128, bitmap only (ink auto-adjusted if ink=paper) |
 | Monochrome 1/3 | .scr | 256×64, bitmap only (ink auto-adjusted if ink=paper) |
-| Monochrome | .scr | 256×192, bitmap only (ink auto-adjusted if ink=paper) |
-| Monochrome 2/3 | .scr | 256×128, bitmap only (ink auto-adjusted if ink=paper) |
-| Monochrome 1/3 | .scr | 256×64, bitmap only (ink auto-adjusted if ink=paper) |
 | Attributes | .atr | 32×24 color cells |
 | SPECSCII | .specscii | 32×24 text mode |
 | chr$ | .ch$ | Variable-size, interleaved 8×8 cells |
@@ -563,10 +560,6 @@ For **SCR** format, the Export dropdown includes built-in [ZX7](https://spectrum
 - **`.scr.upk (upkr level 1)`** — compresses the screen data with upkr (rANS entropy coding, Z80 settings, fast compression)
 - **`.scr.upk (upkr level 9)`** — compresses the screen data with upkr (rANS entropy coding, Z80 settings, best compression)
 - **`Compare compressions...`** — opens a dialog showing all twelve compression variants side-by-side:
-- **`.scr.lc (LC compressed)`** — compresses the screen data with Laser Compact 5.2.1 (includes LCMP5 header; reordering and segment handling are built-in)
-- **`.scr.upk (upkr level 1)`** — compresses the screen data with upkr (rANS entropy coding, Z80 settings, fast compression)
-- **`.scr.upk (upkr level 9)`** — compresses the screen data with upkr (rANS entropy coding, Z80 settings, best compression)
-- **`Compare compressions...`** — opens a dialog showing all twelve compression variants side-by-side:
   - Plain SCR (6912 bytes, uncompressed baseline)
   - ZX7 / ZX7 backwards
   - RCS + ZX7 / RCS + ZX7 backwards
@@ -628,9 +621,7 @@ For **SCR** format, the Export dropdown includes built-in [ZX7](https://spectrum
   **Total** column — shows real saving: saved bytes minus depacker overhead (saved − depacker). A positive value means compression is beneficial even accounting for the depacker. A negative value (highlighted in red) means the compressed data plus depacker exceeds the original size.
 
 **Create ASM** checkbox — when enabled, saving also generates a sjasmplus `.asm` file alongside the compressed data. ASM generation is only available for Full SCR + Whole mode. The ASM file is a complete working example: it decompresses the data directly to screen memory at `$4000`, includes the appropriate ZX7, ZX0, LC, or upkr decompressor (forward or backward where applicable) and RCS-to-SCR reorder routine where needed, uses `device zxspectrum48` and `savesna` to produce a `.sna` snapshot. The LC variant uses the Laser Compact 5.2 depacker by Hrumer which decompresses LCMP5-headered data directly to screen. The upkr variant uses the Z80 unpacker by Peter Helcmanovsky (IX=packed data, DE'=destination via EXX).
-**Create ASM** checkbox — when enabled, saving also generates a sjasmplus `.asm` file alongside the compressed data. ASM generation is only available for Full SCR + Whole mode. The ASM file is a complete working example: it decompresses the data directly to screen memory at `$4000`, includes the appropriate ZX7, ZX0, LC, or upkr decompressor (forward or backward where applicable) and RCS-to-SCR reorder routine where needed, uses `device zxspectrum48` and `savesna` to produce a `.sna` snapshot. The LC variant uses the Laser Compact 5.2 depacker by Hrumer which decompresses LCMP5-headered data directly to screen. The upkr variant uses the Z80 unpacker by Peter Helcmanovsky (IX=packed data, DE'=destination via EXX).
 
-Forward-compressed files use `.zx7`/`.zx0` extensions, backward-compressed use `.zx7b`/`.zx0b`. LC compressed files use `.lc` extension. upkr compressed files use `.upk` extension. All variants can be opened directly — decompression (and RCS reordering reversal where needed) is automatic on load.
 Forward-compressed files use `.zx7`/`.zx0` extensions, backward-compressed use `.zx7b`/`.zx0b`. LC compressed files use `.lc` extension. upkr compressed files use `.upk` extension. All variants can be opened directly — decompression (and RCS reordering reversal where needed) is automatic on load.
 
 ### Format ASM Export
@@ -1479,8 +1470,6 @@ Drag a `.zgs`, `.zgt`, or `.zgp` file onto the page to open it.
 | .scr.zx0b | variable | ZX0 backward compressed screen (auto-decompressed on load) |
 | .rcs.zx0 | variable | RCS reordered + ZX0 compressed (auto-decompressed and un-reordered on load) |
 | .rcs.zx0b | variable | RCS reordered + ZX0 backward compressed (auto-decompressed and un-reordered on load) |
-| .scr.lc | variable | Laser Compact 5.2.1 compressed screen with LCMP5 header (auto-decompressed on load) |
-| .scr.upk | variable | upkr compressed screen with Z80 settings (auto-decompressed on load) |
 | .scr.lc | variable | Laser Compact 5.2.1 compressed screen with LCMP5 header (auto-decompressed on load) |
 | .scr.upk | variable | upkr compressed screen with Z80 settings (auto-decompressed on load) |
 | .scr | 6976 bytes | ULA+ (64-color palette) |
