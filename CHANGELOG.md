@@ -1,5 +1,15 @@
 # SpectraLab Version History
 
+## v2.17
+- Fixed pixel edits lost on undo/save for NXI, SL2, LoRes, and LoRes Radastan formats — drawing on the background layer now correctly syncs layer data, so undo reverts only the last action and edits are preserved across save/load
+- Fixed background layer desync for cell fill, cell invert, recolor, paste, selection invert, attribute optimize, and hidden pixel removal across all bitmap formats (SCR, BSC, IFL, MLT, BMC4, GMX, Gigascreen) — these operations now keep layer data in sync with screenData, preventing undo from reverting all changes at once
+- Fixed very slow freehand drawing on non-background layers for NXI, SL2, LoRes, and LoRes Radastan formats — `flattenLayersToScreen()` was called per pixel (25+ times per brush stamp for brush size 5), now deferred to once per frame via `scheduleRender()`. Same fix applied to transparent-color painting on non-background layers for all bitmap formats. Also cached `ImageData`, pre-computed 32-bit palette for single-write-per-pixel NXI rendering, and reused the compositing buffer to eliminate per-frame allocations
+
+## v2.16
+- Fixed SCA filmstrip scrolling — selecting a frame no longer jumps the page to the top; only the filmstrip scrolls when the selected frame is off-screen
+- Marked SCA frames (trimmed, manually deleted, duplicate) now show tooltips explaining their status and that they will be excluded from the saved file
+- Fix merge artifacts: duplicate help file entries for Monochrome export formats, LC/upkr compression, Create ASM, and file format table rows
+
 ## v2.15
 - **Faster import preview during slider drags** — dragging brightness, contrast, saturation, gamma, sharpness, smoothing, levels, color balance, or dither strength sliders now skips multi-pass dither-region compositing and uses throttled debounce (150 ms). Full-quality render with all dither regions runs on slider release. Switching the **Show** dropdown (Source/Preview/Both/None) no longer triggers a full re-conversion — only the overlay is repainted from cache.
 - Double-click now reliably closes a dither region lasso polygon (minimum 2 vertices)

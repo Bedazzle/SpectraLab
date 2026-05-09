@@ -966,7 +966,7 @@ The SCA editor opens as a full-screen overlay when editing `.sca` animation file
 
 ### Filmstrip
 
-A scrollable strip of frame thumbnails at the top. Click a thumbnail to select that frame. Trimmed frames are visually distinguished.
+A scrollable strip of frame thumbnails at the top. Click a thumbnail to select that frame. **Ctrl+Click** or **Delete/Backspace** toggles manual deletion on the selected frame. Marked frames show a tooltip with their status (trimmed / manually deleted / duplicate) and a note that they will be excluded from the saved file.
 
 ### Sidebar Controls
 

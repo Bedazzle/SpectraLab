@@ -1325,6 +1325,15 @@ function getColorsRgb(attr) {
 /** @type {ImageData|null} Cached ImageData for renderScrFast (reused to avoid per-frame allocation) */
 let scrFastImageData = null;
 
+/** @type {ImageData|null} Cached ImageData for renderNxiScreen (reused to avoid per-frame allocation) */
+let nxiFastImageData = null;
+/** @type {Uint32Array|null} Cached 32-bit palette for NXI rendering (built from nxiResolvedPalette) */
+let nxiPalette32 = null;
+/** @type {Array|null} Reference to the nxiResolvedPalette used to build nxiPalette32 */
+let nxiPalette32Source = null;
+/** @type {boolean} True if platform is little-endian */
+const nxiIsLE = new Uint8Array(new Uint32Array([0x0A0B0C0D]).buffer)[0] === 0x0D;
+
 /**
  * Renders standard SCR format using ImageData for better performance
  * Creates a 256x192 image and scales it using the canvas
@@ -7862,49 +7871,57 @@ function renderNxiScreen(ctx, borderOffset) {
   else if (nxiLayer2Mode === '640x256') { width = 640; height = 256; }
   else { width = 256; height = 192; }
 
-  const imageData = ctx.createImageData(width, height);
-  const pixels = imageData.data;
+  // Reuse cached ImageData (avoid per-frame allocation & GC pressure)
+  if (!nxiFastImageData || nxiFastImageData.width !== width || nxiFastImageData.height !== height) {
+    nxiFastImageData = ctx.createImageData(width, height);
+  }
+  const imageData = nxiFastImageData;
+
+  // Rebuild 32-bit palette cache when palette reference changes
+  if (!nxiPalette32 || nxiPalette32Source !== nxiResolvedPalette) {
+    const palLen = nxiResolvedPalette.length;
+    nxiPalette32 = new Uint32Array(palLen);
+    for (let i = 0; i < palLen; i++) {
+      const rgb = nxiResolvedPalette[i];
+      nxiPalette32[i] = nxiIsLE
+        ? (0xFF000000 | (rgb[2] << 16) | (rgb[1] << 8) | rgb[0])
+        : ((rgb[0] << 24) | (rgb[1] << 16) | (rgb[2] << 8) | 0xFF);
+    }
+    nxiPalette32Source = nxiResolvedPalette;
+  }
+
+  const pixels32 = new Uint32Array(imageData.data.buffer);
   const pixelOffset = getNxiPixelOffset();
 
   if (nxiLayer2Mode === '640x256') {
     // 4bpp column-major: 2 pixels per byte, address = (x/2)*256 + y
+    const pal32 = nxiPalette32;
     for (let x = 0; x < 640; x += 2) {
       const col = (x >> 1) * 256;
       for (let y = 0; y < 256; y++) {
         const byteVal = screenData[pixelOffset + col + y] || 0;
-        const idx0 = (byteVal >> 4) & 0x0F;
-        const idx1 = byteVal & 0x0F;
-        const rgb0 = nxiResolvedPalette[idx0];
-        const rgb1 = nxiResolvedPalette[idx1];
-        const dst0 = (y * 640 + x) * 4;
-        const dst1 = (y * 640 + x + 1) * 4;
-        pixels[dst0] = rgb0[0]; pixels[dst0 + 1] = rgb0[1]; pixels[dst0 + 2] = rgb0[2]; pixels[dst0 + 3] = 255;
-        pixels[dst1] = rgb1[0]; pixels[dst1 + 1] = rgb1[1]; pixels[dst1 + 2] = rgb1[2]; pixels[dst1 + 3] = 255;
+        const row = y * 640 + x;
+        pixels32[row] = pal32[(byteVal >> 4) & 0x0F];
+        pixels32[row + 1] = pal32[byteVal & 0x0F];
       }
     }
   } else if (nxiLayer2Mode === '320x256') {
     // 8bpp column-major: address = x*256 + y
+    const pal32 = nxiPalette32;
     for (let x = 0; x < 320; x++) {
       const col = x * 256;
       for (let y = 0; y < 256; y++) {
-        const colorIdx = screenData[pixelOffset + col + y] || 0;
-        const rgb = nxiResolvedPalette[colorIdx];
-        const dst = (y * 320 + x) * 4;
-        pixels[dst] = rgb[0]; pixels[dst + 1] = rgb[1]; pixels[dst + 2] = rgb[2]; pixels[dst + 3] = 255;
+        pixels32[y * 320 + x] = pal32[screenData[pixelOffset + col + y] || 0];
       }
     }
   } else {
     // 256×192 row-major (original mode)
+    const pal32 = nxiPalette32;
     for (let y = 0; y < 192; y++) {
+      const rowBase = pixelOffset + y * 256;
+      const dstBase = y * 256;
       for (let x = 0; x < 256; x++) {
-        const srcIdx = pixelOffset + y * 256 + x;
-        const colorIdx = screenData[srcIdx] || 0;
-        const rgb = nxiResolvedPalette[colorIdx];
-        const dstIdx = (y * 256 + x) * 4;
-        pixels[dstIdx] = rgb[0];
-        pixels[dstIdx + 1] = rgb[1];
-        pixels[dstIdx + 2] = rgb[2];
-        pixels[dstIdx + 3] = 255;
+        pixels32[dstBase + x] = pal32[screenData[rowBase + x] || 0];
       }
     }
   }

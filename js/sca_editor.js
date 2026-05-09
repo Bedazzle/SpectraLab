@@ -475,6 +475,16 @@ function updateFilmstripMarkers() {
 
     frame.classList.toggle('marked-delete', isTrimmed || isManuallyDeleted);
     frame.classList.toggle('marked-optimized', isOptimized && !isTrimmed && !isManuallyDeleted);
+
+    if (isTrimmed) {
+      frame.title = 'Trimmed — excluded from saved file';
+    } else if (isManuallyDeleted) {
+      frame.title = 'Marked for deletion (Ctrl+Click or Delete to restore) — excluded from saved file';
+    } else if (isOptimized) {
+      frame.title = 'Duplicate — excluded from saved file';
+    } else {
+      frame.title = '';
+    }
   });
 }
 
@@ -488,8 +498,14 @@ function updateFilmstripSelection() {
   frames.forEach((frame, index) => {
     if (index === editCurrentFrame) {
       frame.classList.add('selected');
-      // Scroll into view
-      frame.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      // Scroll filmstrip container only (not the whole page)
+      const fl = frame.offsetLeft;
+      const fw = frame.offsetWidth;
+      const sl = filmstrip.scrollLeft;
+      const sw = filmstrip.clientWidth;
+      if (fl < sl || fl + fw > sl + sw) {
+        filmstrip.scrollLeft = fl - (sw - fw) / 2;
+      }
     } else {
       frame.classList.remove('selected');
     }

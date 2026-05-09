@@ -1096,6 +1096,8 @@ function nxiPaletteHandleCopySwapClick(idx, isSwap) {
  * Build the 16×16 NXI/SL2 palette grid from nxiResolvedPalette.
  */
 function buildNxiPalette() {
+  // Invalidate cached 32-bit palette used by renderNxiScreen (defined in screen_viewer.js)
+  nxiPalette32 = null;
   const grid = document.getElementById('nxiPaletteGrid');
   if (!grid || !nxiResolvedPalette) return;
   grid.innerHTML = '';
@@ -2452,6 +2454,9 @@ let layersEnabled = false;
 /** @type {boolean} - When true, flattenLayersToScreen() is deferred (for bulk pixel operations) */
 let batchFlattenDeferred = false;
 
+/** @type {Uint8Array|null} - Reusable compositing buffer for NXI/SL2 flattenLayersToScreen */
+let flattenNxiBuffer = null;
+
 /** @type {Uint8Array|null} - Transparency mask for flattened result (1=has content, 0=transparent) */
 let screenTransparencyMask = null;
 
@@ -3492,10 +3497,14 @@ function setPixel(data, x, y, isInk) {
       if (layer) {
         layer.bitmap[flatIdx] = color & 0xFF;
         layer.mask[flatIdx] = 1;
-        flattenLayersToScreen();
+        // screenData will be updated via flattenLayersToScreen() in scheduleRender()
       }
     } else {
       data[flatIdx] = color & 0xFF;
+      // Also update background layer bitmap if layers are enabled
+      if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0]) {
+        layers[0].bitmap[flatIdx] = color & 0xFF;
+      }
     }
     return;
   }
@@ -3509,7 +3518,7 @@ function setPixel(data, x, y, isInk) {
       if (layer) {
         layer.bitmap[flatIdx] = color;
         layer.mask[flatIdx] = 1;
-        flattenLayersToScreen();
+        // screenData will be updated via flattenLayersToScreen() in scheduleRender()
       }
     } else {
       // Pack into nibble in screenData
@@ -3521,6 +3530,10 @@ function setPixel(data, x, y, isInk) {
         byteVal = (byteVal & 0xF0) | color;
       }
       data[byteOffset] = byteVal;
+      // Also update background layer bitmap if layers are enabled
+      if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0]) {
+        layers[0].bitmap[flatIdx] = color;
+      }
     }
     return;
   }
@@ -3535,7 +3548,7 @@ function setPixel(data, x, y, isInk) {
       if (layer) {
         layer.bitmap[flatIdx] = color & (nxiLayer2Mode === '640x256' ? 0x0F : 0xFF);
         layer.mask[flatIdx] = 1;
-        flattenLayersToScreen();
+        // screenData will be updated via flattenLayersToScreen() in scheduleRender()
       }
     } else {
       const pixOff = getNxiPixelOffset();
@@ -3545,6 +3558,10 @@ function setPixel(data, x, y, isInk) {
         data[byteIdx] = (x & 1) ? ((oldByte & 0xF0) | (color & 0x0F)) : ((oldByte & 0x0F) | ((color & 0x0F) << 4));
       } else {
         data[pixOff + getNxiPixelIndex(x, y)] = color & 0xFF;
+      }
+      // Also update background layer bitmap if layers are enabled
+      if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0]) {
+        layers[0].bitmap[flatIdx] = color & (nxiLayer2Mode === '640x256' ? 0x0F : 0xFF);
       }
     }
     return;
@@ -3563,7 +3580,7 @@ function setPixel(data, x, y, isInk) {
       if (layer) {
         const maskIdx = y * width + x;
         layer.mask[maskIdx] = 0; // Make pixel transparent
-        flattenLayersToScreen();
+        // screenData will be updated via flattenLayersToScreen() in scheduleRender()
       }
     }
     // On background layer, transparent does nothing (can't erase background)
@@ -4512,6 +4529,105 @@ function syncCurrentPicture() {
 }
 
 /**
+ * Syncs the background layer (layers[0]) from current screenData.
+ * Used after bulk operations (invert, paste, etc.) that modify screenData
+ * directly without per-write layer sync.
+ */
+function syncBackgroundLayerFromScreen() {
+  if (!layersEnabled || layers.length === 0 || !layers[0] || activeLayerIndex !== 0) return;
+  if (!screenData) return;
+  const layer = layers[0];
+  const bitmapSize = getLayerBitmapSize();
+
+  // Sync bitmap
+  if (currentFormat === FORMAT.LORES_RAD) {
+    for (let y = 0; y < LORES_RAD.HEIGHT; y++) {
+      for (let x = 0; x < LORES_RAD.WIDTH; x++) {
+        const byteOffset = y * LORES_RAD.BYTES_PER_ROW + (x >> 1);
+        const byteVal = screenData[byteOffset] || 0;
+        layer.bitmap[y * LORES_RAD.WIDTH + x] = (x & 1) === 0 ? (byteVal >> 4) & 0x0F : byteVal & 0x0F;
+      }
+    }
+  } else if (currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) {
+    const pixOff = getNxiPixelOffset();
+    const w = getFormatWidth();
+    const h = getFormatHeight();
+    if (nxiLayer2Mode === '640x256') {
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x += 2) {
+          const byteVal = screenData[pixOff + (x >> 1) * 256 + y] || 0;
+          layer.bitmap[y * w + x] = (byteVal >> 4) & 0x0F;
+          layer.bitmap[y * w + x + 1] = byteVal & 0x0F;
+        }
+      }
+    } else if (nxiLayer2Mode === '320x256') {
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          layer.bitmap[y * w + x] = screenData[pixOff + x * 256 + y];
+        }
+      }
+    } else {
+      for (let i = 0; i < bitmapSize; i++) {
+        layer.bitmap[i] = screenData[pixOff + i];
+      }
+    }
+  } else if (currentFormat === FORMAT.LORES) {
+    for (let i = 0; i < bitmapSize; i++) {
+      layer.bitmap[i] = screenData[i];
+    }
+  } else if (isGigascreenEditable()) {
+    for (let i = 0; i < bitmapSize; i++) {
+      layer.bitmap[i] = screenData[i];
+    }
+    if (layer.bitmap2) {
+      const gigaFS = getGigaFrameSize();
+      for (let i = 0; i < bitmapSize; i++) {
+        layer.bitmap2[i] = screenData[gigaFS + i];
+      }
+    }
+  } else {
+    for (let i = 0; i < bitmapSize; i++) {
+      layer.bitmap[i] = screenData[i];
+    }
+  }
+
+  // Sync attributes
+  const attrSize = getLayerAttributeSize();
+  if (attrSize > 0 && layer.attributes) {
+    if (currentFormat === FORMAT.BMC4) {
+      for (let i = 0; i < BMC4.ATTR1_SIZE; i++) {
+        layer.attributes[i] = screenData[BMC4.ATTR1_OFFSET + i];
+      }
+      if (layer.attributes2) {
+        for (let i = 0; i < BMC4.ATTR2_SIZE; i++) {
+          layer.attributes2[i] = screenData[BMC4.ATTR2_OFFSET + i];
+        }
+      }
+    } else if (isGigascreenEditable()) {
+      const gigaAS = getGigaAttrSize();
+      const gigaFS = getGigaFrameSize();
+      for (let i = 0; i < gigaAS; i++) {
+        layer.attributes[i] = screenData[SCREEN.BITMAP_SIZE + i];
+      }
+      if (layer.attributesFrame2) {
+        for (let i = 0; i < gigaAS; i++) {
+          layer.attributesFrame2[i] = screenData[gigaFS + SCREEN.BITMAP_SIZE + i];
+        }
+      }
+    } else if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) {
+      const attrOff = currentFormat === FORMAT.GMX ? GMX.ATTR_OFFSET : GMX160.HEADER_SIZE;
+      for (let i = 0; i < attrSize && (attrOff + i) < screenData.length; i++) {
+        layer.attributes[i] = screenData[attrOff + i];
+      }
+    } else {
+      for (let i = 0; i < attrSize; i++) {
+        layer.attributes[i] = screenData[bitmapSize + i];
+      }
+    }
+  }
+}
+
+/**
  * Flattens all visible layers to screenData for rendering/export.
  * Background provides base, upper layers composite on top where mask=1.
  */
@@ -4617,10 +4733,15 @@ function flattenLayersToScreen() {
     const h = getFormatHeight();
     const pixelCount = w * h;
 
-    // First, composite all layers into a flat row-major buffer
-    const composited = new Uint8Array(pixelCount);
+    // Reuse composited buffer to avoid per-frame allocation
+    if (!flattenNxiBuffer || flattenNxiBuffer.length < pixelCount) {
+      flattenNxiBuffer = new Uint8Array(pixelCount);
+    }
+    const composited = flattenNxiBuffer;
     if (layers[0].visible) {
       composited.set(layers[0].bitmap.subarray(0, pixelCount));
+    } else {
+      composited.fill(0, 0, pixelCount);
     }
     for (let layerIdx = 1; layerIdx < layers.length; layerIdx++) {
       const layer = layers[layerIdx];
@@ -7180,6 +7301,9 @@ function fillCell(x, y, isInk) {
     for (let py = 0; py < 8 && cellY + py < maxY; py++) {
       const bitmapAddr = getBitmapAddress(cellX, cellY + py);
       screenData[bitmapAddr] = isInk ? 0xFF : 0x00;
+      if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0]) {
+        layers[0].bitmap[bitmapAddr] = isInk ? 0xFF : 0x00;
+      }
     }
   } else if (currentFormat === FORMAT.MLT) {
     if (!screenData || screenData.length < MLT.TOTAL_SIZE) return;
@@ -7189,11 +7313,19 @@ function fillCell(x, y, isInk) {
 
     // Set attribute for this 8×1 block
     const attrAddr = getMltAttributeAddress(cellX, y);
-    screenData[attrAddr] = getCurrentDrawingAttribute();
+    const attr = getCurrentDrawingAttribute();
+    screenData[attrAddr] = attr;
 
     // Fill single pixel row
     const bitmapAddr = getBitmapAddress(cellX, y);
     screenData[bitmapAddr] = isInk ? 0xFF : 0x00;
+
+    if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0]) {
+      layers[0].bitmap[bitmapAddr] = isInk ? 0xFF : 0x00;
+      if (layers[0].attributes) {
+        layers[0].attributes[getMltLayerAttrIndex(cellX, y)] = attr;
+      }
+    }
   } else if (currentFormat === FORMAT.IFL) {
     if (!screenData || screenData.length < IFL.TOTAL_SIZE) return;
 
@@ -7203,12 +7335,20 @@ function fillCell(x, y, isInk) {
 
     // Set attribute for this 8×2 block
     const attrAddr = getIflAttributeAddress(cellX, cellY);
-    screenData[attrAddr] = getCurrentDrawingAttribute();
+    const attr = getCurrentDrawingAttribute();
+    screenData[attrAddr] = attr;
 
     // Fill 2 pixel rows
     for (let py = 0; py < 2; py++) {
       const bitmapAddr = getBitmapAddress(cellX, cellY + py);
       screenData[bitmapAddr] = isInk ? 0xFF : 0x00;
+      if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0]) {
+        layers[0].bitmap[bitmapAddr] = isInk ? 0xFF : 0x00;
+      }
+    }
+    if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0] && layers[0].attributes) {
+      const attrRow = Math.floor(cellY / 2);
+      layers[0].attributes[attrRow * 32 + Math.floor(cellX / 8)] = attr;
     }
   } else if (currentFormat === FORMAT.BMC4) {
     if (!screenData || screenData.length < BMC4.TOTAL_SIZE) return;
@@ -7219,12 +7359,27 @@ function fillCell(x, y, isInk) {
 
     // Set attribute for this 8×4 block
     const attrAddr = getBmc4AttributeAddress(cellX, cellY);
-    screenData[attrAddr] = getCurrentDrawingAttribute();
+    const attr = getCurrentDrawingAttribute();
+    screenData[attrAddr] = attr;
 
     // Fill 4 pixel rows
     for (let py = 0; py < 4; py++) {
       const bitmapAddr = getBitmapAddress(cellX, cellY + py);
       screenData[bitmapAddr] = isInk ? 0xFF : 0x00;
+      if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0]) {
+        layers[0].bitmap[bitmapAddr] = isInk ? 0xFF : 0x00;
+      }
+    }
+    if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0]) {
+      const pixelLine = cellY % 8;
+      const charRow = Math.floor(cellY / 8);
+      const charCol = Math.floor(cellX / 8);
+      const attrIdx = charRow * 32 + charCol;
+      if (pixelLine < 4 && layers[0].attributes) {
+        layers[0].attributes[attrIdx] = attr;
+      } else if (pixelLine >= 4 && layers[0].attributes2) {
+        layers[0].attributes2[attrIdx] = attr;
+      }
     }
   } else if (currentFormat === FORMAT.HLR) {
     // HLR: bitmap is loader-tiled from the picture's 8-byte fill pattern;
@@ -7278,6 +7433,18 @@ function fillCell(x, y, isInk) {
       const bitmapAddr = getBitmapAddress(cellX, cellY + py);
       screenData[gigaFS + bitmapAddr] = isInk ? 0xFF : 0x00;
     }
+
+    // Sync background layer
+    if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0]) {
+      const fillByte = isInk ? 0xFF : 0x00;
+      for (let py = 0; py < cellH; py++) {
+        const bitmapAddr = getBitmapAddress(cellX, cellY + py);
+        if (layers[0].bitmap) layers[0].bitmap[bitmapAddr] = fillByte;
+        if (layers[0].bitmap2) layers[0].bitmap2[bitmapAddr] = fillByte;
+      }
+      if (layers[0].attributes) layers[0].attributes[attrOffset] = attr1;
+      if (layers[0].attributesFrame2) layers[0].attributesFrame2[attrOffset] = attr2;
+    }
   } else if ((currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) && currentPicture) {
     // ZXP/chr$: variable-size cells with linear layout
     if (!screenData) return;
@@ -7287,12 +7454,21 @@ function fillCell(x, y, isInk) {
 
     // Set attribute
     const attrAddr = getAttributeAddress(cellX, cellY);
-    screenData[attrAddr] = getCurrentDrawingAttribute();
+    const attr = getCurrentDrawingAttribute();
+    screenData[attrAddr] = attr;
 
     // Fill all pixels in cell
     for (let py = 0; py < attrCellH && cellY + py < currentPicture.height; py++) {
       const bitmapAddr = getBitmapAddress(cellX, cellY + py);
       screenData[bitmapAddr] = isInk ? 0xFF : 0x00;
+      if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0]) {
+        layers[0].bitmap[bitmapAddr] = isInk ? 0xFF : 0x00;
+      }
+    }
+    if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0] && layers[0].attributes) {
+      const cols = currentPicture.width >> 3;
+      const attrRow = Math.floor(cellY / attrCellH);
+      layers[0].attributes[attrRow * cols + Math.floor(cellX / 8)] = attr;
     }
   } else {
     // SCR/BSC: 8×8 cells
@@ -7303,12 +7479,21 @@ function fillCell(x, y, isInk) {
 
     // Set attribute
     const attrAddr = getAttributeAddress(cellX, cellY);
-    screenData[attrAddr] = getCurrentDrawingAttribute();
+    const attr = getCurrentDrawingAttribute();
+    screenData[attrAddr] = attr;
 
     // Fill all pixels in cell
     for (let py = 0; py < 8; py++) {
       const bitmapAddr = getBitmapAddress(cellX, cellY + py);
       screenData[bitmapAddr] = isInk ? 0xFF : 0x00;
+      if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0]) {
+        layers[0].bitmap[bitmapAddr] = isInk ? 0xFF : 0x00;
+      }
+    }
+    if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0] && layers[0].attributes) {
+      const charRow = Math.floor(cellY / 8);
+      const charCol = Math.floor(cellX / 8);
+      layers[0].attributes[charRow * 32 + charCol] = attr;
     }
   }
 }
@@ -7728,6 +7913,9 @@ function setPixelDirect(x, y, isInk) {
       }
     } else {
       screenData[flatIdx] = color & 0xFF;
+      if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0]) {
+        layers[0].bitmap[flatIdx] = color & 0xFF;
+      }
     }
     return;
   }
@@ -7751,6 +7939,9 @@ function setPixelDirect(x, y, isInk) {
         byteVal = (byteVal & 0xF0) | color;
       }
       screenData[byteOffset] = byteVal;
+      if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0]) {
+        layers[0].bitmap[flatIdx] = color;
+      }
     }
     return;
   }
@@ -7774,6 +7965,9 @@ function setPixelDirect(x, y, isInk) {
         screenData[byteIdx] = (x & 1) ? ((oldByte & 0xF0) | (color & 0x0F)) : ((oldByte & 0x0F) | ((color & 0x0F) << 4));
       } else {
         screenData[pixOff + getNxiPixelIndex(x, y)] = color & 0xFF;
+      }
+      if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0]) {
+        layers[0].bitmap[flatIdx] = color & (nxiLayer2Mode === '640x256' ? 0x0F : 0xFF);
       }
     }
     return;
@@ -7989,6 +8183,7 @@ function cellInvert(x, y) {
       screenData[bitmapAddr] ^= 0xFF;
     }
     // GMX160: no bitmap to invert (fixed 0x0F pattern)
+    syncBackgroundLayerFromScreen();
     return;
   }
 
@@ -8000,6 +8195,7 @@ function cellInvert(x, y) {
     // Invert one bitmap byte for this pixel row
     const bitmapAddr = getBitmapAddress(x, y);
     screenData[bitmapAddr] ^= 0xFF;
+    syncBackgroundLayerFromScreen();
     return;
   }
 
@@ -8014,6 +8210,7 @@ function cellInvert(x, y) {
       const addr = getBitmapAddress(charCol * 8, blockY + line);
       screenData[addr] ^= 0xFF;
     }
+    syncBackgroundLayerFromScreen();
     return;
   }
 
@@ -8028,6 +8225,7 @@ function cellInvert(x, y) {
       const addr = getBitmapAddress(charCol * 8, blockY + line);
       screenData[addr] ^= 0xFF;
     }
+    syncBackgroundLayerFromScreen();
     return;
   }
 
@@ -8057,6 +8255,7 @@ function cellInvert(x, y) {
       screenData[addr] ^= 0xFF;
       screenData[gigaFS + addr] ^= 0xFF;
     }
+    syncBackgroundLayerFromScreen();
     return;
   }
 
@@ -8070,6 +8269,8 @@ function cellInvert(x, y) {
     const addr = getBitmapAddress(charCol * 8, cellY + line);
     screenData[addr] ^= 0xFF;
   }
+
+  syncBackgroundLayerFromScreen();
 }
 
 /**
@@ -8172,13 +8373,23 @@ function recolorCell(x, y) {
   if (currentFormat === FORMAT.GMX) {
     if (!screenData || screenData.length < GMX.TOTAL_SIZE) return;
     const attrAddr = getAttributeAddress(x, y);
-    screenData[attrAddr] = getCurrentDrawingAttribute();
+    const attr = getCurrentDrawingAttribute();
+    screenData[attrAddr] = attr;
+    if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0] && layers[0].attributes) {
+      const attrIdx = y * 80 + Math.floor(x / 8);
+      layers[0].attributes[attrIdx] = attr;
+    }
     return;
   }
   if (currentFormat === FORMAT.GMX160) {
     if (!screenData || screenData.length < GMX160.TOTAL_SIZE) return;
     const attrAddr = getAttributeAddress(x, y);
-    screenData[attrAddr] = getCurrentDrawingAttribute();
+    const attr = getCurrentDrawingAttribute();
+    screenData[attrAddr] = attr;
+    if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0] && layers[0].attributes) {
+      const attrIdx = y * 80 + Math.floor(x / 8);
+      layers[0].attributes[attrIdx] = attr;
+    }
     return;
   }
 
@@ -8187,19 +8398,40 @@ function recolorCell(x, y) {
 
     // MLT: 8×1 blocks - set single attribute for this pixel row
     const attrAddr = getMltAttributeAddress(x, y);
-    screenData[attrAddr] = getCurrentDrawingAttribute();
+    const attr = getCurrentDrawingAttribute();
+    screenData[attrAddr] = attr;
+    if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0] && layers[0].attributes) {
+      layers[0].attributes[getMltLayerAttrIndex(x, y)] = attr;
+    }
   } else if (currentFormat === FORMAT.IFL) {
     if (!screenData || screenData.length < IFL.TOTAL_SIZE) return;
 
     // IFL: 8×2 blocks - set single attribute for this block
     const attrAddr = getIflAttributeAddress(x, y);
-    screenData[attrAddr] = getCurrentDrawingAttribute();
+    const attr = getCurrentDrawingAttribute();
+    screenData[attrAddr] = attr;
+    if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0] && layers[0].attributes) {
+      const attrRow = Math.floor(y / 2);
+      layers[0].attributes[attrRow * 32 + Math.floor(x / 8)] = attr;
+    }
   } else if (currentFormat === FORMAT.BMC4) {
     if (!screenData || screenData.length < BMC4.TOTAL_SIZE) return;
 
     // BMC4: 8×4 blocks - set attribute for this block
     const attrAddr = getBmc4AttributeAddress(x, y);
-    screenData[attrAddr] = getCurrentDrawingAttribute();
+    const attr = getCurrentDrawingAttribute();
+    screenData[attrAddr] = attr;
+    if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0]) {
+      const pixelLine = y % 8;
+      const charRow = Math.floor(y / 8);
+      const charCol = Math.floor(x / 8);
+      const attrIdx = charRow * 32 + charCol;
+      if (pixelLine < 4 && layers[0].attributes) {
+        layers[0].attributes[attrIdx] = attr;
+      } else if (pixelLine >= 4 && layers[0].attributes2) {
+        layers[0].attributes2[attrIdx] = attr;
+      }
+    }
   } else if (currentFormat === FORMAT.HLR) {
     // HLR: recolor entire 8x8 cell with the chosen virtual ink color by
     // setting both ink and paper of both attribute frames (solid mode).
@@ -8238,7 +8470,14 @@ function recolorCell(x, y) {
     const cellY = Math.floor(y / (currentPicture.attrCellHeight || 8)) * (currentPicture.attrCellHeight || 8);
 
     const attrAddr = getAttributeAddress(cellX, cellY);
-    screenData[attrAddr] = getCurrentDrawingAttribute();
+    const attr = getCurrentDrawingAttribute();
+    screenData[attrAddr] = attr;
+    if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0] && layers[0].attributes) {
+      const cols = currentPicture.width >> 3;
+      const attrCellH = currentPicture.attrCellHeight || 8;
+      const attrRow = Math.floor(y / attrCellH);
+      layers[0].attributes[attrRow * cols + Math.floor(x / 8)] = attr;
+    }
   } else {
     // SCR/BSC: 8×8 cells
     if (!screenData || screenData.length < SCREEN.TOTAL_SIZE) return;
@@ -8247,7 +8486,13 @@ function recolorCell(x, y) {
     const cellY = Math.floor(y / 8) * 8;
 
     const attrAddr = getAttributeAddress(cellX, cellY);
-    screenData[attrAddr] = getCurrentDrawingAttribute();
+    const attr = getCurrentDrawingAttribute();
+    screenData[attrAddr] = attr;
+    if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0] && layers[0].attributes) {
+      const charRow = Math.floor(y / 8);
+      const charCol = Math.floor(x / 8);
+      layers[0].attributes[charRow * 32 + charCol] = attr;
+    }
   }
 }
 
@@ -8706,6 +8951,8 @@ function invertSelection() {
     }
   }
 
+  syncBackgroundLayerFromScreen();
+
   const infoEl = document.getElementById('editorPositionInfo');
   if (infoEl) {
     infoEl.innerHTML = `Inverted ${rect.width}×${rect.height} pixels`;
@@ -8802,6 +9049,7 @@ function optimizeAttributes(mode) {
     }
   }
 
+  if (flipped > 0) syncBackgroundLayerFromScreen();
   return flipped;
 }
 
@@ -8897,6 +9145,7 @@ function removeHiddenPixels() {
     }
   }
 
+  if (cleaned > 0) syncBackgroundLayerFromScreen();
   return cleaned;
 }
 
@@ -9246,6 +9495,8 @@ function executePaste(x, y) {
     }
     specsciiSyncToStream();
   }
+
+  syncBackgroundLayerFromScreen();
 
   // Sync internal picture format after paste
   syncCurrentPicture();
@@ -20106,6 +20357,8 @@ function executePasteAt(x, y) {
       }
     }
   }
+
+  syncBackgroundLayerFromScreen();
 }
 
 /**
