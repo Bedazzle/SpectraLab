@@ -326,7 +326,7 @@ The undo history is preserved as long as the picture is open. Creating a new pic
 
 When you load a `.png`, `.gif`, `.jpg`, `.webp`, or `.bmp` file, the Image Import dialog opens automatically.
 
-The dialog shows two canvases side by side — ORIGINAL (source) and PREVIEW (converted result). Each has a zoom dropdown (Fit, x1–x4 for source; Fit, x1–x5 for preview). The preview also has a **Grid** checkbox to overlay 8×8 attribute boundaries. Scrollbars appear when zoomed images exceed the available space.
+The dialog shows two canvases side by side — ORIGINAL (source) and PREVIEW (converted result). Each has a zoom dropdown (Fit, x1–x4 for source; Fit, x1–x5 for preview). Both canvases have a **Grid** checkbox — the source grid shows 8×8 pixel boundaries within the crop rectangle, while the preview grid shows attribute cell boundaries on the output. Scrollbars appear when zoomed images exceed the available space.
 
 ### Choose Target Format
 
@@ -746,23 +746,18 @@ You can also open `.rcs` files directly in SpectraLab — the RCS reordering is 
 
 ### ZX7 / ZX0 Compression (SCR only)
 
-SpectraLab includes built-in [ZX7](https://spectrumcomputing.co.uk/entry/27996/ZX-Spectrum/ZX7) and [ZX0](https://github.com/einar-saukas/ZX0) (v2 format) compression by Einar Saukas. For SCR files, the Export dropdown offers:
+SpectraLab includes built-in [ZX7](https://spectrumcomputing.co.uk/entry/27996/ZX-Spectrum/ZX7) and [ZX0](https://github.com/einar-saukas/ZX0) (v2 format) compression by Einar Saukas, plus several other compressors. For SCR files, the Export dropdown offers:
 
 **Direct export:**
 
-1. Select `.scr.zx7` or `.scr.zx0` — compresses the screen with ZX7 or ZX0
-2. Select `.rcs.zx7` or `.rcs.zx0` — applies RCS reordering first, then compression
-3. Click **Export** — downloads the compressed file
+1. Select a compressed format — `.scr.zx7`, `.scr.zx0`, `.rcs.zx7`, `.rcs.zx0`, `.scr.lc`, `.scr.lzf`, `.scr.rle`, `.scr.upk`, `.scr.c4` (Chunks 4×4), `.scr.c2` (Chunks 4×2)
+2. Click **Export** — downloads the compressed file
+3. Note: Chunks formats (`.scr.c4`, `.scr.c2`) are **lossy monochrome** — they produce fixed-size output by encoding bitmap blocks as 2-bit indices into a 4-pattern dictionary. Attributes are not stored.
 
 **Compare all variants:**
 
 1. Select `Compare compressions...` from the Export dropdown
-2. Click **Export** — a dialog appears showing nine compression variants:
-   - Plain SCR (uncompressed baseline)
-   - ZX7 forward / ZX7 backwards
-   - RCS + ZX7 forward / RCS + ZX7 backwards
-   - ZX0 forward / ZX0 backwards
-   - RCS + ZX0 forward / RCS + ZX0 backwards
+2. Click **Compare** — a dialog shows compression variants side-by-side (enable/disable formats via ⚙ settings)
 3. The best (smallest) result is highlighted and pre-selected
 4. Select the variant you want and click **Save**
 5. Optional: check **Create ASM** before saving to also generate a sjasmplus `.asm` file that decompresses the data directly to screen memory (`device zxspectrum48`, `savesna`)
@@ -813,11 +808,15 @@ When you open a multi-frame animated GIF, the standard Image Import dialog opens
 
 1. Open an animated GIF file (via Open or drag-and-drop)
 2. The import dialog opens with dithering/format/adjustment controls as usual
-3. Select the import mode from the dropdown:
-   - **Picture** — import the first frame as a static picture using the selected format and settings
+3. Use the **◄/► buttons** or **slider** next to the mode dropdown to browse individual frames — the preview updates to show each frame with the current format, dithering, and adjustments
+4. Select the import mode from the dropdown:
+   - **Picture** — import the currently previewed frame as a static picture using the selected format and settings
    - **Flash** (2-frame GIFs only) — convert both frames into a single SCR with FLASH attributes. Cells that differ between the two frames use the FLASH bit to alternate ink↔paper every 320ms; identical cells remain static
-   - **Animation** — convert all frames to an SCA animation. Per-frame delays from the GIF are preserved. After import, the full SCA editor is available (filmstrip, playback, trim, delay editing, optimize, export)
-4. Click **Import** to apply
+   - **Animation** — convert all frames to an SCA animation. Per-frame delays from the GIF are preserved. After import, the full SCA editor is available (filmstrip, playback, trim, delay editing, optimize, export). The output type depends on the **Format** dropdown:
+     - **53c** → SCA type 1 (attribute-only frames with fill pattern) — select the desired pattern from the **53c Pattern** dropdown (Checker, Stripes, DD/77, or Custom with hex input)
+     - **Chunks 4×4** or **Chunks 4×2** → SCA type 2 (chunks-compressed monochrome frames). Encoded size depends on the selected region — e.g. 768 bytes per frame for 4×4 full screen, or 256 bytes for a single third
+     - Any other format → SCA type 0 (full SCR frames, 6912 bytes per frame)
+5. Click **Import** to apply
 
 ### Navigate Frames
 
@@ -838,7 +837,7 @@ The SCA editor opens as a fullscreen overlay. Here you can:
 ### Save and Export
 
 - **Save As...** — dropdown with export options:
-  - **SCA** — save as SCA animation
+  - **SCA** — save as SCA animation. The save settings window offers compression for type 2: Uncompressed, ZX0, Laser Compact, or RLE. RLE offers the fastest Z80 decompression with moderate compression ratio. Chunks 4×4/4×2 animations use their own compression and don't need additional settings. ASM export is also available from the settings window — supports all types including chunks (with embedded lookup table and Z80 depacker)
   - **SCR zip** — export all frames as SCR files in a ZIP
   - **53c zip** — export all frames as 53c attribute files in a ZIP
   - **GIF** — export as animated GIF with per-frame delay
@@ -1110,7 +1109,56 @@ Assembler errors appear in the status bar with line numbers (e.g., "Line 15: Unk
 
 ---
 
-## 22. Tips and Hidden Features
+## 22. Working with Plugins
+
+Plugins let you extract and edit graphics from game snapshots or custom binary files, then save the edits back.
+
+### Installing a Plugin
+
+1. Go to **Tools** tab → **Plugins** section
+2. Click **Load Plugin…** and select a `.slplugin` or `.slpluginjs` file (or drag-and-drop it onto the app)
+3. The plugin appears in the list and persists across sessions
+
+Example plugins are in the `plugins/` folder.
+
+### Extracting Pictures from a Snapshot (JSON Plugin)
+
+This workflow lets you pull graphics from specific memory addresses in a .sna file:
+
+1. Load `example.slplugin` (or write your own — see the `_doc` section inside the file for reference)
+2. Click **Open…** next to the plugin name and select a `.sna` file
+3. The plugin extracts pictures from the defined addresses and adds them to the picture tab bar
+4. Edit the pictures normally — all drawing tools, layers, and transforms work
+5. Click **Save Patched File** in the session bar to write the edits back into the snapshot and download it
+6. Or click **Save Raw** to export each picture as a standalone file
+
+### Using a Codec Plugin (JS Plugin)
+
+Codec plugins handle compressed or encoded formats. For example, the RLE plugin:
+
+1. Load `rle_scr.slpluginjs`
+2. To **decode**: click **Open…** and select an RLE-compressed file — the decompressed screen appears in the editor
+3. To **encode**: open any `.scr` picture the normal way, then click **Export** next to the plugin name — the picture is RLE-compressed and downloaded
+
+### Editing Game Graphics in a Snapshot (JS Plugin with Session)
+
+Some JS plugins extract multiple pictures from a game snapshot, let you edit them, and write everything back. The MARIA plugin is a real-world example:
+
+1. Load `maria_sna.slpluginjs`
+2. Click **Open…** and select the Maria's Christmas Box 48K `.sna` file
+3. The plugin extracts 6 pictures: the loading screen (uncompressed at 0x4000) and 5 RLE-packed game screens
+4. Edit any screen — all tools work normally
+5. Click **Save Patched File** to re-compress all screens with RLE, update the offset table, and download the patched `.sna`
+
+The plugin uses `"session": true` to enable the session bar. It also checks that packed data doesn't overflow past 0xFDFF (the stack area) — if your edits produce data that compresses poorly, you'll get an error message.
+
+### Writing Your Own Plugin
+
+Open any example plugin in a text editor — the `_doc` field at the top explains all fields and the API. JSON descriptor plugins need no coding — just specify addresses, formats, and lengths. JS plugins use `extract()` and `patch()` functions with full access to snapshot memory banks. Add `"session": true` to a JS plugin descriptor if it needs the Save Patched File / Save Raw workflow.
+
+---
+
+## 23. Tips and Hidden Features
 
 ### Workspace Save/Load
 Save all your open pictures at once with **Save Workspace** in the Xform tab. Load them back later — preserving layers, sprites, settings, and reference images. Workspace buttons are always available in the Xform tab, even without a loaded picture.

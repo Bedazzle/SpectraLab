@@ -189,6 +189,18 @@ function initScaEditor() {
     });
   });
 
+  // SCA Save dialog event listeners
+  document.getElementById('scaSavePayloadType')?.addEventListener('change', updateScaSaveDialog);
+  document.getElementById('scaSaveRegion')?.addEventListener('change', updateScaSaveDialog);
+  document.getElementById('scaSaveFct')?.addEventListener('change', updateScaSaveDialog);
+  document.getElementById('scaSaveCompression')?.addEventListener('change', updateScaSaveDialog);
+  document.getElementById('scaSavePattern')?.addEventListener('change', updateScaSaveDialog);
+  document.getElementById('scaSaveCancelBtn')?.addEventListener('click', () => {
+    const dlg = document.getElementById('scaSaveDialog');
+    if (dlg) dlg.style.display = 'none';
+  });
+  document.getElementById('scaSaveOkBtn')?.addEventListener('click', executeScaSave);
+
   // Load saved preview mode setting
   // @ts-ignore
   if (typeof window.savedEditPreviewTrimmedOnly !== 'undefined') {
@@ -383,11 +395,16 @@ function renderScaFrameToCanvas(canvas, frameIndex) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
-  const frameOffset = scaHeader.frameDataStart + (frameIndex * scaHeader.frameSize);
+  const frameOffset = (typeof getScaFrameOffset === 'function')
+    ? getScaFrameOffset(frameIndex)
+    : scaHeader.frameDataStart + (frameIndex * scaHeader.frameSize);
   const imageData = ctx.createImageData(SCREEN.WIDTH, SCREEN.HEIGHT);
   const data = imageData.data;
 
-  if (scaHeader.payloadType === 1 && scaHeader.fillPattern) {
+  if (scaHeader.payloadType === 2 && scaHeader.region && scaHeader.frames) {
+    // Payload type 2: packed frames with FCT + region
+    renderScaType2FrameToCanvas(data, frameOffset, scaHeader);
+  } else if (scaHeader.payloadType === 1 && scaHeader.fillPattern) {
     // Payload type 1: attribute-only frames with fill pattern
     const fillPattern = (typeof getSelectedPattern === 'function')
       ? getSelectedPattern(scaHeader.fillPattern)
@@ -459,6 +476,94 @@ function renderScaFrameToCanvas(canvas, frameIndex) {
   }
 
   ctx.putImageData(imageData, 0, 0);
+}
+
+/**
+ * Renders a type 2 SCA frame into imageData pixel array (editor/filmstrip version).
+ * @param {Uint8ClampedArray} data - ImageData pixel array
+ * @param {number} frameOffset - Byte offset in screenData
+ * @param {object} header - Parsed SCA header
+ */
+function renderScaType2FrameToCanvas(data, frameOffset, header) {
+  const fct = header.fct;
+  const region = header.region;
+  const startRow = region.startRow;
+  const charRows = region.charRows;
+  const hasBitmap = (fct === 0 || fct === 1);
+  const hasAttrs = (fct === 1 || fct === 2);
+
+  let bitmapOffset = frameOffset;
+  let attrOffset = frameOffset + (hasBitmap ? region.bitmapSize : 0);
+
+  if (hasBitmap) {
+    // Bitmap region — ZX Spectrum screen memory layout, scoped to region
+    const numSections = charRows / 8;
+    for (let s = 0; s < numSections; s++) {
+      const sectionStartRow = startRow + s * 8;
+      const sectionBitmapBase = bitmapOffset + s * 2048;
+      const sectionAttrBase = hasAttrs ? (attrOffset + s * 256) : 0;
+
+      for (let line = 0; line < 8; line++) {
+        for (let row = 0; row < 8; row++) {
+          for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
+            const bmpOff = sectionBitmapBase + col + row * 32 + line * 256;
+            const byte = screenData[bmpOff];
+
+            let inkRgb, paperRgb;
+            if (hasAttrs) {
+              const attr = screenData[sectionAttrBase + col + row * 32];
+              ({ inkRgb, paperRgb } = getColorsRgb(attr));
+            } else {
+              inkRgb = [0, 0, 0];
+              paperRgb = [255, 255, 255];
+            }
+
+            const x = col * 8;
+            const y = (sectionStartRow + row) * 8 + line;
+
+            for (let bit = 0; bit < 8; bit++) {
+              const rgb = isBitSet(byte, bit) ? inkRgb : paperRgb;
+              const pixelIndex = (y * SCREEN.WIDTH + x + bit) * 4;
+              data[pixelIndex] = rgb[0];
+              data[pixelIndex + 1] = rgb[1];
+              data[pixelIndex + 2] = rgb[2];
+              data[pixelIndex + 3] = 255;
+            }
+          }
+        }
+      }
+    }
+  } else if (fct === 2 && header.fillPattern) {
+    // Attrs-only with fill pattern, scoped to region
+    const fillPattern = (typeof getSelectedPattern === 'function')
+      ? getSelectedPattern(header.fillPattern)
+      : header.fillPattern;
+
+    for (let r = 0; r < charRows; r++) {
+      const row = startRow + r;
+      for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
+        const attr = screenData[attrOffset + col + r * 32];
+        const { inkRgb, paperRgb } = getColorsRgb(attr);
+
+        const cellX = col * 8;
+        const cellY = row * 8;
+
+        for (let py = 0; py < 8; py++) {
+          const patternByte = fillPattern[py];
+          for (let px = 0; px < 8; px++) {
+            const bit = 7 - px;
+            const isInk = (patternByte & (1 << bit)) !== 0;
+            const rgb = isInk ? inkRgb : paperRgb;
+            const pixelIndex = ((cellY + py) * SCREEN.WIDTH + cellX + px) * 4;
+            data[pixelIndex] = rgb[0];
+            data[pixelIndex + 1] = rgb[1];
+            data[pixelIndex + 2] = rgb[2];
+            data[pixelIndex + 3] = 255;
+          }
+        }
+      }
+    }
+  }
 }
 
 /**
@@ -1015,6 +1120,16 @@ function calculateScaFileSize(frameCount) {
     // Default to type 0 if no header
     return SCA.HEADER_SIZE + frameCount + (frameCount * SCA.FRAME_SIZE);
   }
+  if (scaHeader.payloadType === 2 && scaHeader.region) {
+    // Type 2: Header + FCT byte + optional fill pattern + per-frame (header + blocks + delay)
+    const fct = scaHeader.fct;
+    const region = scaHeader.region;
+    const hasBitmap = (fct === 0 || fct === 1);
+    const hasAttrs = (fct === 1 || fct === 2);
+    const blockDataSize = (hasBitmap ? region.bitmapSize : 0) + (hasAttrs ? region.attrSize : 0);
+    const fillPatternSize = (fct === 2) ? SCA.FILL_PATTERN_SIZE : 0;
+    return SCA.HEADER_SIZE + 1 + fillPatternSize + (frameCount * (1 + blockDataSize + 1));
+  }
   if (scaHeader.payloadType === 1) {
     // Type 1: Header + delays + fill pattern (8 bytes) + attributes per frame (768 bytes)
     return SCA.HEADER_SIZE + frameCount + SCA.FILL_PATTERN_SIZE + (frameCount * SCA.ATTR_FRAME_SIZE);
@@ -1303,13 +1418,18 @@ function scheduleNextEditFrame() {
 /**
  * Saves the trimmed SCA file
  */
-function saveTrimmedSca() {
-  if (!scaHeader || !screenData) return;
+/**
+ * Builds trimmed SCA data from current editor state
+ * @returns {{ data: Uint8Array, trimmedCount: number } | null}
+ */
+function buildTrimmedScaData() {
+  if (!scaHeader || !screenData) return null;
 
   const trimmedCount = getTrimmedFrameCount();
-  if (trimmedCount === 0) {
-    alert('Cannot save: no frames remaining after trim.');
-    return;
+  if (trimmedCount === 0) return null;
+
+  if (scaHeader.payloadType === 2) {
+    return buildTrimmedScaType2Data(trimmedCount);
   }
 
   const isType1 = scaHeader.payloadType === 1;
@@ -1367,6 +1487,91 @@ function saveTrimmedSca() {
     }
   }
 
+  return { data: newData, trimmedCount };
+}
+
+/**
+ * Builds trimmed SCA type 2 data (packed frames with per-frame headers)
+ * @param {number} trimmedCount - Number of frames after trimming
+ * @returns {{ data: Uint8Array, trimmedCount: number } | null}
+ */
+function buildTrimmedScaType2Data(trimmedCount) {
+  if (!scaHeader || !scaHeader.frames || !scaHeader.region) return null;
+
+  const fct = scaHeader.fct;
+  const region = scaHeader.region;
+  const hasBitmap = (fct === 0 || fct === 1);
+  const hasAttrs = (fct === 1 || fct === 2);
+  const blockDataSize = (hasBitmap ? region.bitmapSize : 0) + (hasAttrs ? region.attrSize : 0);
+  // Per frame: 1 header byte + block data + 1 delay byte
+  const perFrameSize = 1 + blockDataSize + 1;
+
+  // Calculate new file size
+  // Header + FCT byte + optional fill pattern + (perFrameSize * trimmedCount)
+  const fctSize = 1;
+  const fillPatternSize = (fct === 2) ? SCA.FILL_PATTERN_SIZE : 0;
+  const newSize = SCA.HEADER_SIZE + fctSize + fillPatternSize + (perFrameSize * trimmedCount);
+  const newData = new Uint8Array(newSize);
+
+  // Write file header
+  newData[0] = 0x53; // 'S'
+  newData[1] = 0x43; // 'C'
+  newData[2] = 0x41; // 'A'
+  newData[3] = scaHeader.version;
+  newData[4] = scaHeader.width & 0xFF;
+  newData[5] = (scaHeader.width >> 8) & 0xFF;
+  newData[6] = scaHeader.height & 0xFF;
+  newData[7] = (scaHeader.height >> 8) & 0xFF;
+  newData[8] = scaHeader.borderColor;
+  newData[9] = trimmedCount & 0xFF;
+  newData[10] = (trimmedCount >> 8) & 0xFF;
+  newData[11] = scaHeader.payloadType;
+  newData[12] = SCA.HEADER_SIZE & 0xFF;
+  newData[13] = (SCA.HEADER_SIZE >> 8) & 0xFF;
+
+  let offset = SCA.HEADER_SIZE;
+
+  // Write FCT byte
+  newData[offset++] = ((scaHeader.fct & 0x0F) << 4) | (scaHeader.regionCode & 0x0F);
+
+  // Write fill pattern if FCT=2
+  if (fct === 2 && scaHeader.fillPattern) {
+    for (let i = 0; i < SCA.FILL_PATTERN_SIZE; i++) {
+      newData[offset++] = scaHeader.fillPattern[i];
+    }
+  }
+
+  // Write frames (skip trimmed/deleted)
+  for (let i = editTrimStart; i < scaHeader.frameCount - editTrimEnd; i++) {
+    if (optimizedOutFrames.has(i) || manuallyDeletedFrames.has(i)) continue;
+
+    const frame = scaHeader.frames[i];
+
+    // Frame header byte: [CCCCC BBB]
+    newData[offset++] = (frame.compressionType << 3) | frame.borderColor;
+
+    // Block data (bitmap + attrs)
+    const srcOffset = frame.offset;
+    for (let j = 0; j < blockDataSize; j++) {
+      newData[offset++] = screenData[srcOffset + j];
+    }
+
+    // Delay byte
+    newData[offset++] = getFrameDelay(i);
+  }
+
+  return { data: newData, trimmedCount };
+}
+
+function saveTrimmedSca() {
+  const result = buildTrimmedScaData();
+  if (!result) {
+    if (getTrimmedFrameCount() === 0) {
+      alert('Cannot save: no frames remaining after trim.');
+    }
+    return;
+  }
+
   // Generate filename
   const baseName = currentFileName.replace(/\.sca$/i, '');
   const hasTrim = editTrimStart > 0 || editTrimEnd > 0;
@@ -1382,7 +1587,7 @@ function saveTrimmedSca() {
   }
   const newFileName = `${baseName}${suffix}.sca`;
 
-  downloadFile(new Blob([newData], { type: 'application/octet-stream' }), newFileName);
+  downloadFile(new Blob([result.data], { type: 'application/octet-stream' }), newFileName);
 }
 
 /**
@@ -1508,6 +1713,1056 @@ function exportTo53cSeries() {
 }
 
 // ============================================================================
+// SCA Save Config Dialog
+// ============================================================================
+
+/** Standard fill patterns (8 bytes each, one per pixel line in a char cell) */
+const SCA_FILL_PATTERNS = {
+  checker: new Uint8Array([0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55]),
+  stripes: new Uint8Array([0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00]),
+  solid:   new Uint8Array([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+};
+
+/**
+ * Shows the SCA save configuration dialog
+ */
+function showScaSaveDialog() {
+  if (!scaHeader) return;
+
+  const trimmedCount = getTrimmedFrameCount();
+  if (trimmedCount === 0) {
+    alert('Cannot save: no frames remaining after trim.');
+    return;
+  }
+
+  const dialog = document.getElementById('scaSaveDialog');
+  if (!dialog) return;
+
+  // Set defaults from current file
+  const payloadSel = /** @type {HTMLSelectElement} */ (document.getElementById('scaSavePayloadType'));
+  const regionSel = /** @type {HTMLSelectElement} */ (document.getElementById('scaSaveRegion'));
+  const fctSel = /** @type {HTMLSelectElement} */ (document.getElementById('scaSaveFct'));
+  const patternSel = /** @type {HTMLSelectElement} */ (document.getElementById('scaSavePattern'));
+
+  if (payloadSel) payloadSel.value = String(scaHeader.payloadType);
+  if (regionSel) regionSel.value = String(scaHeader.regionCode || 5);
+  if (fctSel) fctSel.value = String(scaHeader.fct || 1);
+
+  // Set pattern default
+  if (patternSel) {
+    if (scaHeader.fillPattern) {
+      // Check if file pattern matches a known preset
+      const filePatternMatch = matchFillPattern(scaHeader.fillPattern);
+      patternSel.value = filePatternMatch || 'file';
+      // Show "From file" option only if file has a pattern
+      const fileOption = patternSel.querySelector('option[value="file"]');
+      if (fileOption) {
+        /** @type {HTMLOptionElement} */ (fileOption).style.display = scaHeader.fillPattern ? '' : 'none';
+      }
+    } else {
+      patternSel.value = 'checker';
+      const fileOption = patternSel.querySelector('option[value="file"]');
+      if (fileOption) /** @type {HTMLOptionElement} */ (fileOption).style.display = 'none';
+    }
+  }
+
+  updateScaSaveDialog();
+  dialog.style.display = '';
+}
+
+/**
+ * Matches a fill pattern against known presets
+ * @param {Uint8Array} pattern
+ * @returns {string|null}
+ */
+function matchFillPattern(pattern) {
+  for (const [name, preset] of Object.entries(SCA_FILL_PATTERNS)) {
+    let match = true;
+    for (let i = 0; i < 8; i++) {
+      if (pattern[i] !== preset[i]) { match = false; break; }
+    }
+    if (match) return name;
+  }
+  return null;
+}
+
+/**
+ * Updates the SCA save dialog state (visibility, warnings, size estimate)
+ */
+function updateScaSaveDialog() {
+  const payloadType = parseInt(/** @type {HTMLSelectElement} */ (document.getElementById('scaSavePayloadType')).value, 10);
+  const patternSel = /** @type {HTMLSelectElement} */ (document.getElementById('scaSavePattern'));
+  const regionSel = /** @type {HTMLSelectElement} */ (document.getElementById('scaSaveRegion'));
+  const fctSel = /** @type {HTMLSelectElement} */ (document.getElementById('scaSaveFct'));
+
+  // Show/hide conditional rows
+  const regionRow = document.getElementById('scaSaveRegionRow');
+  const fctRow = document.getElementById('scaSaveFctRow');
+  const compressionRow = document.getElementById('scaSaveCompressionRow');
+  const patternRow = document.getElementById('scaSavePatternRow');
+
+  const isType2 = payloadType === 2;
+  const compressionType = parseInt(/** @type {HTMLSelectElement} */ (document.getElementById('scaSaveCompression')).value, 10);
+  const isChunks = (compressionType === 4 || compressionType === 5);
+
+  // For chunks compression: force FCT=0 (bitmap only), region is user-selectable
+  if (isType2 && isChunks) {
+    if (fctSel) { fctSel.value = '0'; fctSel.disabled = true; }
+    if (regionSel) regionSel.disabled = false;
+  } else {
+    if (regionSel) regionSel.disabled = false;
+    if (fctSel) fctSel.disabled = false;
+  }
+
+  // Read fct and regionCode after potential chunks override
+  const regionCode = parseInt(regionSel ? regionSel.value : '5', 10);
+  const fct = parseInt(fctSel ? fctSel.value : '1', 10);
+
+  if (regionRow) regionRow.style.display = isType2 ? '' : 'none';
+  if (fctRow) fctRow.style.display = isType2 ? '' : 'none';
+  if (compressionRow) compressionRow.style.display = isType2 ? '' : 'none';
+
+  // Fill pattern visible for type 1, or type 2 with FCT=2 (attrs only) — not needed for chunks
+  const needsPattern = payloadType === 1 || (isType2 && fct === 2 && !isChunks);
+  if (patternRow) patternRow.style.display = needsPattern ? '' : 'none';
+
+  // Update warnings
+  const warnings = getScaSaveWarnings(payloadType, fct, regionCode);
+  const warningDiv = document.getElementById('scaSaveWarning');
+  if (warningDiv) {
+    if (warnings.length > 0) {
+      warningDiv.innerHTML = warnings.map(w => '\u26A0 ' + w).join('<br>');
+      warningDiv.style.display = '';
+    } else {
+      warningDiv.style.display = 'none';
+    }
+  }
+
+  // Update size estimate
+  const trimmedCount = getTrimmedFrameCount();
+  const size = calculateTargetScaFileSize(trimmedCount, payloadType, fct, regionCode);
+  const sizeSpan = document.getElementById('scaSaveSize');
+  if (sizeSpan) {
+    if (isType2 && compressionType !== 0) {
+      // Compressed size is variable; show uncompressed as upper bound
+      const sizeKB = size / 1024;
+      sizeSpan.textContent = '\u2264 ' + (sizeKB >= 1024
+        ? (sizeKB / 1024).toFixed(1) + ' MB'
+        : sizeKB.toFixed(1) + ' KB') + ' (compressed)';
+    } else if (size >= 1024 * 1024) {
+      sizeSpan.textContent = (size / (1024 * 1024)).toFixed(1) + ' MB';
+    } else {
+      sizeSpan.textContent = (size / 1024).toFixed(1) + ' KB';
+    }
+  }
+
+  // Update pattern preview
+  updateScaSavePatternPreview();
+}
+
+/**
+ * Updates the fill pattern preview canvas
+ */
+function updateScaSavePatternPreview() {
+  const canvas = /** @type {HTMLCanvasElement|null} */ (document.getElementById('scaSavePatternPreview'));
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const pattern = getSelectedFillPattern();
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, 16, 16);
+
+  // Draw 2x2 chars (8x8 pixels each, scaled to fit 16x16)
+  for (let line = 0; line < 8; line++) {
+    const byte = pattern[line];
+    for (let bit = 0; bit < 8; bit++) {
+      if (byte & (0x80 >> bit)) {
+        ctx.fillStyle = '#fff';
+      } else {
+        ctx.fillStyle = '#000';
+      }
+      ctx.fillRect(bit * 2, line * 2, 2, 2);
+    }
+  }
+}
+
+/**
+ * Gets the currently selected fill pattern bytes
+ * @returns {Uint8Array}
+ */
+function getSelectedFillPattern() {
+  const patternSel = /** @type {HTMLSelectElement} */ (document.getElementById('scaSavePattern'));
+  const patternName = patternSel ? patternSel.value : 'checker';
+
+  if (patternName === 'file' && scaHeader && scaHeader.fillPattern) {
+    return scaHeader.fillPattern;
+  }
+  return SCA_FILL_PATTERNS[patternName] || SCA_FILL_PATTERNS.checker;
+}
+
+/**
+ * Gets conversion warnings for the current dialog settings
+ * @param {number} targetType
+ * @param {number} targetFct
+ * @param {number} targetRegionCode
+ * @returns {string[]}
+ */
+function getScaSaveWarnings(targetType, targetFct, targetRegionCode) {
+  if (!scaHeader) return [];
+  const warnings = [];
+
+  const srcType = scaHeader.payloadType;
+  const srcFct = scaHeader.fct || 1;
+  const srcRegionCode = scaHeader.regionCode || 5;
+
+  // Determine what data source has
+  const srcHasBitmap = srcType === 0 || (srcType === 2 && (srcFct === 0 || srcFct === 1));
+  const srcHasAttrs = srcType === 0 || srcType === 1 || (srcType === 2 && (srcFct === 1 || srcFct === 2));
+
+  // Determine what target needs
+  const targetHasBitmap = targetType === 0 || (targetType === 2 && (targetFct === 0 || targetFct === 1));
+  const targetHasAttrs = targetType === 0 || targetType === 1 || (targetType === 2 && (targetFct === 1 || targetFct === 2));
+
+  // Bitmap loss
+  if (srcHasBitmap && !targetHasBitmap) {
+    warnings.push('Bitmap data will be discarded.');
+  }
+
+  // Attr loss
+  if (srcHasAttrs && !targetHasAttrs) {
+    warnings.push('Attribute data will be discarded.');
+  }
+
+  // Bitmap generation from pattern
+  if (!srcHasBitmap && targetHasBitmap) {
+    warnings.push('Bitmap will be generated from fill pattern.');
+  }
+
+  // Region reduction (only relevant when target is type 2)
+  if (targetType === 2) {
+    const srcRegion = (srcType === 2) ? (SCA.REGIONS[srcRegionCode] || SCA.REGIONS[5]) : SCA.REGIONS[5];
+    const targetRegion = SCA.REGIONS[targetRegionCode] || SCA.REGIONS[5];
+
+    // Check if target region is smaller than source
+    if (targetRegion.charRows < srcRegion.charRows ||
+        targetRegion.startRow > srcRegion.startRow ||
+        (targetRegion.startRow + targetRegion.charRows) < (srcRegion.startRow + srcRegion.charRows)) {
+      warnings.push('Data outside the selected region will be discarded.');
+    }
+  } else if (srcType === 2 && targetType !== 2) {
+    // Converting from partial region to full-screen type 0/1
+    const srcRegion = SCA.REGIONS[srcRegionCode] || SCA.REGIONS[5];
+    if (srcRegion.charRows < 24) {
+      warnings.push('Source has partial region; missing areas will use fill pattern or zeros.');
+    }
+  }
+
+  return warnings;
+}
+
+/**
+ * Calculates the target SCA file size for given parameters
+ * @param {number} frameCount
+ * @param {number} targetType
+ * @param {number} targetFct
+ * @param {number} targetRegionCode
+ * @returns {number}
+ */
+function calculateTargetScaFileSize(frameCount, targetType, targetFct, targetRegionCode) {
+  if (targetType === 2) {
+    const region = SCA.REGIONS[targetRegionCode] || SCA.REGIONS[5];
+    const hasBitmap = (targetFct === 0 || targetFct === 1);
+    const hasAttrs = (targetFct === 1 || targetFct === 2);
+    const blockDataSize = (hasBitmap ? region.bitmapSize : 0) + (hasAttrs ? region.attrSize : 0);
+    const fillPatternSize = (targetFct === 2) ? SCA.FILL_PATTERN_SIZE : 0;
+    return SCA.HEADER_SIZE + 1 + fillPatternSize + (frameCount * (1 + blockDataSize + 1));
+  }
+  if (targetType === 1) {
+    return SCA.HEADER_SIZE + frameCount + SCA.FILL_PATTERN_SIZE + (frameCount * SCA.ATTR_FRAME_SIZE);
+  }
+  // Type 0
+  return SCA.HEADER_SIZE + frameCount + (frameCount * SCA.FRAME_SIZE);
+}
+
+/**
+ * Shows/hides the save progress UI in the dialog and disables/enables controls.
+ * @param {boolean} show
+ * @param {string} [text]
+ * @param {number} [percent]
+ */
+function updateScaSaveProgress(show, text, percent) {
+  const row = document.getElementById('scaSaveProgressRow');
+  const textEl = document.getElementById('scaSaveProgressText');
+  const bar = document.getElementById('scaSaveProgressBar');
+  const okBtn = document.getElementById('scaSaveOkBtn');
+  const cancelBtn = document.getElementById('scaSaveCancelBtn');
+  if (row) row.style.display = show ? '' : 'none';
+  if (textEl && text !== undefined) textEl.textContent = text;
+  if (bar && percent !== undefined) bar.style.width = percent + '%';
+  if (okBtn) /** @type {HTMLButtonElement} */ (okBtn).disabled = show;
+  if (cancelBtn) /** @type {HTMLButtonElement} */ (cancelBtn).disabled = show;
+  // Disable/enable all select controls during processing
+  const selectIds = ['scaSavePayloadType', 'scaSaveRegion', 'scaSaveFct', 'scaSaveCompression', 'scaSavePattern', 'scaSaveOutput'];
+  for (const id of selectIds) {
+    const el = document.getElementById(id);
+    if (el) /** @type {HTMLSelectElement} */ (el).disabled = show;
+  }
+}
+
+/**
+ * Executes the SCA save with the configured settings
+ */
+async function executeScaSave() {
+  if (!scaHeader || !screenData) return;
+
+  const targetType = parseInt(/** @type {HTMLSelectElement} */ (document.getElementById('scaSavePayloadType')).value, 10);
+  const targetRegionCode = parseInt(/** @type {HTMLSelectElement} */ (document.getElementById('scaSaveRegion')).value, 10);
+  const targetFct = parseInt(/** @type {HTMLSelectElement} */ (document.getElementById('scaSaveFct')).value, 10);
+  const compressionType = parseInt(/** @type {HTMLSelectElement} */ (document.getElementById('scaSaveCompression')).value, 10);
+  const fillPattern = getSelectedFillPattern();
+
+  const trimmedCount = getTrimmedFrameCount();
+  if (trimmedCount === 0) {
+    alert('Cannot save: no frames remaining after trim.');
+    return;
+  }
+
+  // If no conversion needed, use existing fast path
+  const noConversion = targetType === scaHeader.payloadType &&
+    compressionType === 0 &&
+    (targetType !== 2 || (targetFct === scaHeader.fct && targetRegionCode === scaHeader.regionCode));
+
+  /** @type {{data: Uint8Array, trimmedCount: number}|null} */
+  let result;
+  if (noConversion) {
+    result = buildTrimmedScaData();
+  } else {
+    // Show progress for conversion/compression
+    updateScaSaveProgress(true, 'Processing frames...', 0);
+    await new Promise(r => setTimeout(r, 0)); // yield for UI update
+
+    /** @param {number} current @param {number} total */
+    const onProgress = async (current, total) => {
+      const pct = Math.round((current / total) * 100);
+      const compLabel = compressionType !== 0 ? 'Compressing' : 'Converting';
+      updateScaSaveProgress(true, `${compLabel} frame ${current}/${total}...`, pct);
+      await new Promise(r => setTimeout(r, 0));
+    };
+
+    result = await buildConvertedScaDataAsync(targetType, targetFct, targetRegionCode, fillPattern, compressionType, onProgress);
+    updateScaSaveProgress(false);
+  }
+
+  if (!result) {
+    updateScaSaveProgress(false);
+    return;
+  }
+
+  // Generate filename
+  const baseName = currentFileName.replace(/\.sca$/i, '');
+  const hasTrim = editTrimStart > 0 || editTrimEnd > 0;
+  const hasOptimized = optimizedOutFrames.size > 0;
+  const hasDeleted = manuallyDeletedFrames.size > 0;
+  let suffix = '';
+  if (noConversion) {
+    if (hasOptimized || hasDeleted) {
+      suffix = '_edited';
+    } else if (hasTrim) {
+      suffix = '_trimmed';
+    } else if (delaysModified) {
+      suffix = '_edited';
+    }
+  } else {
+    suffix = '_converted';
+  }
+
+  const outputFormat = /** @type {HTMLSelectElement} */ (document.getElementById('scaSaveOutput')).value;
+
+  if (outputFormat === 'asm') {
+    // ASM + SCA zip output
+    const scaFileName = `${baseName}${suffix}.sca`;
+    // Warn if SCA data + player code won't fit in 64K at ORG 25000
+    const estimatedEnd = 25000 + 300 + result.data.length; // ORG + ~code + data
+    if (estimatedEnd > 0x10000) {
+      const overBy = estimatedEnd - 0x10000;
+      alert(`Warning: SCA data (${result.data.length} bytes) is too large to fit in 64K at ORG 25000 — overflows by ~${overBy} bytes. The exported ASM player may not work correctly on real hardware.`);
+    }
+    const asmSource = generateScaPlayerAsm(
+      baseName + suffix,
+      result.trimmedCount,
+      targetType,
+      scaHeader.borderColor,
+      targetFct,
+      targetRegionCode,
+      compressionType,
+      fillPattern
+    );
+    const asmBytes = new TextEncoder().encode(asmSource);
+    const files = [
+      { name: scaFileName, data: result.data },
+      { name: `${baseName}${suffix}.asm`, data: asmBytes }
+    ];
+    const zipData = scaCreateZip(files);
+    downloadFile(new Blob([zipData], { type: 'application/zip' }), `${baseName}${suffix}_asm.zip`);
+  } else {
+    // SCA binary output
+    const newFileName = `${baseName}${suffix}.sca`;
+    downloadFile(new Blob([result.data], { type: 'application/octet-stream' }), newFileName);
+  }
+
+  // Close dialog
+  const dialog = document.getElementById('scaSaveDialog');
+  if (dialog) dialog.style.display = 'none';
+}
+
+// ============================================================================
+// SCA Conversion Helpers
+// ============================================================================
+
+/**
+ * Extracts bitmap bytes for a target region from the current source frame.
+ * Returns ZX-interleaved bitmap bytes for the specified region.
+ * @param {number} frameIndex - Source frame index
+ * @param {number} targetRegionCode - Target region code (0-5)
+ * @param {Uint8Array} fillPattern - Fill pattern for generating bitmap if source lacks it
+ * @returns {Uint8Array}
+ */
+function extractBitmapForRegion(frameIndex, targetRegionCode, fillPattern) {
+  const targetRegion = SCA.REGIONS[targetRegionCode] || SCA.REGIONS[5];
+  const targetBitmapSize = targetRegion.bitmapSize;
+  const result = new Uint8Array(targetBitmapSize);
+
+  const srcType = scaHeader.payloadType;
+  const targetStartThird = targetRegion.startRow / 8;
+  const targetThirdCount = targetRegion.charRows / 8;
+
+  if (srcType === 0) {
+    // Type 0: full 6912-byte frames, bitmap at offsets 0..6143
+    const frameOffset = scaHeader.frameDataStart + (frameIndex * scaHeader.frameSize);
+    let dstOffset = 0;
+    for (let t = 0; t < targetThirdCount; t++) {
+      const srcThird = targetStartThird + t;
+      const srcBitmapStart = frameOffset + srcThird * 2048;
+      for (let i = 0; i < 2048; i++) {
+        result[dstOffset++] = screenData[srcBitmapStart + i];
+      }
+    }
+  } else if (srcType === 1) {
+    // Type 1: no bitmap data, generate from fill pattern
+    return generateBitmapFromPattern(fillPattern, targetRegionCode);
+  } else if (srcType === 2) {
+    // Type 2: packed frames with region
+    const srcFct = scaHeader.fct;
+    const srcHasBitmap = (srcFct === 0 || srcFct === 1);
+    const srcRegion = scaHeader.region;
+    const srcRegionCode = scaHeader.regionCode || 5;
+
+    if (!srcHasBitmap) {
+      // Source has no bitmap, generate from pattern
+      return generateBitmapFromPattern(fillPattern, targetRegionCode);
+    }
+
+    // Source has bitmap - extract overlapping portions
+    const frame = scaHeader.frames[frameIndex];
+    const srcStartThird = srcRegion.startRow / 8;
+    const srcThirdCount = srcRegion.charRows / 8;
+
+    let dstOffset = 0;
+    for (let t = 0; t < targetThirdCount; t++) {
+      const absThird = targetStartThird + t;
+      const relInSrc = absThird - srcStartThird;
+
+      if (relInSrc >= 0 && relInSrc < srcThirdCount) {
+        // This third is in the source region - copy it
+        const srcBitmapStart = frame.offset + relInSrc * 2048;
+        for (let i = 0; i < 2048; i++) {
+          result[dstOffset++] = screenData[srcBitmapStart + i];
+        }
+      } else {
+        // This third is outside source region - fill with pattern
+        const patternThird = generateBitmapFromPattern(fillPattern, 0); // single third
+        for (let i = 0; i < 2048; i++) {
+          result[dstOffset++] = patternThird[i];
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Extracts attribute bytes for a target region from the current source frame.
+ * @param {number} frameIndex - Source frame index
+ * @param {number} targetRegionCode - Target region code (0-5)
+ * @returns {Uint8Array|null} - null if source has no attrs
+ */
+function extractAttrsForRegion(frameIndex, targetRegionCode) {
+  const targetRegion = SCA.REGIONS[targetRegionCode] || SCA.REGIONS[5];
+  const targetAttrSize = targetRegion.attrSize;
+  const result = new Uint8Array(targetAttrSize);
+
+  const srcType = scaHeader.payloadType;
+  const targetStartRow = targetRegion.startRow;
+  const targetCharRows = targetRegion.charRows;
+
+  if (srcType === 0) {
+    // Type 0: full frames, attrs at offset 6144..6911
+    const frameOffset = scaHeader.frameDataStart + (frameIndex * scaHeader.frameSize);
+    const attrBase = frameOffset + 6144;
+    const srcStartOffset = targetStartRow * 32;
+    for (let i = 0; i < targetAttrSize; i++) {
+      result[i] = screenData[attrBase + srcStartOffset + i];
+    }
+  } else if (srcType === 1) {
+    // Type 1: frame data is 768 bytes of full-screen attrs
+    const frameOffset = scaHeader.frameDataStart + (frameIndex * scaHeader.frameSize);
+    const srcStartOffset = targetStartRow * 32;
+    for (let i = 0; i < targetAttrSize; i++) {
+      result[i] = screenData[frameOffset + srcStartOffset + i];
+    }
+  } else if (srcType === 2) {
+    // Type 2: packed frames with region
+    const srcFct = scaHeader.fct;
+    const srcHasAttrs = (srcFct === 1 || srcFct === 2);
+    const srcRegion = scaHeader.region;
+    const srcHasBitmap = (srcFct === 0 || srcFct === 1);
+
+    if (!srcHasAttrs) {
+      // Source has no attrs - return zeros (white on black default)
+      result.fill(0x38); // white paper, black ink
+      return result;
+    }
+
+    // Source has attrs
+    const frame = scaHeader.frames[frameIndex];
+    const attrOffset = frame.offset + (srcHasBitmap ? srcRegion.bitmapSize : 0);
+    const srcStartRow = srcRegion.startRow;
+    const srcCharRows = srcRegion.charRows;
+
+    for (let row = 0; row < targetCharRows; row++) {
+      const absRow = targetStartRow + row;
+      const relRow = absRow - srcStartRow;
+      for (let col = 0; col < 32; col++) {
+        if (relRow >= 0 && relRow < srcCharRows) {
+          result[row * 32 + col] = screenData[attrOffset + relRow * 32 + col];
+        } else {
+          result[row * 32 + col] = 0x38; // default attr
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Generates ZX-interleaved bitmap bytes by tiling the 8-byte fill pattern.
+ * @param {Uint8Array} fillPattern - 8-byte fill pattern (one byte per pixel line)
+ * @param {number} regionCode - Target region code (0-5)
+ * @returns {Uint8Array}
+ */
+function generateBitmapFromPattern(fillPattern, regionCode) {
+  const region = SCA.REGIONS[regionCode] || SCA.REGIONS[5];
+  const bitmapSize = region.bitmapSize;
+  const result = new Uint8Array(bitmapSize);
+  const thirdCount = region.charRows / 8;
+
+  let dstOffset = 0;
+  for (let third = 0; third < thirdCount; third++) {
+    // Each third: 2048 bytes, ZX interleaved: line*256 + charRow*32 + col
+    for (let line = 0; line < 8; line++) {
+      for (let charRow = 0; charRow < 8; charRow++) {
+        for (let col = 0; col < 32; col++) {
+          result[third * 2048 + line * 256 + charRow * 32 + col] = fillPattern[line];
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Compresses a data block using the specified compression type.
+ * @param {Uint8Array} data - Raw data to compress
+ * @param {number} compressionType - 0=none, 1=ZX0, 2=LC, 3=RLE, 4=Chunks4x4, 5=Chunks4x2
+ * @param {{startCharRow: number, charRows: number}} [region] - Region info for chunks (optional)
+ * @returns {Uint8Array} - Compressed data (or original if uncompressed)
+ */
+function compressScaBlock(data, compressionType, region) {
+  if (compressionType === 1) {
+    // ZX0 forward mode, no skip, not backwards, not classic
+    const result = ZX0.compress(data, 0, false, false, false);
+    return result.data;
+  } else if (compressionType === 2) {
+    // Laser Compact
+    const result = LC.compress(data);
+    return result.data instanceof Uint8Array ? result.data : new Uint8Array(result.data);
+  } else if (compressionType === 3) {
+    // RLE
+    const result = RLE.compress(data);
+    return result.data;
+  } else if (compressionType === 4) {
+    // Chunks 4×4 — store only encoded bytes, codebook/LUT are static preset
+    const result = CHUNKS.compress(data, CHUNKS.MODE_4x4, undefined, region);
+    return result.encoded;
+  } else if (compressionType === 5) {
+    // Chunks 4×2 — store only encoded bytes, codebook/LUT are static preset
+    const result = CHUNKS.compress(data, CHUNKS.MODE_4x2, undefined, region);
+    return result.encoded;
+  }
+  return data;
+}
+
+/**
+ * Builds converted SCA data with a different payload type/FCT/region.
+ * @param {number} targetType - Target payload type (0, 1, 2)
+ * @param {number} targetFct - Target FCT (0, 1, 2) for type 2
+ * @param {number} targetRegionCode - Target region code (0-5) for type 2
+ * @param {Uint8Array} fillPattern - Fill pattern (8 bytes)
+ * @param {number} [compressionType] - Compression type for type 2 (0=none, 1=ZX0, 2=LC)
+ * @returns {{data: Uint8Array, trimmedCount: number}|null}
+ */
+function buildConvertedScaData(targetType, targetFct, targetRegionCode, fillPattern, compressionType) {
+  if (!scaHeader || !screenData) return null;
+
+  const trimmedCount = getTrimmedFrameCount();
+  if (trimmedCount === 0) return null;
+
+  compressionType = compressionType || 0;
+
+  // For compressed type 2, build dynamically since sizes are variable
+  if (targetType === 2 && compressionType !== 0) {
+    return buildCompressedScaType2Data(trimmedCount, targetFct, targetRegionCode, fillPattern, compressionType);
+  }
+
+  // Calculate target file size (for uncompressed)
+  const targetSize = calculateTargetScaFileSize(trimmedCount, targetType, targetFct, targetRegionCode);
+  const newData = new Uint8Array(targetSize);
+
+  // Write header
+  writeScaHeader(newData, trimmedCount, targetType);
+
+  let offset = SCA.HEADER_SIZE;
+
+  if (targetType === 0) {
+    // Type 0: delays followed by full 6912-byte frames
+    // Write delay table
+    for (let i = editTrimStart; i < scaHeader.frameCount - editTrimEnd; i++) {
+      if (!optimizedOutFrames.has(i) && !manuallyDeletedFrames.has(i)) {
+        newData[offset++] = getFrameDelay(i);
+      }
+    }
+
+    // Write frames
+    for (let i = editTrimStart; i < scaHeader.frameCount - editTrimEnd; i++) {
+      if (optimizedOutFrames.has(i) || manuallyDeletedFrames.has(i)) continue;
+
+      // Build full 6912-byte frame: bitmap (6144) + attrs (768)
+      const bitmap = extractBitmapForRegion(i, 5, fillPattern); // full screen
+      const attrs = extractAttrsForRegion(i, 5);
+
+      // Copy bitmap (6144 bytes)
+      for (let j = 0; j < 6144; j++) {
+        newData[offset + j] = bitmap[j];
+      }
+      // Copy attrs (768 bytes)
+      if (attrs) {
+        for (let j = 0; j < 768; j++) {
+          newData[offset + 6144 + j] = attrs[j];
+        }
+      } else {
+        // Default attrs
+        for (let j = 0; j < 768; j++) {
+          newData[offset + 6144 + j] = 0x38;
+        }
+      }
+      offset += SCA.FRAME_SIZE;
+    }
+  } else if (targetType === 1) {
+    // Type 1: delays + fill pattern (8 bytes) + attr frames (768 bytes each)
+    // Write delay table
+    for (let i = editTrimStart; i < scaHeader.frameCount - editTrimEnd; i++) {
+      if (!optimizedOutFrames.has(i) && !manuallyDeletedFrames.has(i)) {
+        newData[offset++] = getFrameDelay(i);
+      }
+    }
+
+    // Write fill pattern
+    for (let i = 0; i < SCA.FILL_PATTERN_SIZE; i++) {
+      newData[offset++] = fillPattern[i];
+    }
+
+    // Write attr frames
+    for (let i = editTrimStart; i < scaHeader.frameCount - editTrimEnd; i++) {
+      if (optimizedOutFrames.has(i) || manuallyDeletedFrames.has(i)) continue;
+
+      const attrs = extractAttrsForRegion(i, 5); // full screen attrs
+      if (attrs) {
+        for (let j = 0; j < SCA.ATTR_FRAME_SIZE; j++) {
+          newData[offset++] = attrs[j];
+        }
+      } else {
+        for (let j = 0; j < SCA.ATTR_FRAME_SIZE; j++) {
+          newData[offset++] = 0x38;
+        }
+      }
+    }
+  } else if (targetType === 2) {
+    // Type 2 uncompressed: FCT byte + optional fill pattern + per-frame (header + block + delay)
+    const targetRegion = SCA.REGIONS[targetRegionCode] || SCA.REGIONS[5];
+    const hasBitmap = (targetFct === 0 || targetFct === 1);
+    const hasAttrs = (targetFct === 1 || targetFct === 2);
+
+    // Write FCT byte (high nibble = FCT, low nibble = region code)
+    newData[offset++] = ((targetFct & 0x0F) << 4) | (targetRegionCode & 0x0F);
+
+    // Write fill pattern if FCT=2
+    if (targetFct === 2) {
+      for (let i = 0; i < SCA.FILL_PATTERN_SIZE; i++) {
+        newData[offset++] = fillPattern[i];
+      }
+    }
+
+    // Write frames
+    for (let i = editTrimStart; i < scaHeader.frameCount - editTrimEnd; i++) {
+      if (optimizedOutFrames.has(i) || manuallyDeletedFrames.has(i)) continue;
+
+      // Frame header byte: [CCCCC BBB] - compression=0, border from source
+      const borderColor = (scaHeader.payloadType === 2 && scaHeader.frames && scaHeader.frames[i])
+        ? scaHeader.frames[i].borderColor
+        : scaHeader.borderColor;
+      newData[offset++] = (0 << 3) | (borderColor & 0x07);
+
+      // Block data: bitmap then attrs
+      if (hasBitmap) {
+        const bitmap = extractBitmapForRegion(i, targetRegionCode, fillPattern);
+        for (let j = 0; j < targetRegion.bitmapSize; j++) {
+          newData[offset++] = bitmap[j];
+        }
+      }
+      if (hasAttrs) {
+        const attrs = extractAttrsForRegion(i, targetRegionCode);
+        if (attrs) {
+          for (let j = 0; j < targetRegion.attrSize; j++) {
+            newData[offset++] = attrs[j];
+          }
+        } else {
+          for (let j = 0; j < targetRegion.attrSize; j++) {
+            newData[offset++] = 0x38;
+          }
+        }
+      }
+
+      // Delay byte
+      newData[offset++] = getFrameDelay(i);
+    }
+  }
+
+  return { data: newData, trimmedCount };
+}
+
+/**
+ * Async version of buildConvertedScaData that yields to the browser periodically
+ * and reports progress via callback.
+ * @param {number} targetType
+ * @param {number} targetFct
+ * @param {number} targetRegionCode
+ * @param {Uint8Array} fillPattern
+ * @param {number} [compressionType]
+ * @param {((current: number, total: number) => Promise<void>)|undefined} [onProgress]
+ * @returns {Promise<{data: Uint8Array, trimmedCount: number}|null>}
+ */
+async function buildConvertedScaDataAsync(targetType, targetFct, targetRegionCode, fillPattern, compressionType, onProgress) {
+  if (!scaHeader || !screenData) return null;
+
+  const trimmedCount = getTrimmedFrameCount();
+  if (trimmedCount === 0) return null;
+
+  compressionType = compressionType || 0;
+
+  // Build list of frame indices to process
+  const frameIndices = [];
+  for (let i = editTrimStart; i < scaHeader.frameCount - editTrimEnd; i++) {
+    if (!optimizedOutFrames.has(i) && !manuallyDeletedFrames.has(i)) {
+      frameIndices.push(i);
+    }
+  }
+
+  // For compressed type 2, use dynamic buffer
+  if (targetType === 2 && compressionType !== 0) {
+    return buildCompressedScaType2DataAsync(trimmedCount, targetFct, targetRegionCode, fillPattern, compressionType, frameIndices, onProgress);
+  }
+
+  // Uncompressed conversion — still async with yield points for large files
+  const targetSize = calculateTargetScaFileSize(trimmedCount, targetType, targetFct, targetRegionCode);
+  const newData = new Uint8Array(targetSize);
+  writeScaHeader(newData, trimmedCount, targetType);
+
+  let offset = SCA.HEADER_SIZE;
+
+  if (targetType === 0) {
+    // Write delay table
+    for (const idx of frameIndices) {
+      newData[offset++] = getFrameDelay(idx);
+    }
+    // Write frames with progress
+    for (let f = 0; f < frameIndices.length; f++) {
+      const i = frameIndices[f];
+      const bitmap = extractBitmapForRegion(i, 5, fillPattern);
+      const attrs = extractAttrsForRegion(i, 5);
+      for (let j = 0; j < 6144; j++) newData[offset + j] = bitmap[j];
+      if (attrs) {
+        for (let j = 0; j < 768; j++) newData[offset + 6144 + j] = attrs[j];
+      } else {
+        for (let j = 0; j < 768; j++) newData[offset + 6144 + j] = 0x38;
+      }
+      offset += SCA.FRAME_SIZE;
+      if (onProgress && f % 5 === 0) await onProgress(f + 1, frameIndices.length);
+    }
+  } else if (targetType === 1) {
+    // Write delay table
+    for (const idx of frameIndices) {
+      newData[offset++] = getFrameDelay(idx);
+    }
+    // Write fill pattern
+    for (let i = 0; i < SCA.FILL_PATTERN_SIZE; i++) newData[offset++] = fillPattern[i];
+    // Write attr frames
+    for (let f = 0; f < frameIndices.length; f++) {
+      const i = frameIndices[f];
+      const attrs = extractAttrsForRegion(i, 5);
+      if (attrs) {
+        for (let j = 0; j < SCA.ATTR_FRAME_SIZE; j++) newData[offset++] = attrs[j];
+      } else {
+        for (let j = 0; j < SCA.ATTR_FRAME_SIZE; j++) newData[offset++] = 0x38;
+      }
+      if (onProgress && f % 10 === 0) await onProgress(f + 1, frameIndices.length);
+    }
+  } else if (targetType === 2) {
+    // Type 2 uncompressed
+    const targetRegion = SCA.REGIONS[targetRegionCode] || SCA.REGIONS[5];
+    const hasBitmap = (targetFct === 0 || targetFct === 1);
+    const hasAttrs = (targetFct === 1 || targetFct === 2);
+    newData[offset++] = ((targetFct & 0x0F) << 4) | (targetRegionCode & 0x0F);
+    if (targetFct === 2) {
+      for (let i = 0; i < SCA.FILL_PATTERN_SIZE; i++) newData[offset++] = fillPattern[i];
+    }
+    for (let f = 0; f < frameIndices.length; f++) {
+      const i = frameIndices[f];
+      const borderColor = (scaHeader.payloadType === 2 && scaHeader.frames && scaHeader.frames[i])
+        ? scaHeader.frames[i].borderColor : scaHeader.borderColor;
+      newData[offset++] = (0 << 3) | (borderColor & 0x07);
+      if (hasBitmap) {
+        const bitmap = extractBitmapForRegion(i, targetRegionCode, fillPattern);
+        for (let j = 0; j < targetRegion.bitmapSize; j++) newData[offset++] = bitmap[j];
+      }
+      if (hasAttrs) {
+        const attrs = extractAttrsForRegion(i, targetRegionCode);
+        if (attrs) {
+          for (let j = 0; j < targetRegion.attrSize; j++) newData[offset++] = attrs[j];
+        } else {
+          for (let j = 0; j < targetRegion.attrSize; j++) newData[offset++] = 0x38;
+        }
+      }
+      newData[offset++] = getFrameDelay(i);
+      if (onProgress && f % 5 === 0) await onProgress(f + 1, frameIndices.length);
+    }
+  }
+
+  return { data: newData, trimmedCount };
+}
+
+/**
+ * Async version of buildCompressedScaType2Data with progress reporting.
+ * @param {number} trimmedCount
+ * @param {number} targetFct
+ * @param {number} targetRegionCode
+ * @param {Uint8Array} fillPattern
+ * @param {number} compressionType
+ * @param {number[]} frameIndices
+ * @param {((current: number, total: number) => Promise<void>)|undefined} [onProgress]
+ * @returns {Promise<{data: Uint8Array, trimmedCount: number}|null>}
+ */
+async function buildCompressedScaType2DataAsync(trimmedCount, targetFct, targetRegionCode, fillPattern, compressionType, frameIndices, onProgress) {
+  const targetRegion = SCA.REGIONS[targetRegionCode] || SCA.REGIONS[5];
+  const isChunks = (compressionType === 4 || compressionType === 5);
+  const hasBitmap = isChunks ? true : (targetFct === 0 || targetFct === 1);
+  const hasAttrs = isChunks ? false : (targetFct === 1 || targetFct === 2);
+
+  const chunks = [];
+  let totalSize = 0;
+
+  // Header
+  const header = new Uint8Array(SCA.HEADER_SIZE);
+  writeScaHeader(header, trimmedCount, 2);
+  chunks.push(header);
+  totalSize += SCA.HEADER_SIZE;
+
+  // FCT byte
+  const fctByte = new Uint8Array([((targetFct & 0x0F) << 4) | (targetRegionCode & 0x0F)]);
+  chunks.push(fctByte);
+  totalSize += 1;
+
+  // Fill pattern if FCT=2
+  if (targetFct === 2) {
+    const fp = new Uint8Array(SCA.FILL_PATTERN_SIZE);
+    for (let i = 0; i < SCA.FILL_PATTERN_SIZE; i++) fp[i] = fillPattern[i];
+    chunks.push(fp);
+    totalSize += SCA.FILL_PATTERN_SIZE;
+  }
+
+  // Process frames with progress
+  for (let f = 0; f < frameIndices.length; f++) {
+    const i = frameIndices[f];
+
+    // Frame header byte: [CCCCC BBB]
+    const borderColor = (scaHeader.payloadType === 2 && scaHeader.frames && scaHeader.frames[i])
+      ? scaHeader.frames[i].borderColor : scaHeader.borderColor;
+    const frameHeader = new Uint8Array([(compressionType << 3) | (borderColor & 0x07)]);
+    chunks.push(frameHeader);
+    totalSize += 1;
+
+    // Compress bitmap and attrs as separate blocks for direct-to-screen decompression
+    const chunksRegion = isChunks ? { startCharRow: targetRegion.startRow, charRows: targetRegion.charRows } : undefined;
+    if (hasBitmap) {
+      const bitmapData = extractBitmapForRegion(i, targetRegionCode, fillPattern);
+      const compressedBitmap = compressScaBlock(bitmapData, compressionType, chunksRegion);
+      chunks.push(compressedBitmap);
+      totalSize += compressedBitmap.length;
+    }
+    if (hasAttrs) {
+      const attrsData = extractAttrsForRegion(i, targetRegionCode) || new Uint8Array(targetRegion.attrSize).fill(0x38);
+      const compressedAttrs = compressScaBlock(attrsData, compressionType);
+      chunks.push(compressedAttrs);
+      totalSize += compressedAttrs.length;
+    }
+
+    // Delay byte
+    const delayByte = new Uint8Array([getFrameDelay(i)]);
+    chunks.push(delayByte);
+    totalSize += 1;
+
+    // Report progress (yield every frame for compressed, since each frame is slow)
+    if (onProgress) await onProgress(f + 1, frameIndices.length);
+  }
+
+  // Assemble
+  const result = new Uint8Array(totalSize);
+  let offset = 0;
+  for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.length; }
+
+  return { data: result, trimmedCount };
+}
+
+/**
+ * Writes the standard 14-byte SCA header.
+ * @param {Uint8Array} data
+ * @param {number} frameCount
+ * @param {number} payloadType
+ */
+function writeScaHeader(data, frameCount, payloadType) {
+  data[0] = 0x53; // 'S'
+  data[1] = 0x43; // 'C'
+  data[2] = 0x41; // 'A'
+  data[3] = scaHeader.version;
+  data[4] = scaHeader.width & 0xFF;
+  data[5] = (scaHeader.width >> 8) & 0xFF;
+  data[6] = scaHeader.height & 0xFF;
+  data[7] = (scaHeader.height >> 8) & 0xFF;
+  data[8] = scaHeader.borderColor;
+  data[9] = frameCount & 0xFF;
+  data[10] = (frameCount >> 8) & 0xFF;
+  data[11] = payloadType;
+  data[12] = SCA.HEADER_SIZE & 0xFF;
+  data[13] = (SCA.HEADER_SIZE >> 8) & 0xFF;
+}
+
+/**
+ * Builds compressed SCA type 2 data using dynamic buffer (since frame sizes vary).
+ * @param {number} trimmedCount
+ * @param {number} targetFct
+ * @param {number} targetRegionCode
+ * @param {Uint8Array} fillPattern
+ * @param {number} compressionType - 1=ZX0, 2=LC
+ * @returns {{data: Uint8Array, trimmedCount: number}|null}
+ */
+function buildCompressedScaType2Data(trimmedCount, targetFct, targetRegionCode, fillPattern, compressionType) {
+  const targetRegion = SCA.REGIONS[targetRegionCode] || SCA.REGIONS[5];
+  const isChunks = (compressionType === 4 || compressionType === 5);
+  const hasBitmap = isChunks ? true : (targetFct === 0 || targetFct === 1);
+  const hasAttrs = isChunks ? false : (targetFct === 1 || targetFct === 2);
+
+  // Build output dynamically using array of chunks
+  const chunks = [];
+  let totalSize = 0;
+
+  // Header (14 bytes)
+  const header = new Uint8Array(SCA.HEADER_SIZE);
+  writeScaHeader(header, trimmedCount, 2);
+  chunks.push(header);
+  totalSize += SCA.HEADER_SIZE;
+
+  // FCT byte
+  const fctByte = new Uint8Array([((targetFct & 0x0F) << 4) | (targetRegionCode & 0x0F)]);
+  chunks.push(fctByte);
+  totalSize += 1;
+
+  // Fill pattern if FCT=2
+  if (targetFct === 2) {
+    const fp = new Uint8Array(SCA.FILL_PATTERN_SIZE);
+    for (let i = 0; i < SCA.FILL_PATTERN_SIZE; i++) fp[i] = fillPattern[i];
+    chunks.push(fp);
+    totalSize += SCA.FILL_PATTERN_SIZE;
+  }
+
+  // Frames
+  for (let i = editTrimStart; i < scaHeader.frameCount - editTrimEnd; i++) {
+    if (optimizedOutFrames.has(i) || manuallyDeletedFrames.has(i)) continue;
+
+    // Frame header byte: [CCCCC BBB]
+    const borderColor = (scaHeader.payloadType === 2 && scaHeader.frames && scaHeader.frames[i])
+      ? scaHeader.frames[i].borderColor
+      : scaHeader.borderColor;
+    const frameHeader = new Uint8Array([(compressionType << 3) | (borderColor & 0x07)]);
+    chunks.push(frameHeader);
+    totalSize += 1;
+
+    // Compress bitmap and attrs as separate blocks so the player can
+    // decompress each directly to its screen address (no buffer needed)
+    const chunksRegion = isChunks ? { startCharRow: targetRegion.startRow, charRows: targetRegion.charRows } : undefined;
+    if (hasBitmap) {
+      const bitmapData = extractBitmapForRegion(i, targetRegionCode, fillPattern);
+      const compressedBitmap = compressScaBlock(bitmapData, compressionType, chunksRegion);
+      chunks.push(compressedBitmap);
+      totalSize += compressedBitmap.length;
+    }
+    if (hasAttrs) {
+      const attrsData = extractAttrsForRegion(i, targetRegionCode) || new Uint8Array(targetRegion.attrSize).fill(0x38);
+      const compressedAttrs = compressScaBlock(attrsData, compressionType);
+      chunks.push(compressedAttrs);
+      totalSize += compressedAttrs.length;
+    }
+
+    // Delay byte
+    const delayByte = new Uint8Array([getFrameDelay(i)]);
+    chunks.push(delayByte);
+    totalSize += 1;
+  }
+
+  // Assemble final buffer
+  const result = new Uint8Array(totalSize);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  return { data: result, trimmedCount };
+}
+
+// ============================================================================
 // Save dispatcher
 // ============================================================================
 
@@ -1515,7 +2770,7 @@ function handleScaSave() {
   const sel = document.getElementById('editSaveFormat');
   const fmt = sel ? /** @type {HTMLSelectElement} */ (sel).value : 'sca';
   switch (fmt) {
-    case 'sca': saveTrimmedSca(); break;
+    case 'sca': showScaSaveDialog(); break;
     case 'scr': exportToScrSeries(); break;
     case '53c': exportTo53cSeries(); break;
     case 'gif': exportToGif(); break;
@@ -1953,5 +3208,725 @@ async function exportToPngSeries() {
   }
 }
 
+// ============================================================================
+// ASM (zip) export
+// ============================================================================
+
+/**
+ * Generates SCA player ASM source for sjasmplus
+ * @param {string} baseName - base filename (without extension)
+ * @param {number} frameCount - number of frames
+ * @param {number} payloadType - 0 = full frames, 1 = attr-only with fill pattern
+ * @param {number} borderColor - border color (0-7)
+ * @returns {string}
+ */
+/**
+ * Generates Z80 assembly source for an SCA animation player.
+ * Supports all payload types (0, 1, 2) and compression (ZX0, LC).
+ * @param {string} baseName
+ * @param {number} frameCount
+ * @param {number} payloadType
+ * @param {number} borderColor
+ * @param {number} [fct] - Frame content type (for type 2)
+ * @param {number} [regionCode] - Region code (for type 2)
+ * @param {number} [compressionType] - 0=none, 1=ZX0, 2=LC
+ * @param {Uint8Array} [fillPattern] - Fill pattern bytes
+ * @returns {string}
+ */
+function generateScaPlayerAsm(baseName, frameCount, payloadType, borderColor, fct, regionCode, compressionType, fillPattern) {
+  const scaFile = baseName + '.sca';
+  const snaFile = baseName + '.sna';
+  const isType1 = payloadType === 1;
+  const isType2 = payloadType === 2;
+  compressionType = compressionType || 0;
+  fct = (fct !== undefined && fct !== null) ? fct : 1;
+  regionCode = (regionCode !== undefined) ? regionCode : 5;
+
+  let asm = '';
+  asm += '; SCA animation player\n';
+  asm += '; Generated by SpectraLab - https://github.com/nicklasio/SpectraLab\n';
+  asm += '; Target: sjasmplus, ZX Spectrum 128K\n';
+  asm += ';\n';
+  asm += '; Frames: ' + frameCount + '\n';
+
+  if (isType2) {
+    const comprNames = ['uncompressed', 'ZX0', 'Laser Compact', 'RLE', 'Chunks 4×4', 'Chunks 4×2'];
+    const fctNames = ['bitmap only', 'bitmap + attrs', 'attrs only'];
+    const regionNames = ['top third', 'mid third', 'bot third', 'top+mid', 'mid+bot', 'full screen'];
+    asm += '; Payload type: 2 (packed)\n';
+    asm += '; FCT: ' + fct + ' (' + (fctNames[fct] || '?') + ')\n';
+    asm += '; Region: ' + regionCode + ' (' + (regionNames[regionCode] || '?') + ')\n';
+    asm += '; Compression: ' + compressionType + ' (' + (comprNames[compressionType] || '?') + ')\n';
+  } else {
+    asm += '; Payload type: ' + payloadType + (isType1 ? ' (attrs + fill pattern)' : ' (full 6912-byte frames)') + '\n';
+  }
+  asm += '; Border color: ' + borderColor + '\n';
+  asm += '\n';
+  asm += '  DEVICE ZXSPECTRUM128\n';
+  asm += '  ORG 25000\n';
+  asm += '\n';
+  asm += 'FRAME_COUNT   EQU ' + frameCount + '\n';
+  asm += 'BORDER_COLOR  EQU ' + borderColor + '\n';
+
+  if (!isType2) {
+    const frameSize = isType1 ? SCA.ATTR_FRAME_SIZE : SCA.FRAME_SIZE;
+    asm += 'FRAME_SIZE    EQU ' + frameSize + '\n';
+  } else {
+    const region = SCA.REGIONS[regionCode] || SCA.REGIONS[5];
+    const hasBitmap = (fct === 0 || fct === 1);
+    const hasAttrs = (fct === 1 || fct === 2);
+    const blockSize = (hasBitmap ? region.bitmapSize : 0) + (hasAttrs ? region.attrSize : 0);
+    asm += 'BLOCK_SIZE    EQU ' + blockSize + '\n';
+    if (hasBitmap) asm += 'BITMAP_SIZE   EQU ' + region.bitmapSize + '\n';
+    if (hasAttrs) asm += 'ATTR_SIZE     EQU ' + region.attrSize + '\n';
+    asm += 'SCREEN_BMP    EQU #4000 + ' + (region.startRow * 256) + '\n';
+    asm += 'SCREEN_ATTR   EQU #5800 + ' + (region.startRow * 32) + '\n';
+  }
+  asm += '\n';
+
+  asm += 'Start:\n';
+  asm += '  DI\n';
+  asm += '  LD SP,25000       ; stack grows down below our code\n';
+  asm += '  ; Select 48K BASIC ROM + bank 0 at #C000 (safe IM 1 handler)\n';
+  asm += '  LD A,#10           ; bit4=ROM1(48K), bits0-2=bank0\n';
+  asm += '  LD BC,#7FFD\n';
+  asm += '  OUT (C),A\n';
+  asm += '  LD A,BORDER_COLOR\n';
+  asm += '  OUT (#FE),A\n';
+  asm += '\n';
+
+  if (isType1 || (isType2 && fct === 2)) {
+    // Fill bitmap for type 1 or type 2 attrs-only
+    asm += '  ; Fill bitmap with fill pattern\n';
+    asm += '  LD IX,FillPattern\n';
+    asm += '  LD DE,#4000\n';
+    asm += '  LD C,3           ; 3 thirds\n';
+    asm += 'FillThird:\n';
+    asm += '  LD B,8           ; 8 pixel lines per third\n';
+    asm += '  PUSH IX\n';
+    asm += 'FillLine:\n';
+    asm += '  LD A,(IX+0)\n';
+    asm += '  PUSH BC\n';
+    asm += '  LD B,0           ; 256 bytes\n';
+    asm += 'FillBlock:\n';
+    asm += '  LD (DE),A\n';
+    asm += '  INC DE\n';
+    asm += '  DJNZ FillBlock\n';
+    asm += '  INC IX\n';
+    asm += '  POP BC\n';
+    asm += '  DJNZ FillLine\n';
+    asm += '  POP IX\n';
+    asm += '  DEC C\n';
+    asm += '  JR NZ,FillThird\n';
+    asm += '\n';
+  }
+
+  if (isType2 && (compressionType === 4 || compressionType === 5)) {
+    // Chunks is bitmap-only — set attrs to 0x38 (black on white) so bitmap is visible
+    asm += '  ; Init screen attrs (chunks = bitmap only, no attr data)\n';
+    asm += '  LD HL,#5800\n';
+    asm += '  LD DE,#5801\n';
+    asm += '  LD BC,767\n';
+    asm += '  LD (HL),#38       ; ink=0 paper=7\n';
+    asm += '  LDIR\n';
+    asm += '\n';
+  }
+
+  if (isType2 && compressionType !== 0) {
+    // Type 2 compressed player
+    asm += generateType2CompressedPlayer(frameCount, fct, regionCode, compressionType);
+  } else if (isType2) {
+    // Type 2 uncompressed player
+    asm += generateType2UncompressedPlayer(frameCount, fct, regionCode);
+  } else {
+    // Type 0/1 player (original logic)
+    asm += '  IM 1\n';
+    asm += '  EI\n';
+    asm += '\n';
+    asm += 'Restart:\n';
+    asm += '  LD IX,DelayTable\n';
+    asm += '  LD HL,FrameData\n';
+    asm += '  LD A,FRAME_COUNT\n';
+    asm += '  LD (FramesLeft),A\n';
+    asm += '\n';
+    asm += 'MainLoop:\n';
+
+    if (isType1) {
+      asm += '  LD DE,#5800\n';
+      asm += '  LD BC,768\n';
+    } else {
+      asm += '  LD DE,#4000\n';
+      asm += '  LD BC,6912\n';
+    }
+
+    asm += '  PUSH HL\n';
+    asm += '  LDIR\n';
+    asm += '  POP HL\n';
+    asm += '\n';
+    asm += '  LD A,(IX+0)\n';
+    asm += '  OR A\n';
+    asm += '  JR Z,.NoDelay\n';
+    asm += '  LD B,A\n';
+    asm += '.WaitLoop:\n';
+    asm += '  HALT\n';
+    asm += '  DJNZ .WaitLoop\n';
+    asm += '.NoDelay:\n';
+    asm += '\n';
+    asm += '  LD BC,FRAME_SIZE\n';
+    asm += '  ADD HL,BC\n';
+    asm += '  INC IX\n';
+    asm += '  LD A,(FramesLeft)\n';
+    asm += '  DEC A\n';
+    asm += '  LD (FramesLeft),A\n';
+    asm += '  JR NZ,MainLoop\n';
+    asm += '  JR Restart\n';
+    asm += '\n';
+    asm += 'FramesLeft:\n';
+    asm += '  DB 0\n';
+  }
+
+  // Decompressor include for compressed type 2
+  if (isType2 && compressionType === 1) {
+    asm += '\n; --- ZX0 depacker (forward, standard) ---\n';
+    asm += generateZx0Depacker();
+  } else if (isType2 && compressionType === 2) {
+    asm += '\n; --- Laser Compact 5.2 depacker ---\n';
+    asm += generateLcDepacker();
+  } else if (isType2 && compressionType === 3) {
+    asm += '\n; --- RLE depacker ---\n';
+    asm += generateRleDepacker();
+  } else if (isType2 && (compressionType === 4 || compressionType === 5)) {
+    asm += '\n; --- Chunks depacker ---\n';
+    asm += compressionType === 4 ? CHUNKS.getDepacker4x4() : CHUNKS.getDepacker4x2();
+    // Embed lookup table derived from static preset codebook
+    const chunkMode = compressionType === 4 ? CHUNKS.MODE_4x4 : CHUNKS.MODE_4x2;
+    const preset = CHUNKS.getPreset('standard', chunkMode);
+    const lut = CHUNKS.generateLookupTable(preset, chunkMode);
+    asm += '\n; --- Chunks lookup table (static preset) ---\n';
+    asm += 'ChunksLUT:\n';
+    const lutLines = [];
+    for (let i = 0; i < lut.length; i += 8) {
+      const slice = Array.from(lut.subarray(i, Math.min(i + 8, lut.length)));
+      lutLines.push('  DB ' + slice.map(b => '#' + b.toString(16).toUpperCase().padStart(2, '0')).join(','));
+    }
+    asm += lutLines.join('\n') + '\n';
+  }
+
+  // Data section
+  asm += '\n';
+
+  if (isType2) {
+    // Type 2: frame data starts after header + FCT byte + optional fill pattern
+    const fctByteOffset = SCA.HEADER_SIZE;
+    const fillPatternOfs = (fct === 2) ? fctByteOffset + 1 : 0;
+    const frameStreamOffset = fctByteOffset + 1 + ((fct === 2) ? SCA.FILL_PATTERN_SIZE : 0);
+
+    asm += 'ScaData:\n';
+    asm += '  INCBIN "' + scaFile + '"\n';
+    asm += '\n';
+    asm += 'FrameStream EQU ScaData + ' + frameStreamOffset + '\n';
+    if (fct === 2) {
+      asm += 'FillPattern EQU ScaData + ' + fillPatternOfs + '\n';
+    }
+  } else {
+    const delayTableOffset = SCA.HEADER_SIZE;
+    const fillPatternOffset = isType1 ? SCA.HEADER_SIZE + frameCount : 0;
+    const frameDataOffset = isType1
+      ? SCA.HEADER_SIZE + frameCount + SCA.FILL_PATTERN_SIZE
+      : SCA.HEADER_SIZE + frameCount;
+
+    asm += 'ScaData:\n';
+    asm += '  INCBIN "' + scaFile + '"\n';
+    asm += '\n';
+    asm += 'DelayTable EQU ScaData + ' + delayTableOffset + '\n';
+    if (isType1) {
+      asm += 'FillPattern EQU ScaData + ' + fillPatternOffset + '\n';
+    }
+    asm += 'FrameData  EQU ScaData + ' + frameDataOffset + '\n';
+  }
+
+  asm += '\n';
+  asm += '  SAVESNA "' + snaFile + '", Start\n';
+
+  return asm;
+}
+
+/**
+ * Generates the main loop for type 2 uncompressed player.
+ */
+function generateType2UncompressedPlayer(frameCount, fct, regionCode) {
+  const region = SCA.REGIONS[regionCode] || SCA.REGIONS[5];
+  const hasBitmap = (fct === 0 || fct === 1);
+  const hasAttrs = (fct === 1 || fct === 2);
+
+  let asm = '';
+  asm += '  IM 1\n';
+  asm += '  EI\n';
+  asm += '\n';
+  asm += 'Restart:\n';
+  asm += '  LD HL,FrameStream\n';
+  asm += '  LD A,FRAME_COUNT\n';
+  asm += '  LD (FramesLeft),A\n';
+  asm += '\n';
+  asm += 'MainLoop:\n';
+  asm += '  ; Read frame header [CCCCC BBB]\n';
+  asm += '  LD A,(HL)\n';
+  asm += '  INC HL\n';
+  asm += '  AND 7\n';
+  asm += '  OUT (#FE),A         ; set border color\n';
+  asm += '\n';
+
+  if (hasBitmap) {
+    asm += '  ; Copy bitmap to screen\n';
+    asm += '  LD DE,SCREEN_BMP\n';
+    asm += '  LD BC,BITMAP_SIZE\n';
+    asm += '  LDIR\n';
+  }
+  if (hasAttrs) {
+    asm += '  ; Copy attrs to screen\n';
+    asm += '  LD DE,SCREEN_ATTR\n';
+    asm += '  LD BC,ATTR_SIZE\n';
+    asm += '  LDIR\n';
+  }
+
+  asm += '\n';
+  asm += '  ; Read delay byte and wait\n';
+  asm += '  LD A,(HL)\n';
+  asm += '  INC HL\n';
+  asm += '  OR A\n';
+  asm += '  JR Z,.NoDelay\n';
+  asm += '  LD B,A\n';
+  asm += '.WaitLoop:\n';
+  asm += '  HALT\n';
+  asm += '  DJNZ .WaitLoop\n';
+  asm += '.NoDelay:\n';
+  asm += '\n';
+  asm += '  LD A,(FramesLeft)\n';
+  asm += '  DEC A\n';
+  asm += '  LD (FramesLeft),A\n';
+  asm += '  JR NZ,MainLoop\n';
+  asm += '  JR Restart\n';
+  asm += '\n';
+  asm += 'FramesLeft:\n';
+  asm += '  DB 0\n';
+
+  return asm;
+}
+
+/**
+ * Generates the main loop for type 2 compressed player.
+ *
+ * Bitmap and attrs are compressed as separate blocks in the SCA stream,
+ * so each is decompressed directly to its screen address — no buffer needed.
+ */
+function generateType2CompressedPlayer(frameCount, fct, regionCode, compressionType) {
+  const region = SCA.REGIONS[regionCode] || SCA.REGIONS[5];
+  const isChunks = (compressionType === 4 || compressionType === 5);
+  const hasBitmap = isChunks ? true : (fct === 0 || fct === 1);
+  const hasAttrs = isChunks ? false : (fct === 1 || fct === 2);
+  const depackCall = compressionType === 1 ? 'Dzx0' : compressionType === 3 ? 'DeRle' : 'DeLc';
+
+  let asm = '';
+  asm += '  IM 1\n';
+  asm += '  EI\n';
+  asm += '\n';
+  asm += 'Restart:\n';
+  asm += '  LD HL,FrameStream\n';
+  asm += '  LD A,FRAME_COUNT\n';
+  asm += '  LD (FramesLeft),A\n';
+  asm += '\n';
+  asm += 'MainLoop:\n';
+  asm += '  ; Read frame header [CCCCC BBB]\n';
+  asm += '  LD A,(HL)\n';
+  asm += '  INC HL\n';
+  asm += '  AND 7\n';
+  asm += '  OUT (#FE),A         ; set border color\n';
+  asm += '\n';
+
+  if (isChunks) {
+    // Chunks: per-frame data is just encoded bytes, LUT is embedded once
+    const deChunksCall = compressionType === 4 ? 'DeChunks4x4' : 'DeChunks4x2';
+    const thirdCount = region.charRows / 8;
+    asm += '  DI\n';
+    asm += '  LD IX,ChunksLUT\n';
+    asm += '  LD DE,SCREEN_BMP\n';
+    asm += '  LD C,' + thirdCount + '             ; number of thirds\n';
+    asm += '  CALL ' + deChunksCall + '\n';
+    asm += '  EI\n';
+    asm += '  ; HL now past encoded data\n';
+  } else {
+    // Bitmap and attrs are compressed as separate blocks, so each can be
+    // decompressed directly to its screen address — no intermediate buffer needed
+    if (hasBitmap) {
+      asm += '  ; Decompress bitmap directly to screen\n';
+      asm += '  LD DE,SCREEN_BMP\n';
+      asm += '  CALL ' + depackCall + '\n';
+    }
+    if (hasAttrs) {
+      asm += '  ; Decompress attrs directly to screen\n';
+      asm += '  LD DE,SCREEN_ATTR\n';
+      asm += '  CALL ' + depackCall + '\n';
+    }
+  }
+  asm += '  ; HL now past compressed data, pointing at delay byte\n';
+
+  asm += '\n';
+  asm += '  ; Read delay byte and wait\n';
+  asm += '  LD A,(HL)\n';
+  asm += '  INC HL\n';
+  asm += '  OR A\n';
+  asm += '  JR Z,.NoDelay\n';
+  asm += '  LD B,A\n';
+  asm += '.WaitLoop:\n';
+  asm += '  HALT\n';
+  asm += '  DJNZ .WaitLoop\n';
+  asm += '.NoDelay:\n';
+  asm += '\n';
+  asm += '  LD A,(FramesLeft)\n';
+  asm += '  DEC A\n';
+  asm += '  LD (FramesLeft),A\n';
+  asm += '  JR NZ,MainLoop\n';
+  asm += '  JR Restart\n';
+  asm += '\n';
+  asm += 'FramesLeft:\n';
+  asm += '  DB 0\n';
+
+  return asm;
+}
+
+/**
+ * Returns Z80 assembly source for the standard ZX0 depacker (forward mode).
+ * Entry: HL = compressed data, DE = destination
+ * Exit: HL = past end of compressed data
+ * Based on the standard dzx0_standard.asm by Einar Saukas.
+ */
+function generateZx0Depacker() {
+  // Canonical dzx0_standard.asm by Einar Saukas & Urusergi (68 bytes)
+  // https://github.com/einar-saukas/ZX0/blob/main/z80/dzx0_standard.asm
+  let asm = '';
+  asm += '; dzx0_standard - ZX0 decompressor by Einar Saukas & Urusergi\n';
+  asm += '; HL = source (compressed data), DE = destination\n';
+  asm += '; Uses: A, BC, DE, HL, AF\', stack (2 bytes)\n';
+  asm += '\n';
+  asm += 'Dzx0:\n';
+  asm += '        ld      bc, #ffff\n';
+  asm += '        push    bc\n';
+  asm += '        inc     bc\n';
+  asm += '        ld      a, #80\n';
+  asm += 'dzx0s_literals:\n';
+  asm += '        call    dzx0s_elias\n';
+  asm += '        ldir\n';
+  asm += '        add     a, a\n';
+  asm += '        jr      c, dzx0s_new_offset\n';
+  asm += '        call    dzx0s_elias\n';
+  asm += 'dzx0s_copy:\n';
+  asm += '        ex      (sp), hl\n';
+  asm += '        push    hl\n';
+  asm += '        add     hl, de\n';
+  asm += '        ldir\n';
+  asm += '        pop     hl\n';
+  asm += '        ex      (sp), hl\n';
+  asm += '        add     a, a\n';
+  asm += '        jr      nc, dzx0s_literals\n';
+  asm += 'dzx0s_new_offset:\n';
+  asm += '        pop     bc\n';
+  asm += '        ld      c, #fe\n';
+  asm += '        call    dzx0s_elias_loop\n';
+  asm += '        inc     c\n';
+  asm += '        ret     z\n';
+  asm += '        ld      b, c\n';
+  asm += '        ld      c, (hl)\n';
+  asm += '        inc     hl\n';
+  asm += '        rr      b\n';
+  asm += '        rr      c\n';
+  asm += '        push    bc\n';
+  asm += '        ld      bc, 1\n';
+  asm += '        call    nc, dzx0s_elias_backtrack\n';
+  asm += '        inc     bc\n';
+  asm += '        jr      dzx0s_copy\n';
+  asm += 'dzx0s_elias:\n';
+  asm += '        inc     c\n';
+  asm += 'dzx0s_elias_loop:\n';
+  asm += '        add     a, a\n';
+  asm += '        jr      nz, dzx0s_elias_skip\n';
+  asm += '        ld      a, (hl)\n';
+  asm += '        inc     hl\n';
+  asm += '        rla\n';
+  asm += 'dzx0s_elias_skip:\n';
+  asm += '        ret     c\n';
+  asm += 'dzx0s_elias_backtrack:\n';
+  asm += '        add     a, a\n';
+  asm += '        rl      c\n';
+  asm += '        rl      b\n';
+  asm += '        jr      dzx0s_elias_loop\n';
+  asm += '\n';
+  return asm;
+}
+
+/**
+ * Returns Z80 assembly source for the Laser Compact 5.2 depacker.
+ * Entry: HL = compressed data, DE = destination
+ * Exit: HL = past end of compressed data
+ */
+function generateLcDepacker() {
+  // Laser Compact 5.2 depacker for Z80
+  // Based on the decompression algorithm from lc.js by Hrumer
+  //
+  // Design:
+  // - lc_bits (memory) holds the bit buffer with sentinel approach
+  // - lc_getbit: loads buffer, shifts, stores back, returns bit in carry
+  //   It TRASHES A but preserves all other registers.
+  // - VLC and main loop use C to accumulate VLC data bits.
+  // - HL = source stream pointer (saved to lc_src during match copy)
+  // - DE = destination pointer
+  //
+  // Entry: HL = compressed data, DE = destination
+  // Exit:  HL past compressed data, DE past decompressed data
+  let asm = '';
+  asm += '; Laser Compact 5.2 depacker\n';
+  asm += '; Entry: HL = compressed data, DE = destination\n';
+  asm += '; Exit:  HL past compressed data, DE past decompressed data\n';
+  asm += '; Uses:  AF, BC, DE, HL\n';
+  asm += '\n';
+  asm += 'DeLc:\n';
+  asm += '        ld      a, #80\n';
+  asm += '        ld      (lc_bits), a    ; init bit buffer (sentinel)\n';
+  asm += '        ; First byte is always literal\n';
+  asm += '        ld      a, (hl)\n';
+  asm += '        inc     hl\n';
+  asm += '        ld      (de), a\n';
+  asm += '        inc     de\n';
+  asm += '\n';
+  asm += 'lc_main:\n';
+  asm += '        call    lc_getbit       ; C=1: literal, C=0: match\n';
+  asm += '        jr      nc, lc_match\n';
+  asm += '        ; Literal\n';
+  asm += '        ld      a, (hl)\n';
+  asm += '        inc     hl\n';
+  asm += '        ld      (de), a\n';
+  asm += '        inc     de\n';
+  asm += '        jr      lc_main\n';
+  asm += '\n';
+  asm += 'lc_match:\n';
+  asm += '        call    lc_vlc          ; A = VLC code (0..22)\n';
+  asm += '        cp      6\n';
+  asm += '        jr      nz, lc_not_ext\n';
+  asm += '        ; Code 6: extended length or end marker\n';
+  asm += '        ld      a, (hl)\n';
+  asm += '        inc     hl\n';
+  asm += '        neg\n';
+  asm += '        ret     z               ; end marker\n';
+  asm += '        jr      lc_got_msize\n';
+  asm += 'lc_not_ext:\n';
+  asm += '        cp      6               ; only codes 0..5 need +1\n';
+  asm += '        jr      nc, lc_got_msize ; codes 7..22 used as-is\n';
+  asm += '        inc     a               ; codes 0..5 => 1..6\n';
+  asm += 'lc_got_msize:\n';
+  asm += '        ; A = extra match bytes (total copy = A + 1)\n';
+  asm += '        ld      (lc_msize), a\n';
+  asm += '        ; Offset high\n';
+  asm += '        call    lc_vlc          ; A = mofsHi\n';
+  asm += '        inc     a\n';
+  asm += '        ld      b, a            ; B = offset high part\n';
+  asm += '        ; Direction bit\n';
+  asm += '        call    lc_getbit       ; carry = dir (0=fwd, 1=bwd)\n';
+  asm += '        ld      a, 0\n';
+  asm += '        rla\n';
+  asm += '        ld      (lc_dir), a\n';
+  asm += '        ; Offset low byte from stream\n';
+  asm += '        ld      c, (hl)\n';
+  asm += '        inc     hl\n';
+  asm += '        ; offset = B*256 - C\n';
+  asm += '        ld      a, c\n';
+  asm += '        neg                     ; A = (-C) & FF\n';
+  asm += '        ld      c, a\n';
+  asm += '        jr      z, lc_no_borr\n';
+  asm += '        dec     b\n';
+  asm += 'lc_no_borr:\n';
+  asm += '        ; BC = offset value\n';
+  asm += '        ; If offset > #300, msize++\n';
+  asm += '        ld      a, b\n';
+  asm += '        cp      4\n';
+  asm += '        jr      nc, lc_extra\n';
+  asm += '        cp      3\n';
+  asm += '        jr      c, lc_do_copy\n';
+  asm += '        ld      a, c\n';
+  asm += '        or      a\n';
+  asm += '        jr      z, lc_do_copy\n';
+  asm += 'lc_extra:\n';
+  asm += '        ld      a, (lc_msize)\n';
+  asm += '        inc     a\n';
+  asm += '        ld      (lc_msize), a\n';
+  asm += '\n';
+  asm += 'lc_do_copy:\n';
+  asm += '        ; BC=offset, HL=stream, DE=dest\n';
+  asm += '        ld      (lc_src), hl    ; save stream ptr\n';
+  asm += '        ; HL = DE - BC (match base)\n';
+  asm += '        ld      h, d\n';
+  asm += '        ld      l, e\n';
+  asm += '        or      a\n';
+  asm += '        sbc     hl, bc\n';
+  asm += '        ; Copy first byte\n';
+  asm += '        ld      a, (hl)\n';
+  asm += '        ld      (de), a\n';
+  asm += '        inc     de\n';
+  asm += '        ; Remaining\n';
+  asm += '        ld      a, (lc_msize)\n';
+  asm += '        or      a\n';
+  asm += '        jr      z, lc_cdone\n';
+  asm += '        ld      b, a\n';
+  asm += '        ld      a, (lc_dir)\n';
+  asm += '        or      a\n';
+  asm += '        jr      nz, lc_cbwd\n';
+  asm += 'lc_cfwd:\n';
+  asm += '        inc     hl\n';
+  asm += '        ld      a, (hl)\n';
+  asm += '        ld      (de), a\n';
+  asm += '        inc     de\n';
+  asm += '        djnz    lc_cfwd\n';
+  asm += '        jr      lc_cdone\n';
+  asm += 'lc_cbwd:\n';
+  asm += '        dec     hl\n';
+  asm += '        ld      a, (hl)\n';
+  asm += '        ld      (de), a\n';
+  asm += '        inc     de\n';
+  asm += '        djnz    lc_cbwd\n';
+  asm += 'lc_cdone:\n';
+  asm += '        ld      hl, (lc_src)\n';
+  asm += '        jr      lc_main\n';
+  asm += '\n';
+  asm += '; ---- VLC reader ----\n';
+  asm += '; Returns decoded value in A (0..22). Trashes C.\n';
+  asm += '; VLC: 1=>0, 0d1=>2-d, 00dd1=>6-dd, 000dddd=>22-dddd\n';
+  asm += '; Note: lc_getbit trashes A but preserves carry and all other regs.\n';
+  asm += '; Strategy: after getbit, carry holds the bit. Load A from C, then RLA.\n';
+  asm += 'lc_vlc:\n';
+  asm += '        call    lc_getbit       ; carry = terminator/flag bit\n';
+  asm += '        jr      nc, lc_v1\n';
+  asm += '        xor     a               ; value = 0\n';
+  asm += '        ret\n';
+  asm += 'lc_v1:  ; 1st data bit\n';
+  asm += '        call    lc_getbit       ; carry = data bit\n';
+  asm += '        ld      a, 0\n';
+  asm += '        rla                     ; A = carry = d0\n';
+  asm += '        ld      c, a            ; C = accumulated (1 bit)\n';
+  asm += '        call    lc_getbit       ; carry = terminator?\n';
+  asm += '        jr      nc, lc_v2\n';
+  asm += '        ; Terminated: value = 2 - C\n';
+  asm += '        ld      a, 2\n';
+  asm += '        sub     c\n';
+  asm += '        ret                     ; 1..2\n';
+  asm += 'lc_v2:  ; 2nd data bit\n';
+  asm += '        call    lc_getbit       ; carry = data bit\n';
+  asm += '        ld      a, c            ; A = prev accumulated\n';
+  asm += '        rla                     ; shift carry in: A = d0:d1\n';
+  asm += '        ld      c, a\n';
+  asm += '        call    lc_getbit       ; carry = terminator?\n';
+  asm += '        jr      nc, lc_v3\n';
+  asm += '        ; Terminated: value = 6 - (C & 3)\n';
+  asm += '        ld      a, c\n';
+  asm += '        and     3\n';
+  asm += '        ld      c, a\n';
+  asm += '        ld      a, 6\n';
+  asm += '        sub     c\n';
+  asm += '        ret                     ; 3..6\n';
+  asm += 'lc_v3:  ; 3rd data bit\n';
+  asm += '        call    lc_getbit\n';
+  asm += '        ld      a, c\n';
+  asm += '        rla\n';
+  asm += '        ld      c, a\n';
+  asm += '        ; 4th data bit (no terminator for 4-bit group)\n';
+  asm += '        call    lc_getbit\n';
+  asm += '        ld      a, c\n';
+  asm += '        rla\n';
+  asm += '        ; value = 22 - (A & 15)\n';
+  asm += '        and     15\n';
+  asm += '        ld      c, a\n';
+  asm += '        ld      a, 22\n';
+  asm += '        sub     c\n';
+  asm += '        ret                     ; 7..22\n';
+  asm += '\n';
+  asm += '; ---- Bit reader ----\n';
+  asm += '; Returns bit in carry. Trashes A only.\n';
+  asm += '; Bit buffer in memory (lc_bits), MSB-first, sentinel in bit 0.\n';
+  asm += 'lc_getbit:\n';
+  asm += '        ld      a, (lc_bits)\n';
+  asm += '        add     a, a            ; shift out MSB to carry\n';
+  asm += '        ld      (lc_bits), a\n';
+  asm += '        ret     nz              ; sentinel still present\n';
+  asm += '        ; Buffer exhausted, carry holds last valid bit\n';
+  asm += '        ; Refill from stream: read byte, use it as next 8 bits\n';
+  asm += '        ; Current carry is our result (was the sentinel bit)\n';
+  asm += '        ; Wait - if A became 0 from the shift, that means the\n';
+  asm += '        ; sentinel was just shifted out. The carry IS the bit.\n';
+  asm += '        ; We need to refill for NEXT call, not this one.\n';
+  asm += '        ; After add a,a: if result=0, the bit that went to carry\n';
+  asm += '        ; was the sentinel (1). But that means we already consumed\n';
+  asm += '        ; all real bits and the sentinel itself went to carry.\n';
+  asm += '        ; That\'s wrong - sentinel should never be returned as data.\n';
+  asm += '        ;\n';
+  asm += '        ; Correct sentinel approach:\n';
+  asm += '        ; Buffer byte: [d7 d6 d5 d4 d3 d2 d1 1] (sentinel=1 at end)\n';
+  asm += '        ; Shift out d7 first. After 7 shifts: [1 0 0 0 0 0 0 0]\n';
+  asm += '        ; 8th shift: carry=1 (sentinel), A=0 -> detect exhaustion\n';
+  asm += '        ; So we should NOT return carry here (it\'s sentinel)\n';
+  asm += '        ; Instead: refill and get first bit of new byte.\n';
+  asm += '        ld      a, (hl)\n';
+  asm += '        inc     hl\n';
+  asm += '        scf                     ; set sentinel\n';
+  asm += '        rla                     ; bit7->carry(result), sentinel->bit0\n';
+  asm += '                                ; A = [d6 d5 d4 d3 d2 d1 d0 1]\n';
+  asm += '        ld      (lc_bits), a\n';
+  asm += '        ret                     ; carry = bit7 of fresh byte\n';
+  asm += '\n';
+  asm += '; Variables\n';
+  asm += 'lc_bits:  db 0\n';
+  asm += 'lc_msize: db 0\n';
+  asm += 'lc_dir:   db 0\n';
+  asm += 'lc_src:   dw 0\n';
+  asm += '\n';
+  return asm;
+}
+
+/**
+ * Generates Z80 RLE depacker (~23 bytes).
+ * Entry: HL = compressed data, DE = destination
+ * Exit:  HL past compressed data, DE past decompressed data
+ */
+function generateRleDepacker() {
+  let asm = '';
+  asm += '; RLE depacker (PackBits-style)\n';
+  asm += '; Entry: HL = compressed data, DE = destination\n';
+  asm += '; Exit:  HL past compressed data, DE past decompressed data\n';
+  asm += '; Uses:  AF, BC, DE, HL\n';
+  asm += '\n';
+  asm += 'DeRle:\n';
+  asm += '        ld      a, (hl)\n';
+  asm += '        inc     hl\n';
+  asm += '        or      a\n';
+  asm += '        ret     z               ; end marker\n';
+  asm += '        jp      m, .rle_rep     ; bit 7 = repeat\n';
+  asm += '        ; Literal run: copy A bytes\n';
+  asm += '        ld      c, a\n';
+  asm += '        ld      b, 0\n';
+  asm += '        ldir\n';
+  asm += '        jr      DeRle\n';
+  asm += '.rle_rep:\n';
+  asm += '        sub     126             ; repeat count (2..129)\n';
+  asm += '        ld      b, a\n';
+  asm += '        ld      a, (hl)\n';
+  asm += '        inc     hl\n';
+  asm += '.rle_lp:\n';
+  asm += '        ld      (de), a\n';
+  asm += '        inc     de\n';
+  asm += '        djnz    .rle_lp\n';
+  asm += '        jr      DeRle\n';
+  asm += '\n';
+  return asm;
+}
+
+/**
+ * Exports SCA as ZIP containing .sca file + .asm player source
+ */
 // Initialize when DOM is ready
 document.addEventListener('DOMContentLoaded', initScaEditor);

@@ -1,0 +1,63 @@
+{
+  "_doc": [
+    "SpectraLab Plugin Descriptor (.slplugin)",
+    "",
+    "This is a JSON-based plugin that tells SpectraLab where to find",
+    "pictures inside a binary file (e.g. a .sna snapshot of a game).",
+    "No programming required — just specify addresses and formats.",
+    "",
+    "Fields:",
+    "  id             Unique identifier (use lowercase + underscores)",
+    "  name           Human-readable name shown in the UI",
+    "  version        Plugin version number",
+    "  description    Short description (shown as tooltip)",
+    "  fileExtensions Array of file extensions this plugin works with",
+    "  pictures       Array of picture descriptors (see below)",
+    "  fixups         Optional: byte patches applied on save-back",
+    "",
+    "Each picture descriptor:",
+    "  name           Display name for the extracted picture",
+    "  format         SpectraLab format: 'scr', 'ifl', 'mlt', 'bsc', etc.",
+    "  source         Where to read the data from (see address modes)",
+    "",
+    "Address modes:",
+    "  'z80addr'  Z80 logical address (0x4000-0xFFFF).",
+    "             Auto-maps: 0x4000-0x7FFF = bank 5,",
+    "                        0x8000-0xBFFF = bank 2,",
+    "                        0xC000-0xFFFF = currently paged bank.",
+    "             Use 'bank' field to override (e.g. bank 7 for shadow screen).",
+    "             Requires a .sna or .z80 file.",
+    "",
+    "  'offset'   Raw byte offset into the file. Works with any binary.",
+    "",
+    "Numeric values accept hex strings ('0x4000') or plain numbers (16384)."
+  ],
+
+  "id": "zx_spectrum_sna_screens",
+  "name": "ZX Spectrum SNA Screens",
+  "version": 1,
+  "description": "Extract standard and shadow screens from a 128K .sna snapshot using Z80 addressing",
+  "fileExtensions": [".sna"],
+
+  "pictures": [
+    {
+      "name": "Main Screen",
+      "format": "scr",
+      "source": {
+        "addressMode": "z80addr",
+        "address": "0x4000",
+        "length": 6912
+      }
+    },
+    {
+      "name": "Shadow Screen",
+      "format": "scr",
+      "source": {
+        "addressMode": "z80addr",
+        "address": "0x4000",
+        "bank": 7,
+        "length": 6912
+      }
+    }
+  ]
+}

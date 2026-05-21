@@ -404,10 +404,97 @@ function decompressArray(inputArray) {
     return decompress(inputData);
 }
 
+/**
+ * Decompress and return both output data and number of input bytes consumed.
+ * Used when decompressing from a stream where subsequent data follows.
+ * @param {Uint8Array} inputData
+ * @returns {{data: Uint8Array, bytesRead: number}}
+ */
+function decompressTracked(inputData) {
+    const inputSize = inputData.length;
+    if (inputSize === 0) return { data: new Uint8Array(0), bytesRead: 0 };
+
+    const output = [];
+    let ip = 0;
+    let bitBuf = 0;
+    let bitMask = 0;
+
+    function readByte() {
+        if (ip >= inputSize) throw new Error('Truncated input');
+        return inputData[ip++];
+    }
+
+    function readBit() {
+        if (bitMask === 0) {
+            bitBuf = readByte();
+            bitMask = 0x80;
+        }
+        const b = (bitBuf & bitMask) ? 1 : 0;
+        bitMask >>= 1;
+        return b;
+    }
+
+    function readVlc() {
+        let num = 0;
+        let bits = 0;
+        while (true) {
+            if (readBit()) {
+                if (bits === 0) return 0;
+                if (bits === 1) return 2 - num;
+                if (bits === 2) return 6 - (num & 3);
+                if (bits === 3) return 22 - (num & 15);
+                throw new Error('VLC too long');
+            }
+            num = (num << 1) | readBit();
+            bits++;
+            if (bits === 3) {
+                num = (num << 1) | readBit();
+                return 22 - (num & 15);
+            }
+        }
+    }
+
+    // first byte literal
+    output.push(readByte());
+
+    while (true) {
+        if (readBit()) {
+            output.push(readByte());
+        } else {
+            let msize = readVlc();
+            if (msize === 6) {
+                msize = (-(readByte())) & 0xff;
+                if (msize === 0) break; // end marker
+            } else {
+                if (msize < 6) msize++;
+            }
+
+            const mofsHi = readVlc();
+            const direction = readBit();
+            const mofs = ((mofsHi + 1) << 8) - readByte();
+
+            if (mofs > 0x300) msize++;
+
+            const pos = output.length;
+            output.push(output[pos - mofs]);
+            for (let i = 0; i < msize; i++) {
+                if (direction) {
+                    output.push(output[pos - mofs - 1 - i]);
+                } else {
+                    output.push(output[pos - mofs + 1 + i]);
+                }
+            }
+        }
+    }
+
+    return { data: new Uint8Array(output), bytesRead: ip };
+}
+
 if (typeof window !== 'undefined') {
     window.LC = {
         compress,
         decompress,
+        decompressTracked,
         reorder,
         deorder,
         compressScreen,

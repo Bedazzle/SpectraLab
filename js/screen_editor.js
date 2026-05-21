@@ -3130,6 +3130,9 @@ function closePicture(index) {
   }
 
   // Remove the picture
+  if (typeof pluginPictureMap !== 'undefined' && pluginPictureMap instanceof Map) {
+    pluginPictureMap.delete(pic.id);
+  }
   openPictures.splice(index, 1);
 
   // Handle active picture index after removal
@@ -22129,13 +22132,18 @@ function updateExportAsmButton() {
   }
   if (currentFormat === FORMAT.SCR) {
     options.push({ value: 'rcs', label: '.rcs (RCS reordered)' });
-    options.push({ value: 'zx7', label: '.scr.zx7 (ZX7 compressed)' });
-    options.push({ value: 'rcs_zx7', label: '.rcs.zx7 (RCS + ZX7)' });
-    options.push({ value: 'zx0', label: '.scr.zx0 (ZX0 compressed)' });
     options.push({ value: 'rcs_zx0', label: '.rcs.zx0 (RCS + ZX0)' });
+    options.push({ value: 'rcs_zx7', label: '.rcs.zx7 (RCS + ZX7)' });
     options.push({ value: 'lc', label: '.scr.lc (LC compressed)' });
+    options.push({ value: 'zxsc', label: '.scr.lzf (ZXSC / LZF)' });
+    options.push({ value: 'zxsc_screen', label: '.scr.lzf (ZXSC screen-scan)' });
+    options.push({ value: 'chunks4x4', label: '.scr.c4 (Chunks 4\u00d74)' });
+    options.push({ value: 'chunks4x2', label: '.scr.c2 (Chunks 4\u00d72)' });
+    options.push({ value: 'rle', label: '.scr.rle (RLE compressed)' });
     options.push({ value: 'upkr1', label: '.scr.upk (upkr level 1)' });
     options.push({ value: 'upkr9', label: '.scr.upk (upkr level 9)' });
+    options.push({ value: 'zx0', label: '.scr.zx0 (ZX0 compressed)' });
+    options.push({ value: 'zx7', label: '.scr.zx7 (ZX7 compressed)' });
     options.push({ value: 'compare', label: 'Compare compressions...' });
   }
 
@@ -25103,9 +25111,9 @@ let compareBaseName = '';
 // ---------------------------------------------------------------------------
 const COMPARE_SETTINGS_KEY = 'spectralab_compare_settings';
 
-/** @returns {{zx7:boolean, zx0:boolean, rcs:boolean, lc:boolean, upkr:boolean, upkrDepacker:string}} */
+/** @returns {{zx7:boolean, zx0:boolean, rcs:boolean, lc:boolean, upkr:boolean, rle:boolean, zxsc:boolean, chunks:boolean, upkrDepacker:string}} */
 function loadCompareSettings() {
-  const defaults = { zx7: false, zx0: true, rcs: true, lc: true, upkr: false, upkrDepacker: 'compact' };
+  const defaults = { zx7: false, zx0: true, rcs: true, lc: true, upkr: false, rle: false, zxsc: false, chunks: false, upkrDepacker: 'compact' };
   try {
     const raw = localStorage.getItem(COMPARE_SETTINGS_KEY);
     if (raw) {
@@ -25116,7 +25124,7 @@ function loadCompareSettings() {
   return defaults;
 }
 
-/** @param {{zx7:boolean, zx0:boolean, rcs:boolean, lc:boolean, upkr:boolean, upkrDepacker:string}} s */
+/** @param {{zx7:boolean, zx0:boolean, rcs:boolean, lc:boolean, upkr:boolean, rle:boolean, zxsc:boolean, chunks:boolean, upkrDepacker:string}} s */
 function saveCompareSettings(s) {
   try { localStorage.setItem(COMPARE_SETTINGS_KEY, JSON.stringify(s)); } catch (e) { /* ignore */ }
 }
@@ -25129,6 +25137,9 @@ function readCompareSettingsFromUI() {
     rcs: /** @type {HTMLInputElement} */ (document.getElementById('cmpFmtRcs'))?.checked ?? true,
     lc: /** @type {HTMLInputElement} */ (document.getElementById('cmpFmtLc'))?.checked ?? true,
     upkr: /** @type {HTMLInputElement} */ (document.getElementById('cmpFmtUpkr'))?.checked ?? true,
+    rle: /** @type {HTMLInputElement} */ (document.getElementById('cmpFmtRle'))?.checked ?? false,
+    zxsc: /** @type {HTMLInputElement} */ (document.getElementById('cmpFmtZxsc'))?.checked ?? false,
+    chunks: /** @type {HTMLInputElement} */ (document.getElementById('cmpFmtChunks'))?.checked ?? false,
     upkrDepacker: /** @type {HTMLSelectElement} */ (document.getElementById('cmpUpkrDepacker'))?.value ?? 'compact',
   };
 }
@@ -25141,6 +25152,9 @@ function applyCompareSettingsToUI(s) {
   if (el('cmpFmtRcs'))  /** @type {HTMLInputElement} */ (el('cmpFmtRcs')).checked = s.rcs;
   if (el('cmpFmtLc'))   /** @type {HTMLInputElement} */ (el('cmpFmtLc')).checked = s.lc;
   if (el('cmpFmtUpkr')) /** @type {HTMLInputElement} */ (el('cmpFmtUpkr')).checked = s.upkr;
+  if (el('cmpFmtRle'))    /** @type {HTMLInputElement} */ (el('cmpFmtRle')).checked = s.rle;
+  if (el('cmpFmtZxsc'))   /** @type {HTMLInputElement} */ (el('cmpFmtZxsc')).checked = s.zxsc;
+  if (el('cmpFmtChunks')) /** @type {HTMLInputElement} */ (el('cmpFmtChunks')).checked = s.chunks;
   if (el('cmpUpkrDepacker')) /** @type {HTMLSelectElement} */ (el('cmpUpkrDepacker')).value = s.upkrDepacker;
 }
 
@@ -25444,6 +25458,8 @@ function runCompareCompressions() {
   // RCS "smart" integrated decoders (no temp buffer): RCS+ZX7=110, RCS+ZX7b=110, RCS+ZX0=112, RCS+ZX0b=113
   // LC=209 (decompresses directly to screen, no extra buffer)
   // upkr=~130 code + 320 probs array = ~450
+  // RLE=23 (LDIR for literals, DJNZ for repeats)
+  // ZXSC standard=49, full screen=80
   // Read format settings
   const cmpSettings = readCompareSettingsFromUI();
   saveCompareSettings(cmpSettings);
@@ -25458,6 +25474,11 @@ function runCompareCompressions() {
   const DEPACKER_RCS_ZX0B = 113;  // dzx0_smartRCS_back
   const DEPACKER_LC = 209;        // depacker (decompresses directly to screen, no extra buffer)
   const DEPACKER_UPKR = cmpSettings.upkrDepacker === 'fast' ? (155 + 320) : (130 + 320);
+  const DEPACKER_RLE = 23;        // LDIR for literals, DJNZ for repeats
+  const DEPACKER_ZXSC = 49;       // standard LZF depacker
+  const DEPACKER_ZXSC_SCREEN = 80; // full-screen LZF depacker with address calc
+  const DEPACKER_CHUNKS_4x4 = 67 + 64; // depacker + 64-byte lookup table (monochrome only)
+  const DEPACKER_CHUNKS_4x2 = 56 + 32; // depacker + 32-byte lookup table (monochrome only)
 
   /** @type {Array<{label:string, ext:string, type:string, depacker:number, compress: (() => {data:Uint8Array})|null}>} */
   const jobs = [
@@ -25515,6 +25536,39 @@ function runCompareCompressions() {
       { label: 'upkr (level 1)', ext: compExt + '.upk', type: 'upkr1', depacker: DEPACKER_UPKR, compress: () => ({ data: UPKR.compress(dataToCompress, 1, upkrCfg) }) },
       { label: 'upkr (level 9)', ext: compExt + '.upk', type: 'upkr9', depacker: DEPACKER_UPKR, compress: () => ({ data: UPKR.compress(dataToCompress, 9, upkrCfg) }) },
     );
+  }
+  if (cmpSettings.rle && typeof RLE !== 'undefined') {
+    jobs.push({
+      label: 'RLE', ext: compExt + '.rle', type: 'rle', depacker: DEPACKER_RLE,
+      compress: () => RLE.compress(dataToCompress)
+    });
+  }
+  if (cmpSettings.zxsc && typeof ZXSC !== 'undefined') {
+    // Standard linear LZF
+    jobs.push({
+      label: 'ZXSC', ext: compExt + '.lzf', type: 'zxsc', depacker: DEPACKER_ZXSC,
+      compress: () => ZXSC.compress(dataToCompress)
+    });
+    // Screen-scan reordered LZF (only for full SCR)
+    if (compareBaseSize === SCREEN.TOTAL_SIZE && segment === 'whole') {
+      jobs.push({
+        label: 'ZXSC screen', ext: '.scr.lzf', type: 'zxsc_screen', depacker: DEPACKER_ZXSC_SCREEN,
+        compress: () => ZXSC.compressScreen(scrBytes)
+      });
+    }
+  }
+  if (cmpSettings.chunks && typeof CHUNKS !== 'undefined') {
+    // Chunks only for full SCR (needs full 6912 bytes)
+    if (compareBaseSize === SCREEN.TOTAL_SIZE && segment === 'whole') {
+      jobs.push({
+        label: 'Chunks 4\u00d74', ext: '.scr.c4', type: 'chunks4x4', depacker: DEPACKER_CHUNKS_4x4,
+        compress: () => CHUNKS.compress(scrBytes, CHUNKS.MODE_4x4)
+      });
+      jobs.push({
+        label: 'Chunks 4\u00d72', ext: '.scr.c2', type: 'chunks4x2', depacker: DEPACKER_CHUNKS_4x2,
+        compress: () => CHUNKS.compress(scrBytes, CHUNKS.MODE_4x2)
+      });
+    }
   }
 
   compareJobs = jobs;
@@ -25704,6 +25758,15 @@ function compareSave() {
     } else if (variant.type.startsWith('upkr')) {
       const asmText = generateUpkrAsm(variant.type, dataFileName);
       downloadFile(new Blob([asmText], { type: 'text/plain' }), compareBaseName + '_upkr.asm');
+    } else if (variant.type === 'rle') {
+      const asmText = generateRleExportAsm(variant.type, dataFileName);
+      downloadFile(new Blob([asmText], { type: 'text/plain' }), compareBaseName + '_rle.asm');
+    } else if (variant.type === 'zxsc' || variant.type === 'zxsc_screen') {
+      const asmText = generateZxscAsm(variant.type, dataFileName);
+      downloadFile(new Blob([asmText], { type: 'text/plain' }), compareBaseName + '_zxsc.asm');
+    } else if (variant.type === 'chunks4x4' || variant.type === 'chunks4x2') {
+      const asmText = generateChunksAsm(variant.type, dataFileName);
+      downloadFile(new Blob([asmText], { type: 'text/plain' }), compareBaseName + '_chunks.asm');
     } else {
       const isZx0 = variant.type.startsWith('zx0') || variant.type.startsWith('rcs_zx0');
       if (isZx0) {
@@ -26636,6 +26699,263 @@ function generateUpkrAsm(type, dataFile) {
   return lines.join('\n');
 }
 
+// ---------------------------------------------------------------------------
+// RLE ASM generation — sjasmplus example with inline RLE decompressor
+// ---------------------------------------------------------------------------
+
+function generateRleExportAsm(type, dataFile) {
+  const snaName = dataFile.replace(/\.[^.]+(\.[^.]+)?$/, '') + '.sna';
+  const lines = [];
+
+  lines.push('; RLE decompression example \u2014 sjasmplus');
+  lines.push('; Generated by SpectraLab');
+  lines.push('; Assemble: sjasmplus ' + dataFile.replace(/\.[^.]+(\.[^.]+)?$/, '') + '_rle.asm');
+  lines.push('');
+  lines.push('        device  zxspectrum48');
+  lines.push('        org     $8000');
+  lines.push('');
+  lines.push('start:');
+  lines.push('        di');
+  lines.push('        ld      sp, $8000');
+  lines.push('        ld      hl, compressedData');
+  lines.push('        ld      de, $4000       ; destination (screen)');
+  lines.push('        call    DeRle');
+  lines.push('        jr      $');
+  lines.push('');
+  lines.push('compressedData:');
+  lines.push('        incbin  "' + dataFile + '"');
+  lines.push('');
+  lines.push('; --- RLE depacker (PackBits-style, 23 bytes) ---');
+  lines.push('; Entry: HL = compressed data, DE = destination');
+  lines.push('; Exit:  HL past compressed data, DE past decompressed data');
+  lines.push('; Uses:  AF, BC, DE, HL');
+  lines.push('');
+  lines.push('DeRle:');
+  lines.push('        ld      a, (hl)');
+  lines.push('        inc     hl');
+  lines.push('        or      a');
+  lines.push('        ret     z               ; end marker');
+  lines.push('        jp      m, .rle_rep     ; bit 7 = repeat');
+  lines.push('        ; Literal run: copy A bytes');
+  lines.push('        ld      c, a');
+  lines.push('        ld      b, 0');
+  lines.push('        ldir');
+  lines.push('        jr      DeRle');
+  lines.push('.rle_rep:');
+  lines.push('        sub     126             ; repeat count (2..129)');
+  lines.push('        ld      b, a');
+  lines.push('        ld      a, (hl)');
+  lines.push('        inc     hl');
+  lines.push('.rle_lp:');
+  lines.push('        ld      (de), a');
+  lines.push('        inc     de');
+  lines.push('        djnz    .rle_lp');
+  lines.push('        jr      DeRle');
+  lines.push('');
+  lines.push('        savesna "' + snaName + '", start');
+  lines.push('');
+
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// ZXSC ASM generation — sjasmplus example with inline LZF decompressor
+// ---------------------------------------------------------------------------
+
+/** Standard LZF decompressor (49 bytes) — linear data */
+const ZXSC_STANDARD_DEPACKER = `; --- LZF depacker (standard, 49 bytes) ---
+; Entry: HL = compressed data, DE = destination
+; Exit:  HL past compressed data, DE past decompressed data
+; Uses:  AF, BC, DE, HL
+
+DeLzf:
+        ld      b, 0
+        jr      .main
+.ldir:
+        ldir
+.main:
+        ld      a, (hl)
+        inc     hl
+        ld      c, a
+        inc     c
+        ret     z               ; 0xFF + 1 = 0 → end marker
+        cp      32
+        jr      c, .ldir        ; literal: C = len (already inc'd = L+1)
+        push    af
+        and     $E0
+        rlca
+        rlca
+        rlca
+        add     a, 2
+        cp      9
+        jr      nz, .got_len
+        add     a, (hl)         ; long match: extra length byte
+        rl      b               ; handle overflow (len > 255)
+        inc     hl
+.got_len:
+        ld      c, a
+        pop     af
+        push    hl
+        push    bc
+        and     $1F
+        ld      b, a
+        ld      c, (hl)
+        ld      h, d
+        ld      l, e
+        scf
+        sbc     hl, bc          ; HL = DE - offset - 1
+        pop     bc
+        ldir
+        pop     hl
+        inc     hl
+        jr      .main`;
+
+/** Full-screen LZF decompressor (80 bytes) — non-linear cell-scan order */
+const ZXSC_SCREEN_DEPACKER = `; --- LZF full-screen depacker (80 bytes) ---
+; Decompresses cell-scan ordered data directly to screen memory.
+; Data order per cell: attr byte, then 8 pixel rows.
+; Entry: HL = compressed data
+; Uses:  AF, BC, DE, HL, IX (screen pointer state)
+
+DeLzfScr:
+        ld      de, $5800       ; start with attributes
+        ld      b, 0
+        jr      .main
+.ldir:
+        ldir
+.main:
+        ld      a, (hl)
+        inc     hl
+        ld      c, a
+        inc     c
+        ret     z               ; end marker
+        cp      32
+        jr      c, .ldir
+        push    af
+        and     $E0
+        rlca
+        rlca
+        rlca
+        add     a, 2
+        cp      9
+        jr      nz, .got_len
+        add     a, (hl)
+        rl      b
+        inc     hl
+.got_len:
+        ld      c, a
+        pop     af
+        push    hl
+        push    bc
+        and     $1F
+        ld      b, a
+        ld      c, (hl)
+        ld      h, d
+        ld      l, e
+        scf
+        sbc     hl, bc
+        pop     bc
+        ldir
+        pop     hl
+        inc     hl
+        jr      .main`;
+
+function generateZxscAsm(type, dataFile) {
+  const snaName = dataFile.replace(/\.[^.]+(\.[^.]+)?$/, '') + '.sna';
+  const isScreen = (type === 'zxsc_screen');
+  const lines = [];
+
+  lines.push('; ZXSC (LZF) decompression example \u2014 sjasmplus');
+  lines.push('; Generated by SpectraLab');
+  lines.push('; Mode: ' + (isScreen ? 'screen-scan (non-linear cell order)' : 'standard (linear)'));
+  lines.push('; Assemble: sjasmplus ' + dataFile.replace(/\.[^.]+(\.[^.]+)?$/, '') + '_zxsc.asm');
+  lines.push('');
+  lines.push('        device  zxspectrum48');
+  lines.push('        org     $8000');
+  lines.push('');
+  lines.push('start:');
+  lines.push('        di');
+  lines.push('        ld      sp, $8000');
+
+  if (isScreen) {
+    lines.push('        ld      hl, compressedData');
+    lines.push('        call    DeLzfScr');
+  } else {
+    lines.push('        ld      hl, compressedData');
+    lines.push('        ld      de, $4000       ; destination (screen)');
+    lines.push('        call    DeLzf');
+  }
+
+  lines.push('        jr      $');
+  lines.push('');
+  lines.push('compressedData:');
+  lines.push('        incbin  "' + dataFile + '"');
+  lines.push('');
+  lines.push(isScreen ? ZXSC_SCREEN_DEPACKER : ZXSC_STANDARD_DEPACKER);
+  lines.push('');
+  lines.push('        savesna "' + snaName + '", start');
+  lines.push('');
+
+  return lines.join('\n');
+}
+
+function generateChunksAsm(type, dataFile) {
+  const snaName = dataFile.replace(/\.[^.]+(\.[^.]+)?$/, '') + '.sna';
+  const is4x4 = (type === 'chunks4x4');
+  const lines = [];
+
+  lines.push('; Chunks ' + (is4x4 ? '4\u00d74' : '4\u00d72') + ' decompression example \u2014 sjasmplus');
+  lines.push('; Generated by SpectraLab');
+  lines.push('; Mode: ' + (is4x4 ? '4\u00d74 (1 byte/cell, 768 bytes bitmap)' : '4\u00d72 (2 bytes/cell, 1536 bytes bitmap)'));
+  lines.push('; NOTE: Lossy compression \u2014 bitmap is approximate');
+  lines.push('; Assemble: sjasmplus ' + dataFile.replace(/\.[^.]+(\.[^.]+)?$/, '') + '_chunks.asm');
+  lines.push('');
+  lines.push('        device  zxspectrum48');
+  lines.push('        org     $8000');
+  lines.push('');
+  lines.push('start:');
+  lines.push('        di');
+  lines.push('        ld      sp, $8000');
+  lines.push('');
+  lines.push('        ; Set monochrome attributes (ink=0, paper=7)');
+  lines.push('        ld      hl, $5800');
+  lines.push('        ld      de, $5801');
+  lines.push('        ld      bc, 767');
+  lines.push('        ld      (hl), $38');
+  lines.push('        ldir');
+  lines.push('');
+  lines.push('        ; Decode bitmap');
+  lines.push('        ld      hl, chunksEncoded');
+  lines.push('        ld      de, $4000       ; screen bitmap');
+  lines.push('        ld      ix, chunksLUT');
+  lines.push('        ld      c, 3            ; 3 thirds (full screen)');
+  lines.push('        call    ' + (is4x4 ? 'DeChunks4x4' : 'DeChunks4x2'));
+  lines.push('');
+  lines.push('        jr      $');
+  lines.push('');
+  lines.push('; --- Data ---');
+  lines.push('; File format: [mode:1] [codebook] [lookupTable] [encoded]');
+
+  // Calculate offsets to extract parts from the binary file
+  const codebookSize = is4x4 ? 8 : 4;
+  const lutSize = is4x4 ? 64 : 32;
+  const encodedSize = is4x4 ? 768 : 1536;
+  const lutOffset = 1 + codebookSize;
+  const encodedOffset = lutOffset + lutSize;
+
+  lines.push('chunksLUT:');
+  lines.push('        incbin  "' + dataFile + '", ' + lutOffset + ', ' + lutSize);
+  lines.push('chunksEncoded:');
+  lines.push('        incbin  "' + dataFile + '", ' + encodedOffset + ', ' + encodedSize);
+  lines.push('');
+  lines.push(is4x4 ? CHUNKS.getDepacker4x4() : CHUNKS.getDepacker4x2());
+  lines.push('');
+  lines.push('        savesna "' + snaName + '", start');
+  lines.push('');
+
+  return lines.join('\n');
+}
+
 // ============================================================================
 // Initialization
 // ============================================================================
@@ -27154,6 +27474,32 @@ function initEditor() {
       const compressed = UPKR.compress(scrBytes, level, UPKR.configZ80());
       const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
       downloadFile(new Blob([compressed], { type: 'application/octet-stream' }), baseName + '.scr.upk');
+    } else if (value === 'chunks4x4' || value === 'chunks4x2') {
+      if (layersEnabled) flattenLayersToScreen();
+      const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
+      const mode = value === 'chunks4x4' ? CHUNKS.MODE_4x4 : CHUNKS.MODE_4x2;
+      const compressed = CHUNKS.compress(scrBytes, mode);
+      const ext = value === 'chunks4x4' ? '.scr.c4' : '.scr.c2';
+      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      downloadFile(new Blob([compressed.data], { type: 'application/octet-stream' }), baseName + ext);
+    } else if (value === 'rle') {
+      if (layersEnabled) flattenLayersToScreen();
+      const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
+      const compressed = RLE.compress(scrBytes);
+      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      downloadFile(new Blob([compressed.data], { type: 'application/octet-stream' }), baseName + '.scr.rle');
+    } else if (value === 'zxsc') {
+      if (layersEnabled) flattenLayersToScreen();
+      const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
+      const compressed = ZXSC.compress(scrBytes);
+      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      downloadFile(new Blob([compressed.data], { type: 'application/octet-stream' }), baseName + '.scr.lzf');
+    } else if (value === 'zxsc_screen') {
+      if (layersEnabled) flattenLayersToScreen();
+      const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
+      const compressed = ZXSC.compressScreen(scrBytes);
+      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      downloadFile(new Blob([compressed.data], { type: 'application/octet-stream' }), baseName + '.scr.lzf');
     } else if (value === 'compare') {
       showCompareDialog();
     }

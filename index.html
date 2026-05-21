@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v2.17 -->
+<!-- SpectraLab v2.23 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -1474,7 +1474,7 @@
       <div class="panel-content">
         <!-- File input -->
         <div class="control-group">
-          <input type="file" id="inputFile" multiple accept=".scr,.rcs,.53c,.atr,.bsc,.bsp,.bmc4,.ifl,.mlt,.mc,.3,.img,.mg1,.mg2,.mg4,.mg8,.hlr,.stl,.nxi,.sl2,.slr,.rad,.c,.specscii,.sca,.zxp,.ch$,.chr$,.ch-,.slp,.slw,.sna,.z80,.btile,.wtile,.zx7,.zx7b,.zx0,.zx0b,.lc,.upk,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,image/*" style="width: 100%; font-size: 11px;">
+          <input type="file" id="inputFile" multiple accept=".scr,.rcs,.53c,.atr,.bsc,.bsp,.bmc4,.ifl,.mlt,.mc,.3,.img,.mg1,.mg2,.mg4,.mg8,.hlr,.stl,.nxi,.sl2,.slr,.rad,.c,.specscii,.sca,.zxp,.ch$,.chr$,.ch-,.slp,.slw,.sna,.z80,.btile,.wtile,.zx7,.zx7b,.zx0,.zx0b,.lc,.upk,.rle,.lzf,.c4,.c2,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,.slplugin,.slpluginjs,image/*" style="width: 100%; font-size: 11px;">
         </div>
 
         <!-- New and Save buttons -->
@@ -2529,6 +2529,12 @@
               <a href="font_editor.html" target="_blank" style="font-size: 12px; color: var(--accent-color); text-decoration: none;" title="Open Font Editor in a new tab">Font Editor</a>
             </div>
           </div>
+          <div class="control-group" id="pluginSection">
+            <div class="control-group-title">Plugins</div>
+            <input type="file" id="pluginFileInput" accept=".slplugin,.slpluginjs,.json" style="display:none;">
+            <button id="pluginLoadBtn" style="font-size:11px;margin-bottom:4px;">Load Plugin&#8230;</button>
+            <div id="pluginList"></div>
+          </div>
         </div>
 
         <!-- SCA Animation Controls (always outside tabs) -->
@@ -2552,6 +2558,12 @@
   <!-- Preview Panel -->
   <div class="panel preview-panel">
     <div class="panel-content">
+      <div id="pluginSessionBar" style="display:none;padding:4px 8px;background:var(--bg-tertiary);border-bottom:1px solid var(--border-color);font-size:11px;align-items:center;gap:6px;">
+        <span id="pluginSessionName" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Plugin: --</span>
+        <button id="pluginSaveBtn" style="font-size:10px;padding:1px 8px;">Save Patched File</button>
+        <button id="pluginSaveRawBtn" style="font-size:10px;padding:1px 8px;">Save Raw</button>
+        <button id="pluginCloseBtn" style="font-size:10px;padding:1px 4px;" title="Close plugin session">&times;</button>
+      </div>
       <div id="pictureTabBar">
         <div id="pictureTabList"></div>
       </div>
@@ -3514,7 +3526,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 2.17</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 2.23</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">
@@ -3551,6 +3563,9 @@
             <option value="3">x3</option>
             <option value="4">x4</option>
           </select>
+          <label style="font-size: 10px; display: flex; align-items: center; gap: 2px;" title="Show 8x8 grid on source image (within crop area)">
+            <input type="checkbox" id="importSourceGrid" style="margin: 0;">Grid
+          </label>
           <span style="font-size: 10px; color: var(--text-tertiary);">ORIGINAL <span id="importOriginalSize">256x192</span></span>
         </div>
         <div style="overflow: auto; flex: 1 1 auto; min-height: 0; border: 1px solid var(--border-secondary);">
@@ -3734,6 +3749,8 @@
                 <option value="mono_full">Mono</option>
                 <option value="mono_2_3">Mono 2/3</option>
                 <option value="mono_1_3">Mono 1/3</option>
+                <option value="chunks4x4">Chunks 4×4</option>
+                <option value="chunks4x2">Chunks 4×2</option>
               </optgroup>
               <optgroup label="Text & attributes">
                 <option value="53c">53c (attr)</option>
@@ -3774,7 +3791,10 @@
               <option value="checker" selected>Checker</option>
               <option value="stripes">Stripes</option>
               <option value="dd77">DD/77</option>
+              <option value="custom">Custom</option>
             </select>
+            <input id="import53cPatternHex" type="text" maxlength="23" value="0F 0F 0F 0F F0 F0 F0 F0" style="width: 130px; padding: 2px; font-size: 11px; font-family: monospace; display: none;" title="8 hex bytes separated by spaces (e.g. 0F 0F 0F 0F F0 F0 F0 F0)">
+            <label style="margin-left: 6px; cursor: pointer;" title="Spread color error to neighboring cells (Floyd-Steinberg)"><input type="checkbox" id="import53cDiffusion"> Diffusion</label>
           </label>
           <label id="importHlrPatternRow" style="font-size: 11px; display: none; align-items: center; gap: 4px;">
             <span style="width: 44px;">Pattern:</span>
@@ -3934,6 +3954,12 @@
           <option value="flash">Flash</option>
           <option value="animation">Animation</option>
         </select>
+        <div id="gifFrameNav" style="display: none; align-items: center; gap: 4px; font-size: 12px;">
+          <button id="gifFramePrev" style="padding: 3px 8px;">&#9664;</button>
+          <input type="range" id="gifFrameSlider" min="0" max="0" value="0" style="width: 120px;">
+          <span id="gifFrameLabel" style="min-width: 55px; text-align: center;">1 / 1</span>
+          <button id="gifFrameNext" style="padding: 3px 8px;">&#9654;</button>
+        </div>
         <button id="importAddAllBtn" style="padding: 5px 16px; font-size: 12px; display: none;" title="Import all queued images using current settings">Add All</button>
         <button id="importOkBtn" style="padding: 5px 16px; font-size: 12px;">Import</button>
       </div>
@@ -4036,6 +4062,9 @@
         <label style="cursor: pointer;"><input type="checkbox" id="cmpFmtRcs" checked> RCS variants</label>
         <label style="cursor: pointer;"><input type="checkbox" id="cmpFmtLc" checked> LC</label>
         <label style="cursor: pointer;"><input type="checkbox" id="cmpFmtUpkr"> upkr (level 1 &amp; 9)</label>
+        <label style="cursor: pointer;"><input type="checkbox" id="cmpFmtRle"> RLE</label>
+        <label style="cursor: pointer;"><input type="checkbox" id="cmpFmtZxsc"> ZXSC (LZF)</label>
+        <label style="cursor: pointer;"><input type="checkbox" id="cmpFmtChunks"> Chunks (lossy)</label>
       </div>
       <div style="margin-top: 8px; font-weight: bold; margin-bottom: 6px;">Depacker options</div>
       <div style="display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; align-items: center;">
@@ -4132,12 +4161,108 @@
   </div>
 </div>
 
+<div id="scaSaveDialog" class="modal-overlay" style="display:none;">
+  <div class="modal-dialog" style="min-width: 340px;">
+    <div class="modal-title">Save SCA</div>
+
+    <div style="margin-bottom: 10px;">
+      <label style="font-size: 11px; display: block; margin-bottom: 4px;">Payload type:</label>
+      <select id="scaSavePayloadType" style="width: 100%; padding: 4px; font-size: 11px;">
+        <option value="0">Full frames (type 0)</option>
+        <option value="1">Attr-only (type 1)</option>
+        <option value="2">Packed (type 2)</option>
+      </select>
+    </div>
+
+    <div id="scaSaveRegionRow" style="margin-bottom: 10px; display: none;">
+      <label style="font-size: 11px; display: block; margin-bottom: 4px;">Region:</label>
+      <select id="scaSaveRegion" style="width: 100%; padding: 4px; font-size: 11px;">
+        <option value="0">Top third</option>
+        <option value="1">Middle third</option>
+        <option value="2">Bottom third</option>
+        <option value="3">Top + Middle</option>
+        <option value="4">Middle + Bottom</option>
+        <option value="5">Full screen</option>
+      </select>
+    </div>
+
+    <div id="scaSaveFctRow" style="margin-bottom: 10px; display: none;">
+      <label style="font-size: 11px; display: block; margin-bottom: 4px;">Content:</label>
+      <select id="scaSaveFct" style="width: 100%; padding: 4px; font-size: 11px;">
+        <option value="0">Bitmap only</option>
+        <option value="1">Bitmap + Attributes</option>
+        <option value="2">Attributes only</option>
+      </select>
+    </div>
+
+    <div id="scaSaveCompressionRow" style="margin-bottom: 10px; display: none;">
+      <label style="font-size: 11px; display: block; margin-bottom: 4px;">Compression:</label>
+      <select id="scaSaveCompression" style="width: 100%; padding: 4px; font-size: 11px;">
+        <option value="0">Uncompressed</option>
+        <option value="1">ZX0</option>
+        <option value="2">Laser Compact</option>
+        <option value="3">RLE</option>
+        <option value="4">Chunks 4×4</option>
+        <option value="5">Chunks 4×2</option>
+      </select>
+    </div>
+
+    <div id="scaSavePatternRow" style="margin-bottom: 10px; display: none;">
+      <label style="font-size: 11px; display: block; margin-bottom: 4px;">Fill pattern:</label>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <select id="scaSavePattern" style="flex: 1; padding: 4px; font-size: 11px;">
+          <option value="checker">Checker</option>
+          <option value="stripes">Stripes</option>
+          <option value="solid">Solid</option>
+          <option value="file">From file</option>
+        </select>
+        <canvas id="scaSavePatternPreview" width="16" height="16" style="border: 1px solid var(--border-primary); image-rendering: pixelated;"></canvas>
+      </div>
+    </div>
+
+    <div style="margin-bottom: 10px; border-top: 1px solid var(--border-primary); padding-top: 10px;">
+      <label style="font-size: 11px; display: block; margin-bottom: 4px;">Output:</label>
+      <select id="scaSaveOutput" style="width: 100%; padding: 4px; font-size: 11px;">
+        <option value="sca">SCA binary</option>
+        <option value="asm">ASM + SCA (zip)</option>
+      </select>
+    </div>
+
+    <div id="scaSaveWarning" style="margin-bottom: 10px; padding: 6px 8px; font-size: 11px; color: #b8860b; background: rgba(184,134,11,0.1); border-radius: 4px; display: none;"></div>
+
+    <div style="margin-bottom: 12px; font-size: 11px; color: var(--text-secondary);">
+      Estimated size: <span id="scaSaveSize">0 KB</span>
+    </div>
+
+    <div id="scaSaveProgressRow" style="margin-bottom: 10px; display: none;">
+      <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">
+        <span id="scaSaveProgressText">Processing...</span>
+      </div>
+      <div style="width: 100%; height: 6px; background: var(--bg-primary); border-radius: 3px; overflow: hidden;">
+        <div id="scaSaveProgressBar" style="width: 0%; height: 100%; background: #4a9eff; border-radius: 3px; transition: width 0.1s;"></div>
+      </div>
+    </div>
+
+    <div style="display: flex; gap: 8px; justify-content: flex-end;">
+      <button id="scaSaveCancelBtn" style="padding: 5px 16px; font-size: 12px;">Cancel</button>
+      <button id="scaSaveOkBtn" style="padding: 5px 16px; font-size: 12px;">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- External libraries -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
 <!-- Screen Viewer scripts -->
 <script src="js/app_config.js"></script>
 <script src="js/picture_format.js"></script>
+<script src="js/zx7.js"></script>
+<script src="js/zx0.js"></script>
+<script src="js/lc.js"></script>
+<script src="js/rle.js"></script>
+<script src="js/zxsc.js"></script>
+<script src="js/chunks.js"></script>
+<script src="js/upkr.js"></script>
 <script src="js/screen_viewer.js"></script>
 <script src="js/display_filters.js"></script>
 <script src="js/image_import.js"></script>
@@ -4149,15 +4274,10 @@
 <script src="js/next_l2_asm_export.js"></script>
 <script src="js/lores_asm_export.js"></script>
 <script src="js/snapshot_loader.js"></script>
+<script src="js/plugin_manager.js"></script>
 <script src="js/screen_viewer_ui.js"></script>
 <script src="js/sca_editor.js"></script>
 <script src="js/qrcode.js"></script>
-<script src="js/zx7.js"></script>
-<script src="js/zx0.js"></script>
-<script src="js/lc.js"></script>
-<script src="js/upkr.js"></script>
-<script src="js/lc.js"></script>
-<script src="js/upkr.js"></script>
 <script src="js/screen_editor.js"></script>
 <script src="js/sprite_editor.js"></script>
 </body>

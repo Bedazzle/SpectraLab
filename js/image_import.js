@@ -6786,11 +6786,11 @@ function getBlockAverageColor(pixels, width, x, y, blockWidth = 32) {
  * @param {number} balanceR - Red channel adjustment
  * @param {number} balanceG - Green channel adjustment
  * @param {number} balanceB - Blue channel adjustment
- * @param {string} pattern - Pattern type: 'checker', 'stripes', or 'dd77'
+ * @param {string|number[]} pattern - Pattern type: 'checker', 'stripes', 'dd77', or array of 8 bytes
  * @param {boolean} [monoOutput=false] - true: force grayscale input
  * @returns {Uint8Array} 768-byte attribute data
  */
-function convertTo53c(sourceCanvas, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, pattern = 'checker', monoOutput = false) {
+function convertTo53c(sourceCanvas, brightness, contrast, saturation = 0, gamma = 1.0, grayscale = false, sharpness = 0, smoothing = 0, blackPoint = 0, whitePoint = 255, balanceR = 0, balanceG = 0, balanceB = 0, pattern = 'checker', monoOutput = false, diffusion = true) {
   // Cache color distance mode setting once at start
   updateColorDistanceMode();
 
@@ -6826,9 +6826,11 @@ function convertTo53c(sourceCanvas, brightness, contrast, saturation = 0, gamma 
     applyColorBalance(pixels, balanceR, balanceG, balanceB);
   }
 
-  // Get pattern array from APP_CONFIG
+  // Get pattern array from APP_CONFIG (or use raw array if provided)
   let patternArray;
-  if (pattern === 'stripes') {
+  if (Array.isArray(pattern)) {
+    patternArray = pattern;
+  } else if (pattern === 'stripes') {
     patternArray = APP_CONFIG.PATTERN_53C_STRIPES;
   } else if (pattern === 'dd77') {
     patternArray = APP_CONFIG.PATTERN_53C_DD77;
@@ -6852,11 +6854,17 @@ function convertTo53c(sourceCanvas, brightness, contrast, saturation = 0, gamma 
   }
   const inkRatio = inkBitCount / 64;
 
+  // Cell-level error diffusion buffer (Floyd-Steinberg across 32×24 cell grid)
+  const errorR = diffusion ? new Float32Array(32 * 24) : null;
+  const errorG = diffusion ? new Float32Array(32 * 24) : null;
+  const errorB = diffusion ? new Float32Array(32 * 24) : null;
+
   // Process each 8x8 character cell
   for (let row = 0; row < 24; row++) {
     for (let col = 0; col < 32; col++) {
       const cellX = col * 8;
       const cellY = row * 8;
+      const cellIdx = row * 32 + col;
 
       // Compute overall cell average color (all 64 pixels)
       let totalR = 0, totalG = 0, totalB = 0;
@@ -6870,7 +6878,12 @@ function convertTo53c(sourceCanvas, brightness, contrast, saturation = 0, gamma 
         }
       }
 
-      const cellAvg = [totalR / 64, totalG / 64, totalB / 64];
+      // Add accumulated error from neighboring cells (if diffusion enabled)
+      const cellAvg = diffusion ? [
+        Math.max(0, Math.min(255, totalR / 64 + errorR[cellIdx])),
+        Math.max(0, Math.min(255, totalG / 64 + errorG[cellIdx])),
+        Math.max(0, Math.min(255, totalB / 64 + errorB[cellIdx]))
+      ] : [totalR / 64, totalG / 64, totalB / 64];
 
       // Find best ink/paper pair whose pattern-blended color is closest to cell average
       // Paper rule is NOT applied for 53c: this format has no per-cell bitmap to invert,
@@ -6896,6 +6909,39 @@ function convertTo53c(sourceCanvas, brightness, contrast, saturation = 0, gamma 
               bestPaperIdx = paperIdx;
               bestBright = bright;
             }
+          }
+        }
+      }
+
+      // Distribute error to neighbors (if diffusion enabled)
+      if (diffusion) {
+        const bestPal = bestBright ? combinedPalette.bright : combinedPalette.regular;
+        const achievedR = bestPal[bestInkIdx][0] * inkRatio + bestPal[bestPaperIdx][0] * (1 - inkRatio);
+        const achievedG = bestPal[bestInkIdx][1] * inkRatio + bestPal[bestPaperIdx][1] * (1 - inkRatio);
+        const achievedB = bestPal[bestInkIdx][2] * inkRatio + bestPal[bestPaperIdx][2] * (1 - inkRatio);
+        const errR = cellAvg[0] - achievedR;
+        const errG = cellAvg[1] - achievedG;
+        const errB = cellAvg[2] - achievedB;
+
+        // Floyd-Steinberg distribution: right 7/16, bottom-left 3/16, bottom 5/16, bottom-right 1/16
+        if (col + 1 < 32) {
+          errorR[cellIdx + 1] += errR * 7 / 16;
+          errorG[cellIdx + 1] += errG * 7 / 16;
+          errorB[cellIdx + 1] += errB * 7 / 16;
+        }
+        if (row + 1 < 24) {
+          if (col - 1 >= 0) {
+            errorR[cellIdx + 31] += errR * 3 / 16;
+            errorG[cellIdx + 31] += errG * 3 / 16;
+            errorB[cellIdx + 31] += errB * 3 / 16;
+          }
+          errorR[cellIdx + 32] += errR * 5 / 16;
+          errorG[cellIdx + 32] += errG * 5 / 16;
+          errorB[cellIdx + 32] += errB * 5 / 16;
+          if (col + 1 < 32) {
+            errorR[cellIdx + 33] += errR * 1 / 16;
+            errorG[cellIdx + 33] += errG * 1 / 16;
+            errorB[cellIdx + 33] += errB * 1 / 16;
           }
         }
       }
@@ -8315,7 +8361,7 @@ function renderBmc4ToCanvas(bmc4Data, canvas, zoom = 2) {
  * @param {Uint8Array} attrData - 768 bytes of attribute data
  * @param {HTMLCanvasElement} canvas - Target canvas
  * @param {number} zoom - Zoom level
- * @param {string} pattern - Pattern type: 'checker', 'stripes', or 'dd77'
+ * @param {string|number[]} pattern - Pattern type: 'checker', 'stripes', 'dd77', or array of 8 bytes
  */
 function render53cToCanvas(attrData, canvas, zoom = 2, pattern = 'checker') {
   const ctx = canvas.getContext('2d');
@@ -8328,9 +8374,11 @@ function render53cToCanvas(attrData, canvas, zoom = 2, pattern = 'checker') {
   const pixels = imageData.data;
   const palette = getCombinedPalette();
 
-  // Get pattern array from APP_CONFIG
+  // Get pattern array from APP_CONFIG (or use raw array if provided)
   let patternArray;
-  if (pattern === 'stripes') {
+  if (Array.isArray(pattern)) {
+    patternArray = pattern;
+  } else if (pattern === 'stripes') {
     patternArray = APP_CONFIG.PATTERN_53C_STRIPES;
   } else if (pattern === 'dd77') {
     patternArray = APP_CONFIG.PATTERN_53C_DD77;
@@ -9826,12 +9874,34 @@ async function importAnimatedGifOrFallback(file) {
 }
 
 /**
+ * Resolve the import dialog's 53c pattern selection to a pattern value.
+ * Returns a string name ('checker', 'stripes', 'dd77') or a number[] for custom patterns.
+ * @returns {string|number[]}
+ */
+function getImport53cPattern() {
+  const name = importElements.pattern53c?.value || 'checker';
+  if (name === 'custom') {
+    const hex = (importElements.pattern53cHex?.value || '').trim();
+    const bytes = hex.split(/[\s,]+/).map(s => parseInt(s, 16)).filter(n => !isNaN(n) && n >= 0 && n <= 255);
+    if (bytes.length === 8) return bytes;
+    // Fallback: pad/truncate to 8 bytes
+    while (bytes.length < 8) bytes.push(0);
+    return bytes.slice(0, 8);
+  }
+  return name;
+}
+
+/**
  * Decode an animated GIF and load it as an SCA animation.
  * @param {Uint8Array} data - Raw GIF file bytes
  * @param {string} fileName - Original file name
  * @param {{crop:{x:number,y:number,w:number,h:number},fitMode:string,offset:{x:number,y:number},size:{w:number,h:number},align:string}|null} [fitSettings] - Optional crop/fit settings from import dialog
+ * @param {string} [format='scr'] - Target format: 'scr' for type 0 (full frames), '53c' for type 1 (attr-only), 'chunks4x4'/'chunks4x2' for type 2 (chunks)
+ * @param {string|number[]} [pattern='checker'] - Fill pattern for type 1: 'checker', 'stripes', 'dd77', or array of 8 bytes
+ * @param {boolean} [diffusion=true] - Enable cell-level Floyd-Steinberg error diffusion for type 1
+ * @param {{dithering:string,brightness:number,contrast:number,saturation:number,gamma:number,grayscale:boolean,sharpness:number,smoothing:number,blackPoint:number,whitePoint:number,balanceR:number,balanceG:number,balanceB:number}|null} [ditherSettings=null] - Dithering settings for chunks formats
  */
-async function importAnimatedGif(data, fileName, fitSettings) {
+async function importAnimatedGif(data, fileName, fitSettings, format = 'scr', pattern = 'checker', diffusion = true, ditherSettings = null) {
   let gif;
   try {
     gif = new GifDecoder(data).decode();
@@ -9847,9 +9917,175 @@ async function importAnimatedGif(data, fileName, fitSettings) {
   }
 
   const frameCount = gif.frames.length;
-  const frameSize = 6912;
+
+  // --- Chunks 4×4 / 4×2: SCA type 2 with chunks compression ---
+  const isChunks = (format === 'chunks4x4' || format === 'chunks4x2');
+  if (isChunks) {
+    const chunkMode = format === 'chunks4x4' ? CHUNKS.MODE_4x4 : CHUNKS.MODE_4x2;
+    const chunksCompressionType = format === 'chunks4x4' ? 4 : 5;
+
+    // Dithering settings (from import dialog or defaults)
+    const ds = ditherSettings || {
+      dithering: 'floyd-steinberg', brightness: 0, contrast: 0, saturation: 0,
+      gamma: 1.0, grayscale: false, sharpness: 0, smoothing: 0,
+      blackPoint: 0, whitePoint: 255, balanceR: 0, balanceG: 0, balanceB: 0
+    };
+
+    // Temp canvas for convertToMono calls
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = 256;
+    tempCanvas.height = 192;
+    const tempCtx = tempCanvas.getContext('2d');
+
+    const nativeSize = (gif.width === 256 && gif.height === 192) && !fitSettings;
+
+    // Collect compressed frame data
+    const compressedFrames = [];
+    let totalPayload = 0;
+
+    for (let i = 0; i < frameCount; i++) {
+      const frame = gif.frames[i];
+
+      // Get 256×192 RGBA pixels
+      /** @type {Uint8ClampedArray} */
+      let rgba;
+      if (fitSettings) {
+        rgba = applyFrameCropAndFit(frame.imageData, fitSettings.crop, fitSettings.fitMode,
+          fitSettings.offset, fitSettings.size, fitSettings.align);
+      } else if (nativeSize) {
+        rgba = frame.imageData.data;
+      } else {
+        const srcData = frame.imageData.data;
+        const srcW = frame.imageData.width;
+        const srcH = frame.imageData.height;
+        rgba = new Uint8ClampedArray(256 * 192 * 4);
+        for (let dy = 0; dy < 192; dy++) {
+          const sy = Math.floor(dy * srcH / 192);
+          for (let dx = 0; dx < 256; dx++) {
+            const sx = Math.floor(dx * srcW / 256);
+            const si = (sy * srcW + sx) * 4;
+            const di = (dy * 256 + dx) * 4;
+            rgba[di]     = srcData[si];
+            rgba[di + 1] = srcData[si + 1];
+            rgba[di + 2] = srcData[si + 2];
+            rgba[di + 3] = srcData[si + 3];
+          }
+        }
+      }
+
+      // Put RGBA onto temp canvas for convertToMono
+      const imgData = new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength), 256, 192);
+      tempCtx.putImageData(imgData, 0, 0);
+
+      // Convert to monochrome interleaved bitmap (6144 bytes)
+      const monoData = convertToMono(tempCanvas, ds.dithering, ds.brightness, ds.contrast,
+        ds.saturation, ds.gamma, ds.grayscale, ds.sharpness, ds.smoothing,
+        ds.blackPoint, ds.whitePoint, ds.balanceR, ds.balanceG, ds.balanceB, 3);
+
+      // Compress with chunks
+      const compressed = CHUNKS.compress(monoData, chunkMode);
+
+      // Compute delay
+      let gifDelay = frame.delay;
+      if (gifDelay === 0) gifDelay = 10; // treat 0 as 100ms
+      const scaDelay = Math.max(1, Math.min(255, Math.round(gifDelay / 2)));
+
+      compressedFrames.push({ data: compressed.encoded, delay: scaDelay });
+      totalPayload += 1 + compressed.encoded.length + 1; // frameHeader + encodedBytes + delay
+
+      // Yield every few frames for UI responsiveness
+      if (i % 4 === 0) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+    }
+
+    // Assemble SCA type 2 binary
+    const headerSize = 14;
+    const fctSize = 1; // FCT byte
+    const scaSize = headerSize + fctSize + totalPayload;
+    const scaBinary = new Uint8Array(scaSize);
+
+    // SCA Header (14 bytes)
+    scaBinary[0] = 0x53; // 'S'
+    scaBinary[1] = 0x43; // 'C'
+    scaBinary[2] = 0x41; // 'A'
+    scaBinary[3] = 1;    // version 1
+    scaBinary[4] = 0;    // width low (256 & 0xFF = 0)
+    scaBinary[5] = 1;    // width high (256 >> 8 = 1)
+    scaBinary[6] = 0xC0; // height low (192 & 0xFF = 0xC0)
+    scaBinary[7] = 0;    // height high (192 >> 8 = 0)
+    scaBinary[8] = 0;    // border color
+    scaBinary[9] = frameCount & 0xFF;
+    scaBinary[10] = (frameCount >> 8) & 0xFF;
+    scaBinary[11] = 2;   // payload type 2 (compressed)
+    scaBinary[12] = headerSize & 0xFF;
+    scaBinary[13] = (headerSize >> 8) & 0xFF;
+
+    // FCT byte: (fct << 4) | regionCode — bitmap only (0), full screen (5)
+    let offset = headerSize;
+    scaBinary[offset++] = (0 << 4) | 5;
+
+    // Per-frame data
+    for (let i = 0; i < compressedFrames.length; i++) {
+      const cf = compressedFrames[i];
+      // Frame header byte: (compressionType << 3) | borderColor
+      scaBinary[offset++] = (chunksCompressionType << 3) | 0;
+      // Compressed chunks data
+      scaBinary.set(cf.data, offset);
+      offset += cf.data.length;
+      // Delay byte
+      scaBinary[offset++] = cf.delay;
+    }
+
+    // Load as SCA — mirror screen_viewer.js loadScreenFile SCA handling
+    stopFlashTimer();
+    resetScaState();
+
+    if (typeof activePictureIndex !== 'undefined') {
+      activePictureIndex = -1;
+    }
+
+    screenData = scaBinary;
+    currentFileName = fileName.replace(/\.gif$/i, '') + '.sca';
+    currentFormat = FORMAT.SCA;
+    currentPicture = null;
+    scaHeader = parseScaHeader(screenData);
+
+    if (scaHeader) {
+      borderColor = scaHeader.borderColor;
+      if (borderColorSelect) {
+        borderColorSelect.value = String(borderColor);
+      }
+      startScaAnimation();
+    } else {
+      currentFormat = FORMAT.UNKNOWN;
+    }
+
+    if (typeof updatePictureTabBar === 'function') {
+      updatePictureTabBar();
+    }
+
+    toggleScaControlsVisibility();
+    toggleFormatControlsVisibility();
+    updateScaControls();
+    updateFileInfo();
+    renderScreen();
+
+    if (typeof updateExportAsmButton === 'function') {
+      updateExportAsmButton();
+    }
+    if (typeof updateEditorState === 'function') {
+      updateEditorState();
+    }
+    return;
+  }
+
+  // --- Type 0 (SCR) / Type 1 (53c) path ---
+  const isType1 = (format === '53c');
+  const frameSize = isType1 ? 768 : 6912;
   const headerSize = 14;
-  const scaSize = headerSize + frameCount + frameCount * frameSize;
+  const fillPatternSize = isType1 ? 8 : 0;
+  const scaSize = headerSize + frameCount + fillPatternSize + frameCount * frameSize;
   const scaBinary = new Uint8Array(scaSize);
 
   // SCA Header (14 bytes)
@@ -9864,7 +10100,7 @@ async function importAnimatedGif(data, fileName, fitSettings) {
   scaBinary[8] = 0;    // border color
   scaBinary[9] = frameCount & 0xFF;         // frame count low
   scaBinary[10] = (frameCount >> 8) & 0xFF; // frame count high
-  scaBinary[11] = 0;   // payload type 0 (full frames)
+  scaBinary[11] = isType1 ? 1 : 0;          // payload type
   scaBinary[12] = headerSize & 0xFF;         // payload offset low
   scaBinary[13] = (headerSize >> 8) & 0xFF;  // payload offset high
 
@@ -9876,13 +10112,40 @@ async function importAnimatedGif(data, fileName, fitSettings) {
     scaBinary[headerSize + i] = scaDelay;
   }
 
-  // Convert each frame to SCR
+  // For type 1, write fill pattern after delay table and compute ink ratio
+  let patternArray;
+  let inkRatio = 0;
+  if (isType1) {
+    if (Array.isArray(pattern)) {
+      patternArray = pattern;
+    } else if (pattern === 'stripes') {
+      patternArray = APP_CONFIG.PATTERN_53C_STRIPES;
+    } else if (pattern === 'dd77') {
+      patternArray = APP_CONFIG.PATTERN_53C_DD77;
+    } else {
+      patternArray = APP_CONFIG.PATTERN_53C_CHECKER;
+    }
+    const fillPatternOffset = headerSize + frameCount;
+    for (let i = 0; i < 8; i++) {
+      scaBinary[fillPatternOffset + i] = patternArray[i];
+    }
+    // Compute ink ratio from pattern (count set bits across all 8 bytes / 64)
+    let inkBitCount = 0;
+    for (let py = 0; py < 8; py++) {
+      for (let px = 0; px < 8; px++) {
+        if (patternArray[py] & (1 << (7 - px))) inkBitCount++;
+      }
+    }
+    inkRatio = inkBitCount / 64;
+  }
+
+  // Convert each frame
   const palette = getCombinedPalette();
   const fullPalette = [...palette.regular, ...palette.bright];
 
   const nativeSize = (gif.width === 256 && gif.height === 192) && !fitSettings;
 
-  const frameDataStart = headerSize + frameCount;
+  const frameDataStart = headerSize + frameCount + fillPatternSize;
 
   for (let i = 0; i < frameCount; i++) {
     const frame = gif.frames[i];
@@ -9915,79 +10178,173 @@ async function importAnimatedGif(data, fileName, fitSettings) {
       }
     }
 
-    // SCR conversion: for each 8×8 cell, find best ink/paper pair (brute-force
-    // optimal search over all 128 combinations, same approach as findCellColors)
-    const linearBmp = new Uint8Array(6144);
     const frameAttrs = new Uint8Array(768);
 
-    for (let cellY = 0; cellY < 24; cellY++) {
-      for (let cellX = 0; cellX < 32; cellX++) {
-        // Collect cell RGB values
-        const cellRgb = new Uint8Array(64 * 3);
-        for (let dy = 0; dy < 8; dy++) {
-          const py = cellY * 8 + dy;
-          for (let dx = 0; dx < 8; dx++) {
-            const si = (py * 256 + (cellX * 8 + dx)) * 4;
-            const ci = (dy * 8 + dx) * 3;
-            cellRgb[ci]     = rgba[si];
-            cellRgb[ci + 1] = rgba[si + 1];
-            cellRgb[ci + 2] = rgba[si + 2];
-          }
-        }
+    if (isType1) {
+      // Type 1: attribute-only conversion with optional cell-level error diffusion
+      const errR = diffusion ? new Float32Array(32 * 24) : null;
+      const errG = diffusion ? new Float32Array(32 * 24) : null;
+      const errB = diffusion ? new Float32Array(32 * 24) : null;
 
-        // Try all ink/paper combinations for both brightness levels
-        let bestInk = 0, bestPaper = 0, bestBright = false, bestError = Infinity;
-        for (let br = 0; br <= 1; br++) {
-          const palOff = br ? 8 : 0;
-          for (let ink = 0; ink < 8; ink++) {
-            const ic = fullPalette[palOff + ink];
-            for (let paper = 0; paper < 8; paper++) {
-              const pc = fullPalette[palOff + paper];
-              let totalError = 0;
-              for (let j = 0; j < 64; j++) {
-                const ci = j * 3;
-                const r = cellRgb[ci], g = cellRgb[ci + 1], b = cellRgb[ci + 2];
-                const di = (r - ic[0]) ** 2 + (g - ic[1]) ** 2 + (b - ic[2]) ** 2;
-                const dp = (r - pc[0]) ** 2 + (g - pc[1]) ** 2 + (b - pc[2]) ** 2;
-                totalError += Math.min(di, dp);
-              }
-              if (totalError < bestError) {
-                bestError = totalError;
-                bestInk = ink; bestPaper = paper; bestBright = br === 1;
+      for (let cellY = 0; cellY < 24; cellY++) {
+        for (let cellX = 0; cellX < 32; cellX++) {
+          const cellIdx = cellY * 32 + cellX;
+
+          // Compute cell average color
+          let totalR = 0, totalG = 0, totalB = 0;
+          for (let dy = 0; dy < 8; dy++) {
+            const py = cellY * 8 + dy;
+            for (let dx = 0; dx < 8; dx++) {
+              const si = (py * 256 + (cellX * 8 + dx)) * 4;
+              totalR += rgba[si];
+              totalG += rgba[si + 1];
+              totalB += rgba[si + 2];
+            }
+          }
+
+          // Add accumulated error from neighboring cells (if diffusion enabled)
+          const targetR = diffusion
+            ? Math.max(0, Math.min(255, totalR / 64 + errR[cellIdx]))
+            : totalR / 64;
+          const targetG = diffusion
+            ? Math.max(0, Math.min(255, totalG / 64 + errG[cellIdx]))
+            : totalG / 64;
+          const targetB = diffusion
+            ? Math.max(0, Math.min(255, totalB / 64 + errB[cellIdx]))
+            : totalB / 64;
+
+          // Find best ink/paper pair whose pattern-blended color is closest
+          let bestInk = 0, bestPaper = 0, bestBright = 0, bestDist = Infinity;
+          for (let br = 0; br <= 1; br++) {
+            const palOff = br ? 8 : 0;
+            for (let ink = 0; ink < 8; ink++) {
+              const ic = fullPalette[palOff + ink];
+              for (let paper = 0; paper < 8; paper++) {
+                const pc = fullPalette[palOff + paper];
+                const blendR = ic[0] * inkRatio + pc[0] * (1 - inkRatio);
+                const blendG = ic[1] * inkRatio + pc[1] * (1 - inkRatio);
+                const blendB = ic[2] * inkRatio + pc[2] * (1 - inkRatio);
+                const dr = blendR - targetR, dg = blendG - targetG, db = blendB - targetB;
+                const dist = dr * dr + dg * dg + db * db;
+                if (dist < bestDist) {
+                  bestDist = dist;
+                  bestInk = ink; bestPaper = paper; bestBright = br;
+                }
               }
             }
           }
-        }
 
-        const inkColor = fullPalette[bestBright ? 8 + bestInk : bestInk];
-        const paperColor = fullPalette[bestBright ? 8 + bestPaper : bestPaper];
+          // Distribute error to neighbors (if diffusion enabled)
+          if (diffusion) {
+            const bestIc = fullPalette[bestBright ? 8 + bestInk : bestInk];
+            const bestPc = fullPalette[bestBright ? 8 + bestPaper : bestPaper];
+            const achR = bestIc[0] * inkRatio + bestPc[0] * (1 - inkRatio);
+            const achG = bestIc[1] * inkRatio + bestPc[1] * (1 - inkRatio);
+            const achB = bestIc[2] * inkRatio + bestPc[2] * (1 - inkRatio);
+            const eR = targetR - achR, eG = targetG - achG, eB = targetB - achB;
 
-        // Build bitmap: for each pixel, pick ink or paper (whichever is closer)
-        for (let dy = 0; dy < 8; dy++) {
-          let byte = 0;
-          const py = cellY * 8 + dy;
-          for (let dx = 0; dx < 8; dx++) {
-            const px = cellX * 8 + dx;
-            const si = (py * 256 + px) * 4;
-            const r = rgba[si], g = rgba[si + 1], b = rgba[si + 2];
-            const dInk = (r - inkColor[0]) ** 2 + (g - inkColor[1]) ** 2 + (b - inkColor[2]) ** 2;
-            const dPaper = (r - paperColor[0]) ** 2 + (g - paperColor[1]) ** 2 + (b - paperColor[2]) ** 2;
-            if (dInk < dPaper) byte |= (0x80 >> dx);
+            // Floyd-Steinberg: right 7/16, bottom-left 3/16, bottom 5/16, bottom-right 1/16
+            if (cellX + 1 < 32) {
+              errR[cellIdx + 1] += eR * 7 / 16;
+              errG[cellIdx + 1] += eG * 7 / 16;
+              errB[cellIdx + 1] += eB * 7 / 16;
+            }
+            if (cellY + 1 < 24) {
+              if (cellX - 1 >= 0) {
+                errR[cellIdx + 31] += eR * 3 / 16;
+                errG[cellIdx + 31] += eG * 3 / 16;
+                errB[cellIdx + 31] += eB * 3 / 16;
+              }
+              errR[cellIdx + 32] += eR * 5 / 16;
+              errG[cellIdx + 32] += eG * 5 / 16;
+              errB[cellIdx + 32] += eB * 5 / 16;
+              if (cellX + 1 < 32) {
+                errR[cellIdx + 33] += eR * 1 / 16;
+                errG[cellIdx + 33] += eG * 1 / 16;
+                errB[cellIdx + 33] += eB * 1 / 16;
+              }
+            }
           }
-          linearBmp[py * 32 + cellX] = byte;
+
+          frameAttrs[cellY * 32 + cellX] = (bestBright << 6) | (bestPaper << 3) | bestInk;
         }
-
-        // Write attribute
-        frameAttrs[cellY * 32 + cellX] = (bestPaper << 3) | bestInk | (bestBright ? 0x40 : 0);
       }
-    }
 
-    // Interleave linear bitmap into SCR format and combine with attributes
-    const scrInterleaved = interleaveBitmap(linearBmp, 256, 192);
-    const scr = new Uint8Array(6912);
-    scr.set(scrInterleaved);
-    scr.set(frameAttrs, 6144);
-    scaBinary.set(scr, frameDataStart + i * frameSize);
+      // Type 1: store only attributes
+      scaBinary.set(frameAttrs, frameDataStart + i * frameSize);
+    } else {
+      // Type 0: full SCR frame conversion
+      const linearBmp = new Uint8Array(6144);
+
+      for (let cellY = 0; cellY < 24; cellY++) {
+        for (let cellX = 0; cellX < 32; cellX++) {
+          // Collect cell RGB values
+          const cellRgb = new Uint8Array(64 * 3);
+          for (let dy = 0; dy < 8; dy++) {
+            const py = cellY * 8 + dy;
+            for (let dx = 0; dx < 8; dx++) {
+              const si = (py * 256 + (cellX * 8 + dx)) * 4;
+              const ci = (dy * 8 + dx) * 3;
+              cellRgb[ci]     = rgba[si];
+              cellRgb[ci + 1] = rgba[si + 1];
+              cellRgb[ci + 2] = rgba[si + 2];
+            }
+          }
+
+          // Try all ink/paper combinations for both brightness levels
+          let bestInk = 0, bestPaper = 0, bestBright = false, bestError = Infinity;
+          for (let br = 0; br <= 1; br++) {
+            const palOff = br ? 8 : 0;
+            for (let ink = 0; ink < 8; ink++) {
+              const ic = fullPalette[palOff + ink];
+              for (let paper = 0; paper < 8; paper++) {
+                const pc = fullPalette[palOff + paper];
+                let totalError = 0;
+                for (let j = 0; j < 64; j++) {
+                  const ci = j * 3;
+                  const r = cellRgb[ci], g = cellRgb[ci + 1], b = cellRgb[ci + 2];
+                  const di = (r - ic[0]) ** 2 + (g - ic[1]) ** 2 + (b - ic[2]) ** 2;
+                  const dp = (r - pc[0]) ** 2 + (g - pc[1]) ** 2 + (b - pc[2]) ** 2;
+                  totalError += Math.min(di, dp);
+                }
+                if (totalError < bestError) {
+                  bestError = totalError;
+                  bestInk = ink; bestPaper = paper; bestBright = br === 1;
+                }
+              }
+            }
+          }
+
+          const inkColor = fullPalette[bestBright ? 8 + bestInk : bestInk];
+          const paperColor = fullPalette[bestBright ? 8 + bestPaper : bestPaper];
+
+          // Build bitmap: for each pixel, pick ink or paper (whichever is closer)
+          for (let dy = 0; dy < 8; dy++) {
+            let byte = 0;
+            const py = cellY * 8 + dy;
+            for (let dx = 0; dx < 8; dx++) {
+              const px = cellX * 8 + dx;
+              const si = (py * 256 + px) * 4;
+              const r = rgba[si], g = rgba[si + 1], b = rgba[si + 2];
+              const dInk = (r - inkColor[0]) ** 2 + (g - inkColor[1]) ** 2 + (b - inkColor[2]) ** 2;
+              const dPaper = (r - paperColor[0]) ** 2 + (g - paperColor[1]) ** 2 + (b - paperColor[2]) ** 2;
+              if (dInk < dPaper) byte |= (0x80 >> dx);
+            }
+            linearBmp[py * 32 + cellX] = byte;
+          }
+
+          // Write attribute
+          frameAttrs[cellY * 32 + cellX] = (bestPaper << 3) | bestInk | (bestBright ? 0x40 : 0);
+        }
+      }
+
+      // Interleave linear bitmap into SCR format and combine with attributes
+      const scrInterleaved = interleaveBitmap(linearBmp, 256, 192);
+      const scr = new Uint8Array(6912);
+      scr.set(scrInterleaved);
+      scr.set(frameAttrs, 6144);
+      scaBinary.set(scr, frameDataStart + i * frameSize);
+    }
 
     // Yield every frame for UI responsiveness and progress
     if (i % 4 === 0) {
@@ -10435,6 +10792,12 @@ let lastImportUlaPlusAutoPalette = null;
 /** @type {number[][]|null} - Optimized 16-color palette from SL2 640x256 conversion */
 let importSl2_640Palette = null;
 
+/** @type {Array<{ imageData: ImageData, delay: number }>|null} - Decoded GIF frames */
+let importGifFrames = null;
+
+/** @type {number} - Current GIF frame index for preview */
+let importGifFrameIndex = 0;
+
 // ============================================================================
 // Dither Regions — per-region dithering via lasso tool
 // ============================================================================
@@ -10510,6 +10873,8 @@ const importElements = {
   /** @type {HTMLSelectElement|null} */ format: null,
   /** @type {HTMLSelectElement|null} */ palette: null,
   /** @type {HTMLSelectElement|null} */ pattern53c: null,
+  /** @type {HTMLInputElement|null} */ pattern53cHex: null,
+  /** @type {HTMLInputElement|null} */ pattern53cDiffusion: null,
   /** @type {HTMLSelectElement|null} */ zoom: null,
   /** @type {HTMLSelectElement|null} */ sourceZoom: null,
   /** @type {HTMLSelectElement|null} */ fitMode: null,
@@ -10575,7 +10940,15 @@ const importElements = {
   // Import mode dropdown (picture / flash / animation)
   /** @type {HTMLSelectElement|null} */ modeSelect: null,
   // "Add All" button — imports queued files with current settings
-  /** @type {HTMLButtonElement|null} */ addAllBtn: null
+  /** @type {HTMLButtonElement|null} */ addAllBtn: null,
+  // Source grid checkbox
+  /** @type {HTMLInputElement|null} */ sourceGrid: null,
+  // GIF frame navigation
+  /** @type {HTMLElement|null} */ gifFrameNav: null,
+  /** @type {HTMLButtonElement|null} */ gifFramePrev: null,
+  /** @type {HTMLButtonElement|null} */ gifFrameNext: null,
+  /** @type {HTMLInputElement|null} */ gifFrameSlider: null,
+  /** @type {HTMLElement|null} */ gifFrameLabel: null
 };
 
 /**
@@ -11688,8 +12061,8 @@ function convertWithDitherRegions(format, sourceCanvas, dithering, adjustArgs) {
 function renderFormatToCanvas(format, ditherMethod, targetCanvas, zoom, params) {
   const { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput } = params;
   if (format === '53c') {
-    const pattern = importElements?.pattern53c?.value || 'checker';
-    render53cToCanvas(convertTo53c(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, pattern, monoOutput), targetCanvas, zoom, pattern);
+    const pattern = getImport53cPattern();
+    render53cToCanvas(convertTo53c(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, pattern, monoOutput, importElements.pattern53cDiffusion?.checked !== false), targetCanvas, zoom, pattern);
   } else if (format === 'specscii') {
     const charset = importElements?.specsciiCharset?.value || 'full';
     const r = convertToSpecscii(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, charset, monoOutput);
@@ -11725,6 +12098,12 @@ function renderFormatToCanvas(format, ditherMethod, targetCanvas, zoom, params) 
     renderMonoToCanvas(convertToMono(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 2), targetCanvas, zoom, 2);
   } else if (format === 'mono_1_3') {
     renderMonoToCanvas(convertToMono(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 1), targetCanvas, zoom, 1);
+  } else if (format === 'chunks4x4' || format === 'chunks4x2') {
+    const monoData = convertToMono(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 3);
+    const chunkMode = format === 'chunks4x4' ? 0 : 1;
+    const compressed = CHUNKS.compress(monoData, chunkMode);
+    const decompressed = CHUNKS.decompress(compressed.data);
+    renderMonoToCanvas(decompressed, targetCanvas, zoom, 3);
   } else if (format === 'ulaplus') {
     const r = convertToUlaPlus(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette, monoOutput);
     renderUlaPlusToCanvas(r.data, targetCanvas, zoom);
@@ -12395,6 +12774,39 @@ function renderOriginalWithCrop() {
   // Right
   ctx.fillRect((importCrop.x + importCrop.w) * scale, importCrop.y * scale, importOriginalCanvas.width - (importCrop.x + importCrop.w) * scale, importCrop.h * scale);
 
+  // Draw 8x8 grid within crop area if enabled
+  if (importElements.sourceGrid?.checked) {
+    const cropStartX = importCrop.x * scale;
+    const cropStartY = importCrop.y * scale;
+    const cropW = importCrop.w * scale;
+    const cropH = importCrop.h * scale;
+    const cell = 8 * scale;
+
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 165, 0, 0.5)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([]);
+
+    // Vertical lines
+    ctx.beginPath();
+    for (let x = cell; x < cropW; x += cell) {
+      const px = Math.round(cropStartX + x) + 0.5;
+      ctx.moveTo(px, cropStartY);
+      ctx.lineTo(px, cropStartY + cropH);
+    }
+    ctx.stroke();
+
+    // Horizontal lines
+    ctx.beginPath();
+    for (let y = cell; y < cropH; y += cell) {
+      const py = Math.round(cropStartY + y) + 0.5;
+      ctx.moveTo(cropStartX, py);
+      ctx.lineTo(cropStartX + cropW, py);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
   // Draw resize handles
   ctx.fillStyle = '#0ff';
   const handleSize = 6;
@@ -12890,6 +13302,44 @@ function openImportUlaPlusColorPicker(index) {
 }
 
 /**
+ * Switch the import preview to a specific GIF frame.
+ * @param {number} index - Frame index (clamped to valid range)
+ */
+function setImportGifFrame(index) {
+  if (!importGifFrames || importGifFrames.length === 0) return;
+  index = Math.max(0, Math.min(index, importGifFrames.length - 1));
+  importGifFrameIndex = index;
+
+  const frame = importGifFrames[index];
+  // Create an offscreen canvas with the frame pixels
+  const offscreen = document.createElement('canvas');
+  offscreen.width = frame.imageData.width;
+  offscreen.height = frame.imageData.height;
+  const ctx = offscreen.getContext('2d');
+  if (!ctx) return;
+  ctx.putImageData(frame.imageData, 0, 0);
+
+  // Set naturalWidth/naturalHeight so code that reads importImage.naturalWidth works
+  Object.defineProperty(offscreen, 'naturalWidth', { value: offscreen.width, configurable: true });
+  Object.defineProperty(offscreen, 'naturalHeight', { value: offscreen.height, configurable: true });
+
+  // Replace importImage with the offscreen canvas (drawImage accepts Canvas)
+  importImage = /** @type {any} */ (offscreen);
+  importOriginalSize = { width: offscreen.width, height: offscreen.height };
+
+  // Update crop/fit and preview
+  applyCropAndFit();
+  renderOriginalWithCrop();
+  if (updateImportPreview) updateImportPreview();
+
+  // Update slider and label
+  if (importElements.gifFrameSlider) importElements.gifFrameSlider.value = String(index);
+  if (importElements.gifFrameLabel) {
+    importElements.gifFrameLabel.textContent = (index + 1) + ' / ' + importGifFrames.length;
+  }
+}
+
+/**
  * Initialize image import dialog
  */
 function initImageImport() {
@@ -12924,9 +13374,12 @@ function initImageImport() {
   importElements.brightness = /** @type {HTMLInputElement} */ (document.getElementById('importBrightness'));
   importElements.zoom = /** @type {HTMLSelectElement} */ (document.getElementById('importZoom'));
   importElements.sourceZoom = /** @type {HTMLSelectElement} */ (document.getElementById('importSourceZoom'));
+  importElements.sourceGrid = /** @type {HTMLInputElement} */ (document.getElementById('importSourceGrid'));
   importElements.palette = /** @type {HTMLSelectElement} */ (document.getElementById('importPalette'));
   importElements.format = /** @type {HTMLSelectElement} */ (document.getElementById('importFormat'));
   importElements.pattern53c = /** @type {HTMLSelectElement} */ (document.getElementById('import53cPattern'));
+  importElements.pattern53cHex = /** @type {HTMLInputElement} */ (document.getElementById('import53cPatternHex'));
+  importElements.pattern53cDiffusion = /** @type {HTMLInputElement} */ (document.getElementById('import53cDiffusion'));
   importElements.fitMode = /** @type {HTMLSelectElement} */ (document.getElementById('importFitMode'));
   importElements.align = /** @type {HTMLSelectElement} */ (document.getElementById('importAlign'));
   importElements.paperRule = /** @type {HTMLSelectElement} */ (document.getElementById('importPaperRule'));
@@ -13019,6 +13472,28 @@ function initImageImport() {
   const importBtn = document.getElementById('importOkBtn');
   importElements.modeSelect = /** @type {HTMLSelectElement|null} */ (document.getElementById('importModeSelect'));
   importElements.addAllBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById('importAddAllBtn'));
+  importElements.gifFrameNav = document.getElementById('gifFrameNav');
+  importElements.gifFramePrev = /** @type {HTMLButtonElement|null} */ (document.getElementById('gifFramePrev'));
+  importElements.gifFrameNext = /** @type {HTMLButtonElement|null} */ (document.getElementById('gifFrameNext'));
+  importElements.gifFrameSlider = /** @type {HTMLInputElement|null} */ (document.getElementById('gifFrameSlider'));
+  importElements.gifFrameLabel = document.getElementById('gifFrameLabel');
+
+  // GIF frame navigation event handlers
+  if (importElements.gifFramePrev) {
+    importElements.gifFramePrev.addEventListener('click', () => {
+      setImportGifFrame(importGifFrameIndex - 1);
+    });
+  }
+  if (importElements.gifFrameNext) {
+    importElements.gifFrameNext.addEventListener('click', () => {
+      setImportGifFrame(importGifFrameIndex + 1);
+    });
+  }
+  if (importElements.gifFrameSlider) {
+    importElements.gifFrameSlider.addEventListener('input', function() {
+      setImportGifFrame(parseInt(this.value, 10));
+    });
+  }
 
   // Populate palette dropdown
   if (paletteSelect) {
@@ -13114,8 +13589,8 @@ function initImageImport() {
     const currentZoom = getEffectivePreviewZoom(parseInt(importElements.zoom?.value || '2', 10));
 
     if (format === '53c') {
-      const pattern = importElements.pattern53c?.value || 'checker';
-      const attrData = convertTo53c(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, pattern, monoOutput);
+      const pattern = getImport53cPattern();
+      const attrData = convertTo53c(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, pattern, monoOutput, importElements.pattern53cDiffusion?.checked !== false);
       render53cToCanvas(attrData, importPreviewCanvas, currentZoom, pattern);
     } else if (format === 'specscii') {
       const specsciiCharset = importElements.specsciiCharset?.value || 'full';
@@ -13166,6 +13641,12 @@ function initImageImport() {
     } else if (format === 'mono_1_3') {
       const monoData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 1);
       renderMonoToCanvas(monoData, importPreviewCanvas, currentZoom, 1);
+    } else if (format === 'chunks4x4' || format === 'chunks4x2') {
+      const monoData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 3);
+      const chunkMode = format === 'chunks4x4' ? 0 : 1;
+      const compressed = CHUNKS.compress(monoData, chunkMode);
+      const decompressed = CHUNKS.decompress(compressed.data);
+      renderMonoToCanvas(decompressed, importPreviewCanvas, currentZoom, 3);
     } else if (format === 'ulaplus') {
       const result = convertToUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette, monoOutput);
       renderUlaPlusToCanvas(result.data, importPreviewCanvas, currentZoom);
@@ -13534,7 +14015,7 @@ function initImageImport() {
     // Hide cell-aware dithering for formats without attribute cells (RGB3, Mono)
     // and for HLR (bitmap is fixed so cell-aware methods don't apply either).
     const cellGroup = document.getElementById('importDitherCellGroup');
-    const noCellFormats = format === 'rgb3' || format === 'mono' || format === 'mono_2_3' || format === 'mono_1_3' || format === 'hlr' || format === 'stl' || format === 'specscii' || format === 'nxi' || format === 'nxi320' || format === 'nxi640' || format === 'sl2' || format === 'sl2_320' || format === 'sl2_640' || format === 'lores' || format === 'lores_rad' || format === 'gmx160';
+    const noCellFormats = format === 'rgb3' || format === 'mono' || format === 'mono_2_3' || format === 'mono_1_3' || format === 'chunks4x4' || format === 'chunks4x2' || format === 'hlr' || format === 'stl' || format === 'specscii' || format === 'nxi' || format === 'nxi320' || format === 'nxi640' || format === 'sl2' || format === 'sl2_320' || format === 'sl2_640' || format === 'lores' || format === 'lores_rad' || format === 'gmx160';
     if (cellGroup) {
       cellGroup.style.display = noCellFormats ? 'none' : '';
     }
@@ -13609,7 +14090,14 @@ function initImageImport() {
     }
     updatePreview();
   });
-  importElements.pattern53c?.addEventListener('change', updatePreview);
+  importElements.pattern53c?.addEventListener('change', () => {
+    if (importElements.pattern53cHex) {
+      importElements.pattern53cHex.style.display = importElements.pattern53c.value === 'custom' ? '' : 'none';
+    }
+    updatePreview();
+  });
+  importElements.pattern53cHex?.addEventListener('change', updatePreview);
+  importElements.pattern53cDiffusion?.addEventListener('change', updatePreview);
   importElements.hlrPattern?.addEventListener('change', updatePreview);
   importElements.chrMode?.addEventListener('change', updatePreview);
   importElements.specsciiCharset?.addEventListener('change', updatePreview);
@@ -13810,6 +14298,9 @@ function initImageImport() {
 
   // Grid checkbox
   showGridCheckbox?.addEventListener('change', updatePreview);
+
+  // Source grid checkbox
+  importElements.sourceGrid?.addEventListener('change', () => renderOriginalWithCrop());
 
   // Eyedropper: click output preview to find and edit ULA+ palette color
   importPreviewCanvas?.addEventListener('click', (e) => {
@@ -14264,6 +14755,25 @@ function initImageImport() {
         size: { w: importSize.w, h: importSize.h },
         align: importAlign
       };
+      const animFormat = formatSelect?.value || 'scr';
+      const animPattern = getImport53cPattern();
+      const animDiffusion = importElements.pattern53cDiffusion?.checked !== false;
+      // Capture dithering settings for chunks formats (need convertToMono)
+      const animDitherSettings = (animFormat === 'chunks4x4' || animFormat === 'chunks4x2') ? {
+        dithering: ditheringSelect?.value || 'floyd-steinberg',
+        brightness: parseInt(brightnessSlider?.value || '0', 10),
+        contrast: parseInt(contrastSlider?.value || '0', 10),
+        saturation: parseInt(saturationSlider?.value || '0', 10),
+        gamma: parseInt(gammaSlider?.value || '100', 10) / 100,
+        grayscale: grayscaleCheckbox?.checked || false,
+        sharpness: parseInt(sharpnessSlider?.value || '0', 10),
+        smoothing: parseInt(smoothingSlider?.value || '0', 10),
+        blackPoint: parseInt(blackPointSlider?.value || '0', 10),
+        whitePoint: parseInt(whitePointSlider?.value || '255', 10),
+        balanceR: parseInt(balanceRSlider?.value || '0', 10),
+        balanceG: parseInt(balanceGSlider?.value || '0', 10),
+        balanceB: parseInt(balanceBSlider?.value || '0', 10)
+      } : null;
       closeImportDialog();
       try {
         const arrayBuffer = await file.arrayBuffer();
@@ -14271,7 +14781,7 @@ function initImageImport() {
         if (mode === 'flash') {
           await importGifAsFlash(data, file.name, fitSettings);
         } else {
-          await importAnimatedGif(data, file.name, fitSettings);
+          await importAnimatedGif(data, file.name, fitSettings, animFormat, animPattern, animDiffusion, animDitherSettings);
         }
       } catch (e) {
         const label = mode === 'flash' ? 'Flash' : 'Animated';
@@ -14400,8 +14910,8 @@ function initImageImport() {
           }
 
           if (tileFormat === '53c') {
-            const pattern = importElements.pattern53c?.value || 'checker';
-            tileData = convertTo53c(importSourceCanvas, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, pattern, tileMonoOutput);
+            const pattern = getImport53cPattern();
+            tileData = convertTo53c(importSourceCanvas, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, pattern, tileMonoOutput, importElements.pattern53cDiffusion?.checked !== false);
             tileOutputFormat = FORMAT.ATTR_53C;
           } else if (tileFormat === 'specscii') {
             const tileSpecsciiCharset = importElements.specsciiCharset?.value || 'full';
@@ -14458,6 +14968,12 @@ function initImageImport() {
           } else if (tileFormat === 'mono_1_3') {
             tileData = convertToMono(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, 1);
             tileOutputFormat = FORMAT.MONO_1_3;
+          } else if (tileFormat === 'chunks4x4' || tileFormat === 'chunks4x2') {
+            const tileMono = convertToMono(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, 3);
+            const chunkMode = tileFormat === 'chunks4x4' ? 0 : 1;
+            const compressed = CHUNKS.compress(tileMono, chunkMode);
+            tileData = CHUNKS.decompress(compressed.data);
+            tileOutputFormat = FORMAT.MONO_FULL;
           } else if (tileFormat === 'ulaplus') {
             const result = convertToUlaPlus(importSourceCanvas, tileDithering, tileBrightness, tileContrast, tileSaturation, tileGamma, tileGrayscale, tileSharpness, tileSmoothing, tileBlackPoint, tileWhitePoint, tileBalanceR, tileBalanceG, tileBalanceB, tileUlaPlusPalette, tileMonoOutput);
             tileData = result.data;
@@ -14717,8 +15233,8 @@ function initImageImport() {
     const regionImportResult = convertWithDitherRegions(format, importSourceCanvas, dithering, importAdjustArgs);
 
     if (format === '53c') {
-      const pattern = importElements.pattern53c?.value || 'checker';
-      outputData = convertTo53c(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, pattern, monoOutput);
+      const pattern = getImport53cPattern();
+      outputData = convertTo53c(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, pattern, monoOutput, importElements.pattern53cDiffusion?.checked !== false);
       outputFormat = FORMAT.ATTR_53C;
       fileExt = '.53c';
     } else if (format === 'specscii') {
@@ -14791,6 +15307,13 @@ function initImageImport() {
     } else if (format === 'mono_1_3') {
       outputData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 1);
       outputFormat = FORMAT.MONO_1_3;
+      fileExt = '.scr';
+    } else if (format === 'chunks4x4' || format === 'chunks4x2') {
+      const monoData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 3);
+      const chunkMode = format === 'chunks4x4' ? 0 : 1;
+      const compressed = CHUNKS.compress(monoData, chunkMode);
+      outputData = CHUNKS.decompress(compressed.data);
+      outputFormat = FORMAT.SCR;
       fileExt = '.scr';
     } else if (format === 'ulaplus') {
       // ULA+ format: SCR + 64-byte optimal palette
@@ -15329,6 +15852,10 @@ function openImportDialog(file) {
     importElements.modeSelect.style.display = 'none';
     importElements.modeSelect.value = 'picture';
   }
+  // Reset GIF frame navigation
+  importGifFrames = null;
+  importGifFrameIndex = 0;
+  if (importElements.gifFrameNav) importElements.gifFrameNav.style.display = 'none';
   if (file.name.toLowerCase().endsWith('.gif')) {
     file.arrayBuffer().then(buf => {
       const data = new Uint8Array(buf);
@@ -15342,6 +15869,23 @@ function openImportDialog(file) {
         }
         sel.innerHTML += '<option value="animation">Animation</option>';
         sel.style.display = '';
+
+        // Decode all frames for frame navigation
+        try {
+          const gif = new GifDecoder(data).decode();
+          importGifFrames = gif.frames;
+          importGifFrameIndex = 0;
+          if (importElements.gifFrameSlider) {
+            importElements.gifFrameSlider.max = String(gif.frames.length - 1);
+            importElements.gifFrameSlider.value = '0';
+          }
+          if (importElements.gifFrameLabel) {
+            importElements.gifFrameLabel.textContent = '1 / ' + gif.frames.length;
+          }
+          if (importElements.gifFrameNav) importElements.gifFrameNav.style.display = 'flex';
+        } catch (e) {
+          // GIF decode failed — frame navigation unavailable
+        }
       }
     }).catch(() => {});
   }
@@ -15510,8 +16054,8 @@ function openImportDialog(file) {
       renderUlaPlusToCanvas(result.data, importPreviewCanvas, effectiveZoom);
       if (!importUlaPlusPalette) lastImportUlaPlusAutoPalette = result.palette;
     } else if (format === '53c') {
-      const pattern = importElements.pattern53c?.value || 'checker';
-      const attrData = convertTo53c(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, pattern, monoOutput);
+      const pattern = getImport53cPattern();
+      const attrData = convertTo53c(importSourceCanvas, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, pattern, monoOutput, importElements.pattern53cDiffusion?.checked !== false);
       render53cToCanvas(attrData, importPreviewCanvas, effectiveZoom, pattern);
     } else if (format === 'specscii') {
       const liveSpecsciiCharset = importElements.specsciiCharset?.value || 'full';
@@ -15548,6 +16092,12 @@ function openImportDialog(file) {
     } else if (format === 'mono_1_3') {
       const monoData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 1);
       renderMonoToCanvas(monoData, importPreviewCanvas, effectiveZoom, 1);
+    } else if (format === 'chunks4x4' || format === 'chunks4x2') {
+      const monoData = convertToMono(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, 3);
+      const chunkMode = format === 'chunks4x4' ? 0 : 1;
+      const compressed = CHUNKS.compress(monoData, chunkMode);
+      const decompressed = CHUNKS.decompress(compressed.data);
+      renderMonoToCanvas(decompressed, importPreviewCanvas, effectiveZoom, 3);
     } else if (format === 'hlr') {
       const hlrPattern = getSelectedImportHlrPattern();
       const hlrData = convertToHlr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, hlrPattern, monoOutput);
@@ -15618,6 +16168,11 @@ function closeImportDialog() {
   if (importElements.addAllBtn) importElements.addAllBtn.style.display = 'none';
   importFile = null;
   importQueue = [];
+
+  // Reset GIF frame navigation
+  importGifFrames = null;
+  importGifFrameIndex = 0;
+  if (importElements.gifFrameNav) importElements.gifFrameNav.style.display = 'none';
 
   // Reset ULA+ palette import state
   importUlaPlusPalette = null;

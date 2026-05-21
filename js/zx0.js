@@ -336,9 +336,116 @@ const ZX0 = (() => {
     return decompress(data, false, classic);
   }
 
+  /**
+   * Decompress and return both output data and number of input bytes consumed.
+   * Used when decompressing from a stream where subsequent data follows.
+   */
+  function decompressTracked(input_data, backwards_mode, classic_mode) {
+    const input_size = input_data.length;
+    const output = [];
+
+    let input_index = 0;
+    let bit_mask = 0;
+    let bit_value = 0;
+    let backtrack = false;
+    let last_byte = 0;
+    let last_offset = INITIAL_OFFSET;
+
+    function read_byte() {
+      if (input_index >= input_size)
+        throw new Error('Truncated input');
+      last_byte = input_data[input_index++];
+      return last_byte;
+    }
+
+    function read_bit() {
+      if (backtrack) {
+        backtrack = false;
+        return last_byte & 1;
+      }
+      bit_mask >>= 1;
+      if (bit_mask === 0) {
+        bit_mask = 128;
+        bit_value = read_byte();
+      }
+      return (bit_value & bit_mask) ? 1 : 0;
+    }
+
+    function read_interlaced_elias_gamma(inverted) {
+      let value = 1;
+      if (backwards_mode) {
+        while (read_bit()) {
+          value = value << 1 | (read_bit() ^ inverted);
+        }
+      } else {
+        while (!read_bit()) {
+          value = value << 1 | (read_bit() ^ inverted);
+        }
+      }
+      return value;
+    }
+
+    function write_bytes(offset, length) {
+      for (let i = 0; i < length; i++) {
+        output.push(output[output.length - offset]);
+      }
+    }
+
+    const invert_offset = !classic_mode && !backwards_mode ? 1 : 0;
+    let length;
+
+    function copy_from_new_offset() {
+      let msb = read_interlaced_elias_gamma(invert_offset);
+      if (msb === 256) return false;
+      if (backwards_mode)
+        last_offset = (msb - 1) * 128 + (read_byte() >> 1) + 1;
+      else
+        last_offset = msb * 128 - (read_byte() >> 1);
+      backtrack = true;
+      length = read_interlaced_elias_gamma(0) + 1;
+      write_bytes(last_offset, length);
+      return true;
+    }
+
+    let state = 0;
+    while (true) {
+      if (state === 0) {
+        length = read_interlaced_elias_gamma(0);
+        for (let i = 0; i < length; i++)
+          output.push(read_byte());
+        if (read_bit()) state = 2;
+        else state = 1;
+      } else if (state === 1) {
+        length = read_interlaced_elias_gamma(0);
+        write_bytes(last_offset, length);
+        if (!read_bit()) state = 0;
+        else state = 2;
+      } else {
+        if (!copy_from_new_offset()) break;
+        if (read_bit()) state = 2;
+        else state = 0;
+      }
+    }
+
+    return { data: new Uint8Array(output), bytesRead: input_index };
+  }
+
+  function decompressDataTracked(inputData, backwards, classic) {
+    const data = inputData instanceof Uint8Array ? inputData : new Uint8Array(inputData);
+    if (backwards) {
+      const reversed = new Uint8Array(data);
+      reverse(reversed, 0, reversed.length - 1);
+      const result = decompressTracked(reversed, true, classic);
+      reverse(result.data, 0, result.data.length - 1);
+      return result;
+    }
+    return decompressTracked(data, false, classic);
+  }
+
   return {
     compress: compressData,
     decompress: decompressData,
+    decompressTracked: decompressDataTracked,
     MAX_OFFSET_ZX0,
     MAX_OFFSET_ZX7
   };

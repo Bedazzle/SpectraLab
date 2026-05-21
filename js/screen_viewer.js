@@ -464,7 +464,15 @@ const SCA = {
   FRAME_SIZE: 6912,           // Payload type 0: full SCREEN$ format per frame
   ATTR_FRAME_SIZE: 768,       // Payload type 1: attributes only per frame
   FILL_PATTERN_SIZE: 8,       // Payload type 1: 8-byte fill pattern
-  DELAY_UNIT_MS: 20           // 1/50 second = 20ms per delay unit
+  DELAY_UNIT_MS: 20,          // 1/50 second = 20ms per delay unit
+  REGIONS: [
+    { startRow: 0,  charRows: 8,  bitmapSize: 2048, attrSize: 256  }, // 0: top third
+    { startRow: 8,  charRows: 8,  bitmapSize: 2048, attrSize: 256  }, // 1: mid third
+    { startRow: 16, charRows: 8,  bitmapSize: 2048, attrSize: 256  }, // 2: bot third
+    { startRow: 0,  charRows: 16, bitmapSize: 4096, attrSize: 512  }, // 3: top+mid
+    { startRow: 8,  charRows: 16, bitmapSize: 4096, attrSize: 512  }, // 4: mid+bot
+    { startRow: 0,  charRows: 24, bitmapSize: 6144, attrSize: 768  }, // 5: full screen
+  ]
 };
 
 // BSC format constants
@@ -966,7 +974,7 @@ let fontLoaded = true;
 let currentFontName = 'ROM';
 
 // SCA animation state
-/** @type {{version: number, width: number, height: number, borderColor: number, frameCount: number, payloadType: number, payloadOffset: number, frameDataStart: number, frameSize: number, delays: Uint8Array, fillPattern: Uint8Array|null}|null} */
+/** @type {{version: number, width: number, height: number, borderColor: number, frameCount: number, payloadType: number, payloadOffset: number, frameDataStart: number, frameSize: number, delays: Uint8Array, fillPattern: Uint8Array|null, fct?: number, regionCode?: number, region?: {startRow: number, charRows: number, bitmapSize: number, attrSize: number}, frames?: Array<{offset: number, compressionType: number, borderColor: number, delay: number}>}|null} */
 let scaHeader = null;
 
 /** @type {number} - Current frame index (0-based) */
@@ -3635,7 +3643,7 @@ function renderBspGigaBorder(ctx) {
 /**
  * Parses SCA file header and validates format
  * @param {Uint8Array} data - Raw file data
- * @returns {{version: number, width: number, height: number, borderColor: number, frameCount: number, payloadType: number, payloadOffset: number, frameDataStart: number, frameSize: number, delays: Uint8Array, fillPattern: Uint8Array|null}|null} Parsed header or null if invalid
+ * @returns {{version: number, width: number, height: number, borderColor: number, frameCount: number, payloadType: number, payloadOffset: number, frameDataStart: number, frameSize: number, delays: Uint8Array, fillPattern: Uint8Array|null, fct?: number, regionCode?: number, region?: {startRow: number, charRows: number, bitmapSize: number, attrSize: number}, frames?: Array<{offset: number, compressionType: number, borderColor: number, delay: number}>}|null} Parsed header or null if invalid
  */
 function parseScaHeader(data) {
   if (data.length < SCA.HEADER_SIZE) {
@@ -3662,8 +3670,13 @@ function parseScaHeader(data) {
   const payloadOffset = data[12] | (data[13] << 8);
 
   // Validate
-  if (frameCount === 0 || (payloadType !== 0 && payloadType !== 1)) {
-    return null; // Only payload types 0 and 1 are supported
+  if (frameCount === 0 || (payloadType !== 0 && payloadType !== 1 && payloadType !== 2)) {
+    return null;
+  }
+
+  if (payloadType === 2) {
+    // Type 2: Packed frames with per-frame header, border color, and delay
+    return parseScaType2(data, version, width, height, borderColorSuggestion, frameCount, payloadType, payloadOffset);
   }
 
   // Delay table starts at payloadOffset
@@ -3711,12 +3724,198 @@ function parseScaHeader(data) {
 }
 
 /**
+ * Parses SCA payload type 2 (packed frames with per-frame headers)
+ * @param {Uint8Array} data - Raw file data
+ * @param {number} version
+ * @param {number} width
+ * @param {number} height
+ * @param {number} borderColorSuggestion
+ * @param {number} frameCount
+ * @param {number} payloadType
+ * @param {number} payloadOffset
+ * @returns {object|null}
+ */
+function parseScaType2(data, version, width, height, borderColorSuggestion, frameCount, payloadType, payloadOffset) {
+  let pos = payloadOffset;
+
+  // Read FCT byte: [FFFF RRRR]
+  if (pos >= data.length) return null;
+  const fctByte = data[pos++];
+  const fct = (fctByte >> 4) & 0x0F;   // Frame Content Type: 0=bitmap, 1=bitmap+attrs, 2=attrs
+  const regionCode = fctByte & 0x0F;    // Region: 0-2=single third, 3-4=two thirds, 5=full
+
+  if (regionCode > 5) {
+    alert(`SCA type 2: unsupported region code ${regionCode}.`);
+    return null;
+  }
+  if (fct > 2) {
+    alert(`SCA type 2: unsupported frame content type ${fct}.`);
+    return null;
+  }
+
+  const region = SCA.REGIONS[regionCode];
+
+  // Read fill pattern (8 bytes) only if FCT=2 (attrs-only)
+  /** @type {Uint8Array|null} */
+  let fillPattern = null;
+  if (fct === 2) {
+    if (pos + SCA.FILL_PATTERN_SIZE > data.length) return null;
+    fillPattern = data.slice(pos, pos + SCA.FILL_PATTERN_SIZE);
+    pos += SCA.FILL_PATTERN_SIZE;
+  }
+
+  // Determine block sizes per frame based on FCT and region
+  const hasBitmap = (fct === 0 || fct === 1);
+  const hasAttrs = (fct === 1 || fct === 2);
+  const bitmapBlockSize = hasBitmap ? region.bitmapSize : 0;
+  const attrBlockSize = hasAttrs ? region.attrSize : 0;
+
+  // Walk frame stream and record per-frame metadata
+  /** @type {Array<{offset: number, compressionType: number, borderColor: number, delay: number}>} */
+  const frames = [];
+  const delays = new Uint8Array(frameCount);
+
+  // Check if any frames are compressed — if so, we need to decompress into a new buffer
+  let hasCompressed = false;
+  let scanPos = pos;
+  for (let i = 0; i < frameCount; i++) {
+    if (scanPos >= data.length) break;
+    const hdr = data[scanPos++];
+    const ct = (hdr >> 3) & 0x1F;
+    if (ct !== 0) { hasCompressed = true; break; }
+    scanPos += bitmapBlockSize + attrBlockSize + 1; // skip block + delay
+  }
+
+  if (hasCompressed) {
+    // Decompress all frames into a linear buffer and update screenData
+    const rawBlockSize = bitmapBlockSize + attrBlockSize;
+    const decompBuf = new Uint8Array(frameCount * rawBlockSize);
+    let decompOffset = 0;
+
+    for (let i = 0; i < frameCount; i++) {
+      if (pos >= data.length) return null;
+      const frameHeader = data[pos++];
+      const compressionType = (frameHeader >> 3) & 0x1F;
+      const frameBorderColor = frameHeader & 0x07;
+
+      let frameBlock;
+      if (compressionType === 0) {
+        // Uncompressed: copy directly
+        if (pos + rawBlockSize > data.length) return null;
+        frameBlock = data.slice(pos, pos + rawBlockSize);
+        pos += rawBlockSize;
+      } else if (compressionType === 1 || compressionType === 2 || compressionType === 3) {
+        // ZX0 (1), Laser Compact (2), or RLE (3) compressed
+        // Bitmap and attrs are compressed as separate blocks
+        const decompParts = [];
+        const blockCount = (hasBitmap ? 1 : 0) + (hasAttrs ? 1 : 0);
+        for (let b = 0; b < blockCount; b++) {
+          const input = data.subarray(pos);
+          const result = compressionType === 1
+            ? ZX0.decompressTracked(input, false, false)
+            : compressionType === 3
+              ? RLE.decompressTracked(input)
+              : LC.decompressTracked(input);
+          decompParts.push(result.data);
+          pos += result.bytesRead;
+        }
+        // Concatenate decompressed blocks
+        const totalLen = decompParts.reduce((s, p) => s + p.length, 0);
+        frameBlock = new Uint8Array(totalLen);
+        let fbPos = 0;
+        for (const part of decompParts) {
+          frameBlock.set(part, fbPos);
+          fbPos += part.length;
+        }
+      } else if (compressionType === 4 || compressionType === 5) {
+        // Chunks 4×4 (4) or Chunks 4×2 (5): raw encoded bytes only (codebook is static preset)
+        const chunkMode = compressionType === 4 ? CHUNKS.MODE_4x4 : CHUNKS.MODE_4x2;
+        const bytesPerCell = compressionType === 4 ? 1 : 2;
+        const encodedSize = 32 * region.charRows * bytesPerCell;
+        const input = data.subarray(pos, pos + encodedSize);
+        const chunksRegion = { startCharRow: region.startRow, charRows: region.charRows };
+        const result = CHUNKS.decompressRaw(input, chunkMode, chunksRegion);
+        frameBlock = result.data.subarray(0, bitmapBlockSize);
+        pos += encodedSize;
+      } else {
+        alert(`SCA type 2: unsupported compression type ${compressionType}.`);
+        return null;
+      }
+
+      // Write decompressed block into buffer
+      decompBuf.set(frameBlock.subarray(0, rawBlockSize), decompOffset);
+
+      frames.push({
+        offset: decompOffset,
+        compressionType,
+        borderColor: frameBorderColor,
+        delay: 0
+      });
+
+      decompOffset += rawBlockSize;
+
+      // Delay byte
+      if (pos >= data.length) return null;
+      const delay = data[pos++];
+      frames[i].delay = delay;
+      delays[i] = delay;
+    }
+
+    // Replace screenData with decompressed buffer so rendering works unchanged
+    screenData = decompBuf;
+  } else {
+    // All frames uncompressed — original fast path
+    for (let i = 0; i < frameCount; i++) {
+      if (pos >= data.length) return null;
+      const frameHeader = data[pos++];
+      const compressionType = (frameHeader >> 3) & 0x1F;
+      const frameBorderColor = frameHeader & 0x07;
+
+      const frameDataOffset = pos;
+      pos += bitmapBlockSize + attrBlockSize;
+
+      if (pos >= data.length) return null;
+      const delay = data[pos++];
+
+      frames.push({
+        offset: frameDataOffset,
+        compressionType,
+        borderColor: frameBorderColor,
+        delay
+      });
+      delays[i] = delay;
+    }
+  }
+
+  return {
+    version,
+    width,
+    height,
+    borderColor: borderColorSuggestion,
+    frameCount,
+    payloadType,
+    payloadOffset,
+    frameDataStart: 0, // not used for type 2 — use frames[].offset instead
+    frameSize: 0,       // variable-length for type 2
+    delays,
+    fillPattern,
+    fct,
+    regionCode,
+    region,
+    frames
+  };
+}
+
+/**
  * Gets the data offset for a specific frame in SCA file
  * @param {number} frameIndex - Frame index (0-based)
  * @returns {number} Byte offset in screenData
  */
 function getScaFrameOffset(frameIndex) {
   if (!scaHeader) return 0;
+  if (scaHeader.payloadType === 2 && scaHeader.frames) {
+    return scaHeader.frames[frameIndex].offset;
+  }
   return scaHeader.frameDataStart + (frameIndex * scaHeader.frameSize);
 }
 
@@ -3735,7 +3934,10 @@ function renderScaFrame(ctx, borderOffset, frameIndex) {
   const imageData = ctx.createImageData(SCREEN.WIDTH, SCREEN.HEIGHT);
   const data = imageData.data;
 
-  if (scaHeader.payloadType === 1 && scaHeader.fillPattern) {
+  if (scaHeader.payloadType === 2 && scaHeader.region && scaHeader.frames) {
+    // Payload type 2: packed frames with FCT + region
+    renderScaType2Frame(data, frameOffset, scaHeader, frameIndex);
+  } else if (scaHeader.payloadType === 1 && scaHeader.fillPattern) {
     // Payload type 1: attribute-only frames with fill pattern
     // fillPattern is 8 bytes, one per row within each 8x8 cell
     // Frame data is 768 bytes of attributes (32x24 cells)
@@ -3864,6 +4066,136 @@ function renderScaFrame(ctx, borderOffset, frameIndex) {
 }
 
 /**
+ * Renders a type 2 SCA frame into imageData pixel array.
+ * Bitmap data in type 2 is stored in ZX Spectrum screen memory layout (interleaved),
+ * scoped to the region's character rows.
+ * @param {Uint8ClampedArray} data - ImageData pixel array
+ * @param {number} frameOffset - Byte offset in screenData for this frame's block data
+ * @param {object} header - Parsed SCA header
+ * @param {number} frameIndex - Frame index
+ */
+function renderScaType2Frame(data, frameOffset, header, frameIndex) {
+  const fct = header.fct;
+  const region = header.region;
+  const startRow = region.startRow;
+  const charRows = region.charRows;
+  const hasBitmap = (fct === 0 || fct === 1);
+  const hasAttrs = (fct === 1 || fct === 2);
+
+  let bitmapOffset = frameOffset;
+  let attrOffset = frameOffset + (hasBitmap ? region.bitmapSize : 0);
+
+  if (hasBitmap) {
+    // Render bitmap region — data is in ZX Spectrum screen memory layout
+    // Each third (8 char rows) is interleaved: line, row, col ordering
+    // For a region spanning charRows, we process in 8-row sections
+    const numSections = charRows / 8;
+    for (let s = 0; s < numSections; s++) {
+      const sectionStartRow = startRow + s * 8;
+      const sectionBitmapBase = bitmapOffset + s * 2048;
+      const sectionAttrBase = hasAttrs ? (attrOffset + s * 256) : 0;
+
+      for (let line = 0; line < 8; line++) {
+        for (let row = 0; row < 8; row++) {
+          for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
+            const bmpOff = sectionBitmapBase + col + row * 32 + line * 256;
+            const byte = screenData[bmpOff];
+
+            let inkRgb, paperRgb;
+            if (hasAttrs) {
+              const attr = screenData[sectionAttrBase + col + row * 32];
+              if (showAttributes) {
+                ({ inkRgb, paperRgb } = getColorsRgb(attr));
+              } else {
+                inkRgb = [0, 0, 0];
+                paperRgb = [255, 255, 255];
+              }
+            } else {
+              // FCT 0: bitmap only — white paper, black ink
+              inkRgb = [0, 0, 0];
+              paperRgb = [255, 255, 255];
+            }
+
+            const x = col * 8;
+            const y = (sectionStartRow + row) * 8 + line;
+
+            for (let bit = 0; bit < 8; bit++) {
+              const rgb = isBitSet(byte, bit) ? inkRgb : paperRgb;
+              const pixelIndex = (y * SCREEN.WIDTH + x + bit) * 4;
+              data[pixelIndex] = rgb[0];
+              data[pixelIndex + 1] = rgb[1];
+              data[pixelIndex + 2] = rgb[2];
+              data[pixelIndex + 3] = 255;
+            }
+          }
+        }
+      }
+    }
+  } else if (fct === 2 && header.fillPattern) {
+    // FCT 2: attrs-only with fill pattern, scoped to region
+    const fillPattern = getSelectedPattern(header.fillPattern);
+
+    let inkRatio = 0;
+    if (attr53cBlend) {
+      let inkBitCount = 0;
+      for (let py = 0; py < 8; py++) {
+        for (let px = 0; px < 8; px++) {
+          if (fillPattern[py] & (1 << (7 - px))) inkBitCount++;
+        }
+      }
+      inkRatio = inkBitCount / 64;
+    }
+
+    for (let r = 0; r < charRows; r++) {
+      const row = startRow + r;
+      for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
+        const attr = screenData[attrOffset + col + r * 32];
+        let inkRgb, paperRgb;
+        if (showAttributes) {
+          ({ inkRgb, paperRgb } = getColorsRgb(attr));
+        } else {
+          inkRgb = [0, 0, 0];
+          paperRgb = [255, 255, 255];
+        }
+
+        const cellX = col * 8;
+        const cellY = row * 8;
+
+        if (attr53cBlend) {
+          const br = Math.round(inkRgb[0] * inkRatio + paperRgb[0] * (1 - inkRatio));
+          const bg = Math.round(inkRgb[1] * inkRatio + paperRgb[1] * (1 - inkRatio));
+          const bb = Math.round(inkRgb[2] * inkRatio + paperRgb[2] * (1 - inkRatio));
+          for (let py = 0; py < 8; py++) {
+            const rowOff = (cellY + py) * SCREEN.WIDTH;
+            for (let px = 0; px < 8; px++) {
+              const pixelIndex = (rowOff + cellX + px) * 4;
+              data[pixelIndex] = br;
+              data[pixelIndex + 1] = bg;
+              data[pixelIndex + 2] = bb;
+              data[pixelIndex + 3] = 255;
+            }
+          }
+        } else {
+          for (let py = 0; py < 8; py++) {
+            const patternByte = fillPattern[py];
+            for (let px = 0; px < 8; px++) {
+              const bit = 7 - px;
+              const isInk = (patternByte & (1 << bit)) !== 0;
+              const rgb = isInk ? inkRgb : paperRgb;
+              const pixelIndex = ((cellY + py) * SCREEN.WIDTH + cellX + px) * 4;
+              data[pixelIndex] = rgb[0];
+              data[pixelIndex + 1] = rgb[1];
+              data[pixelIndex + 2] = rgb[2];
+              data[pixelIndex + 3] = 255;
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
  * Starts SCA animation playback
  */
 function startScaAnimation() {
@@ -3909,6 +4241,7 @@ function scheduleNextScaFrame() {
   scaTimerId = setTimeout(() => {
     // Advance to next frame
     scaCurrentFrame = (scaCurrentFrame + 1) % scaHeader.frameCount;
+    updateScaFrameBorderColor();
     renderScreen();
     updateScaControls();
     updateAnimationInfo();
@@ -3929,9 +4262,21 @@ function goToScaFrame(frameIndex) {
 
   // Clamp to valid range
   scaCurrentFrame = Math.max(0, Math.min(frameIndex, scaHeader.frameCount - 1));
+  updateScaFrameBorderColor();
   renderScreen();
   updateScaControls();
   updateAnimationInfo();
+}
+
+/**
+ * Updates the global border color from per-frame data for SCA type 2
+ */
+function updateScaFrameBorderColor() {
+  if (!scaHeader || scaHeader.payloadType !== 2 || !scaHeader.frames) return;
+  borderColor = scaHeader.frames[scaCurrentFrame].borderColor;
+  if (borderColorSelect) {
+    borderColorSelect.value = String(borderColor);
+  }
 }
 
 /**
@@ -3989,16 +4334,18 @@ function toggleFormatControlsVisibility() {
   const pattern53cControls = document.getElementById('pattern53cControls');
   if (pattern53cControls) {
     const isScaType1 = currentFormat === FORMAT.SCA && scaHeader && scaHeader.payloadType === 1;
-    const showPattern = currentFormat === FORMAT.ATTR_53C || isScaType1;
+    const isScaType2Fct2 = currentFormat === FORMAT.SCA && scaHeader && scaHeader.payloadType === 2 && scaHeader.fct === 2;
+    const showPattern = currentFormat === FORMAT.ATTR_53C || isScaType1 || isScaType2Fct2;
     pattern53cControls.style.display = showPattern ? 'flex' : 'none';
-    // Show/hide "File" option (only for SCA type 1 with embedded pattern)
+    // Show/hide "File" option (only for SCA type 1/2 with embedded pattern)
+    const hasEmbeddedPattern = isScaType1 || isScaType2Fct2;
     const patternSelect = /** @type {HTMLSelectElement} */ (document.getElementById('pattern53cSelect'));
     if (patternSelect) {
       const fileOption = patternSelect.querySelector('option[value="file"]');
       if (fileOption) {
-        /** @type {HTMLElement} */ (fileOption).style.display = isScaType1 ? '' : 'none';
+        /** @type {HTMLElement} */ (fileOption).style.display = hasEmbeddedPattern ? '' : 'none';
       }
-      if (isScaType1 && patternSelect.value !== 'file') {
+      if (hasEmbeddedPattern && patternSelect.value !== 'file') {
         patternSelect.value = 'file';
       }
     }
@@ -4724,6 +5071,7 @@ async function loadFileFromZip(fileName) {
         if (borderColorSelect) {
           borderColorSelect.value = String(borderColor);
         }
+        updateScaFrameBorderColor();
         startScaAnimation();
       } else {
         currentFormat = FORMAT.UNKNOWN;
@@ -5918,7 +6266,16 @@ function updateFileInfo() {
         infoFrameCount.textContent = `${scaHeader.frameCount}`;
       }
       if (infoPayloadType) {
-        const payloadDesc = scaHeader.payloadType === 1 ? 'attr-only' : 'full frames';
+        let payloadDesc;
+        if (scaHeader.payloadType === 2) {
+          const fctNames = ['bitmap', 'bitmap+attrs', 'attrs'];
+          const regionNames = ['top', 'mid', 'bot', 'top+mid', 'mid+bot', 'full'];
+          const fctName = fctNames[scaHeader.fct] || '?';
+          const regionName = regionNames[scaHeader.regionCode] || '?';
+          payloadDesc = `packed (${fctName}, ${regionName})`;
+        } else {
+          payloadDesc = scaHeader.payloadType === 1 ? 'attr-only' : 'full frames';
+        }
         infoPayloadType.textContent = `${payloadDesc} (v${scaHeader.payloadType})`;
       }
       updateAnimationInfo();
@@ -8880,6 +9237,7 @@ function loadScreenFile(file) {
           if (borderColorSelect) {
             borderColorSelect.value = String(borderColor);
           }
+          updateScaFrameBorderColor();
           // Auto-start animation
           startScaAnimation();
         } else {
@@ -8975,6 +9333,47 @@ function loadScreenFile(file) {
           return;
         }
         const innerName = fileName.replace(/\.upk$/i, '');
+        format = detectFormat(innerName, data.length);
+      }
+
+      // RLE compressed files — decompress before further processing
+      if (fileExt === 'rle' && typeof RLE !== 'undefined') {
+        try {
+          data = RLE.decompress(data);
+        } catch (e) {
+          alert('Failed to decompress RLE file: ' + e.message);
+          return;
+        }
+        const innerName = fileName.replace(/\.rle$/i, '');
+        format = detectFormat(innerName, data.length);
+      }
+
+      // ZXSC (LZF) compressed files — decompress before further processing
+      if (fileExt === 'lzf' && typeof ZXSC !== 'undefined') {
+        try {
+          // Try screen-scan first (has specific structure), fall back to standard
+          try {
+            data = ZXSC.decompressScreen(data);
+          } catch (_) {
+            data = ZXSC.decompress(data);
+          }
+        } catch (e) {
+          alert('Failed to decompress ZXSC/LZF file: ' + e.message);
+          return;
+        }
+        const innerName = fileName.replace(/\.lzf$/i, '');
+        format = detectFormat(innerName, data.length);
+      }
+
+      // Chunks lossy compressed files — decompress before further processing
+      if ((fileExt === 'c4' || fileExt === 'c2') && typeof CHUNKS !== 'undefined') {
+        try {
+          data = CHUNKS.decompress(data);
+        } catch (e) {
+          alert('Failed to decompress Chunks file: ' + e.message);
+          return;
+        }
+        const innerName = fileName.replace(/\.c[24]$/i, '');
         format = detectFormat(innerName, data.length);
       }
 

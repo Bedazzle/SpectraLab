@@ -109,6 +109,8 @@ function initScreenViewerUI() {
       }
     } else if (typeof isImageFileExt === 'function' && isImageFileExt(file.name)) {
       openImportDialog(file);
+    } else if (typeof isPluginDescriptorFile === 'function' && isPluginDescriptorFile(file.name)) {
+      loadPluginDescriptorFile(file);
     } else if (typeof isSnapshotFile === 'function' && isSnapshotFile(file.name)) {
       loadSnapshotFile(file);
     } else if (typeof isNirvanaTileFile === 'function' && isNirvanaTileFile(file.name)) {
@@ -878,6 +880,11 @@ function initScreenViewerUI() {
 
   // Hide format-specific controls on startup (no file loaded)
   toggleFormatControlsVisibility();
+
+  // Initialize plugin system
+  if (typeof initPluginUI === 'function') {
+    initPluginUI();
+  }
 
   // Initial render
   renderScreen();

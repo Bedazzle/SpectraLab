@@ -1,5 +1,44 @@
 # SpectraLab Version History
 
+## v2.23
+- Added **Plugin System** for custom format support — users can define plugins that extract and patch pictures from arbitrary binary files (e.g., game snapshots). Two plugin tiers: **JSON descriptors** (`.slplugin`) for simple offset-based extraction, and **JS plugins** (`.slpluginjs`) for complex formats with custom encode/decode logic
+- **JSON descriptor plugins** support two address modes: `z80addr` (Z80 logical address with automatic bank mapping for .sna/.z80 snapshots) and `offset` (raw file byte offset for any binary). Supports bank override, hex/decimal addresses, post-patch byte fixups, and full save-back — edited pictures are patched into the original file at the correct addresses
+- **JS plugins** provide `extract(fileBytes, snapshot)` and optional `patch(originalBytes, pictures, snapshot)` functions. The `snapshot` parameter exposes parsed bank arrays as zero-copy views for direct memory access. `jsSource` accepts an array of strings (one per line) for readable multi-line code in JSON
+- **Plugin UI** in the Tools tab — Load, Open, Export, and Remove buttons. Plugins persist across sessions via localStorage. Plugin session bar appears for JSON descriptor plugins with Save Patched File / Save Raw / Close controls
+- **Export via plugin** — any open picture can be exported through a JS plugin's `patch()` function, independent of plugin sessions. Useful for standalone codecs (e.g., RLE compression)
+- Plugin descriptor files (`.slplugin`, `.slpluginjs`) can be installed by drag-and-drop or via the file input
+- **JS plugins with sessions** — JS plugins can opt into session mode by setting `"session": true` in the descriptor. This enables the Save Patched File / Save Raw session bar, letting JS plugins extract pictures from a container file, edit them, and write them back — same workflow as JSON descriptor plugins, but with custom encode/decode logic
+- Included example plugins: `example.slplugin` (SNA screen extraction), `example_js.slpluginjs` (JS extract/patch demo), `rle_scr.slpluginjs` (RLE-compressed SCR load/save), `maria_sna.slpluginjs` (Maria's Christmas Box — 5 RLE-packed screens + loading screen from 48K .sna, with cross-bank data handling and memory overflow protection)
+
+## v2.22
+- Added **Chunks compression** — lossy monochrome bitmap compression that divides 8×8 character cells into sub-chunks with a static 4-pattern dictionary (2 bits per chunk index). Two modes: **Chunks 4×4** (841 bytes total, fastest Z80 depacker) and **Chunks 4×2** (1573 bytes total, better quality). Color-aware density matching uses ink/paper luminance from original attributes for correct monochrome conversion. Supports user-defined explicit patterns and built-in presets. Available in the SCR export dropdown (`.scr.c4`, `.scr.c2`) and Compare Compressions dialog. Auto-decompressed on file open
+- Added **Chunks** to the **Compare Compressions** dialog (⚙ Format settings checkbox). Both 4×4 and 4×2 variants shown for full SCR
+- ASM export support for Chunks formats from the Compare Compressions dialog — uses `incbin` with offsets to extract lookup table, encoded data, and attributes from the binary file
+- Added **Chunks 4×4 / Chunks 4×2 animated GIF import** — selecting Chunks 4×4 or Chunks 4×2 as the target format and importing a GIF as Animation now produces SCA type 2 with chunks compression. Each frame is converted to monochrome via Floyd-Steinberg dithering, then chunks-compressed. Per-frame data stores only the encoded bytes (768 bytes for 4×4, 1536 bytes for 4×2) — no codebook or lookup table per frame, since the standard preset dictionary is static
+- Added **ASM export for Chunks SCA animations** — the SCA ASM (zip) export now supports type 2 chunks animations with a full Z80 player. The player embeds the static lookup table once and uses a fast depacker routine (DeChunks4x4 / DeChunks4x2) per frame. Targets both 48K and 128K machines (selects ROM 1 via port #7FFD at startup for correct IM 1 interrupt handling)
+- Added **partial region support for Chunks SCA** — Chunks 4×4 / 4×2 animations can now target any screen region (top/middle/bottom third, top+middle, middle+bottom, or full screen). The region dropdown is enabled in the SCA save dialog when using chunks compression. Encoded data size scales with the region (256/512/768 bytes for 4×4, 512/1024/1536 bytes for 4×2). The Z80 depacker accepts the thirds count as a parameter
+
+## v2.21
+- Added **ZXSC (LZF) compression** — modified LZF (LZ77 family) compressor with optimal DP parsing, based on [ZXSC by TomDDG](https://github.com/TomDDG/ZXSC---ZX-Spectrum-Screen-Compresser). Two variants: standard linear (49-byte depacker) and screen-scan with non-linear cell-order reordering (80-byte depacker) for visually pleasing decompression. Available in the SCR export dropdown (`.scr.lzf`) and Compare Compressions dialog
+- Added **RLE** and **ZXSC** to the **Compare Compressions** dialog (⚙ Format settings checkboxes). ZXSC screen-scan variant only shown for full SCR
+- Added **RLE** (`.scr.rle`) and **ZXSC** (`.scr.lzf`, `.scr.lzf screen-scan`) to the **SCR Export** dropdown
+- ASM export support for RLE and ZXSC from the Compare Compressions dialog
+- SCR export dropdown items sorted alphabetically
+
+## v2.20
+- Added **RLE compression** — PackBits-style codec optimized for fast Z80 decompression (~23-byte depacker, LDIR for literals at 21 T/byte, DJNZ for repeats at 26 T/byte). Uses backward-pass dynamic programming for provably optimal encoding. Available in the SCA type 2 save
+- Added **SCA type 2 compression options** — the SCA save dialog now offers three compression options for type 2 animations: ZX0, Laser Compact, and RLE
+
+## v2.19
+- Added **GIF frame navigation** to the import dialog — when opening a multi-frame animated GIF, ◄/► buttons and a slider appear next to the mode dropdown, allowing you to preview any individual frame with the current format, dithering, and adjustment settings before importing. The Animation import mode still imports all frames regardless of which frame is previewed
+- Added **Grid checkbox** to the source (ORIGINAL) canvas in the import dialog — overlays an 8×8 pixel grid within the crop rectangle, showing character cell boundaries in source image coordinates
+- Added **ASM (zip) export** to the SCA editor — exports a ZIP containing the trimmed `.sca` file and a `.asm` sjasmplus source with a ready-to-assemble SCA animation player. Supports both type 0 (full 6912-byte frames) and type 1 (attr-only with fill pattern). The player uses HALT-based timing, IM 1 interrupts, and produces a `.sna` snapshot via SAVESNA
+
+## v2.18
+- Fixed animated GIF import ignoring format selection — importing as SCA animation with format set to 53c (attr-only) now correctly creates SCA type 1 (attribute-only frames with fill pattern) instead of always producing type 0 (full frames)
+- Added "Custom" option to the 53c pattern selector in the image import dialog — enter any 8-byte fill pattern as hex (e.g. `0F 0F 0F 0F F0 F0 F0 F0`). Works for both single-image 53c import and animated GIF→SCA type 1 import
+- Improved 53c/127c image import quality — added cell-level Floyd-Steinberg error diffusion so color quantization errors are spread to neighboring cells, reducing blocky color clash artifacts. Enabled by default via a "Diffusion" checkbox next to the pattern selector; uncheck to use the old per-cell-independent algorithm. Applies to both single-image 53c import and animated GIF→SCA type 1 conversion
+
 ## v2.17
 - Fixed pixel edits lost on undo/save for NXI, SL2, LoRes, and LoRes Radastan formats — drawing on the background layer now correctly syncs layer data, so undo reverts only the last action and edits are preserved across save/load
 - Fixed background layer desync for cell fill, cell invert, recolor, paste, selection invert, attribute optimize, and hidden pixel removal across all bitmap formats (SCR, BSC, IFL, MLT, BMC4, GMX, Gigascreen) — these operations now keep layer data in sync with screenData, preventing undo from reverting all changes at once

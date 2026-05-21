@@ -552,14 +552,19 @@ RCS files can also be opened directly — the reordering is automatically revers
 
 For **SCR** format, the Export dropdown includes built-in [ZX7](https://spectrumcomputing.co.uk/entry/27996/ZX-Spectrum/ZX7) and [ZX0](https://github.com/einar-saukas/ZX0) (v2 format) compression options by Einar Saukas:
 
-- **`.scr.zx7 (ZX7 compressed)`** — compresses the screen data with ZX7 (forward mode)
-- **`.rcs.zx7 (RCS + ZX7)`** — applies RCS reordering first, then ZX7 compression
-- **`.scr.zx0 (ZX0 compressed)`** — compresses the screen data with ZX0 (forward mode)
 - **`.rcs.zx0 (RCS + ZX0)`** — applies RCS reordering first, then ZX0 compression
+- **`.rcs.zx7 (RCS + ZX7)`** — applies RCS reordering first, then ZX7 compression
 - **`.scr.lc (LC compressed)`** — compresses the screen data with Laser Compact 5.2.1 (includes LCMP5 header; reordering and segment handling are built-in)
+- **`.scr.c4 (Chunks 4×4)`** — lossy monochrome compression: divides each 8×8 cell into four 4×4 quadrants, encodes each as a 2-bit index into a 4-pattern dictionary. Fixed output: 841 bytes (768B encoded + 64B lookup table + 8B dictionary + 1B mode). Very fast Z80 depacker using nibble-pair lookup
+- **`.scr.c2 (Chunks 4×2)`** — lossy monochrome compression: divides each 8×8 cell into eight 4×2 strips, encodes each as a 2-bit index. Fixed output: 1573 bytes (1536B encoded + 32B lookup table + 4B dictionary + 1B mode). Better quality than 4×4, still fast Z80 depacker
+- **`.scr.lzf (ZXSC / LZF)`** — compresses the screen data with LZF (standard linear mode, 49-byte depacker)
+- **`.scr.lzf (ZXSC screen-scan)`** — compresses using non-linear cell-scan reordering (attribute + 8 pixel rows per cell, top-left to bottom-right) then LZF. Produces visually pleasing decompression on the ZX Spectrum (80-byte depacker)
+- **`.scr.rle (RLE compressed)`** — compresses the screen data with PackBits-style RLE (23-byte depacker, fast decompression)
 - **`.scr.upk (upkr level 1)`** — compresses the screen data with upkr (rANS entropy coding, Z80 settings, fast compression)
 - **`.scr.upk (upkr level 9)`** — compresses the screen data with upkr (rANS entropy coding, Z80 settings, best compression)
-- **`Compare compressions...`** — opens a dialog showing all twelve compression variants side-by-side:
+- **`.scr.zx0 (ZX0 compressed)`** — compresses the screen data with ZX0 (forward mode)
+- **`.scr.zx7 (ZX7 compressed)`** — compresses the screen data with ZX7 (forward mode)
+- **`Compare compressions...`** — opens a dialog showing compression variants side-by-side:
   - Plain SCR (6912 bytes, uncompressed baseline)
   - ZX7 / ZX7 backwards
   - RCS + ZX7 / RCS + ZX7 backwards
@@ -567,10 +572,13 @@ For **SCR** format, the Export dropdown includes built-in [ZX7](https://spectrum
   - RCS + ZX0 / RCS + ZX0 backwards
   - LC (Laser Compact 5.2.1)
   - upkr level 1 / upkr level 9
+  - RLE
+  - ZXSC (linear LZF) / ZXSC screen (cell-scan LZF)
+  - Chunks 4×4 / Chunks 4×2 (lossy)
 
   The dialog opens with an empty table (all sizes shown as "—"). Click the **Compare** button to run compressions — results appear one by one, the best variant is highlighted and pre-selected. The dialog stays open after saving, so you can export multiple formats without re-running compression.
 
-  **⚙ Format settings** (gear icon in the title bar) — toggle a settings panel to enable/disable format families (ZX7, ZX0, RCS variants, LC, upkr). Disabled formats are excluded from the comparison table. The upkr depacker variant can be switched between Compact (130B code + 320B probs = 450B total) and Fast (155B code + 320B probs = 475B total, unrolled multiply loop). All settings are saved to localStorage and persist across sessions.
+  **⚙ Format settings** (gear icon in the title bar) — toggle a settings panel to enable/disable format families (ZX7, ZX0, RCS variants, LC, upkr, RLE, ZXSC, Chunks). Disabled formats are excluded from the comparison table. The upkr depacker variant can be switched between Compact (130B code + 320B probs = 450B total) and Fast (155B code + 320B probs = 475B total, unrolled multiply loop). All settings are saved to localStorage and persist across sessions.
 
   **Data** dropdown — selects which portion of screen data to compress:
   - **Full SCR** (default) — full 6912 bytes (bitmap + attributes)
@@ -589,15 +597,9 @@ For **SCR** format, the Export dropdown includes built-in [ZX7](https://spectrum
 
   Changing any option (Data, Segment, checkboxes) resets the table — click Compare again to re-run.
 
-  **Depacker** column — shows the Z80 depacker size in bytes for each method, including code and any required buffer: ZX7 forward/backward = 69 bytes, ZX0 forward = 68, ZX0 backward = 69. RCS variants use [smart integrated decoders](https://github.com/einar-saukas/RCS) that decompress and decode directly to screen without a temp buffer: RCS+ZX7 = 110, RCS+ZX7 backwards = 110, RCS+ZX0 = 112, RCS+ZX0 backwards = 113. LC = 209 bytes (decompresses directly to screen, no extra buffer). upkr = 450 bytes (130 code + 320-byte probs array). Plain row has no depacker.
+  **Depacker** column — shows the Z80 depacker size in bytes for each method, including code and any required buffer: ZX7 forward/backward = 69 bytes, ZX0 forward = 68, ZX0 backward = 69. RCS variants use [smart integrated decoders](https://github.com/einar-saukas/RCS) that decompress and decode directly to screen without a temp buffer: RCS+ZX7 = 110, RCS+ZX7 backwards = 110, RCS+ZX0 = 112, RCS+ZX0 backwards = 113. LC = 209 bytes (decompresses directly to screen, no extra buffer). upkr = 450 bytes (130 code + 320-byte probs array). RLE = 23 bytes. ZXSC = 49 bytes (standard) / 80 bytes (screen-scan). Chunks 4×4 = 139 bytes (75 code + 64-byte lookup table), Chunks 4×2 = 97 bytes (65 code + 32-byte lookup table). Plain row has no depacker.
 
-  **Total** column — shows real saving: saved bytes minus depacker overhead (saved − depacker). A positive value means compression is beneficial even accounting for the depacker. A negative value (highlighted in red) means the compressed data plus depacker exceeds the original size.
-  - LC (Laser Compact 5.2.1)
-  - upkr level 1 / upkr level 9
-
-  The dialog opens with an empty table (all sizes shown as "—"). Click the **Compare** button to run compressions — results appear one by one, the best variant is highlighted and pre-selected. The dialog stays open after saving, so you can export multiple formats without re-running compression.
-
-  **⚙ Format settings** (gear icon in the title bar) — toggle a settings panel to enable/disable format families (ZX7, ZX0, RCS variants, LC, upkr). Disabled formats are excluded from the comparison table. The upkr depacker variant can be switched between Compact (130B code + 320B probs = 450B total) and Fast (155B code + 320B probs = 475B total, unrolled multiply loop). All settings are saved to localStorage and persist across sessions.
+  **Total** column — shows real saving: saved bytes minus depacker overhead (saved − depacker). A positive value means compression is beneficial even accounting for the depacker. A negative value (highlighted in red) means the compressed data plus depacker exceeds the original size. For lossy Chunks variants, the "saved" value reflects size reduction only — bitmap quality is approximate. The upkr depacker variant can be switched between Compact (130B code + 320B probs = 450B total) and Fast (155B code + 320B probs = 475B total, unrolled multiply loop). All settings are saved to localStorage and persist across sessions.
 
   **Data** dropdown — selects which portion of screen data to compress:
   - **Full SCR** (default) — full 6912 bytes (bitmap + attributes)
@@ -616,7 +618,7 @@ For **SCR** format, the Export dropdown includes built-in [ZX7](https://spectrum
 
   Changing any option (Data, Segment, checkboxes) resets the table — click Compare again to re-run.
 
-  **Depacker** column — shows the Z80 depacker size in bytes for each method, including code and any required buffer: ZX7 forward/backward = 69 bytes, ZX0 forward = 68, ZX0 backward = 69. RCS variants use [smart integrated decoders](https://github.com/einar-saukas/RCS) that decompress and decode directly to screen without a temp buffer: RCS+ZX7 = 110, RCS+ZX7 backwards = 110, RCS+ZX0 = 112, RCS+ZX0 backwards = 113. LC = 209 bytes (decompresses directly to screen, no extra buffer). upkr = 450 bytes (130 code + 320-byte probs array). Plain row has no depacker.
+  **Depacker** column — shows the Z80 depacker size in bytes for each method, including code and any required buffer: ZX7 forward/backward = 69 bytes, ZX0 forward = 68, ZX0 backward = 69. RCS variants use [smart integrated decoders](https://github.com/einar-saukas/RCS) that decompress and decode directly to screen without a temp buffer: RCS+ZX7 = 110, RCS+ZX7 backwards = 110, RCS+ZX0 = 112, RCS+ZX0 backwards = 113. LC = 209 bytes (decompresses directly to screen, no extra buffer). upkr = 450 bytes (130 code + 320-byte probs array). RLE = 23 bytes. ZXSC = 49 bytes (standard) / 80 bytes (screen-scan). Chunks 4×4 = 139 bytes (75 code + 64-byte lookup table), Chunks 4×2 = 97 bytes (65 code + 32-byte lookup table). Plain row has no depacker.
 
   **Total** column — shows real saving: saved bytes minus depacker overhead (saved − depacker). A positive value means compression is beneficial even accounting for the depacker. A negative value (highlighted in red) means the compressed data plus depacker exceeds the original size.
 
@@ -841,15 +843,18 @@ For Attributed and Multicolour mode sprites:
 When loading a PNG, JPG, WebP, BMP, or GIF file, the Image Import dialog opens.
 
 For multi-frame animated GIFs, a **mode dropdown** appears next to the Import button with the following options:
-- **Picture** — import the first frame as a static picture using selected format/dithering/adjustments
+- **Picture** — import the currently previewed frame as a static picture using selected format/dithering/adjustments
 - **Flash** (2-frame GIFs only) — convert both frames into a single SCR with FLASH attributes. Cells that differ between frames use the FLASH bit (0x80) to alternate ink↔paper every 320ms; identical cells remain static
-- **Animation** — convert all frames to SCA animation. Each frame is converted to SCR format, per-frame delays from the GIF are preserved (converted to SCA 20ms units). After import, the full SCA editor is available (filmstrip, playback, trim, delay editing, optimize, export)
+- **Animation** — convert all frames to SCA animation. Per-frame delays from the GIF are preserved (converted to SCA 20ms units). After import, the full SCA editor is available (filmstrip, playback, trim, delay editing, optimize, export). The output format depends on the **Format** dropdown:
+  - Any format except 53c and Chunks → SCA type 0 (full SCR frames, 6912 bytes per frame)
+  - **53c** → SCA type 1 (attribute-only frames, 768 bytes per frame + embedded fill pattern). The pattern is taken from the **53c Pattern** selector (Checker, Stripes, DD/77, or Custom)
+  - **Chunks 4×4** or **Chunks 4×2** → SCA type 2 (chunks-compressed monochrome frames). Each frame is dithered to monochrome and compressed using the static 4-pattern dictionary. Per-frame encoded size depends on the region (e.g. 768 bytes for 4×4 full screen, 256 for a single third) — no codebook stored per frame
 
 ### Layout
 
 The dialog shows two canvases side by side:
-- **ORIGINAL** — the source image with a zoom dropdown (Fit, x1–x4). Fit scales to fill available space up to x2.
-- **PREVIEW** — the dithered ZX Spectrum result with a zoom dropdown (Fit, x1–x5, default x2) and a Grid checkbox to overlay the 8×8 attribute grid.
+- **ORIGINAL** — the source image with a zoom dropdown (Fit, x1–x4) and a **Grid** checkbox to overlay an 8×8 pixel grid within the crop rectangle. Fit scales to fill available space up to x2.
+- **PREVIEW** — the dithered ZX Spectrum result with a zoom dropdown (Fit, x1–x5, default x2) and a **Grid** checkbox to overlay the 8×8 attribute grid.
 
 Both canvases show scrollbars when the zoomed image exceeds the available space.
 
@@ -914,7 +919,7 @@ Crop the source image:
 
 - **Format:** SCR, ULA+, 53c (attr), IFL (8×2), BMC4 (8×4), MLT (8×1), MLT+ULA+, BSC, BSP, RGB3, Gigascreen, HLR, STL, GMX 640×200, GMX 160×200, NXI (256×192, 320×256, 640×256), SL2 (256×192, 320×256, 640×256), SPECSCII, Mono, Mono 2/3, Mono 1/3, LoRes, Radastan, ZXP, chr$, btile (Nirvana 16×16), wtile (Nirvana 24×16)
 - **Palette** selector
-- **53c Pattern** (for 53c format): Checker, Stripes, DD/77
+- **53c Pattern** (for 53c format): Checker, Stripes, DD/77, Custom. When "Custom" is selected, a hex input field appears where you can enter 8 bytes separated by spaces (e.g. `0F 0F 0F 0F F0 F0 F0 F0`). Each byte defines one row of the 8×8 fill pattern (MSB = leftmost pixel). The custom pattern is used both for single-image 53c import and for animated GIF → SCA type 1 import
 - **SPECSCII Charset** (for SPECSCII format): Full (ROM font + block graphics, 112 glyphs), ASCII (ROM font only, 96 glyphs), UDG (block graphics only, 16 glyphs + space)
 - **ULA+ Palette:** Auto, Load .pal, From picture
 - **Position:** X, Y offset
@@ -948,6 +953,7 @@ Crop the source image:
 - **Zoom:** x1, x2, x3
 - **Grid** — show 8×8 grid on output preview
 - **Mode dropdown** (animated GIFs only) — select Picture, Flash, or Animation import mode
+- **Frame navigation** (animated GIFs only) — ◄/► buttons and a slider to preview any individual frame with the current format, dithering, and adjustment settings. The label shows the current frame number and total (e.g. "3 / 48"). Animation mode still imports all frames regardless of which frame is previewed
 - **Cancel** / **Import** buttons
 
 ![Image import dialog](screenshots/image_import.png)
@@ -963,6 +969,11 @@ The SCA editor opens as a full-screen overlay when editing `.sca` animation file
 - **← Back** — return to the main view
 - **Save As...** — dropdown with export options: SCA, SCR zip, 53c zip, GIF (animated), PNG zip
 - **Save** — save in the selected format
+
+When saving as **SCA**, a settings window appears with options:
+- **Compression** — select compression for SCA type 2: Uncompressed, ZX0, Laser Compact, or RLE. RLE uses a PackBits-style control-byte format optimized for fast Z80 decompression (~23-byte depacker). Compression ratio is between uncompressed and ZX0/LC, but decompression speed is significantly faster (LDIR for literals, DJNZ for repeats). Chunks 4×4/4×2 animations are always stored as type 2 with chunks compression (no additional compression selection needed)
+- **Region** — select which screen thirds to include in type 2 frames: top, middle, bottom, top+middle, middle+bottom, or full screen. Applies to all compression types including Chunks. For Chunks, the encoded data size scales with the region (1 byte per cell for 4×4, 2 bytes per cell for 4×2)
+- **ASM (zip)** — export SCA player as sjasmplus assembly source with frame data in a ZIP archive. Supports type 0 (full frames), type 1 (attr-only with fill pattern), and type 2 with chunks compression (embeds the static lookup table and DeChunks depacker). The player selects ROM 1 at startup for 128K compatibility
 
 ### Filmstrip
 
@@ -1454,7 +1465,124 @@ Drag a `.zgs`, `.zgt`, or `.zgp` file onto the page to open it.
 
 ---
 
-## 26. Supported Formats Reference
+## 26. Plugins — Custom Format Support
+
+SpectraLab supports user-defined plugins that extract and patch pictures from arbitrary binary files (e.g., game snapshots). Plugins are managed in the **Tools** tab → **Plugins** section.
+
+### Two Plugin Tiers
+
+**JSON Descriptor Plugins (`.slplugin`)** — no programming required. Define picture locations as addresses/offsets in a JSON file. Best for extracting screens from known memory locations in snapshot files.
+
+**JS Plugins (`.slpluginjs`)** — programmable plugins with custom extract/patch logic. Best for compressed formats or complex data layouts. Code is written as JavaScript inside a JSON wrapper.
+
+### Loading a Plugin
+
+- Click **Load Plugin…** in the Tools tab, or
+- Drag-and-drop a `.slplugin` / `.slpluginjs` file onto the application
+
+Installed plugins persist across sessions (saved in localStorage).
+
+### Using a Plugin
+
+Each loaded plugin shows a row with buttons:
+
+- **Open…** — select a file to open with this plugin. Extracts pictures according to the plugin definition and adds them to the picture tab bar
+- **Export** (JS plugins only) — encode/compress the currently active picture through the plugin's patch function and download the result
+- **×** — remove the plugin
+
+### Plugin Session
+
+When pictures are opened via a JSON descriptor plugin, a session bar appears above the picture tabs. JS plugins can also enable sessions by setting `"session": true` in the descriptor — this is useful for JS plugins that extract multiple pictures from a container file and need to write them back.
+
+- **Save Patched File** — writes all edited pictures back into the original file (at the defined addresses for JSON plugins, or via the `patch()` function for JS plugins) and downloads the patched file
+- **Save Raw** — exports each picture as a separate raw format file
+- **×** — closes the session (pictures remain open but lose the link to the original file)
+
+### JSON Descriptor Format
+
+```json
+{
+  "id": "unique_plugin_id",
+  "name": "Display Name",
+  "version": 1,
+  "description": "Short description",
+  "fileExtensions": [".sna", ".z80"],
+  "pictures": [
+    {
+      "name": "Picture Name",
+      "format": "scr",
+      "source": {
+        "addressMode": "z80addr",
+        "address": "0x4000",
+        "length": 6912
+      }
+    }
+  ],
+  "fixups": []
+}
+```
+
+**Address modes:**
+
+| Mode | Description |
+|------|-------------|
+| `z80addr` | Z80 logical address (0x4000–0xFFFF). Auto-maps to memory banks: 0x4000–0x7FFF → bank 5, 0x8000–0xBFFF → bank 2, 0xC000–0xFFFF → currently paged bank. Optional `bank` field overrides auto-mapping. Requires .sna or .z80 file. |
+| `offset` | Raw byte offset into the file. Works with any binary file. |
+
+Numeric values accept hex strings (`"0x4000"`) or plain numbers (`16384`).
+
+**Fixups** — optional byte patches applied after pictures are written back:
+
+```json
+"fixups": [
+  { "addressMode": "offset", "offset": "0xC100", "value": [0, 27] }
+]
+```
+
+### JS Plugin Format
+
+```json
+{
+  "id": "unique_id",
+  "name": "Display Name",
+  "fileExtensions": [".bin"],
+  "type": "js",
+  "jsSource": [
+    "plugin = {",
+    "  extract: function(fileBytes, snapshot) {",
+    "    // Return: array of {name, format, data}",
+    "    return [{ name: 'Screen', format: 'scr', data: fileBytes.slice(0, 6912) }];",
+    "  },",
+    "  patch: function(originalBytes, pictures, snapshot) {",
+    "    // Optional: encode/compress and return Uint8Array",
+    "    return new Uint8Array(pictures[0].data);",
+    "  }",
+    "};"
+  ]
+}
+```
+
+`jsSource` can be a single string or an array of strings (one per line, joined with newlines). The array form is recommended for readability.
+
+**Optional field:** `"session": true` — enables the session bar (Save Patched File / Save Raw) for JS plugins that extract from and write back to container files. Without this, JS plugins work as standalone codecs (Open to decode, Export to encode).
+
+**Parameters:**
+- `fileBytes` — `Uint8Array` of the entire file
+- `snapshot` — parsed snapshot object `{banks: Uint8Array[8], machineType, pagingByte}` or `null` for non-snapshot files. Bank arrays are subarray views into `fileBytes` (zero-copy)
+- `pictures` — array of `{name, format, data}` with the current edited screen data
+
+### Example Plugins
+
+Example plugins are provided in the `plugins/` directory:
+
+- `example.slplugin` — JSON descriptor: extracts main and shadow screens from a 128K .sna snapshot
+- `example_js.slpluginjs` — JS plugin: demonstrates extract/patch with snapshot bank access
+- `rle_scr.slpluginjs` — JS plugin (codec): loads and saves RLE-compressed SCR files (0x00/0xFF + count encoding)
+- `maria_sna.slpluginjs` — JS plugin (session): extracts loading screen + 5 RLE-packed screens from Maria's Christmas Box 48K .sna snapshot. Demonstrates cross-bank data handling (packed data spans bank 2 into bank 0) and memory overflow protection (prevents writing past 0xFDFF)
+
+---
+
+## 27. Supported Formats Reference
 
 ### Editable Formats
 
@@ -1471,6 +1599,10 @@ Drag a `.zgs`, `.zgt`, or `.zgp` file onto the page to open it.
 | .rcs.zx0 | variable | RCS reordered + ZX0 compressed (auto-decompressed and un-reordered on load) |
 | .rcs.zx0b | variable | RCS reordered + ZX0 backward compressed (auto-decompressed and un-reordered on load) |
 | .scr.lc | variable | Laser Compact 5.2.1 compressed screen with LCMP5 header (auto-decompressed on load) |
+| .scr.c4 | 841 bytes | Chunks 4×4 lossy monochrome bitmap — 4-pattern dictionary, 1 byte/cell (768B encoded + 64B LUT + 8B dictionary + 1B mode) |
+| .scr.c2 | 1573 bytes | Chunks 4×2 lossy monochrome bitmap — 4-pattern dictionary, 2 bytes/cell (1536B encoded + 32B LUT + 4B dictionary + 1B mode) |
+| .scr.lzf | variable | [ZXSC](https://github.com/TomDDG/ZXSC---ZX-Spectrum-Screen-Compresser) LZF compressed screen — standard or screen-scan mode (auto-decompressed on load) |
+| .scr.rle | variable | RLE (PackBits-style) compressed screen (auto-decompressed on load) |
 | .scr.upk | variable | upkr compressed screen with Z80 settings (auto-decompressed on load) |
 | .scr | 6976 bytes | ULA+ (64-color palette) |
 | .scr | 6945–7426 bytes | ULANext (Next extended palette, up to 256 colors) |
@@ -1689,3 +1821,14 @@ When using **Step**, the textarea highlights the source line corresponding to th
 | Alt (during drag) | Draw shape from center instead of corner |
 
 > **Note:** Keyboard shortcuts work with any keyboard layout (Russian, German, etc.) — they are based on physical key position.
+
+---
+
+## Credits and Third-Party Libraries
+
+- **ZX7** — compression by [Einar Saukas](https://spectrumcomputing.co.uk/entry/27996/ZX-Spectrum/ZX7)
+- **ZX0** — compression by [Einar Saukas](https://github.com/einar-saukas/ZX0)
+- **RCS** — screen reordering by [Einar Saukas](https://github.com/einar-saukas/RCS)
+- **Laser Compact 5.2.1** — compression by Hrumer (packer/depacker, 1994–2014), Eugene Larchenko (buffer overflow fix, segment support)
+- **upkr** — compression by phar/Loonies ([GitHub](https://github.com/exoticorn/upkr))
+- **ZXSC** — LZF screen compressor with non-linear cell-scan ordering by [TomDDG](https://github.com/TomDDG/ZXSC---ZX-Spectrum-Screen-Compresser) (MIT license). Z80 depackers and algorithm design from the original project; compressor reimplemented in JavaScript with optimal DP parsing
