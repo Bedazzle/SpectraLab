@@ -876,6 +876,9 @@ let borderColor = 7;
 /** @type {number} */
 let borderSize = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.DEFAULT_BORDER_SIZE) || 24;
 
+/** @type {number} - Canvas rotation angle: 0, 90, 180 or 270 */
+let canvasRotation = 0;
+
 /** @type {number} - Last canvas width (for resize optimization) */
 let lastCanvasWidth = 0;
 
@@ -5382,6 +5385,7 @@ function renderScreen() {
         typeof referenceImage !== 'undefined' && referenceImage) {
       drawReferenceOverlay();
     }
+    applyCanvasRotation();
     return;
   }
 
@@ -5429,6 +5433,7 @@ function renderScreen() {
         drawReferenceOverlay();
       }
       if (typeof applyOverlayFilters === 'function') applyOverlayFilters();
+      applyCanvasRotation();
       return; // BSC handles everything including grid
     } else if (currentFormat === FORMAT.BMC4) {
       // BMC4 format: border + 8x4 multicolor
@@ -5449,6 +5454,7 @@ function renderScreen() {
         drawReferenceOverlay();
       }
       if (typeof applyOverlayFilters === 'function') applyOverlayFilters();
+      applyCanvasRotation();
       return; // BMC4 handles everything including grid
     } else if (currentFormat === FORMAT.BSP && bspHasBorder && currentPicture && currentPicture.colorMode === 'gigascreen') {
       // BSP gigascreen + border: render border frame + gigascreen main screen
@@ -5466,6 +5472,7 @@ function renderScreen() {
         drawReferenceOverlay();
       }
       if (typeof applyOverlayFilters === 'function') applyOverlayFilters();
+      applyCanvasRotation();
       return;
     } else if (currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) {
       // NXI/SL2: ZX Spectrum Next Layer 2 (256-color indexed)
@@ -5550,6 +5557,9 @@ function renderScreen() {
 
   // Update hidden pixel count after rendering
   updateInfoCounters();
+
+  // Apply CSS rotation to viewport
+  applyCanvasRotation();
 }
 
 /**
@@ -6340,6 +6350,80 @@ function setBorderSize(size) {
   saveSettings();
 }
 
+/**
+ * Returns the current canvas rotation angle
+ * @returns {number} 0, 90, 180 or 270
+ */
+function getCanvasRotation() {
+  return canvasRotation;
+}
+
+/**
+ * Sets the canvas rotation angle and redraws
+ * @param {number} angle - 0, 90, 180 or 270
+ */
+function setCanvasRotation(angle) {
+  canvasRotation = angle;
+  if (typeof editorRender === 'function' && editorActive) {
+    editorRender();
+  } else {
+    renderScreen();
+  }
+  saveSettings();
+}
+
+/**
+ * Applies CSS rotation to the canvasViewport element and adjusts
+ * wrapper dimensions for 90°/270° so the scroll container sizes correctly.
+ * Must be called AFTER renderScreen has set wrapper/viewport dimensions.
+ *
+ * For 90°/270° the viewport is absolutely-centered in the wrapper so that
+ * CSS transform: rotate() keeps the visual content within the swapped
+ * wrapper bounds.  Absolute positioning removes the viewport from flow,
+ * avoiding layout-overflow problems (CSS transforms don't affect layout).
+ */
+function applyCanvasRotation() {
+  const viewport = document.getElementById('canvasViewport');
+  const wrapper = document.getElementById('canvasWrapper');
+  if (!viewport || !wrapper) return;
+
+  const isSwapped = (canvasRotation === 90 || canvasRotation === 270);
+  // wrapper dimensions are the unrotated logical size (set by renderScreen)
+  const w = parseFloat(wrapper.style.width) || viewport.offsetWidth;
+  const h = parseFloat(wrapper.style.height) || viewport.offsetHeight;
+
+  if (canvasRotation === 0) {
+    // Reset everything — renderScreen already set position to relative/sticky
+    viewport.style.transform = '';
+    viewport.style.transformOrigin = '';
+    viewport.style.left = '';
+    viewport.style.top = '';
+    wrapper.style.overflow = '';
+  } else if (isSwapped) {
+    // Swap wrapper dimensions so scroll area matches the rotated bounding box
+    wrapper.style.width = h + 'px';
+    wrapper.style.height = w + 'px';
+    wrapper.style.overflow = 'hidden';
+    // Absolutely center the viewport in the wrapper, then rotate.
+    // left:50%/top:50% places the viewport's top-left at the wrapper center;
+    // translate(-50%,-50%) shifts it back by half its own size to center it;
+    // rotate() then spins around the element center (default transform-origin).
+    viewport.style.position = 'absolute';
+    viewport.style.left = '50%';
+    viewport.style.top = '50%';
+    viewport.style.transform = `translate(-50%, -50%) rotate(${canvasRotation}deg)`;
+    viewport.style.transformOrigin = '';  // default 50% 50%
+  } else {
+    // 180° — same dimensions, just rotate around center
+    wrapper.style.overflow = '';
+    viewport.style.position = 'absolute';
+    viewport.style.left = '50%';
+    viewport.style.top = '50%';
+    viewport.style.transform = `translate(-50%, -50%) rotate(180deg)`;
+    viewport.style.transformOrigin = '';
+  }
+}
+
 // ============================================================================
 // Settings Persistence
 // ============================================================================
@@ -6352,6 +6436,7 @@ const SETTINGS_KEY = 'screenViewerSettings';
 function saveSettings() {
   const settings = {
     zoom: zoom,
+    canvasRotation: canvasRotation,
     borderColor: borderColor,
     borderSize: borderSize,
     flashEnabled: flashEnabled,
@@ -6393,6 +6478,13 @@ function loadSettings() {
     if (settings.zoom !== undefined) {
       zoom = settings.zoom;
       if (zoomSelect) zoomSelect.value = String(zoom);
+    }
+
+    // Apply canvas rotation
+    if (settings.canvasRotation !== undefined) {
+      canvasRotation = settings.canvasRotation;
+      const rotSel = document.getElementById('rotationSelect');
+      if (rotSel) /** @type {HTMLSelectElement} */ (rotSel).value = String(canvasRotation);
     }
 
     // Apply border color

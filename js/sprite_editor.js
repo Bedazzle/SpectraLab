@@ -2413,8 +2413,20 @@ function startGrabMode() {
     const z = typeof zoom !== 'undefined' ? zoom : 2;
     const border = typeof borderSize !== 'undefined' ? borderSize : 0;
     const borderPx = border * z;
-    const px = (e.clientX - rect.left - borderPx) / z;
-    const py = (e.clientY - rect.top - borderPx) / z;
+    let dx = e.clientX - rect.left;
+    let dy = e.clientY - rect.top;
+    // Inverse-map rotated display coords to unrotated canvas coords
+    const rotation = typeof getCanvasRotation === 'function' ? getCanvasRotation() : 0;
+    if (rotation !== 0 && typeof unrotateDisplayCoords === 'function') {
+      const isSwapped = (rotation === 90 || rotation === 270);
+      const origCssW = isSwapped ? rect.height : rect.width;
+      const origCssH = isSwapped ? rect.width : rect.height;
+      const unrot = unrotateDisplayCoords(dx, dy, origCssW, origCssH, rotation);
+      dx = unrot.x;
+      dy = unrot.y;
+    }
+    const px = (dx - borderPx) / z;
+    const py = (dy - borderPx) / z;
     const scrW = typeof getFormatWidth === 'function' ? getFormatWidth() : 256;
     const scrH = typeof getFormatHeight === 'function' ? getFormatHeight() : 192;
     return {
@@ -2449,6 +2461,16 @@ function startGrabMode() {
     return { x: clampedLeft, y: clampedTop, w: snappedW, h: snappedH };
   }
 
+  // Helper: forward-rotate canvas-space point to display (rotated AABB) space
+  function forwardRotateCoords(cx, cy, cw, ch, rotation) {
+    switch (rotation) {
+      case 90:  return { x: ch - cy, y: cx };
+      case 180: return { x: cw - cx, y: ch - cy };
+      case 270: return { x: cy, y: cw - cx };
+      default:  return { x: cx, y: cy };
+    }
+  }
+
   // Helper: position overlay div from snapped grab region
   function positionOverlay(x1, y1, x2, y2) {
     const rect = canvas.getBoundingClientRect();
@@ -2456,11 +2478,40 @@ function startGrabMode() {
     const border = typeof borderSize !== 'undefined' ? borderSize : 0;
     const borderPx = border * z;
     const rgn = snapGrabRegion(x1, y1, x2, y2);
-    spriteGrabOverlay.style.display = '';
-    spriteGrabOverlay.style.left = (rect.left + borderPx + rgn.x * z) + 'px';
-    spriteGrabOverlay.style.top = (rect.top + borderPx + rgn.y * z) + 'px';
-    spriteGrabOverlay.style.width = (rgn.w * z) + 'px';
-    spriteGrabOverlay.style.height = (rgn.h * z) + 'px';
+    const rotation = typeof getCanvasRotation === 'function' ? getCanvasRotation() : 0;
+
+    if (rotation !== 0) {
+      const isSwapped = (rotation === 90 || rotation === 270);
+      const origCssW = isSwapped ? rect.height : rect.width;
+      const origCssH = isSwapped ? rect.width : rect.height;
+      // Region corners in unrotated canvas CSS space
+      const cx1 = borderPx + rgn.x * z;
+      const cy1 = borderPx + rgn.y * z;
+      const cx2 = cx1 + rgn.w * z;
+      const cy2 = cy1 + rgn.h * z;
+      // Forward-rotate all four corners to find display AABB
+      const corners = [
+        forwardRotateCoords(cx1, cy1, origCssW, origCssH, rotation),
+        forwardRotateCoords(cx2, cy1, origCssW, origCssH, rotation),
+        forwardRotateCoords(cx1, cy2, origCssW, origCssH, rotation),
+        forwardRotateCoords(cx2, cy2, origCssW, origCssH, rotation)
+      ];
+      const minX = Math.min(corners[0].x, corners[1].x, corners[2].x, corners[3].x);
+      const minY = Math.min(corners[0].y, corners[1].y, corners[2].y, corners[3].y);
+      const maxX = Math.max(corners[0].x, corners[1].x, corners[2].x, corners[3].x);
+      const maxY = Math.max(corners[0].y, corners[1].y, corners[2].y, corners[3].y);
+      spriteGrabOverlay.style.display = '';
+      spriteGrabOverlay.style.left = (rect.left + minX) + 'px';
+      spriteGrabOverlay.style.top = (rect.top + minY) + 'px';
+      spriteGrabOverlay.style.width = (maxX - minX) + 'px';
+      spriteGrabOverlay.style.height = (maxY - minY) + 'px';
+    } else {
+      spriteGrabOverlay.style.display = '';
+      spriteGrabOverlay.style.left = (rect.left + borderPx + rgn.x * z) + 'px';
+      spriteGrabOverlay.style.top = (rect.top + borderPx + rgn.y * z) + 'px';
+      spriteGrabOverlay.style.width = (rgn.w * z) + 'px';
+      spriteGrabOverlay.style.height = (rgn.h * z) + 'px';
+    }
   }
 
   spriteGrabMouseDown = function(e) {

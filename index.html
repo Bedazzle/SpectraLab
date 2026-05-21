@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v2.23 -->
+<!-- SpectraLab v2.24 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -1495,23 +1495,34 @@
         <!-- View Tab Content -->
         <div id="tabView" class="panel-tab-content active">
           <div class="control-group">
-            <label>
-              Zoom:
-              <select id="zoomSelect" style="width: 80px; min-width: 80px; flex: none;">
-                <option value="0.125">x1/8</option>
-                <option value="0.25">x1/4</option>
-                <option value="0.5">x1/2</option>
-                <option value="1">x1</option>
-                <option value="2" selected>x2</option>
-                <option value="3">x3</option>
-                <option value="4">x4</option>
-                <option value="5">x5</option>
-                <option value="6">x6</option>
-                <option value="8">x8</option>
-                <option value="10">x10</option>
-                <option value="20">x20</option>
-              </select>
-            </label>
+            <div style="display: flex; gap: 6px; align-items: center;">
+              <label>
+                Zoom:
+                <select id="zoomSelect" style="width: 54px; min-width: 54px; flex: none;">
+                  <option value="0.125">x1/8</option>
+                  <option value="0.25">x1/4</option>
+                  <option value="0.5">x1/2</option>
+                  <option value="1">x1</option>
+                  <option value="2" selected>x2</option>
+                  <option value="3">x3</option>
+                  <option value="4">x4</option>
+                  <option value="5">x5</option>
+                  <option value="6">x6</option>
+                  <option value="8">x8</option>
+                  <option value="10">x10</option>
+                  <option value="20">x20</option>
+                </select>
+              </label>
+              <label>
+                Rotate:
+                <select id="rotationSelect" style="width: 54px; min-width: 54px; flex: none;">
+                  <option value="0" selected>0&deg;</option>
+                  <option value="90">90&deg;</option>
+                  <option value="180">180&deg;</option>
+                  <option value="270">270&deg;</option>
+                </select>
+              </label>
+            </div>
           </div>
           <div class="control-group" id="viewSettingsSection">
             <div id="viewSettingsHeader" class="collapsible-header" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 2px 0;">
@@ -3526,7 +3537,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 2.23</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 2.24</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">

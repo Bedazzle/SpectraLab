@@ -3,7 +3,7 @@
 // @ts-check
 "use strict";
 
-const APP_VERSION = '2.23';
+const APP_VERSION = '2.24';
 
 const APP_CONFIG = {
   // ============================================================================

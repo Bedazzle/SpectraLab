@@ -95,6 +95,10 @@ The View tab controls how the image is displayed.
 
 Select zoom level from the dropdown: **x1/8, x1/4, x1/2, x1, x2, x3, x4, x5, x6, x8, x10, x20** (fractional levels x1/8, x1/4, x1/2 are available for large images). You can also use **Ctrl+Mouse Wheel** to zoom in/out (works anywhere in the canvas panel area), or press number keys **1-5** for quick zoom. Ctrl+Mouse Wheel over the left sidebar performs normal browser zoom.
 
+### Rotate
+
+Select display rotation from the **Rotate** dropdown (next to Zoom): **0°, 90°, 180°, 270°**. This is a purely visual CSS rotation — all drawing tools, format renderers, load/save operations, and PNG export remain unaffected. Mouse coordinates are automatically inverse-mapped so pencil, brush, flood fill, and all other editor tools work correctly at any angle. The editor preview panel rotates to match. The setting persists across sessions via localStorage.
+
 ### View Settings (collapsible)
 
 Click the "View Settings" header to expand/collapse.
@@ -1579,6 +1583,7 @@ Example plugins are provided in the `plugins/` directory:
 - `example_js.slpluginjs` — JS plugin: demonstrates extract/patch with snapshot bank access
 - `rle_scr.slpluginjs` — JS plugin (codec): loads and saves RLE-compressed SCR files (0x00/0xFF + count encoding)
 - `maria_sna.slpluginjs` — JS plugin (session): extracts loading screen + 5 RLE-packed screens from Maria's Christmas Box 48K .sna snapshot. Demonstrates cross-bank data handling (packed data spans bank 2 into bank 0) and memory overflow protection (prevents writing past 0xFDFF)
+- `heroquest_128k.slpluginjs` — JS plugin (session): extracts 11 graphics from Hero Quest 128K .sna snapshot across banks 3, 4, 6, and 7. Ten 128×64 px graphics in banks 3/4/7 use linear bitmap+attrs layout converted to/from ZX-interleaved SCR; bank 6 contains the full 256×192 playfield screen as a standard SCR. Unused screen area filled with bright/regular white checkerboard to mark the editable region
 
 ---
 

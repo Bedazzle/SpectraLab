@@ -210,6 +210,11 @@ function initScreenViewerUI() {
     setZoom(parseFloat(this.value));
   });
 
+  // Rotation select handler
+  document.getElementById('rotationSelect')?.addEventListener('change', function() {
+    setCanvasRotation(parseInt(this.value, 10));
+  });
+
   // Border color select handler
   borderColorSelect?.addEventListener('change', function() {
     setBorderColor(parseInt(this.value, 10));
@@ -598,16 +603,52 @@ function initScreenViewerUI() {
         // Cursor position within the visible container area
         const cursorX = event.clientX - rect.left;
         const cursorY = event.clientY - rect.top;
-        // Canvas coordinate under cursor (in source pixels, accounting for border)
-        const canvasX = (canvasContainer.scrollLeft + cursorX) / zoom;
-        const canvasY = (canvasContainer.scrollTop + cursorY) / zoom;
+
+        // Account for rotation: scroll axes are visual (post-rotation), but
+        // the logical canvas coordinate must be computed in unrotated space.
+        const rot = typeof getCanvasRotation === 'function' ? getCanvasRotation() : 0;
+        const isSwapped = (rot === 90 || rot === 270);
+
+        // scrollLeft/Top and cursor are in visual (wrapper) space; convert to
+        // logical canvas space by inverse-rotating the scroll+cursor vector.
+        const vx = canvasContainer.scrollLeft + cursorX;
+        const vy = canvasContainer.scrollTop + cursorY;
+        let canvasX, canvasY;
+        if (rot === 0) {
+          canvasX = vx / zoom;
+          canvasY = vy / zoom;
+        } else {
+          // Wrapper dimensions at current zoom (visual space)
+          const wrapW = isSwapped
+            ? (canvasContainer.scrollWidth || rect.width)
+            : (canvasContainer.scrollWidth || rect.width);
+          const wrapH = isSwapped
+            ? (canvasContainer.scrollHeight || rect.height)
+            : (canvasContainer.scrollHeight || rect.height);
+          // Convert visual scroll position to logical canvas position
+          if (rot === 90)  { canvasX = vy / zoom; canvasY = (wrapW - vx) / zoom; }
+          else if (rot === 180) { canvasX = (wrapW - vx) / zoom; canvasY = (wrapH - vy) / zoom; }
+          else /* 270 */   { canvasX = (wrapH - vy) / zoom; canvasY = vx / zoom; }
+        }
 
         if (zoomSelect) zoomSelect.value = String(newZoom);
         setZoom(newZoom);
 
-        // After zoom, adjust scroll so the same canvas point stays under cursor
-        canvasContainer.scrollLeft = canvasX * newZoom - cursorX;
-        canvasContainer.scrollTop = canvasY * newZoom - cursorY;
+        // After zoom, forward-rotate the logical canvas point back to visual
+        // scroll space at the new zoom level, then subtract cursor offset.
+        if (rot === 0) {
+          canvasContainer.scrollLeft = canvasX * newZoom - cursorX;
+          canvasContainer.scrollTop = canvasY * newZoom - cursorY;
+        } else {
+          const newWrapW = canvasContainer.scrollWidth || rect.width;
+          const newWrapH = canvasContainer.scrollHeight || rect.height;
+          let nvx, nvy;
+          if (rot === 90)  { nvx = newWrapW - canvasY * newZoom; nvy = canvasX * newZoom; }
+          else if (rot === 180) { nvx = newWrapW - canvasX * newZoom; nvy = newWrapH - canvasY * newZoom; }
+          else /* 270 */   { nvx = canvasY * newZoom; nvy = newWrapH - canvasX * newZoom; }
+          canvasContainer.scrollLeft = nvx - cursorX;
+          canvasContainer.scrollTop = nvy - cursorY;
+        }
       } else {
         if (zoomSelect) zoomSelect.value = String(newZoom);
         setZoom(newZoom);

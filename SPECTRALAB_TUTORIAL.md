@@ -40,6 +40,12 @@ Load a standard `.scr` file by clicking the file input or dragging it anywhere o
 - Press keys **1-5** for quick zoom levels
 - Use **Ctrl+Mouse Wheel** to zoom in/out (works anywhere in the canvas panel area; Ctrl+Wheel over the left sidebar performs normal browser zoom)
 
+### Rotate the Display
+
+- Use the **Rotate** dropdown (next to Zoom) to rotate the canvas by **0°, 90°, 180°, or 270°**
+- This is purely visual — drawing tools, load/save, and export are not affected
+- All editor tools work correctly at any rotation angle
+
 ### Toggle Grid Overlay
 
 1. Expand the **View Settings** section (click the header)
@@ -1151,6 +1157,19 @@ Some JS plugins extract multiple pictures from a game snapshot, let you edit the
 5. Click **Save Patched File** to re-compress all screens with RLE, update the offset table, and download the patched `.sna`
 
 The plugin uses `"session": true` to enable the session bar. It also checks that packed data doesn't overflow past 0xFDFF (the stack area) — if your edits produce data that compresses poorly, you'll get an error message.
+
+### Editing Linear Graphics Across Banks (Hero Quest Plugin)
+
+The Hero Quest plugin demonstrates a common scenario: game graphics stored in non-standard linear format across multiple 128K memory banks.
+
+1. Load `heroquest_128k.slpluginjs`
+2. Click **Open…** and select the Hero Quest 128K `.sna` file
+3. The plugin extracts 10 graphics (128×64 px each) from banks 3, 4, and 7 — characters like Skeleton, Mummy, Orc, Elf, Knight, etc.
+4. Each graphic appears as a full 256×192 SCR with the actual picture at the top-left — the rest is filled with a bright/regular white checkerboard so you can clearly see the editable area
+5. Edit the top-left 16×8 character cell region using any drawing tools
+6. Click **Save Patched File** — the plugin extracts only the edited region from each SCR, converts it back to linear format, and writes it into the correct bank
+
+The plugin handles the conversion between the game's linear bitmap+attrs layout and the ZX Spectrum's interleaved screen format automatically.
 
 ### Writing Your Own Plugin
 

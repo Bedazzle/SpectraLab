@@ -1,5 +1,9 @@
 # SpectraLab Version History
 
+## v2.24
+- Added **Canvas Rotation** — rotate the display by 0°, 90°, 180° or 270° via the **Rotate** dropdown next to Zoom in the View tab. Purely visual CSS rotation: all format renderers, load/save, PNG export, and data coordinates are unaffected. Mouse/drawing coordinates are inverse-mapped so tools work correctly at any rotation. The editor preview panel rotates to match. Rotation setting persists across sessions. Works with all formats including BSC, BMC4, and BSP border modes
+- Included **Hero Quest 128K plugin** (`heroquest_128k.slpluginjs`) — extracts and patches 11 graphics from a 128K .sna snapshot across four RAM banks (3, 4, 6, 7). Ten 128×64 px graphics in banks 3/4/7 use non-standard linear layout (row-major bitmap + linear attributes) and are converted to/from ZX-interleaved SCR on the fly; bank 6 contains the full 256×192 playfield screen as a standard SCR. Unused screen area is filled with a bright/regular white attribute checkerboard to clearly mark the editable region
+
 ## v2.23
 - Added **Plugin System** for custom format support — users can define plugins that extract and patch pictures from arbitrary binary files (e.g., game snapshots). Two plugin tiers: **JSON descriptors** (`.slplugin`) for simple offset-based extraction, and **JS plugins** (`.slpluginjs`) for complex formats with custom encode/decode logic
 - **JSON descriptor plugins** support two address modes: `z80addr` (Z80 logical address with automatic bank mapping for .sna/.z80 snapshots) and `offset` (raw file byte offset for any binary). Supports bank override, hex/decimal addresses, post-patch byte fixups, and full save-back — edited pictures are patched into the original file at the correct addresses

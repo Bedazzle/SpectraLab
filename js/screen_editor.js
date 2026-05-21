@@ -9750,6 +9750,27 @@ function cancelSelection() {
 // ============================================================================
 
 /**
+ * Maps display-space coordinates (from rotated bounding box) back to
+ * unrotated canvas space.  Works with CSS transform: rotate() and
+ * transform-origin: center center.
+ *
+ * @param {number} ax - X inside the rotated AABB (event - rect.left)
+ * @param {number} ay - Y inside the rotated AABB (event - rect.top)
+ * @param {number} cw - original (unrotated) CSS width of the element
+ * @param {number} ch - original (unrotated) CSS height of the element
+ * @param {number} rotation - 0, 90, 180 or 270
+ * @returns {{x: number, y: number}}
+ */
+function unrotateDisplayCoords(ax, ay, cw, ch, rotation) {
+  switch (rotation) {
+    case 90:  return { x: ay, y: ch - ax };
+    case 180: return { x: cw - ax, y: ch - ay };
+    case 270: return { x: cw - ay, y: ax };
+    default:  return { x: ax, y: ay };
+  }
+}
+
+/**
  * Converts canvas coords to screen coords
  * @param {HTMLCanvasElement} canvas
  * @param {MouseEvent} event
@@ -9757,8 +9778,19 @@ function cancelSelection() {
  */
 function canvasToScreenCoords(canvas, event) {
   const rect = canvas.getBoundingClientRect();
-  const canvasX = event.clientX - rect.left;
-  const canvasY = event.clientY - rect.top;
+  let canvasX = event.clientX - rect.left;
+  let canvasY = event.clientY - rect.top;
+
+  // Inverse-map rotated display coords to unrotated canvas coords
+  const rotation = typeof getCanvasRotation === 'function' ? getCanvasRotation() : 0;
+  if (rotation !== 0) {
+    const isSwapped = (rotation === 90 || rotation === 270);
+    const origCssW = isSwapped ? rect.height : rect.width;
+    const origCssH = isSwapped ? rect.width : rect.height;
+    const unrot = unrotateDisplayCoords(canvasX, canvasY, origCssW, origCssH, rotation);
+    canvasX = unrot.x;
+    canvasY = unrot.y;
+  }
 
   // When canvas is viewport-capped (sticky mode), rendering uses a scroll transform,
   // so we must add scroll offsets. When canvas is full logical size,
@@ -11196,12 +11228,14 @@ function renderPreview() {
   // BSC / BSP non-giga with border: render full frame including borders (border in screenData)
   if ((currentFormat === FORMAT.BSC || (currentFormat === FORMAT.BSP && currentPicture && currentPicture.border && currentPicture.colorMode !== 'gigascreen')) && screenData.length >= BSC.TOTAL_SIZE) {
     renderBscPreview(ctx);
+    applyPreviewRotation();
     return;
   }
 
   // BSP giga+border: render border from picture.border + gigascreen main screen
   if (currentFormat === FORMAT.BSP && currentPicture && currentPicture.border && currentPicture.colorMode === 'gigascreen') {
     renderBspGigaBorderPreview(ctx);
+    applyPreviewRotation();
     return;
   }
 
@@ -11911,6 +11945,45 @@ function renderPreview() {
 
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(temp.canvas, 0, 0, Math.round(displayW * effectiveZoom), Math.round(displayH * effectiveZoom));
+  applyPreviewRotation();
+}
+
+/**
+ * Applies CSS rotation to the preview canvas, matching the main canvas rotation.
+ * For 90°/270° the container is given explicit swapped dimensions so
+ * fit-content sizing works correctly around the rotated canvas.
+ */
+function applyPreviewRotation() {
+  if (!previewCanvas) return;
+  const container = document.getElementById('editorPreviewContainer');
+  if (!container) return;
+  const rotation = typeof getCanvasRotation === 'function' ? getCanvasRotation() : 0;
+  const cw = previewCanvas.width;
+  const ch = previewCanvas.height;
+  const isSwapped = (rotation === 90 || rotation === 270);
+
+  if (rotation === 0) {
+    previewCanvas.style.transform = '';
+    container.style.width = '';
+    container.style.height = '';
+  } else if (isSwapped) {
+    previewCanvas.style.transform = `translate(-50%, -50%) rotate(${rotation}deg)`;
+    previewCanvas.style.transformOrigin = 'center center';
+    previewCanvas.style.position = 'relative';
+    previewCanvas.style.left = '50%';
+    previewCanvas.style.top = '50%';
+    container.style.width = ch + 'px';
+    container.style.height = cw + 'px';
+  } else {
+    // 180°
+    previewCanvas.style.transform = `rotate(180deg)`;
+    previewCanvas.style.transformOrigin = 'center center';
+    previewCanvas.style.position = '';
+    previewCanvas.style.left = '';
+    previewCanvas.style.top = '';
+    container.style.width = '';
+    container.style.height = '';
+  }
 }
 
 /**
@@ -17989,8 +18062,19 @@ let borderRectStart = null;
  */
 function canvasToBscCoords(canvas, event) {
   const rect = canvas.getBoundingClientRect();
-  const canvasX = event.clientX - rect.left;
-  const canvasY = event.clientY - rect.top;
+  let canvasX = event.clientX - rect.left;
+  let canvasY = event.clientY - rect.top;
+
+  // Inverse-map rotated display coords to unrotated canvas coords
+  const rotation = typeof getCanvasRotation === 'function' ? getCanvasRotation() : 0;
+  if (rotation !== 0) {
+    const isSwapped = (rotation === 90 || rotation === 270);
+    const origCssW = isSwapped ? rect.height : rect.width;
+    const origCssH = isSwapped ? rect.width : rect.height;
+    const unrot = unrotateDisplayCoords(canvasX, canvasY, origCssW, origCssH, rotation);
+    canvasX = unrot.x;
+    canvasY = unrot.y;
+  }
 
   // BSC uses full-size canvas (not viewport-sized), so getBoundingClientRect()
   // already accounts for scroll — no scroll offset needed here.
