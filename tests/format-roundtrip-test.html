@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SpectraLab — Format Roundtrip Test</title>
+<style>
+  body { font-family: monospace; background: #1a1a1a; color: #ccc; padding: 16px; }
+  #summary { font-size: 18px; font-weight: bold; padding: 8px; margin-bottom: 12px; }
+  .summary-pass { color: #0f0; }
+  .summary-fail { color: #f44; }
+  .section { color: #8cf; margin-top: 8px; }
+  .pass { color: #6c6; }
+  .fail { color: #f66; font-weight: bold; }
+  #log { white-space: pre; line-height: 1.4; }
+</style>
+</head>
+<body>
+<h2>Format Roundtrip Test</h2>
+<div id="summary">Running...</div>
+<div id="log"></div>
+
+<!-- Minimal stubs for screen_viewer.js -->
+<canvas id="screenCanvas" width="1" height="1" style="display:none"></canvas>
+<canvas id="filterOverlayCanvas" width="1" height="1" style="display:none"></canvas>
+
+<!-- Load dependencies -->
+<script src="../js/app_config.js"></script>
+<script src="../js/screen_viewer.js"></script>
+<script src="../js/picture_format.js"></script>
+<script src="test-helpers.js"></script>
+
+<script>
+"use strict";
+initTests();
+
+// ═══════════════════════════════════════════════════
+// Roundtrip test helper
+// Import fileBytes → Picture → export → compare with original
+// ═══════════════════════════════════════════════════
+
+function testRoundtrip(format, fileBytes, fileName, label) {
+  var pic = importPicture(format, fileBytes, fileName);
+  assertNotNull(pic, label + ': import succeeds');
+  if (!pic) return;
+
+  var exported = exportPicture(pic);
+  assertNotNull(exported, label + ': export succeeds');
+  if (!exported) return;
+
+  assertEqual(exported.length, fileBytes.length,
+    label + ': exported size matches (' + exported.length + ' = ' + fileBytes.length + ')');
+  assertArrayEqual(exported, fileBytes, label + ': byte-perfect roundtrip');
+}
+
+// Same as above but allows export to differ from original (lossy or reordered formats)
+// Instead: import → export → re-import → compare Picture planes
+function testRoundtripByPicture(format, fileBytes, fileName, label) {
+  var pic1 = importPicture(format, fileBytes, fileName);
+  assertNotNull(pic1, label + ': first import succeeds');
+  if (!pic1) return;
+
+  var exported = exportPicture(pic1);
+  assertNotNull(exported, label + ': export succeeds');
+  if (!exported) return;
+
+  var pic2 = importPicture(format, exported, fileName);
+  assertNotNull(pic2, label + ': re-import succeeds');
+  if (!pic2) return;
+
+  assertEqual(pic2.width, pic1.width, label + ': width preserved');
+  assertEqual(pic2.height, pic1.height, label + ': height preserved');
+  assertEqual(pic2.planeCount, pic1.planeCount, label + ': planeCount preserved');
+
+  for (var p = 0; p < pic1.planeCount; p++) {
+    assertArrayEqual(pic2.planes[p].bitmap, pic1.planes[p].bitmap,
+      label + ': plane ' + p + ' bitmap preserved');
+    assertArrayEqual(pic2.planes[p].attrs, pic1.planes[p].attrs,
+      label + ': plane ' + p + ' attrs preserved');
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// SCR — standard 6912 bytes
+// ═══════════════════════════════════════════════════
+section('SCR roundtrip');
+
+(function() {
+  // Patterned screen: recognizable bitmap + varied attrs
+  var d = new Uint8Array(6912);
+  for (var i = 0; i < 6144; i++) d[i] = ((i * 7 + 3) ^ (i >> 4)) & 0xFF;
+  for (var i = 6144; i < 6912; i++) d[i] = (i * 13 + 5) & 0xFF;
+  testRoundtrip('scr', d, 'test.scr', 'SCR patterned');
+
+  // Empty screen (all zeros)
+  testRoundtrip('scr', new Uint8Array(6912), 'empty.scr', 'SCR empty');
+
+  // Full screen (all 0xFF)
+  var full = new Uint8Array(6912);
+  for (var i = 0; i < 6912; i++) full[i] = 0xFF;
+  testRoundtrip('scr', full, 'full.scr', 'SCR full');
+})();
+
+// ═══════════════════════════════════════════════════
+// IFL — 8x2 multicolor (9216 bytes)
+// ═══════════════════════════════════════════════════
+section('IFL roundtrip');
+
+(function() {
+  var d = new Uint8Array(9216);
+  for (var i = 0; i < 9216; i++) d[i] = ((i * 11 + 7) ^ (i >> 5)) & 0xFF;
+  testRoundtrip('ifl', d, 'test.ifl', 'IFL patterned');
+})();
+
+// ═══════════════════════════════════════════════════
+// MLT — 8x1 multicolor (12288 bytes)
+// ═══════════════════════════════════════════════════
+section('MLT roundtrip');
+
+(function() {
+  var d = new Uint8Array(12288);
+  for (var i = 0; i < 12288; i++) d[i] = ((i * 3 + 11) ^ (i >> 6)) & 0xFF;
+  testRoundtrip('mlt', d, 'test.mlt', 'MLT patterned');
+})();
+
+// ═══════════════════════════════════════════════════
+// RGB3 — tricolor (18432 bytes)
+// ═══════════════════════════════════════════════════
+section('RGB3 roundtrip');
+
+(function() {
+  var d = new Uint8Array(18432);
+  for (var i = 0; i < 18432; i++) d[i] = ((i * 5 + 17) ^ (i >> 3)) & 0xFF;
+  testRoundtrip('rgb3', d, 'test.3', 'RGB3 patterned');
+})();
+
+// ═══════════════════════════════════════════════════
+// Gigascreen — 2 frames (13824 bytes)
+// ═══════════════════════════════════════════════════
+section('Gigascreen roundtrip');
+
+(function() {
+  var d = new Uint8Array(13824);
+  for (var i = 0; i < 13824; i++) d[i] = ((i * 9 + 2) ^ (i >> 4)) & 0xFF;
+  testRoundtrip('img', d, 'test.img', 'Gigascreen patterned');
+})();
+
+// ═══════════════════════════════════════════════════
+// BSC — screen + border (11136 bytes)
+// ═══════════════════════════════════════════════════
+section('BSC roundtrip');
+
+(function() {
+  var d = new Uint8Array(11136);
+  // Bitmap + attrs
+  for (var i = 0; i < 6912; i++) d[i] = ((i * 7 + 3) ^ (i >> 4)) & 0xFF;
+  // Border data: each byte encodes 3-bit color for 8px strip
+  // Values must be valid 3-bit border colors (0-7) in the proper encoding
+  for (var i = 6912; i < 11136; i++) d[i] = (i % 8);
+  testRoundtrip('bsc', d, 'test.bsc', 'BSC patterned');
+})();
+
+// ═══════════════════════════════════════════════════
+// BMC4 — border + 8x4 multicolor (11904 bytes)
+// ═══════════════════════════════════════════════════
+section('BMC4 roundtrip');
+
+(function() {
+  var d = new Uint8Array(11904);
+  for (var i = 0; i < 6144; i++) d[i] = ((i * 7 + 3) ^ (i >> 4)) & 0xFF;
+  for (var i = 6144; i < 7680; i++) d[i] = (i * 13 + 5) & 0xFF; // attrs banks
+  for (var i = 7680; i < 11904; i++) d[i] = (i % 8); // border
+  testRoundtrip('bmc4', d, 'test.bmc4', 'BMC4 patterned');
+})();
+
+// ═══════════════════════════════════════════════════
+// ULA+ — SCR + 64-byte palette (6976 bytes)
+// ═══════════════════════════════════════════════════
+section('ULA+ roundtrip');
+
+(function() {
+  var d = new Uint8Array(6976);
+  for (var i = 0; i < 6912; i++) d[i] = ((i * 7 + 3) ^ (i >> 4)) & 0xFF;
+  for (var i = 6912; i < 6976; i++) d[i] = (i - 6912) * 4; // GRB332 palette
+  testRoundtrip('scr+', d, 'test.scr', 'ULA+ patterned');
+})();
+
+// ═══════════════════════════════════════════════════
+// 53c — attributes only (768 bytes)
+// ═══════════════════════════════════════════════════
+section('53c roundtrip');
+
+(function() {
+  // 53c import stores raw attrs; export normalizes them via normalizeAttrForPaint().
+  // So raw bytes won't survive a roundtrip. Instead verify:
+  // 1) Import works
+  // 2) Export produces valid normalized data
+  // 3) Idempotence: export→re-import→export yields identical bytes
+  var d = new Uint8Array(768);
+  for (var i = 0; i < 768; i++) d[i] = (i * 13 + 5) & 0xFF;
+
+  var pic1 = importPicture('53c', d, 'test.53c');
+  assertNotNull(pic1, '53c: import succeeds');
+
+  var exp1 = exportPicture(pic1);
+  assertNotNull(exp1, '53c: export succeeds');
+  assertEqual(exp1.length, 768, '53c: exported size = 768');
+
+  // Idempotence: export → re-import → export = same bytes
+  var pic2 = importPicture('53c', exp1, 'test.53c');
+  assertNotNull(pic2, '53c: re-import succeeds');
+  var exp2 = exportPicture(pic2);
+  assertArrayEqual(exp2, exp1, '53c: export is idempotent after normalization');
+
+  // Planes match after normalization cycle
+  assertArrayEqual(pic2.planes[0].attrs, exp1, '53c: re-imported attrs = normalized bytes');
+})();
+
+// ═══════════════════════════════════════════════════
+// SPECSCII — text mode (768 bytes)
+// ═══════════════════════════════════════════════════
+section('SPECSCII roundtrip');
+
+(function() {
+  // importSpecscii() does NOT parse fileBytes — it creates a blank grid
+  // (chars filled with 0x20 spaces). Actual stream parsing is in screen_editor.js
+  // via specsciiStreamToGrids(). exportSpecscii() returns empty.
+  // We can only verify the import creates a valid structure.
+  var d = new Uint8Array(768);
+  var pic = importPicture('specscii', d, 'test.specscii');
+  assertNotNull(pic, 'SPECSCII: import succeeds');
+  assertEqual(pic.contentMode, 'text', 'SPECSCII: contentMode = text');
+  assertNotNull(pic.chars, 'SPECSCII: chars allocated');
+  assertEqual(pic.chars.length, 768, 'SPECSCII: 768 char cells');
+  // Default fill is 0x20 (space)
+  var allSpaces = true;
+  for (var i = 0; i < 768; i++) {
+    if (pic.chars[i] !== 0x20) { allSpaces = false; break; }
+  }
+  assert(allSpaces, 'SPECSCII: chars initialized to spaces (0x20)');
+  assertNotNull(pic.cellColors, 'SPECSCII: cellColors allocated');
+  assertEqual(pic.cellColors.length, 768, 'SPECSCII: 768 cellColors');
+})();
+
+// ═══════════════════════════════════════════════════
+// Mono full — bitmap only (6144 bytes)
+// ═══════════════════════════════════════════════════
+section('Mono full roundtrip');
+
+(function() {
+  var d = new Uint8Array(6144);
+  for (var i = 0; i < 6144; i++) d[i] = ((i * 7 + 3) ^ (i >> 4)) & 0xFF;
+  testRoundtrip('mono_full', d, 'test.scr', 'Mono full patterned');
+})();
+
+// ═══════════════════════════════════════════════════
+// HLR — Gigascreen Lowres (1628 bytes)
+// ═══════════════════════════════════════════════════
+section('HLR roundtrip');
+
+(function() {
+  var d = new Uint8Array(1628);
+  // Loader stub (first 84 bytes)
+  for (var i = 0; i < 84; i++) d[i] = 0;
+  // Pattern (8 bytes at offset 84)
+  for (var i = 0; i < 8; i++) d[84 + i] = 0xAA;
+  // Attrs1 (768 bytes at offset 92)
+  for (var i = 92; i < 860; i++) d[i] = (i * 13 + 5) & 0xFF;
+  // Attrs2 (768 bytes at offset 860)
+  for (var i = 860; i < 1628; i++) d[i] = (i * 7 + 3) & 0xFF;
+  // HLR export regenerates the loader prefix, so byte-perfect compare may differ.
+  // Use picture-level roundtrip instead.
+  testRoundtripByPicture('hlr', d, 'test.hlr', 'HLR');
+})();
+
+// ═══════════════════════════════════════════════════
+// STL — Stellar 64x48 (3072 bytes)
+// ═══════════════════════════════════════════════════
+section('STL roundtrip');
+
+(function() {
+  var d = new Uint8Array(3072);
+  for (var i = 0; i < 3072; i++) d[i] = (i * 13 + 5) & 0xFF;
+  testRoundtrip('stl', d, 'test.stl', 'STL patterned');
+})();
+
+// ═══════════════════════════════════════════════════
+// GMX 640x200 (32768 bytes)
+// ═══════════════════════════════════════════════════
+section('GMX 640x200 roundtrip');
+
+(function() {
+  var d = new Uint8Array(32768);
+  // Pixel data (16000 bytes)
+  for (var i = 0; i < 16000; i++) d[i] = ((i * 7 + 3) ^ (i >> 4)) & 0xFF;
+  // 384 bytes padding (zeros)
+  // Attr data at offset 16384
+  for (var i = 16384; i < 32384; i++) d[i] = (i * 13 + 5) & 0xFF;
+  // 384 bytes padding (zeros)
+  testRoundtrip('gmx', d, 'test.c', 'GMX640 patterned');
+})();
+
+// ═══════════════════════════════════════════════════
+// GMX160 attr-only (16128 bytes)
+// ═══════════════════════════════════════════════════
+section('GMX160 roundtrip');
+
+(function() {
+  var d = new Uint8Array(16128);
+  // Header: "GMX\x0F" + zeros
+  d[0] = 0x47; d[1] = 0x4D; d[2] = 0x58; d[3] = 0x0F;
+  // Attr data at offset 128
+  for (var i = 128; i < 16128; i++) d[i] = (i * 13 + 5) & 0xFF;
+  testRoundtrip('gmx160', d, 'test.c', 'GMX160 patterned');
+})();
+
+// ═══════════════════════════════════════════════════
+// Mono 2/3 — bitmap only (4096 bytes, 128 lines)
+// ═══════════════════════════════════════════════════
+section('Mono 2/3 roundtrip');
+
+(function() {
+  var d = new Uint8Array(4096);
+  for (var i = 0; i < 4096; i++) d[i] = ((i * 7 + 3) ^ (i >> 4)) & 0xFF;
+  testRoundtrip('mono_2_3', d, 'test.scr', 'Mono 2/3 patterned');
+})();
+
+// ═══════════════════════════════════════════════════
+// Mono 1/3 — bitmap only (2048 bytes, 64 lines)
+// ═══════════════════════════════════════════════════
+section('Mono 1/3 roundtrip');
+
+(function() {
+  var d = new Uint8Array(2048);
+  for (var i = 0; i < 2048; i++) d[i] = ((i * 7 + 3) ^ (i >> 4)) & 0xFF;
+  testRoundtrip('mono_1_3', d, 'test.scr', 'Mono 1/3 patterned');
+})();
+
+// ═══════════════════════════════════════════════════
+// BSP — screen only (no giga, no border)
+// ═══════════════════════════════════════════════════
+section('BSP roundtrip');
+
+(function() {
+  // Build minimal BSP: 70-byte header + 6912-byte screen
+  var d = new Uint8Array(70 + 6912);
+  d[0] = 0x62; d[1] = 0x73; d[2] = 0x70; // "bsp"
+  d[3] = 0x00; // config: no giga, no border
+  for (var i = 0; i < 6912; i++) d[70 + i] = ((i * 7 + 3) ^ (i >> 4)) & 0xFF;
+
+  // BSP export regenerates the header, so byte-perfect match of header
+  // bytes may differ (title/author fields). Use picture-level roundtrip.
+  testRoundtripByPicture('bsp', d, 'test.bsp', 'BSP screen-only');
+})();
+
+// ═══════════════════════════════════════════════════
+// MLT linear export variant
+// ═══════════════════════════════════════════════════
+section('MLT linear roundtrip');
+
+(function() {
+  // Import as mlt_linear, export, re-import, compare planes
+  var d = new Uint8Array(12288);
+  for (var i = 0; i < 12288; i++) d[i] = ((i * 3 + 11) ^ (i >> 6)) & 0xFF;
+  // mlt_linear uses the same import as mlt but exports in linear bitmap layout
+  testRoundtripByPicture('mlt_linear', d, 'test.mlt', 'MLT linear');
+})();
+
+// ═══════════════════════════════════════════════════
+// MLT ULA+ export variant (12352 bytes = 12288 + 64 palette)
+// ═══════════════════════════════════════════════════
+section('MLT ULA+ roundtrip');
+
+(function() {
+  // Build MLT+ULA+ input: 12288 MLT data + 64-byte GRB332 palette
+  var d = new Uint8Array(12352);
+  for (var i = 0; i < 12288; i++) d[i] = ((i * 3 + 11) ^ (i >> 6)) & 0xFF;
+  for (var i = 12288; i < 12352; i++) d[i] = (i - 12288) * 4; // palette
+
+  // Import as mlt_ula — must pass {timexHiColour: true} to trigger ULA+ path
+  var pic = importPicture('mlt_ula', d, 'test.mlt', { timexHiColour: true });
+  assertNotNull(pic, 'MLT ULA+: import succeeds');
+  assertEqual(pic.sourceFormat, 'mlt_ula', 'MLT ULA+: sourceFormat = mlt_ula');
+
+  // importMlt doesn't read the palette from fileBytes — attach it manually
+  // (in production, the palette is read separately by screen_viewer.js)
+  pic.palette = new Uint8Array(64);
+  for (var i = 0; i < 64; i++) pic.palette[i] = d[12288 + i];
+
+  // Export should produce 12352 bytes (12288 data + 64 palette)
+  var exported = exportPicture(pic);
+  assertNotNull(exported, 'MLT ULA+: export succeeds');
+  assertEqual(exported.length, 12352, 'MLT ULA+: exported size = 12352');
+
+  // Verify palette in exported data
+  for (var i = 0; i < 64; i++) {
+    if (exported[12288 + i] !== d[12288 + i]) {
+      assert(false, 'MLT ULA+: palette byte ' + i + ' mismatch');
+      break;
+    }
+  }
+  assert(true, 'MLT ULA+: palette bytes preserved in export');
+
+  // Re-import and compare planes
+  var pic2 = importPicture('mlt_ula', exported, 'test.mlt', { timexHiColour: true });
+  assertNotNull(pic2, 'MLT ULA+: re-import succeeds');
+  assertArrayEqual(pic2.planes[0].bitmap, pic.planes[0].bitmap, 'MLT ULA+: bitmap preserved');
+  assertArrayEqual(pic2.planes[0].attrs, pic.planes[0].attrs, 'MLT ULA+: attrs preserved');
+})();
+
+// ═══════════════════════════════════════════════════
+// MGH — export only (mock 2-plane gigascreen Picture)
+// ═══════════════════════════════════════════════════
+section('MGH export');
+
+(function() {
+  // Create mock 2-plane gigascreen Picture with attrCellHeight=8 (mg8 mode)
+  var pic = makePicture({
+    sourceFormat: 'mgh',
+    fileName: 'test.mgh',
+    width: 256,
+    height: 192,
+    attrCellHeight: 8,
+    planeCount: 2,
+    colorMode: 'gigascreen'
+  });
+  // Fill planes with recognizable data
+  for (var i = 0; i < 6144; i++) {
+    pic.planes[0].bitmap[i] = (i & 0xFF);
+    pic.planes[1].bitmap[i] = ((i >> 2) & 0xFF);
+  }
+  for (var i = 0; i < 768; i++) {
+    pic.planes[0].attrs[i] = 0x07;
+    pic.planes[1].attrs[i] = 0x38;
+  }
+
+  var exported = exportPicture(pic);
+  assertNotNull(exported, 'MGH mg8: export succeeds');
+  assertGreater(exported.length, 256, 'MGH mg8: output has header + data');
+  // Verify MGH magic header
+  assertEqual(exported[0], 0x4D, 'MGH header byte 0 = M');
+  assertEqual(exported[1], 0x47, 'MGH header byte 1 = G');
+  assertEqual(exported[2], 0x48, 'MGH header byte 2 = H');
+
+  // Test mg1 mode (attrCellHeight=1, multicolor per-line attrs)
+  var picMg1 = makePicture({
+    sourceFormat: 'mgh',
+    fileName: 'test.mg1',
+    width: 256,
+    height: 192,
+    attrCellHeight: 1,
+    planeCount: 2,
+    colorMode: 'gigascreen'
+  });
+  for (var i = 0; i < 6144; i++) {
+    picMg1.planes[0].bitmap[i] = (i & 0xFF);
+    picMg1.planes[1].bitmap[i] = ((i >> 2) & 0xFF);
+  }
+  // mg1: 192 attr rows * 32 cols = 6144 attrs per plane
+  for (var i = 0; i < 6144; i++) {
+    picMg1.planes[0].attrs[i] = 0x07;
+    picMg1.planes[1].attrs[i] = 0x38;
+  }
+  var exportedMg1 = exportPicture(picMg1);
+  assertNotNull(exportedMg1, 'MGH mg1: export succeeds');
+  assertGreater(exportedMg1.length, 256, 'MGH mg1: output has header + data');
+  assertEqual(exportedMg1[0], 0x4D, 'MGH mg1 header byte 0 = M');
+
+  // Test mg4 mode (attrCellHeight=4)
+  var picMg4 = makePicture({
+    sourceFormat: 'mgh',
+    fileName: 'test.mg4',
+    width: 256,
+    height: 192,
+    attrCellHeight: 4,
+    planeCount: 2,
+    colorMode: 'gigascreen'
+  });
+  for (var i = 0; i < 6144; i++) {
+    picMg4.planes[0].bitmap[i] = (i & 0xFF);
+    picMg4.planes[1].bitmap[i] = ((i >> 2) & 0xFF);
+  }
+  for (var i = 0; i < 1536; i++) {
+    picMg4.planes[0].attrs[i] = 0x07;
+    picMg4.planes[1].attrs[i] = 0x38;
+  }
+  var exportedMg4 = exportPicture(picMg4);
+  assertNotNull(exportedMg4, 'MGH mg4: export succeeds');
+  assertGreater(exportedMg4.length, 256, 'MGH mg4: output has header + data');
+})();
+
+// ═══════════════════════════════════════════════════
+// exportPicture — invalid/missing handlers
+// ═══════════════════════════════════════════════════
+section('exportPicture — edge cases');
+
+(function() {
+  var fakePic = makePicture({ sourceFormat: 'nonexistent', fileName: 'test.xyz' });
+  var exported = exportPicture(fakePic);
+  assert(exported === null, 'export unknown format returns null');
+})();
+
+</script>
+</body>
+</html>

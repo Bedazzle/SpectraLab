@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SpectraLab — Picture Structure Test</title>
+<style>
+  body { font-family: monospace; background: #1a1a1a; color: #ccc; padding: 16px; }
+  #summary { font-size: 18px; font-weight: bold; padding: 8px; margin-bottom: 12px; }
+  .summary-pass { color: #0f0; }
+  .summary-fail { color: #f44; }
+  .section { color: #8cf; margin-top: 8px; }
+  .pass { color: #6c6; }
+  .fail { color: #f66; font-weight: bold; }
+  #log { white-space: pre; line-height: 1.4; }
+</style>
+</head>
+<body>
+<h2>Picture Structure Test</h2>
+<div id="summary">Running...</div>
+<div id="log"></div>
+
+<!-- Minimal stubs for screen_viewer.js -->
+<canvas id="screenCanvas" width="1" height="1" style="display:none"></canvas>
+<canvas id="filterOverlayCanvas" width="1" height="1" style="display:none"></canvas>
+
+<!-- Load dependencies in correct order -->
+<script src="../js/app_config.js"></script>
+<script src="../js/screen_viewer.js"></script>
+<script src="../js/picture_format.js"></script>
+<script src="test-helpers.js"></script>
+
+<script>
+"use strict";
+initTests();
+
+// ═══════════════════════════════════════════════════
+// Helper: generate synthetic file data for each format
+// ═══════════════════════════════════════════════════
+
+function makeScrBytes() {
+  var d = new Uint8Array(6912);
+  for (var i = 0; i < 6144; i++) d[i] = (i & 0xFF);
+  for (var i = 6144; i < 6912; i++) d[i] = 0x07;
+  return d;
+}
+
+function makeIflBytes() {
+  var d = new Uint8Array(9216);
+  for (var i = 0; i < 6144; i++) d[i] = (i & 0xFF);
+  for (var i = 6144; i < 9216; i++) d[i] = 0x38;
+  return d;
+}
+
+function makeMltBytes() {
+  var d = new Uint8Array(12288);
+  for (var i = 0; i < 6144; i++) d[i] = (i & 0xFF);
+  for (var i = 6144; i < 12288; i++) d[i] = 0x07;
+  return d;
+}
+
+function makeRgb3Bytes() {
+  var d = new Uint8Array(18432);
+  for (var i = 0; i < 18432; i++) d[i] = (i & 0xFF);
+  return d;
+}
+
+function makeGigascreenBytes() {
+  var d = new Uint8Array(13824);
+  for (var i = 0; i < 13824; i++) d[i] = (i & 0xFF);
+  return d;
+}
+
+function makeBscBytes() {
+  var d = new Uint8Array(11136);
+  for (var i = 0; i < 6144; i++) d[i] = (i & 0xFF);
+  for (var i = 6144; i < 6912; i++) d[i] = 0x07;
+  for (var i = 6912; i < 11136; i++) d[i] = 0x00;
+  return d;
+}
+
+function makeBmc4Bytes() {
+  var d = new Uint8Array(11904);
+  for (var i = 0; i < 6144; i++) d[i] = (i & 0xFF);
+  for (var i = 6144; i < 6912; i++) d[i] = 0x07;  // attr bank 1
+  for (var i = 6912; i < 7680; i++) d[i] = 0x38;  // attr bank 2
+  for (var i = 7680; i < 11904; i++) d[i] = 0x00;  // border
+  return d;
+}
+
+function make53cBytes() {
+  var d = new Uint8Array(768);
+  for (var i = 0; i < 768; i++) d[i] = 0x47;
+  return d;
+}
+
+function makeSpecsciiBytes() {
+  var d = new Uint8Array(768);
+  for (var i = 0; i < 768; i++) d[i] = 0x20; // spaces
+  return d;
+}
+
+function makeUlaPlusBytes() {
+  var d = new Uint8Array(6976);
+  for (var i = 0; i < 6144; i++) d[i] = (i & 0xFF);
+  for (var i = 6144; i < 6912; i++) d[i] = 0x07;
+  // 64-byte GRB332 palette
+  for (var i = 6912; i < 6976; i++) d[i] = (i - 6912) * 4;
+  return d;
+}
+
+function makeMonoFullBytes() {
+  var d = new Uint8Array(6144);
+  for (var i = 0; i < 6144; i++) d[i] = (i & 0xFF);
+  return d;
+}
+
+function makeHlrBytes() {
+  // 1628 bytes: 84 loader + 8 pattern + 768 attrs1 + 768 attrs2
+  var d = new Uint8Array(1628);
+  // Pattern at offset 84
+  for (var i = 0; i < 8; i++) d[84 + i] = 0xAA;
+  // Attrs
+  for (var i = 92; i < 860; i++) d[i] = 0x07;
+  for (var i = 860; i < 1628; i++) d[i] = 0x38;
+  return d;
+}
+
+function makeStlBytes() {
+  // 3072 bytes: interleaved 4-byte groups [f1a, f1b, f2a, f2b]
+  var d = new Uint8Array(3072);
+  for (var i = 0; i < 3072; i++) d[i] = (i & 0x3F);
+  return d;
+}
+
+function makeGmx640Bytes() {
+  var d = new Uint8Array(32768);
+  for (var i = 0; i < 16000; i++) d[i] = (i & 0xFF);
+  for (var i = 16384; i < 32384; i++) d[i] = 0x07;
+  return d;
+}
+
+function makeGmx160Bytes() {
+  // 128-byte header ("GMX\x0F" + padding) + 16000 attr bytes
+  var d = new Uint8Array(16128);
+  d[0] = 0x47; d[1] = 0x4D; d[2] = 0x58; d[3] = 0x0F; // "GMX\x0F"
+  for (var i = 128; i < 16128; i++) d[i] = 0x07;
+  return d;
+}
+
+// ═══════════════════════════════════════════════════
+// SCR — standard 6912-byte screen
+// ═══════════════════════════════════════════════════
+section('SCR picture structure');
+
+(function() {
+  var pic = importPicture('scr', makeScrBytes(), 'test.scr');
+  assertNotNull(pic, 'importPicture returns Picture');
+  assertEqual(pic.sourceFormat, 'scr', 'sourceFormat = scr');
+  assertEqual(pic.width, 256, 'width = 256');
+  assertEqual(pic.height, 192, 'height = 192');
+  assertEqual(pic.cols, 32, 'cols = 32');
+  assertEqual(pic.attrCellHeight, 8, 'attrCellHeight = 8');
+  assertEqual(pic.attrRows, 24, 'attrRows = 24');
+  assertEqual(pic.planeCount, 1, 'planeCount = 1');
+  assertEqual(pic.planes.length, 1, 'planes.length = 1');
+  assertEqual(pic.planes[0].bitmap.length, 6144, 'bitmap size = 6144');
+  assertEqual(pic.planes[0].attrs.length, 768, 'attrs size = 768');
+  assert(pic.palette === null, 'palette = null');
+  assertEqual(pic.contentMode, 'pixel', 'contentMode = pixel');
+  assertEqual(pic.colorMode, 'standard', 'colorMode = standard');
+  assert(pic.border === null, 'border = null');
+})();
+
+// ═══════════════════════════════════════════════════
+// IFL — 8x2 multicolor (9216 bytes)
+// ═══════════════════════════════════════════════════
+section('IFL picture structure');
+
+(function() {
+  var pic = importPicture('ifl', makeIflBytes(), 'test.ifl');
+  assertNotNull(pic, 'importPicture returns Picture');
+  assertEqual(pic.sourceFormat, 'ifl', 'sourceFormat = ifl');
+  assertEqual(pic.width, 256, 'width = 256');
+  assertEqual(pic.height, 192, 'height = 192');
+  assertEqual(pic.cols, 32, 'cols = 32');
+  assertEqual(pic.attrCellHeight, 2, 'attrCellHeight = 2');
+  assertEqual(pic.attrRows, 96, 'attrRows = 96');
+  assertEqual(pic.planeCount, 1, 'planeCount = 1');
+  assertEqual(pic.planes[0].bitmap.length, 6144, 'bitmap = 6144');
+  assertEqual(pic.planes[0].attrs.length, 3072, 'attrs = 3072 (96*32)');
+  assert(pic.palette === null, 'palette = null');
+})();
+
+// ═══════════════════════════════════════════════════
+// MLT — 8x1 multicolor (12288 bytes)
+// ═══════════════════════════════════════════════════
+section('MLT picture structure');
+
+(function() {
+  var pic = importPicture('mlt', makeMltBytes(), 'test.mlt');
+  assertNotNull(pic, 'importPicture returns Picture');
+  assertEqual(pic.sourceFormat, 'mlt', 'sourceFormat = mlt');
+  assertEqual(pic.width, 256, 'width = 256');
+  assertEqual(pic.height, 192, 'height = 192');
+  assertEqual(pic.attrCellHeight, 1, 'attrCellHeight = 1');
+  assertEqual(pic.attrRows, 192, 'attrRows = 192');
+  assertEqual(pic.planeCount, 1, 'planeCount = 1');
+  assertEqual(pic.planes[0].bitmap.length, 6144, 'bitmap = 6144');
+  assertEqual(pic.planes[0].attrs.length, 6144, 'attrs = 6144 (192*32)');
+})();
+
+// ═══════════════════════════════════════════════════
+// RGB3 — tricolor (18432 bytes, 3 planes)
+// ═══════════════════════════════════════════════════
+section('RGB3 picture structure');
+
+(function() {
+  var pic = importPicture('rgb3', makeRgb3Bytes(), 'test.3');
+  assertNotNull(pic, 'importPicture returns Picture');
+  assertEqual(pic.sourceFormat, 'rgb3', 'sourceFormat = rgb3');
+  assertEqual(pic.width, 256, 'width = 256');
+  assertEqual(pic.height, 192, 'height = 192');
+  assertEqual(pic.planeCount, 3, 'planeCount = 3');
+  assertEqual(pic.planes.length, 3, 'planes.length = 3');
+  for (var i = 0; i < 3; i++) {
+    assertEqual(pic.planes[i].bitmap.length, 6144, 'plane ' + i + ' bitmap = 6144');
+  }
+  assertEqual(pic.colorMode, 'rgb3', 'colorMode = rgb3');
+})();
+
+// ═══════════════════════════════════════════════════
+// Gigascreen — 2 alternating frames (13824 bytes)
+// ═══════════════════════════════════════════════════
+section('Gigascreen picture structure');
+
+(function() {
+  var pic = importPicture('img', makeGigascreenBytes(), 'test.img');
+  assertNotNull(pic, 'importPicture returns Picture');
+  assertEqual(pic.sourceFormat, 'img', 'sourceFormat = img');
+  assertEqual(pic.width, 256, 'width = 256');
+  assertEqual(pic.height, 192, 'height = 192');
+  assertEqual(pic.planeCount, 2, 'planeCount = 2');
+  assertEqual(pic.planes.length, 2, 'planes.length = 2');
+  for (var i = 0; i < 2; i++) {
+    assertEqual(pic.planes[i].bitmap.length, 6144, 'plane ' + i + ' bitmap = 6144');
+    assertEqual(pic.planes[i].attrs.length, 768, 'plane ' + i + ' attrs = 768');
+  }
+  assertEqual(pic.colorMode, 'gigascreen', 'colorMode = gigascreen');
+})();
+
+// ═══════════════════════════════════════════════════
+// BSC — screen + border (11136 bytes)
+// ═══════════════════════════════════════════════════
+section('BSC picture structure');
+
+(function() {
+  var pic = importPicture('bsc', makeBscBytes(), 'test.bsc');
+  assertNotNull(pic, 'importPicture returns Picture');
+  assertEqual(pic.sourceFormat, 'bsc', 'sourceFormat = bsc');
+  assertEqual(pic.width, 256, 'width = 256');
+  assertEqual(pic.height, 192, 'height = 192');
+  assertEqual(pic.planeCount, 1, 'planeCount = 1');
+  assertEqual(pic.planes[0].bitmap.length, 6144, 'bitmap = 6144');
+  assertEqual(pic.planes[0].attrs.length, 768, 'attrs = 768');
+  assertNotNull(pic.border, 'border is not null');
+})();
+
+// ═══════════════════════════════════════════════════
+// BMC4 — border + 8x4 multicolor (11904 bytes)
+// ═══════════════════════════════════════════════════
+section('BMC4 picture structure');
+
+(function() {
+  var pic = importPicture('bmc4', makeBmc4Bytes(), 'test.bmc4');
+  assertNotNull(pic, 'importPicture returns Picture');
+  assertEqual(pic.sourceFormat, 'bmc4', 'sourceFormat = bmc4');
+  assertEqual(pic.width, 256, 'width = 256');
+  assertEqual(pic.height, 192, 'height = 192');
+  assertEqual(pic.attrCellHeight, 4, 'attrCellHeight = 4');
+  assertEqual(pic.attrRows, 48, 'attrRows = 48');
+  assertEqual(pic.planeCount, 1, 'planeCount = 1');
+  assertEqual(pic.planes[0].bitmap.length, 6144, 'bitmap = 6144');
+  assertEqual(pic.planes[0].attrs.length, 1536, 'attrs = 1536 (48*32)');
+  assertNotNull(pic.border, 'border is not null');
+})();
+
+// ═══════════════════════════════════════════════════
+// 53c — attributes only (768 bytes)
+// ═══════════════════════════════════════════════════
+section('53c picture structure');
+
+(function() {
+  var pic = importPicture('53c', make53cBytes(), 'test.53c');
+  assertNotNull(pic, 'importPicture returns Picture');
+  assertEqual(pic.sourceFormat, '53c', 'sourceFormat = 53c');
+  assertEqual(pic.width, 256, 'width = 256');
+  assertEqual(pic.height, 192, 'height = 192');
+  assertEqual(pic.planeCount, 1, 'planeCount = 1');
+  assertEqual(pic.planes[0].attrs.length, 768, 'attrs = 768');
+  assertNotNull(pic.pattern, 'pattern is not null');
+})();
+
+// ═══════════════════════════════════════════════════
+// SPECSCII — text mode (768 bytes)
+// ═══════════════════════════════════════════════════
+section('SPECSCII picture structure');
+
+(function() {
+  var pic = importPicture('specscii', makeSpecsciiBytes(), 'test.specscii');
+  assertNotNull(pic, 'importPicture returns Picture');
+  assertEqual(pic.sourceFormat, 'specscii', 'sourceFormat = specscii');
+  assertEqual(pic.contentMode, 'text', 'contentMode = text');
+  assertNotNull(pic.chars, 'chars is not null');
+  assertEqual(pic.chars.length, 768, 'chars = 768');
+})();
+
+// ═══════════════════════════════════════════════════
+// ULA+ — SCR with 64-color palette (6976 bytes)
+// ═══════════════════════════════════════════════════
+section('ULA+ picture structure');
+
+(function() {
+  var ulaPlusData = makeUlaPlusBytes();
+  var pic = importPicture('scr+', ulaPlusData, 'test.scr');
+  assertNotNull(pic, 'importPicture returns Picture');
+  assertEqual(pic.sourceFormat, 'scr+', 'sourceFormat = scr+');
+  assertEqual(pic.width, 256, 'width = 256');
+  assertEqual(pic.height, 192, 'height = 192');
+  assertEqual(pic.planeCount, 1, 'planeCount = 1');
+  assertEqual(pic.planes[0].bitmap.length, 6144, 'bitmap = 6144');
+  assertEqual(pic.planes[0].attrs.length, 768, 'attrs = 768');
+  assertNotNull(pic.palette, 'palette is not null');
+  assertEqual(pic.palette.length, 64, 'palette has 64 entries (GRB332)');
+  // Verify palette content matches input bytes at offset 6912
+  var palOk = true;
+  for (var i = 0; i < 64; i++) {
+    if (pic.palette[i] !== ulaPlusData[6912 + i]) { palOk = false; break; }
+  }
+  assert(palOk, 'palette content matches input file bytes');
+})();
+
+// ═══════════════════════════════════════════════════
+// Mono full — bitmap only (6144 bytes)
+// ═══════════════════════════════════════════════════
+section('Mono full picture structure');
+
+(function() {
+  var pic = importPicture('mono_full', makeMonoFullBytes(), 'test.scr');
+  assertNotNull(pic, 'importPicture returns Picture');
+  assertEqual(pic.sourceFormat, 'mono_full', 'sourceFormat = mono_full');
+  assertEqual(pic.width, 256, 'width = 256');
+  assertEqual(pic.height, 192, 'height = 192');
+  assertEqual(pic.planeCount, 1, 'planeCount = 1');
+  assertEqual(pic.planes[0].bitmap.length, 6144, 'bitmap = 6144');
+})();
+
+// ═══════════════════════════════════════════════════
+// HLR — Gigascreen Lowres (1628 bytes)
+// ═══════════════════════════════════════════════════
+section('HLR picture structure');
+
+(function() {
+  var pic = importPicture('hlr', makeHlrBytes(), 'test.hlr');
+  assertNotNull(pic, 'importPicture returns Picture');
+  assertEqual(pic.sourceFormat, 'hlr', 'sourceFormat = hlr');
+  assertEqual(pic.planeCount, 2, 'planeCount = 2 (gigascreen)');
+  assertEqual(pic.planes.length, 2, 'planes.length = 2');
+})();
+
+// ═══════════════════════════════════════════════════
+// STL — Stellar 64x48 (3072 bytes)
+// ═══════════════════════════════════════════════════
+section('STL picture structure');
+
+(function() {
+  var pic = importPicture('stl', makeStlBytes(), 'test.stl');
+  assertNotNull(pic, 'importPicture returns Picture');
+  assertEqual(pic.sourceFormat, 'stl', 'sourceFormat = stl');
+  assertEqual(pic.planeCount, 2, 'planeCount = 2 (gigascreen)');
+  assertEqual(pic.colorMode, 'gigascreen', 'colorMode = gigascreen');
+})();
+
+// ═══════════════════════════════════════════════════
+// GMX 640x200
+// ═══════════════════════════════════════════════════
+section('GMX 640x200 picture structure');
+
+(function() {
+  var pic = importPicture('gmx', makeGmx640Bytes(), 'test.c');
+  assertNotNull(pic, 'importPicture returns Picture');
+  assertEqual(pic.sourceFormat, 'gmx', 'sourceFormat = gmx');
+  assertEqual(pic.width, 640, 'width = 640');
+  assertEqual(pic.height, 200, 'height = 200');
+  assertEqual(pic.cols, 80, 'cols = 80');
+  assertEqual(pic.attrCellHeight, 1, 'attrCellHeight = 1');
+  assertEqual(pic.attrRows, 200, 'attrRows = 200');
+})();
+
+// ═══════════════════════════════════════════════════
+// GMX160 attr-only
+// ═══════════════════════════════════════════════════
+section('GMX160 picture structure');
+
+(function() {
+  var pic = importPicture('gmx160', makeGmx160Bytes(), 'test.c');
+  assertNotNull(pic, 'importPicture returns Picture');
+  assertEqual(pic.sourceFormat, 'gmx160', 'sourceFormat = gmx160');
+  assertEqual(pic.width, 640, 'width = 640 (same grid as GMX640, implied pixel pattern)');
+  assertEqual(pic.height, 200, 'height = 200');
+})();
+
+// ═══════════════════════════════════════════════════
+// Mono 2/3 — bitmap only (4096 bytes, 128 lines)
+// ═══════════════════════════════════════════════════
+section('Mono 2/3 picture structure');
+
+(function() {
+  var d = new Uint8Array(4096);
+  for (var i = 0; i < 4096; i++) d[i] = (i & 0xFF);
+  var pic = importPicture('mono_2_3', d, 'test.scr');
+  assertNotNull(pic, 'importPicture returns Picture');
+  assertEqual(pic.sourceFormat, 'mono_2_3', 'sourceFormat = mono_2_3');
+  assertEqual(pic.width, 256, 'width = 256');
+  assertEqual(pic.height, 128, 'height = 128');
+  assertEqual(pic.planeCount, 1, 'planeCount = 1');
+  assertEqual(pic.planes[0].bitmap.length, 4096, 'bitmap = 4096 (256/8 * 128)');
+})();
+
+// ═══════════════════════════════════════════════════
+// Mono 1/3 — bitmap only (2048 bytes, 64 lines)
+// ═══════════════════════════════════════════════════
+section('Mono 1/3 picture structure');
+
+(function() {
+  var d = new Uint8Array(2048);
+  for (var i = 0; i < 2048; i++) d[i] = (i & 0xFF);
+  var pic = importPicture('mono_1_3', d, 'test.scr');
+  assertNotNull(pic, 'importPicture returns Picture');
+  assertEqual(pic.sourceFormat, 'mono_1_3', 'sourceFormat = mono_1_3');
+  assertEqual(pic.width, 256, 'width = 256');
+  assertEqual(pic.height, 64, 'height = 64');
+  assertEqual(pic.planeCount, 1, 'planeCount = 1');
+  assertEqual(pic.planes[0].bitmap.length, 2048, 'bitmap = 2048 (256/8 * 64)');
+})();
+
+// ═══════════════════════════════════════════════════
+// BSP — screen only (simplest variant: no giga, no border)
+// ═══════════════════════════════════════════════════
+section('BSP picture structure');
+
+(function() {
+  // BSP header: 70 bytes. Bytes 0-2 = "bsp", byte 3 = config flags
+  // Config 0x00 = screen only (no giga, no border)
+  var d = new Uint8Array(70 + 6912);
+  d[0] = 0x62; d[1] = 0x73; d[2] = 0x70; // "bsp"
+  d[3] = 0x00; // config: no giga, no border
+  // Screen data at offset 70
+  for (var i = 0; i < 6144; i++) d[70 + i] = (i & 0xFF);
+  for (var i = 6144; i < 6912; i++) d[70 + i] = 0x07;
+  var pic = importPicture('bsp', d, 'test.bsp');
+  assertNotNull(pic, 'importPicture returns Picture (screen only)');
+  assertEqual(pic.sourceFormat, 'bsp', 'sourceFormat = bsp');
+  assertEqual(pic.width, 256, 'width = 256');
+  assertEqual(pic.height, 192, 'height = 192');
+  assertEqual(pic.planeCount, 1, 'planeCount = 1 (no giga)');
+  assertEqual(pic.planes[0].bitmap.length, 6144, 'bitmap = 6144');
+  assertEqual(pic.planes[0].attrs.length, 768, 'attrs = 768');
+  assert(pic.border === null, 'border = null (no border)');
+})();
+
+// ═══════════════════════════════════════════════════
+// SCR ULANext — import only (no export handler)
+// ═══════════════════════════════════════════════════
+section('SCR ULANext picture structure');
+
+(function() {
+  // scr_ulanext import maps to importScr — just verify it works
+  var d = new Uint8Array(6912);
+  for (var i = 0; i < 6912; i++) d[i] = (i & 0xFF);
+  var pic = importPicture('scr_ulanext', d, 'test.scr');
+  assertNotNull(pic, 'importPicture returns Picture');
+  // scr_ulanext handler maps to importScr(), which sets sourceFormat = 'scr'
+  assertEqual(pic.sourceFormat, 'scr', 'sourceFormat = scr (importScr used)');
+  assertEqual(pic.width, 256, 'width = 256');
+  assertEqual(pic.height, 192, 'height = 192');
+  assertEqual(pic.planeCount, 1, 'planeCount = 1');
+})();
+
+// ═══════════════════════════════════════════════════
+// makePicture — factory function validation
+// ═══════════════════════════════════════════════════
+section('makePicture factory');
+
+(function() {
+  var pic = makePicture({ sourceFormat: 'test', fileName: 'test.bin' });
+  assertNotNull(pic, 'makePicture returns object');
+  assertEqual(pic.sourceFormat, 'test', 'sourceFormat preserved');
+  assertEqual(pic.fileName, 'test.bin', 'fileName preserved');
+  assertEqual(pic.width, 256, 'default width = 256');
+  assertEqual(pic.height, 192, 'default height = 192');
+  assertEqual(pic.cols, 32, 'default cols = 32');
+  assertEqual(pic.attrCellHeight, 8, 'default attrCellHeight = 8');
+  assertEqual(pic.attrRows, 24, 'default attrRows = 24');
+  assertEqual(pic.planeCount, 1, 'default planeCount = 1');
+  assertEqual(pic.planes.length, 1, 'default planes.length = 1');
+  assertEqual(pic.planes[0].bitmap.length, 6144, 'default bitmap = 256/8 * 192');
+  assertEqual(pic.planes[0].attrs.length, 768, 'default attrs = 32 * 24');
+  assert(pic.palette === null, 'default palette = null');
+  assertEqual(pic.contentMode, 'pixel', 'default contentMode = pixel');
+  assertEqual(pic.colorMode, 'standard', 'default colorMode = standard');
+  assert(pic.border === null, 'default border = null');
+
+  // Custom dimensions
+  var pic2 = makePicture({ sourceFormat: 'custom', width: 640, height: 200, attrCellHeight: 1, planeCount: 3 });
+  assertEqual(pic2.width, 640, 'custom width = 640');
+  assertEqual(pic2.height, 200, 'custom height = 200');
+  assertEqual(pic2.cols, 80, 'custom cols = 80');
+  assertEqual(pic2.attrCellHeight, 1, 'custom attrCellHeight = 1');
+  assertEqual(pic2.attrRows, 200, 'custom attrRows = 200');
+  assertEqual(pic2.planeCount, 3, 'custom planeCount = 3');
+  assertEqual(pic2.planes.length, 3, 'custom planes.length = 3');
+  assertEqual(pic2.planes[0].bitmap.length, 16000, 'custom bitmap = 80 * 200');
+  assertEqual(pic2.planes[0].attrs.length, 16000, 'custom attrs = 80 * 200');
+})();
+
+// ═══════════════════════════════════════════════════
+// Invalid / missing format
+// ═══════════════════════════════════════════════════
+section('importPicture — invalid format');
+
+(function() {
+  var pic = importPicture('nonexistent', new Uint8Array(100), 'test.xyz');
+  assert(pic === null, 'unknown format returns null');
+
+  var pic2 = importPicture('zxp', new Uint8Array(100), 'test.zxp');
+  assert(pic2 === null, 'zxp (no import handler) returns null');
+
+  var pic3 = importPicture('mgh', new Uint8Array(100), 'test.mgh');
+  assert(pic3 === null, 'mgh (no import handler) returns null');
+})();
+
+</script>
+</body>
+</html>

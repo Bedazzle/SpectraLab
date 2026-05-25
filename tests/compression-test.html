@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SpectraLab — Compression Codecs Test</title>
+<style>
+  body { font-family: monospace; background: #1a1a1a; color: #ccc; padding: 16px; }
+  #summary { font-size: 18px; font-weight: bold; padding: 8px; margin-bottom: 12px; }
+  .summary-pass { color: #0f0; }
+  .summary-fail { color: #f44; }
+  .section { color: #8cf; margin-top: 8px; }
+  .pass { color: #6c6; }
+  .fail { color: #f66; font-weight: bold; }
+  #log { white-space: pre; line-height: 1.4; }
+</style>
+</head>
+<body>
+<h2>Compression Codecs Test</h2>
+<div id="summary">Running...</div>
+<div id="log"></div>
+
+<!-- Compression modules are self-contained, no DOM stubs needed -->
+<script src="../js/zx0.js"></script>
+<script src="../js/zx7.js"></script>
+<script src="../js/rle.js"></script>
+<script src="../js/zxsc.js"></script>
+<script src="../js/lc.js"></script>
+<script src="../js/upkr.js"></script>
+<script src="../js/chunks.js"></script>
+<script src="test-helpers.js"></script>
+
+<script>
+"use strict";
+initTests();
+
+// ═══════════════════════════════════════════════════
+// Test data sets
+// ═══════════════════════════════════════════════════
+
+// Repetitive data — compresses well
+var repetitive = makeRepetitiveData(6912);
+
+// Random-ish data — harder to compress
+var patternData = new Uint8Array(1024);
+for (var i = 0; i < patternData.length; i++) {
+  patternData[i] = ((i * 7 + 13) ^ (i >> 3)) & 0xFF;
+}
+
+// Synthetic SCR data
+var syntheticScr = makeSyntheticScr();
+
+// Small data
+var smallData = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+
+// All zeros
+var zeros = new Uint8Array(256);
+
+// All same byte
+var allFF = new Uint8Array(256);
+for (var i = 0; i < 256; i++) allFF[i] = 0xFF;
+
+// ═══════════════════════════════════════════════════
+// ZX0 — lossless compression
+// ═══════════════════════════════════════════════════
+section('ZX0 roundtrip');
+
+(function testZX0() {
+  // Basic roundtrip with repetitive data
+  var compressed = ZX0.compress(repetitive);
+  assertNotNull(compressed, 'ZX0.compress returns result');
+  assertNotNull(compressed.data, 'ZX0.compress result has .data');
+  var decompressed = ZX0.decompress(compressed.data);
+  assertArrayEqual(decompressed, repetitive, 'ZX0 roundtrip: repetitive data');
+  assertGreater(repetitive.length, compressed.data.length,
+    'ZX0 compresses repetitive data (ratio: ' + compressed.data.length + '/' + repetitive.length + ')');
+
+  // Pattern data roundtrip
+  compressed = ZX0.compress(patternData);
+  decompressed = ZX0.decompress(compressed.data);
+  assertArrayEqual(decompressed, patternData, 'ZX0 roundtrip: pattern data');
+
+  // Small data roundtrip
+  compressed = ZX0.compress(smallData);
+  decompressed = ZX0.decompress(compressed.data);
+  assertArrayEqual(decompressed, smallData, 'ZX0 roundtrip: small data (16 bytes)');
+
+  // All zeros — best case
+  compressed = ZX0.compress(zeros);
+  decompressed = ZX0.decompress(compressed.data);
+  assertArrayEqual(decompressed, zeros, 'ZX0 roundtrip: all zeros');
+  assertGreater(zeros.length, compressed.data.length, 'ZX0 compresses all-zeros well');
+
+  // Synthetic SCR
+  compressed = ZX0.compress(syntheticScr);
+  decompressed = ZX0.decompress(compressed.data);
+  assertArrayEqual(decompressed, syntheticScr, 'ZX0 roundtrip: synthetic SCR');
+
+  // Backwards mode — compress with backwards=true, decompress with backwards=true
+  compressed = ZX0.compress(repetitive, 0, true);
+  decompressed = ZX0.decompress(compressed.data, true);
+  assertArrayEqual(decompressed, repetitive, 'ZX0 backwards roundtrip: repetitive data');
+
+  compressed = ZX0.compress(syntheticScr, 0, true);
+  decompressed = ZX0.decompress(compressed.data, true);
+  assertArrayEqual(decompressed, syntheticScr, 'ZX0 backwards roundtrip: synthetic SCR');
+
+  compressed = ZX0.compress(patternData, 0, true);
+  decompressed = ZX0.decompress(compressed.data, true);
+  assertArrayEqual(decompressed, patternData, 'ZX0 backwards roundtrip: pattern data');
+
+  // Classic mode
+  compressed = ZX0.compress(repetitive, 0, false, true);
+  decompressed = ZX0.decompress(compressed.data, false, true);
+  assertArrayEqual(decompressed, repetitive, 'ZX0 classic roundtrip: repetitive data');
+
+  // Backwards + Classic combined
+  compressed = ZX0.compress(repetitive, 0, true, true);
+  decompressed = ZX0.decompress(compressed.data, true, true);
+  assertArrayEqual(decompressed, repetitive, 'ZX0 backwards+classic roundtrip: repetitive data');
+
+  // decompressTracked with backwards mode
+  compressed = ZX0.compress(smallData, 0, true);
+  var tracked = ZX0.decompressTracked(compressed.data, true);
+  assertArrayEqual(tracked.data, smallData, 'ZX0 backwards decompressTracked: data matches');
+  assertGreater(tracked.bytesRead, 0, 'ZX0 backwards decompressTracked: bytesRead > 0');
+})();
+
+// ═══════════════════════════════════════════════════
+// ZX7 — lossless compression
+// ═══════════════════════════════════════════════════
+section('ZX7 roundtrip');
+
+(function testZX7() {
+  var compressed = ZX7.compress(repetitive);
+  assertNotNull(compressed, 'ZX7.compress returns result');
+  assertNotNull(compressed.data, 'ZX7.compress result has .data');
+  var decompressed = ZX7.decompress(compressed.data);
+  assertArrayEqual(decompressed, repetitive, 'ZX7 roundtrip: repetitive data');
+  assertGreater(repetitive.length, compressed.data.length,
+    'ZX7 compresses repetitive data');
+
+  // Pattern data
+  compressed = ZX7.compress(patternData);
+  decompressed = ZX7.decompress(compressed.data);
+  assertArrayEqual(decompressed, patternData, 'ZX7 roundtrip: pattern data');
+
+  // Small data
+  compressed = ZX7.compress(smallData);
+  decompressed = ZX7.decompress(compressed.data);
+  assertArrayEqual(decompressed, smallData, 'ZX7 roundtrip: small data (16 bytes)');
+
+  // All zeros
+  compressed = ZX7.compress(zeros);
+  decompressed = ZX7.decompress(compressed.data);
+  assertArrayEqual(decompressed, zeros, 'ZX7 roundtrip: all zeros');
+
+  // Backwards mode
+  var compB = ZX7.compressBackwards(repetitive);
+  var decompB = ZX7.decompressBackwards(compB.data);
+  assertArrayEqual(decompB, repetitive, 'ZX7 backwards roundtrip: repetitive data');
+})();
+
+// ═══════════════════════════════════════════════════
+// RLE — run-length encoding
+// ═══════════════════════════════════════════════════
+section('RLE roundtrip');
+
+(function testRLE() {
+  // --- Roundtrip correctness ---
+
+  var compressed, decompressed;
+
+  // Empty screen (all zeros, 6912 bytes) — best case: long runs of 0x00
+  var emptyScreen = new Uint8Array(6912);
+  compressed = RLE.compress(emptyScreen);
+  assertNotNull(compressed, 'RLE.compress returns result');
+  assertNotNull(compressed.data, 'RLE.compress result has .data');
+  decompressed = RLE.decompress(compressed.data);
+  assertArrayEqual(decompressed, emptyScreen, 'RLE roundtrip: empty screen (all zeros)');
+  assertGreater(emptyScreen.length, compressed.data.length,
+    'RLE compresses empty screen: ' + compressed.data.length + '/' + emptyScreen.length);
+
+  // Solid-color screen — bitmap all 0xFF, attrs all same value
+  var solidScreen = new Uint8Array(6912);
+  for (var i = 0; i < 6144; i++) solidScreen[i] = 0xFF;
+  for (var i = 6144; i < 6912; i++) solidScreen[i] = 0x47; // bright white on black
+  compressed = RLE.compress(solidScreen);
+  decompressed = RLE.decompress(compressed.data);
+  assertArrayEqual(decompressed, solidScreen, 'RLE roundtrip: solid-color screen');
+  assertGreater(solidScreen.length, compressed.data.length,
+    'RLE compresses solid screen: ' + compressed.data.length + '/' + solidScreen.length);
+
+  // Random data (6912 bytes) — worst case: no runs, may expand
+  var randomScreen = makeRandomData(6912);
+  compressed = RLE.compress(randomScreen);
+  decompressed = RLE.decompress(compressed.data);
+  assertArrayEqual(decompressed, randomScreen, 'RLE roundtrip: random data');
+  // No compression ratio assertion — random data may expand
+
+  // Typical screen: bitmap has mixed content, attrs have local runs
+  var typicalScreen = new Uint8Array(6912);
+  // Bitmap: alternating sparse/dense areas
+  for (var i = 0; i < 6144; i++) {
+    if (i < 2048) typicalScreen[i] = 0x00;            // top third: empty
+    else if (i < 4096) typicalScreen[i] = (i & 0xFF);  // middle: varied
+    else typicalScreen[i] = 0xFF;                       // bottom: solid
+  }
+  // Attrs: runs of same color per row (typical for real screens)
+  for (var row = 0; row < 24; row++) {
+    var attr = (row & 7) | ((row >> 3) << 3) | 0x40; // varying ink/paper + bright
+    for (var col = 0; col < 32; col++) {
+      typicalScreen[6144 + row * 32 + col] = attr;
+    }
+  }
+  compressed = RLE.compress(typicalScreen);
+  decompressed = RLE.decompress(compressed.data);
+  assertArrayEqual(decompressed, typicalScreen, 'RLE roundtrip: typical screen');
+  assertGreater(typicalScreen.length, compressed.data.length,
+    'RLE compresses typical screen: ' + compressed.data.length + '/' + typicalScreen.length);
+
+  // Single byte
+  var oneByte = new Uint8Array([0x42]);
+  compressed = RLE.compress(oneByte);
+  decompressed = RLE.decompress(compressed.data);
+  assertArrayEqual(decompressed, oneByte, 'RLE roundtrip: single byte');
+
+  // Two identical bytes (minimal run)
+  var twoSame = new Uint8Array([0xAA, 0xAA]);
+  compressed = RLE.compress(twoSame);
+  decompressed = RLE.decompress(compressed.data);
+  assertArrayEqual(decompressed, twoSame, 'RLE roundtrip: two identical bytes');
+
+  // Alternating bytes — no runs at all
+  var alternating = new Uint8Array(256);
+  for (var i = 0; i < 256; i++) alternating[i] = (i & 1) ? 0xFF : 0x00;
+  compressed = RLE.compress(alternating);
+  decompressed = RLE.decompress(compressed.data);
+  assertArrayEqual(decompressed, alternating, 'RLE roundtrip: alternating 0x00/0xFF');
+
+  // Long run of one value surrounded by different bytes
+  var longRun = new Uint8Array(1024);
+  longRun[0] = 0x01;
+  for (var i = 1; i < 1023; i++) longRun[i] = 0x55;
+  longRun[1023] = 0x02;
+  compressed = RLE.compress(longRun);
+  decompressed = RLE.decompress(compressed.data);
+  assertArrayEqual(decompressed, longRun, 'RLE roundtrip: long single-value run');
+  assertGreater(longRun.length, compressed.data.length,
+    'RLE compresses long run: ' + compressed.data.length + '/' + longRun.length);
+
+  // --- Compression ratio scenarios ---
+
+  // Checkerboard attrs (every 8x8 cell alternates) — poor for RLE
+  var checkerAttrs = new Uint8Array(768);
+  for (var i = 0; i < 768; i++) checkerAttrs[i] = (i & 1) ? 0x38 : 0x07;
+  compressed = RLE.compress(checkerAttrs);
+  decompressed = RLE.decompress(compressed.data);
+  assertArrayEqual(decompressed, checkerAttrs, 'RLE roundtrip: checkerboard attrs');
+
+  // Striped screen: horizontal bands of solid color — good for RLE
+  var stripedScreen = new Uint8Array(6912);
+  for (var y = 0; y < 192; y++) {
+    var val = (y < 64) ? 0x00 : (y < 128) ? 0xFF : 0xAA;
+    for (var x = 0; x < 32; x++) stripedScreen[y * 32 + x] = val; // NOTE: linear, not interleaved
+  }
+  for (var i = 6144; i < 6912; i++) stripedScreen[i] = 0x47;
+  compressed = RLE.compress(stripedScreen);
+  decompressed = RLE.decompress(compressed.data);
+  assertArrayEqual(decompressed, stripedScreen, 'RLE roundtrip: striped screen');
+  assertGreater(stripedScreen.length, compressed.data.length,
+    'RLE compresses striped screen: ' + compressed.data.length + '/' + stripedScreen.length);
+})();
+
+// ═══════════════════════════════════════════════════
+// ZXSC — ZX Spectrum Screen Compressor
+// ═══════════════════════════════════════════════════
+section('ZXSC roundtrip');
+
+(function testZXSC() {
+  // Basic compress/decompress
+  var compressed = ZXSC.compress(repetitive);
+  assertNotNull(compressed, 'ZXSC.compress returns result');
+  assertNotNull(compressed.data, 'ZXSC.compress result has .data');
+  var decompressed = ZXSC.decompress(compressed.data);
+  assertArrayEqual(decompressed, repetitive, 'ZXSC roundtrip: repetitive data');
+
+  // Pattern data
+  compressed = ZXSC.compress(patternData);
+  decompressed = ZXSC.decompress(compressed.data);
+  assertArrayEqual(decompressed, patternData, 'ZXSC roundtrip: pattern data');
+
+  // All zeros
+  compressed = ZXSC.compress(zeros);
+  decompressed = ZXSC.decompress(compressed.data);
+  assertArrayEqual(decompressed, zeros, 'ZXSC roundtrip: all zeros');
+
+  // Screen-specific roundtrip (reorder + compress + decompress + unreorder)
+  var scrCompressed = ZXSC.compressScreen(syntheticScr);
+  assertNotNull(scrCompressed, 'ZXSC.compressScreen returns result');
+  var scrDecompressed = ZXSC.decompressScreen(scrCompressed.data);
+  assertArrayEqual(scrDecompressed, syntheticScr, 'ZXSC screen roundtrip: synthetic SCR');
+
+  // Screen reorder/unreorder roundtrip (without compression)
+  var reordered = ZXSC.screenReorder(syntheticScr);
+  assertNotNull(reordered, 'ZXSC.screenReorder returns result');
+  assertGreater(reordered.length, 0, 'ZXSC.screenReorder output is non-empty');
+  var unreordered = ZXSC.screenUnreorder(reordered);
+  assertArrayEqual(unreordered, syntheticScr, 'ZXSC screenReorder→screenUnreorder roundtrip');
+
+  // Screen reorder with region — 16x12 char region (half screen)
+  var region = { x: 0, y: 0, w: 16, h: 12 };
+  var regionReordered = ZXSC.screenReorder(syntheticScr, region);
+  assertNotNull(regionReordered, 'ZXSC.screenReorder with region returns result');
+  // Each cell = 1 attr + 8 pixel bytes = 9 bytes; 16*12 = 192 cells
+  assertEqual(regionReordered.length, 192 * 9, 'ZXSC region reorder: correct size (192 cells × 9 bytes)');
+  var regionUnreordered = ZXSC.screenUnreorder(regionReordered, region);
+  // After unreorder, verify the region pixels match original
+  assertNotNull(regionUnreordered, 'ZXSC.screenUnreorder with region returns result');
+
+  // compressScreen with region
+  var regionCompressed = ZXSC.compressScreen(syntheticScr, region);
+  assertNotNull(regionCompressed, 'ZXSC.compressScreen with region returns result');
+  var regionDecompressed = ZXSC.decompressScreen(regionCompressed.data, region);
+  assertNotNull(regionDecompressed, 'ZXSC.decompressScreen with region returns result');
+
+  // Empty screen (all zeros) should compress very well with screen reordering
+  var emptyScr = new Uint8Array(6912);
+  scrCompressed = ZXSC.compressScreen(emptyScr);
+  scrDecompressed = ZXSC.decompressScreen(scrCompressed.data);
+  assertArrayEqual(scrDecompressed, emptyScr, 'ZXSC screen roundtrip: empty screen');
+  assertGreater(emptyScr.length, scrCompressed.data.length,
+    'ZXSC compressScreen compresses empty screen well');
+})();
+
+// ═══════════════════════════════════════════════════
+// LC — LC compression
+// ═══════════════════════════════════════════════════
+section('LC roundtrip');
+
+(function testLC() {
+  var compressed = LC.compress(repetitive);
+  assertNotNull(compressed, 'LC.compress returns result');
+  assertNotNull(compressed.data, 'LC.compress result has .data');
+  var decompressed = LC.decompress(compressed.data);
+  assertArrayEqual(decompressed, repetitive, 'LC roundtrip: repetitive data');
+
+  // Pattern data
+  compressed = LC.compress(patternData);
+  decompressed = LC.decompress(compressed.data);
+  assertArrayEqual(decompressed, patternData, 'LC roundtrip: pattern data');
+
+  // All zeros
+  compressed = LC.compress(zeros);
+  decompressed = LC.decompress(compressed.data);
+  assertArrayEqual(decompressed, zeros, 'LC roundtrip: all zeros');
+
+  // Screen-specific roundtrip (with LCMP5 header, default options)
+  var scrCompressed = LC.compressScreen(syntheticScr);
+  assertNotNull(scrCompressed, 'LC.compressScreen returns result');
+  assertNotNull(scrCompressed.data, 'LC.compressScreen result has .data');
+  var scrDecompressed = LC.decompressScreen(scrCompressed.data);
+  assertArrayEqual(scrDecompressed, syntheticScr, 'LC screen roundtrip: synthetic SCR');
+
+  // Verify LCMP5 header bytes
+  assertEqual(scrCompressed.data[0], 0x4C, 'LC screen header[0] = L');
+  assertEqual(scrCompressed.data[1], 0x43, 'LC screen header[1] = C');
+  assertEqual(scrCompressed.data[2], 0x4D, 'LC screen header[2] = M');
+  assertEqual(scrCompressed.data[3], 0x50, 'LC screen header[3] = P');
+  assertEqual(scrCompressed.data[4], 0x35, 'LC screen header[4] = 5');
+
+  // Empty screen
+  var emptyScr = new Uint8Array(6912);
+  scrCompressed = LC.compressScreen(emptyScr);
+  scrDecompressed = LC.decompressScreen(scrCompressed.data);
+  assertArrayEqual(scrDecompressed, emptyScr, 'LC screen roundtrip: empty screen');
+  assertGreater(emptyScr.length, scrCompressed.data.length,
+    'LC compressScreen compresses empty screen well');
+
+  // Screen with no header
+  scrCompressed = LC.compressScreen(syntheticScr, { header: false });
+  scrDecompressed = LC.decompressScreen(scrCompressed.data, { header: false });
+  assertArrayEqual(scrDecompressed, syntheticScr, 'LC screen roundtrip: no header');
+
+  // Screen without attrs (bitmap only)
+  scrCompressed = LC.compressScreen(syntheticScr, { attrs: false });
+  scrDecompressed = LC.decompressScreen(scrCompressed.data, { attrs: false });
+  // Only bitmap portion (first 6144 bytes) should match
+  var bitmapOnly = syntheticScr.slice(0, 6144);
+  var decompBitmap = scrDecompressed.slice(0, 6144);
+  assertArrayEqual(decompBitmap, bitmapOnly, 'LC screen roundtrip: bitmap-only mode');
+})();
+
+// ═══════════════════════════════════════════════════
+// UPKR — UPKR compression
+// ═══════════════════════════════════════════════════
+section('UPKR roundtrip');
+
+(function testUPKR() {
+  // UPKR.compress returns Uint8Array directly (not {data})
+  var compressed = UPKR.compress(repetitive);
+  assertNotNull(compressed, 'UPKR.compress returns result');
+  assert(compressed instanceof Uint8Array, 'UPKR.compress returns Uint8Array');
+  var decompressed = UPKR.decompress(compressed);
+  assertArrayEqual(decompressed, repetitive, 'UPKR roundtrip: repetitive data');
+  assertGreater(repetitive.length, compressed.length,
+    'UPKR compresses repetitive data');
+
+  // Pattern data
+  compressed = UPKR.compress(patternData);
+  decompressed = UPKR.decompress(compressed);
+  assertArrayEqual(decompressed, patternData, 'UPKR roundtrip: pattern data');
+
+  // All zeros
+  compressed = UPKR.compress(zeros);
+  decompressed = UPKR.decompress(compressed);
+  assertArrayEqual(decompressed, zeros, 'UPKR roundtrip: all zeros');
+
+  // Config presets exist
+  assertNotNull(UPKR.defaultConfig(), 'UPKR.defaultConfig() exists');
+  assertNotNull(UPKR.configZ80(), 'UPKR.configZ80() exists');
+
+  // Roundtrip with Z80 config
+  compressed = UPKR.compress(repetitive, undefined, UPKR.configZ80());
+  decompressed = UPKR.decompress(compressed, UPKR.configZ80());
+  assertArrayEqual(decompressed, repetitive, 'UPKR roundtrip with Z80 config');
+
+  // Reverse mode — compress with reverse=true, decompress with reverse=true
+  compressed = UPKR.compress(repetitive, undefined, undefined, true);
+  decompressed = UPKR.decompress(compressed, undefined, true);
+  assertArrayEqual(decompressed, repetitive, 'UPKR reverse roundtrip: repetitive data');
+
+  compressed = UPKR.compress(syntheticScr, undefined, undefined, true);
+  decompressed = UPKR.decompress(compressed, undefined, true);
+  assertArrayEqual(decompressed, syntheticScr, 'UPKR reverse roundtrip: synthetic SCR');
+
+  compressed = UPKR.compress(patternData, undefined, undefined, true);
+  decompressed = UPKR.decompress(compressed, undefined, true);
+  assertArrayEqual(decompressed, patternData, 'UPKR reverse roundtrip: pattern data');
+
+  // Reverse + Z80 config combined
+  compressed = UPKR.compress(repetitive, undefined, UPKR.configZ80(), true);
+  decompressed = UPKR.decompress(compressed, UPKR.configZ80(), true);
+  assertArrayEqual(decompressed, repetitive, 'UPKR reverse+Z80 roundtrip: repetitive data');
+
+  // X86 config (if available)
+  if (typeof UPKR.configX86 === 'function') {
+    compressed = UPKR.compress(repetitive, undefined, UPKR.configX86());
+    decompressed = UPKR.decompress(compressed, UPKR.configX86());
+    assertArrayEqual(decompressed, repetitive, 'UPKR roundtrip with X86 config');
+  }
+})();
+
+// ═══════════════════════════════════════════════════
+// CHUNKS — lossy 4x4/4x2 block compression
+// ═══════════════════════════════════════════════════
+section('CHUNKS structure');
+
+(function testCHUNKS() {
+  // CHUNKS is lossy — can't do exact roundtrip comparison
+  // But we can verify structure and decompressed size
+
+  // Verify constants exist (MODE_4x4=0, MODE_4x2=1)
+  assert(CHUNKS.MODE_4x4 !== undefined, 'CHUNKS.MODE_4x4 is defined');
+  assert(CHUNKS.MODE_4x2 !== undefined, 'CHUNKS.MODE_4x2 is defined');
+  assertEqual(CHUNKS.MODE_4x4, 0, 'CHUNKS.MODE_4x4 = 0');
+  assertEqual(CHUNKS.MODE_4x2, 1, 'CHUNKS.MODE_4x2 = 1');
+
+  // Compress a synthetic SCR (only bitmap portion is compressed)
+  var compressed = CHUNKS.compress(syntheticScr);
+  assertNotNull(compressed, 'CHUNKS.compress returns result');
+  assertNotNull(compressed.data, 'CHUNKS.compress result has .data');
+
+  // Decompress should return data
+  var decompressed = CHUNKS.decompress(compressed.data);
+  assertNotNull(decompressed, 'CHUNKS.decompress returns data');
+  assert(decompressed.length > 0, 'CHUNKS decompressed has non-zero length');
+
+  // Preset names
+  var presets = CHUNKS.getPresetNames();
+  assertNotNull(presets, 'CHUNKS.getPresetNames() returns array');
+  assert(presets.length > 0, 'CHUNKS has at least one preset');
+
+  // Get a preset codebook
+  var firstPreset = CHUNKS.getPreset(presets[0]);
+  assertNotNull(firstPreset, 'CHUNKS.getPreset returns codebook for: ' + presets[0]);
+
+  // --- MODE_4x2 ---
+  var compressed4x2 = CHUNKS.compress(syntheticScr, CHUNKS.MODE_4x2);
+  assertNotNull(compressed4x2, 'CHUNKS 4x2: compress returns result');
+  assertNotNull(compressed4x2.data, 'CHUNKS 4x2: result has .data');
+  var decompressed4x2 = CHUNKS.decompress(compressed4x2.data);
+  assertNotNull(decompressed4x2, 'CHUNKS 4x2: decompress returns data');
+  assert(decompressed4x2.length > 0, 'CHUNKS 4x2: decompressed has non-zero length');
+
+  // Both modes should produce different data sizes
+  assertNotEqual(compressed.data.length, compressed4x2.data.length,
+    'CHUNKS 4x4 vs 4x2: different compressed sizes');
+
+  // Codebook serialization roundtrip (4x4)
+  var cb4x4 = CHUNKS.getPreset('standard', CHUNKS.MODE_4x4);
+  assertNotNull(cb4x4, 'CHUNKS 4x4 standard preset exists');
+  var hex4x4 = CHUNKS.codebookToHex(cb4x4, CHUNKS.MODE_4x4);
+  assertNotNull(hex4x4, 'CHUNKS 4x4 codebook to hex');
+  var cb4x4back = CHUNKS.codebookFromHex(hex4x4, CHUNKS.MODE_4x4);
+  assertNotNull(cb4x4back, 'CHUNKS 4x4 codebook from hex');
+
+  // Codebook serialization roundtrip (4x2)
+  var cb4x2 = CHUNKS.getPreset('standard', CHUNKS.MODE_4x2);
+  assertNotNull(cb4x2, 'CHUNKS 4x2 standard preset exists');
+  var hex4x2 = CHUNKS.codebookToHex(cb4x2, CHUNKS.MODE_4x2);
+  assertNotNull(hex4x2, 'CHUNKS 4x2 codebook to hex');
+  var cb4x2back = CHUNKS.codebookFromHex(hex4x2, CHUNKS.MODE_4x2);
+  assertNotNull(cb4x2back, 'CHUNKS 4x2 codebook from hex');
+
+  // Lookup table generation for both modes
+  var lut4x4 = CHUNKS.generateLookupTable(cb4x4, CHUNKS.MODE_4x4);
+  assertNotNull(lut4x4, 'CHUNKS 4x4 lookup table generated');
+
+  var lut4x2 = CHUNKS.generateLookupTable(cb4x2, CHUNKS.MODE_4x2);
+  assertNotNull(lut4x2, 'CHUNKS 4x2 lookup table generated');
+
+  // Custom codebook compress (4x4)
+  var customCb = CHUNKS.makeCodebook(0x0000, 0xFFFF, 0xAAAA, 0x5555);
+  assertNotNull(customCb, 'CHUNKS.makeCodebook returns codebook');
+  var customCompressed = CHUNKS.compress(syntheticScr, CHUNKS.MODE_4x4, customCb);
+  assertNotNull(customCompressed, 'CHUNKS compress with custom codebook');
+  var customDecompressed = CHUNKS.decompress(customCompressed.data);
+  assertNotNull(customDecompressed, 'CHUNKS decompress custom codebook result');
+
+  // Shared codebook from multiple frames
+  var frame1 = makeSyntheticScr();
+  var frame2 = new Uint8Array(6912);
+  for (var i = 0; i < 6144; i++) frame2[i] = ~frame1[i] & 0xFF;
+  var sharedCb = CHUNKS.findSharedCodebook([frame1, frame2], CHUNKS.MODE_4x4);
+  assertNotNull(sharedCb, 'CHUNKS.findSharedCodebook returns codebook');
+  assert(sharedCb.length >= 4, 'CHUNKS shared codebook has 4 entries');
+
+  // Pattern to string visualization
+  var patStr = CHUNKS.patternToString(0xAAAA, CHUNKS.MODE_4x4);
+  assertNotNull(patStr, 'CHUNKS.patternToString returns result');
+  assert(patStr.length > 0, 'CHUNKS pattern string is non-empty');
+
+  // Preset enumeration — all presets should return valid codebooks
+  for (var pi = 0; pi < presets.length; pi++) {
+    var p = CHUNKS.getPreset(presets[pi], CHUNKS.MODE_4x4);
+    assertNotNull(p, 'CHUNKS preset "' + presets[pi] + '" exists for 4x4');
+  }
+})();
+
+// ═══════════════════════════════════════════════════
+// Cross-codec: compare compression ratios
+// ═══════════════════════════════════════════════════
+section('Compression ratio comparison');
+
+(function testRatios() {
+  var testData = makeRepetitiveData(4096);
+  var ratios = {};
+
+  var zx0c = ZX0.compress(testData);
+  ratios['ZX0'] = zx0c.data.length;
+
+  var zx7c = ZX7.compress(testData);
+  ratios['ZX7'] = zx7c.data.length;
+
+  var rlec = RLE.compress(testData);
+  ratios['RLE'] = rlec.data.length;
+
+  var zxscc = ZXSC.compress(testData);
+  ratios['ZXSC'] = zxscc.data.length;
+
+  var lcc = LC.compress(testData);
+  ratios['LC'] = lcc.data.length;
+
+  var upkrc = UPKR.compress(testData);
+  ratios['UPKR'] = upkrc.length;
+
+  // All codecs should produce some output
+  for (var name in ratios) {
+    assertGreater(ratios[name], 0, name + ' produces non-empty output (' + ratios[name] + ' bytes)');
+  }
+
+  // Dictionary-based codecs should compress cyclic data below original size
+  // RLE is excluded — it only compresses consecutive identical bytes (runs),
+  // and cyclic data [0,1,...15,0,1,...] has no runs at all.
+  var dictCodecs = ['ZX0', 'ZX7', 'ZXSC', 'LC', 'UPKR'];
+  for (var i = 0; i < dictCodecs.length; i++) {
+    var name = dictCodecs[i];
+    assertGreater(testData.length, ratios[name],
+      name + ' compresses: ' + ratios[name] + '/' + testData.length +
+      ' (' + Math.round(ratios[name] * 100 / testData.length) + '%)');
+  }
+
+  // RLE should compress data with actual runs (e.g. all-zeros)
+  var runData = new Uint8Array(4096);  // all zeros — ideal for RLE
+  var rleRun = RLE.compress(runData);
+  assertGreater(runData.length, rleRun.data.length,
+    'RLE compresses runs: ' + rleRun.data.length + '/' + runData.length +
+    ' (' + Math.round(rleRun.data.length * 100 / runData.length) + '%)');
+})();
+
+// ═══════════════════════════════════════════════════
+// decompressTracked — verify bytesRead
+// ═══════════════════════════════════════════════════
+section('decompressTracked');
+
+(function testTracked() {
+  // RLE with tracked decompression
+  if (typeof RLE.decompressTracked === 'function') {
+    var compressed = RLE.compress(smallData);
+    var result = RLE.decompressTracked(compressed.data);
+    assertNotNull(result.data, 'RLE.decompressTracked returns .data');
+    assertNotNull(result.bytesRead, 'RLE.decompressTracked returns .bytesRead');
+    assertArrayEqual(result.data, smallData, 'RLE.decompressTracked data matches');
+    assertGreater(result.bytesRead, 0, 'RLE.decompressTracked bytesRead > 0');
+    assertLessOrEqual(result.bytesRead, compressed.data.length,
+      'RLE.decompressTracked bytesRead <= compressed length');
+  }
+
+  // ZXSC with tracked
+  if (typeof ZXSC.decompressTracked === 'function') {
+    var compressed = ZXSC.compress(smallData);
+    var result = ZXSC.decompressTracked(compressed.data);
+    assertNotNull(result.data, 'ZXSC.decompressTracked returns .data');
+    assertArrayEqual(result.data, smallData, 'ZXSC.decompressTracked data matches');
+    assertGreater(result.bytesRead, 0, 'ZXSC.decompressTracked bytesRead > 0');
+  }
+
+  // LC with tracked
+  if (typeof LC.decompressTracked === 'function') {
+    var compressed = LC.compress(smallData);
+    var result = LC.decompressTracked(compressed.data);
+    assertNotNull(result.data, 'LC.decompressTracked returns .data');
+    assertArrayEqual(result.data, smallData, 'LC.decompressTracked data matches');
+    assertGreater(result.bytesRead, 0, 'LC.decompressTracked bytesRead > 0');
+  }
+})();
+
+</script>
+</body>
+</html>

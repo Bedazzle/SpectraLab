@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v2.24 -->
+<!-- SpectraLab v2.26 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -1388,6 +1388,67 @@
   .sprite-editor-close:hover { color: var(--danger-hover); }
   .sprite-editor-body { padding: 8px; }
 
+  .script-editor-panel {
+    position: fixed;
+    top: 80px;
+    left: 300px;
+    width: 380px;
+    height: 520px;
+    z-index: 9000;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: 4px;
+    box-shadow: 0 4px 16px var(--shadow-color);
+    min-width: 300px;
+    min-height: 200px;
+    display: flex;
+    flex-direction: column;
+  }
+  .script-editor-titlebar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 8px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-secondary);
+    cursor: move;
+    font-size: 11px;
+    font-weight: bold;
+    user-select: none;
+    flex-shrink: 0;
+  }
+  .script-editor-close {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 16px;
+    cursor: pointer;
+    padding: 0 4px;
+  }
+  .script-editor-close:hover { color: var(--danger-hover); }
+  .script-editor-body {
+    padding: 8px;
+    flex: 1;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .script-editor-resize {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 16px;
+    height: 16px;
+    cursor: nwse-resize;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    color: var(--text-tertiary);
+    user-select: none;
+  }
+
   #spriteEditorCanvas {
     border: 1px solid var(--border-secondary);
     image-rendering: pixelated;
@@ -1643,65 +1704,6 @@
                   <option value="orange">Orange</option>
                   <option value="red">Red</option>
                   <option value="green">Green</option>
-                </select>
-              </div>
-            </div>
-          </div>
-          <div class="control-group" id="displayFiltersSection">
-            <div id="displayFiltersHeader" class="collapsible-header" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 2px 0;">
-              <div style="display: flex; align-items: center; gap: 4px;">
-                <span id="displayFiltersExpandIcon" style="font-size: 10px; width: 12px;">▶</span>
-                <span class="control-group-title" style="margin: 0;">Display Filters</span>
-              </div>
-              <label style="font-size: 11px; display: flex; align-items: center; gap: 2px;" onclick="event.stopPropagation();">
-                <input type="checkbox" id="filtersEnabledCheckbox"> On
-              </label>
-            </div>
-            <div id="displayFiltersContent" style="display: none;">
-              <div style="display: flex; align-items: center; gap: 4px; margin-top: 4px;">
-                <span style="font-size: 11px; min-width: 65px;">Scanlines:</span>
-                <input type="range" id="filterScanlines" min="0" max="100" value="0" style="flex: 1; min-width: 60px;">
-                <span id="filterScanlinesValue" style="font-size: 11px; min-width: 20px; text-align: right;">0</span>
-              </div>
-              <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
-                <span style="font-size: 11px; min-width: 65px;">Noise:</span>
-                <input type="range" id="filterNoise" min="0" max="100" value="0" style="flex: 1; min-width: 60px;">
-                <span id="filterNoiseValue" style="font-size: 11px; min-width: 20px; text-align: right;">0</span>
-              </div>
-              <div style="margin-left: 69px; margin-top: 1px;">
-                <label style="font-size: 11px;"><input type="checkbox" id="filterNoiseAnimate"> Animate</label>
-              </div>
-              <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
-                <span style="font-size: 11px; min-width: 65px;">Composite:</span>
-                <input type="range" id="filterComposite" min="0" max="10" value="0" style="flex: 1; min-width: 60px;">
-                <span id="filterCompositeValue" style="font-size: 11px; min-width: 20px; text-align: right;">0</span>
-              </div>
-              <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
-                <span style="font-size: 11px; min-width: 65px;">Glow:</span>
-                <input type="range" id="filterGlow" min="0" max="100" value="0" style="flex: 1; min-width: 60px;">
-                <span id="filterGlowValue" style="font-size: 11px; min-width: 20px; text-align: right;">0</span>
-              </div>
-              <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
-                <span style="font-size: 11px; min-width: 65px;">Vignette:</span>
-                <input type="range" id="filterVignette" min="0" max="100" value="0" style="flex: 1; min-width: 60px;">
-                <span id="filterVignetteValue" style="font-size: 11px; min-width: 20px; text-align: right;">0</span>
-              </div>
-              <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
-                <span style="font-size: 11px; min-width: 65px;">Curvature:</span>
-                <input type="range" id="filterCurvature" min="0" max="100" value="0" style="flex: 1; min-width: 60px;">
-                <span id="filterCurvatureValue" style="font-size: 11px; min-width: 20px; text-align: right;">0</span>
-              </div>
-              <div style="margin-top: 2px;">
-                <label style="font-size: 11px;"><input type="checkbox" id="filterSmoothing"> Pixel smoothing</label>
-              </div>
-              <div style="display: flex; align-items: center; gap: 4px; margin-top: 4px;">
-                <span style="font-size: 11px; min-width: 65px;">Preset:</span>
-                <select id="filterPresetSelect" style="flex: 1; font-size: 11px;">
-                  <option value="none" selected>None</option>
-                  <option value="crt_tv">CRT TV</option>
-                  <option value="composite">Composite</option>
-                  <option value="vhs">VHS</option>
-                  <option value="arcade">Arcade</option>
                 </select>
               </div>
             </div>
@@ -2335,13 +2337,6 @@
               </div>
             </div>
 
-            <!-- Generate section -->
-            <div id="generateSection" class="control-group">
-              <div class="control-group-title">Generate</div>
-              <div class="editor-actions">
-                <button id="qrGenerateBtn" title="Generate QR code">QR Code</button>
-              </div>
-            </div>
 
             <!-- Optimize attributes section (SCR 8×8 cells) -->
             <div id="optimizeAttrsSection" class="control-group" style="display: none;">
@@ -2538,6 +2533,72 @@
             <div style="display: flex; flex-direction: column; gap: 6px;">
               <a href="zgs_editor.html" target="_blank" style="font-size: 12px; color: var(--accent-color); text-decoration: none;" title="Open ZGS Scene Editor in a new tab">ZGS Editor</a>
               <a href="font_editor.html" target="_blank" style="font-size: 12px; color: var(--accent-color); text-decoration: none;" title="Open Font Editor in a new tab">Font Editor</a>
+              <a href="#" id="openScriptEditor" style="font-size: 12px; color: var(--accent-color); text-decoration: none;" title="Open Script Editor panel">Script Editor</a>
+            </div>
+          </div>
+          <div class="control-group">
+            <div class="control-group-title">Generate</div>
+            <div class="editor-actions">
+              <button id="qrGenerateBtn" title="Generate QR code">QR Code</button>
+            </div>
+          </div>
+          <div class="control-group" id="displayFiltersSection">
+            <div id="displayFiltersHeader" class="collapsible-header" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 2px 0;">
+              <div style="display: flex; align-items: center; gap: 4px;">
+                <span id="displayFiltersExpandIcon" style="font-size: 10px; width: 12px;">▶</span>
+                <span class="control-group-title" style="margin: 0;">Display Filters</span>
+              </div>
+              <label style="font-size: 11px; display: flex; align-items: center; gap: 2px;" onclick="event.stopPropagation();">
+                <input type="checkbox" id="filtersEnabledCheckbox"> On
+              </label>
+            </div>
+            <div id="displayFiltersContent" style="display: none;">
+              <div style="display: flex; align-items: center; gap: 4px; margin-top: 4px;">
+                <span style="font-size: 11px; min-width: 65px;">Scanlines:</span>
+                <input type="range" id="filterScanlines" min="0" max="100" value="0" style="flex: 1; min-width: 60px;">
+                <span id="filterScanlinesValue" style="font-size: 11px; min-width: 20px; text-align: right;">0</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
+                <span style="font-size: 11px; min-width: 65px;">Noise:</span>
+                <input type="range" id="filterNoise" min="0" max="100" value="0" style="flex: 1; min-width: 60px;">
+                <span id="filterNoiseValue" style="font-size: 11px; min-width: 20px; text-align: right;">0</span>
+              </div>
+              <div style="margin-left: 69px; margin-top: 1px;">
+                <label style="font-size: 11px;"><input type="checkbox" id="filterNoiseAnimate"> Animate</label>
+              </div>
+              <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
+                <span style="font-size: 11px; min-width: 65px;">Composite:</span>
+                <input type="range" id="filterComposite" min="0" max="10" value="0" style="flex: 1; min-width: 60px;">
+                <span id="filterCompositeValue" style="font-size: 11px; min-width: 20px; text-align: right;">0</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
+                <span style="font-size: 11px; min-width: 65px;">Glow:</span>
+                <input type="range" id="filterGlow" min="0" max="100" value="0" style="flex: 1; min-width: 60px;">
+                <span id="filterGlowValue" style="font-size: 11px; min-width: 20px; text-align: right;">0</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
+                <span style="font-size: 11px; min-width: 65px;">Vignette:</span>
+                <input type="range" id="filterVignette" min="0" max="100" value="0" style="flex: 1; min-width: 60px;">
+                <span id="filterVignetteValue" style="font-size: 11px; min-width: 20px; text-align: right;">0</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 4px; margin-top: 2px;">
+                <span style="font-size: 11px; min-width: 65px;">Curvature:</span>
+                <input type="range" id="filterCurvature" min="0" max="100" value="0" style="flex: 1; min-width: 60px;">
+                <span id="filterCurvatureValue" style="font-size: 11px; min-width: 20px; text-align: right;">0</span>
+              </div>
+              <div style="margin-top: 2px;">
+                <label style="font-size: 11px;"><input type="checkbox" id="filterSmoothing"> Pixel smoothing</label>
+              </div>
+              <div style="display: flex; align-items: center; gap: 4px; margin-top: 4px;">
+                <span style="font-size: 11px; min-width: 65px;">Preset:</span>
+                <select id="filterPresetSelect" style="flex: 1; font-size: 11px;">
+                  <option value="none" selected>None</option>
+                  <option value="crt_tv">CRT TV</option>
+                  <option value="composite">Composite</option>
+                  <option value="vhs">VHS</option>
+                  <option value="arcade">Arcade</option>
+                </select>
+              </div>
             </div>
           </div>
           <div class="control-group" id="pluginSection">
@@ -2547,6 +2608,7 @@
             <div id="pluginList"></div>
           </div>
         </div>
+
 
         <!-- SCA Animation Controls (always outside tabs) -->
         <div class="control-group" id="scaControls" style="display: none; flex-direction: column;">
@@ -2569,11 +2631,12 @@
   <!-- Preview Panel -->
   <div class="panel preview-panel">
     <div class="panel-content">
-      <div id="pluginSessionBar" style="display:none;padding:4px 8px;background:var(--bg-tertiary);border-bottom:1px solid var(--border-color);font-size:11px;align-items:center;gap:6px;">
-        <span id="pluginSessionName" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Plugin: --</span>
-        <button id="pluginSaveBtn" style="font-size:10px;padding:1px 8px;">Save Patched File</button>
-        <button id="pluginSaveRawBtn" style="font-size:10px;padding:1px 8px;">Save Raw</button>
-        <button id="pluginCloseBtn" style="font-size:10px;padding:1px 4px;" title="Close plugin session">&times;</button>
+      <div id="pluginSessionBar" style="display:none;padding:4px 8px;background:var(--bg-tertiary);border-bottom:2px solid var(--accent-color);font-size:11px;align-items:center;gap:6px;">
+        <span id="pluginSessionName" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--accent-color);font-weight:bold;">Plugin: --</span>
+        <button id="pluginReplaceBtn" style="font-size:10px;padding:2px 8px;background:var(--accent-hover);color:var(--accent-text);border:1px solid var(--accent-color);border-radius:3px;cursor:pointer;">Replace Picture…</button>
+        <button id="pluginSaveBtn" style="font-size:10px;padding:2px 8px;background:#2e7d32;color:#fff;border:1px solid #4caf50;border-radius:3px;cursor:pointer;">Save Patched File</button>
+        <button id="pluginSaveRawBtn" style="font-size:10px;padding:2px 8px;background:var(--accent-hover);color:var(--accent-text);border:1px solid var(--accent-color);border-radius:3px;cursor:pointer;">Save Raw</button>
+        <button id="pluginCloseBtn" style="font-size:10px;padding:2px 6px;color:var(--text-secondary);border:1px solid var(--border-color);border-radius:3px;cursor:pointer;" title="Close plugin session">&times;</button>
       </div>
       <div id="pictureTabBar">
         <div id="pictureTabList"></div>
@@ -2711,6 +2774,18 @@
       <button id="spriteClear" class="editor-btn" title="Clear frame">Clr</button>
     </div>
   </div>
+</div>
+
+<!-- Floating Script Editor Panel -->
+<div id="scriptEditorPanel" class="script-editor-panel" style="display:none;">
+  <div class="script-editor-titlebar">
+    <span>Script Editor</span>
+    <button id="scriptEditorClose" class="script-editor-close">&times;</button>
+  </div>
+  <div id="scriptEditorBody" class="script-editor-body">
+    <!-- populated by script_ui.js -->
+  </div>
+  <div class="script-editor-resize" title="Drag to resize">&#8944;</div>
 </div>
 
 <!-- Floating Memory Viewer Panel -->
@@ -3537,7 +3612,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 2.24</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 2.26</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">
@@ -3551,6 +3626,18 @@
           </div>
           <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 12px;">
             Thanks to <b>#zxgfx</b> and <b>#zxcoding</b> Telegram groups
+          </div>
+          <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 14px; text-align: left; max-width: 320px; margin-left: auto; margin-right: auto;">
+            <div style="font-weight: bold; margin-bottom: 4px; text-align: center;">Uses works by:</div>
+            <div style="line-height: 1.6;">
+              <b>Einar Saukas</b> — ZX0, ZX7 compression<br>
+              <b>Einar Saukas &amp; Urusergi</b> — dzx0 decoder<br>
+              <b>Einar Saukas, A. Villena &amp; Metalbrain</b> — dzx7 decoder<br>
+              <b>exoticorn (Dennis Ranke)</b> — UPKR compression<br>
+              <b>Hrumer</b> — Laser Compact packer/depacker<br>
+              <b>TomDDG</b> — ZXSC screen compressor<br>
+              <b>Eugene Larchenko</b> — LC improvements
+            </div>
           </div>
           <div style="font-size: 12px; font-style: italic; color: var(--text-secondary);">
             Keep Speccy alive!
@@ -4291,5 +4378,8 @@
 <script src="js/qrcode.js"></script>
 <script src="js/screen_editor.js"></script>
 <script src="js/sprite_editor.js"></script>
+<script src="js/script_engine.js"></script>
+<script src="js/script_commands.js"></script>
+<script src="js/script_ui.js"></script>
 </body>
 </html>

@@ -86,7 +86,7 @@ Select a different display palette from the **Palette** dropdown in View Setting
 
 ### Display Filters (CRT Effects)
 
-1. In **View Settings**, expand the **Display Filters** section
+1. In the **Tools** tab, expand the **Display Filters** section
 2. Check the **On** checkbox to enable
 3. Choose a preset: **CRT TV**, **Composite**, **VHS**, or **Arcade**
 4. Or adjust individual filters: Scanlines, Noise, Composite, Glow, Vignette, Curvature, Smoothing
@@ -1134,7 +1134,7 @@ This workflow lets you pull graphics from specific memory addresses in a .sna fi
 1. Load `example.slplugin` (or write your own — see the `_doc` section inside the file for reference)
 2. Click **Open…** next to the plugin name and select a `.sna` file
 3. The plugin extracts pictures from the defined addresses and adds them to the picture tab bar
-4. Edit the pictures normally — all drawing tools, layers, and transforms work
+4. Edit the pictures normally — all drawing tools, layers, and transforms work. Use **Replace Picture…** to swap the active picture with a `.scr` file from disk
 5. Click **Save Patched File** in the session bar to write the edits back into the snapshot and download it
 6. Or click **Save Raw** to export each picture as a standalone file
 
@@ -1152,11 +1152,11 @@ Some JS plugins extract multiple pictures from a game snapshot, let you edit the
 
 1. Load `maria_sna.slpluginjs`
 2. Click **Open…** and select the Maria's Christmas Box 48K `.sna` file
-3. The plugin extracts 6 pictures: the loading screen (uncompressed at 0x4000) and 5 RLE-packed game screens
-4. Edit any screen — all tools work normally
-5. Click **Save Patched File** to re-compress all screens with RLE, update the offset table, and download the patched `.sna`
+3. The plugin extracts 6 pictures: the loading screen (uncompressed at 0x4000) and 5 compressed game screens (auto-detects ZX0 vs RLE)
+4. Edit any screen — all tools work normally. Or click **Replace Picture…** to quickly swap the current screen with a prepared `.scr` file from disk
+5. Click **Save Patched File** — the plugin asks whether to use ZX0 (smaller) or RLE (original) compression. When ZX0 is chosen, bitmap data is reordered with RCS (Reverse Character Scan) before compression for better ratios. A progress window shows per-screen compression sizes with a progress bar and a Cancel button. When done, it displays free memory remaining and a Close button. The patched `.sna` is downloaded after you click Close
 
-The plugin uses `"session": true` to enable the session bar. It also checks that packed data doesn't overflow past 0xFDFF (the stack area) — if your edits produce data that compresses poorly, you'll get an error message.
+The plugin uses `"session": true` to enable the session bar. The 112-byte `dzx0_smartRCS` depacker is placed at `$FE90` (end of memory), keeping the data block at `$A000` portable for sideloading. Packed data must not reach the depacker area — if your edits produce data that compresses poorly, you'll get an error message. ZX0 compressor, RCS reordering and the smart depacker are by Einar Saukas.
 
 ### Editing Linear Graphics Across Banks (Hero Quest Plugin)
 
@@ -1175,9 +1175,125 @@ The plugin handles the conversion between the game's linear bitmap+attrs layout 
 
 Open any example plugin in a text editor — the `_doc` field at the top explains all fields and the API. JSON descriptor plugins need no coding — just specify addresses, formats, and lengths. JS plugins use `extract()` and `patch()` functions with full access to snapshot memory banks. Add `"session": true` to a JS plugin descriptor if it needs the Save Patched File / Save Raw workflow.
 
+JS plugins also receive an `SL` object with SpectraLab's compression utilities: `SL.ZX0`, `SL.ZX7`, `SL.RLE`, `SL.ZXSC`, `SL.LC`, `SL.UPKR`. Each provides `compress()` and `decompress()` methods. Check availability with `if (SL.ZX0)` before use.
+
 ---
 
-## 23. Tips and Hidden Features
+## 23. Using Scripts
+
+The **Script Editor** floating panel lets you automate drawing with a BASIC-style language. This walkthrough covers the basics.
+
+### Running Your First Script
+
+1. Open the Script Editor from the **Tools** tab → **Script Editor** link.
+2. Select **Diagonal Line** from the Examples dropdown — this loads:
+   ```
+   SETINK 7
+   LINE 0 0 255 191
+   RENDER
+   ```
+3. Click **▶ Run** (or press **Ctrl+Enter**). A white diagonal line appears across the canvas.
+4. Press **Ctrl+Z** to undo — the entire script is reverted in one step.
+
+### Drawing with Loops
+
+Try typing this script to draw random stars:
+
+```
+SETINK 7
+SETPAPER 0
+CLEAR 7 0
+REPEAT 200
+  PIXEL RANDOM(256) RANDOM(192)
+ENDREPEAT
+```
+
+Click **▶ Run**. 200 random white pixels appear on a black background.
+
+### Using FOR Loops and Math
+
+Draw a sine wave:
+
+```
+SETINK 6
+FOR x = 0 TO 255
+  LET y = 96 + FLOOR(SIN(x * PI / 32) * 60)
+  PIXEL x y
+NEXT
+```
+
+### Conditional Logic
+
+Change ink color based on position:
+
+```
+FOR x = 0 TO 255
+  FOR y = 0 TO 191
+    IF (x + y) % 2 = 0 THEN
+      SETINK 4
+    ELSE
+      SETINK 5
+    ENDIF
+    PIXEL x y
+  NEXT
+NEXT
+```
+
+> **Note:** This draws 49,152 pixels — it will yield periodically to keep the browser responsive. Use the **■ Stop** button if needed.
+
+### User-Defined Functions
+
+Create reusable drawing routines:
+
+```
+FUNC box(x, y, w, h)
+  RECT x y x + w y + h
+ENDFUNC
+
+SETINK 7
+CALL box(10, 10, 50, 30)
+CALL box(80, 40, 60, 60)
+CALL box(160, 20, 40, 80)
+```
+
+### Reading Screen State
+
+Query the current screen and react:
+
+```
+# Invert the top-left 8x8 block
+FOR y = 0 TO 7
+  FOR x = 0 TO 7
+    IF GETPIXEL(x, y) = 1 THEN
+      PIXELPAPER x y
+    ELSE
+      PIXEL x y
+    ENDIF
+  NEXT
+NEXT
+```
+
+### Setting Attributes Directly
+
+Set attribute colors per cell without drawing pixels:
+
+```
+FOR row = 0 TO 23
+  FOR col = 0 TO 31
+    SETATTR col row col % 8 row % 8 1 0
+  NEXT
+NEXT
+```
+
+### Saving and Loading Scripts
+
+- Click **Save** to download your script as a `.slscript` file.
+- Click **Load** to open a previously saved script.
+- Script content is also auto-saved to your browser's local storage.
+
+---
+
+## 24. Tips and Hidden Features
 
 ### Workspace Save/Load
 Save all your open pictures at once with **Save Workspace** in the Xform tab. Load them back later — preserving layers, sprites, settings, and reference images. Workspace buttons are always available in the Xform tab, even without a loaded picture.
@@ -1207,7 +1323,7 @@ Load a `.768` font file into the brush system to get a tileset tab. Each charact
 Select a custom brush, set paint mode to **Masked** or **Mask+**, then draw with any brush shape/size. The custom brush acts as a repeating stencil pattern.
 
 ### QR Code Generation
-Generate QR codes directly on the ZX Spectrum screen via the Xform tab. Supports V1-V20 with adjustable module size (1-8 pixels).
+Generate QR codes directly on the ZX Spectrum screen via the Tools tab. Supports V1-V20 with adjustable module size (1-8 pixels).
 
 ### Memory Viewer for Snapshots
 After loading a `.sna` or `.z80` snapshot, use the Memory Viewer to browse raw memory as 1-bit graphics. Navigate by bytes, lines, rows, sprites, or pages. Grab sprites directly from memory into the sprite list.
@@ -1246,7 +1362,7 @@ If the grid overlay is hard to see on dark artwork, change the grid color preset
 Click the moon/sun button (☽/☀) next to the Help button to toggle between light and dark themes. The theme is auto-detected from your OS preference on first visit.
 
 ### Display Filters
-Apply CRT-style post-processing effects from the Display Filters section in the View tab. Choose from presets (CRT TV, Composite, VHS, Arcade) or customize individual effects. Filters are preserved in workspace files.
+Apply CRT-style post-processing effects from the Display Filters section in the Tools tab. Choose from presets (CRT TV, Composite, VHS, Arcade) or customize individual effects. Filters are preserved in workspace files.
 
 ---
 

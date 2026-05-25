@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SpectraLab — Bitmap Interleave Test</title>
+<style>
+  body { font-family: monospace; background: #1a1a1a; color: #ccc; padding: 16px; }
+  #summary { font-size: 18px; font-weight: bold; padding: 8px; margin-bottom: 12px; }
+  .summary-pass { color: #0f0; }
+  .summary-fail { color: #f44; }
+  .section { color: #8cf; margin-top: 8px; }
+  .pass { color: #6c6; }
+  .fail { color: #f66; font-weight: bold; }
+  #log { white-space: pre; line-height: 1.4; }
+</style>
+</head>
+<body>
+<h2>Bitmap Interleave Test</h2>
+<div id="summary">Running...</div>
+<div id="log"></div>
+
+<!-- Minimal stubs -->
+<canvas id="screenCanvas" width="1" height="1" style="display:none"></canvas>
+<canvas id="filterOverlayCanvas" width="1" height="1" style="display:none"></canvas>
+
+<!-- Load dependencies -->
+<script src="../js/app_config.js"></script>
+<script src="../js/screen_viewer.js"></script>
+<script src="test-helpers.js"></script>
+
+<script>
+"use strict";
+initTests();
+
+// linearToScrOffset is the function we're testing.
+// It converts linear (y, x) to ZX Spectrum interleaved screen address.
+// The ZX Spectrum screen is divided into 3 thirds (0-63, 64-127, 128-191).
+// Within each third, lines are interleaved: cell rows cycle through 8 pixel rows.
+
+// ═══════════════════════════════════════════════
+// Known addresses from ZX Spectrum technical manual
+// ═══════════════════════════════════════════════
+section('linearToScrOffset — known addresses');
+
+// First byte of each third
+assertEqual(linearToScrOffset(0, 0), 0x0000, 'y=0 x=0 → 0x0000 (start of third 0)');
+assertEqual(linearToScrOffset(64, 0), 0x0800, 'y=64 x=0 → 0x0800 (start of third 1)');
+assertEqual(linearToScrOffset(128, 0), 0x1000, 'y=128 x=0 → 0x1000 (start of third 2)');
+
+// First pixel row of each character line within third 0
+// Formula: third*2048 + pixelRow*256 + cellRow*32 + x
+// y=N*8: third=0, pixelRow=0, cellRow=N → offset = N*32
+assertEqual(linearToScrOffset(0, 0), 0x0000, 'y=0 → cellRow 0 → 0x0000');
+assertEqual(linearToScrOffset(8, 0), 0x0020, 'y=8 → cellRow 1 → 0x0020');
+assertEqual(linearToScrOffset(16, 0), 0x0040, 'y=16 → cellRow 2 → 0x0040');
+assertEqual(linearToScrOffset(24, 0), 0x0060, 'y=24 → cellRow 3 → 0x0060');
+assertEqual(linearToScrOffset(32, 0), 0x0080, 'y=32 → cellRow 4 → 0x0080');
+assertEqual(linearToScrOffset(40, 0), 0x00A0, 'y=40 → cellRow 5 → 0x00A0');
+assertEqual(linearToScrOffset(48, 0), 0x00C0, 'y=48 → cellRow 6 → 0x00C0');
+assertEqual(linearToScrOffset(56, 0), 0x00E0, 'y=56 → cellRow 7 → 0x00E0');
+
+// Pixel row offsets within first character (y=0..7, x=0)
+// pixelRow*256 spacing
+assertEqual(linearToScrOffset(1, 0), 0x0100, 'y=1 → pixelRow 1 → 0x0100');
+assertEqual(linearToScrOffset(2, 0), 0x0200, 'y=2 → pixelRow 2 → 0x0200');
+assertEqual(linearToScrOffset(3, 0), 0x0300, 'y=3 → pixelRow 3 → 0x0300');
+
+// Column offsets
+assertEqual(linearToScrOffset(0, 1), 0x0001, 'y=0 x=1 → 0x0001');
+assertEqual(linearToScrOffset(0, 31), 0x001F, 'y=0 x=31 → 0x001F');
+
+// Last byte of screen
+assertEqual(linearToScrOffset(191, 31), 0x17FF, 'y=191 x=31 → 0x17FF (last byte)');
+
+// ═══════════════════════════════════════════════
+// Interleave pattern within a character cell
+// ═══════════════════════════════════════════════
+section('linearToScrOffset — character cell interleave');
+
+// Character cell at (0,0): 8 pixel rows, each 256 bytes apart
+assertEqual(linearToScrOffset(0, 0), 0x0000, 'cell(0,0) line 0');
+assertEqual(linearToScrOffset(1, 0), 0x0100, 'cell(0,0) line 1');
+assertEqual(linearToScrOffset(2, 0), 0x0200, 'cell(0,0) line 2');
+assertEqual(linearToScrOffset(3, 0), 0x0300, 'cell(0,0) line 3');
+assertEqual(linearToScrOffset(4, 0), 0x0400, 'cell(0,0) line 4');
+assertEqual(linearToScrOffset(5, 0), 0x0500, 'cell(0,0) line 5');
+assertEqual(linearToScrOffset(6, 0), 0x0600, 'cell(0,0) line 6');
+assertEqual(linearToScrOffset(7, 0), 0x0700, 'cell(0,0) line 7');
+
+// Pixel rows within a cell are 256 bytes apart (pixelRow * 256)
+for (var pr = 0; pr < 8; pr++) {
+  assertEqual(linearToScrOffset(pr, 0), pr * 256,
+    'pixel row ' + pr + ' of cell(0,0) at offset ' + (pr * 256));
+}
+
+// ═══════════════════════════════════════════════
+// Third boundaries
+// ═══════════════════════════════════════════════
+section('linearToScrOffset — third boundaries');
+
+// Each third spans 2048 bytes (0x800)
+assertEqual(linearToScrOffset(63, 31), 0x07FF, 'last byte of third 0');
+assertEqual(linearToScrOffset(64, 0), 0x0800, 'first byte of third 1');
+assertEqual(linearToScrOffset(127, 31), 0x0FFF, 'last byte of third 1');
+assertEqual(linearToScrOffset(128, 0), 0x1000, 'first byte of third 2');
+assertEqual(linearToScrOffset(191, 31), 0x17FF, 'last byte of third 2');
+
+// Each third has exactly 2048 bytes
+var third0max = 0, third1min = 99999, third1max = 0, third2min = 99999;
+for (var y = 0; y < 192; y++) {
+  for (var x = 0; x < 32; x++) {
+    var off = linearToScrOffset(y, x);
+    if (y < 64) third0max = Math.max(third0max, off);
+    else if (y < 128) { third1min = Math.min(third1min, off); third1max = Math.max(third1max, off); }
+    else { third2min = Math.min(third2min, off); }
+  }
+}
+assertEqual(third0max, 0x07FF, 'third 0 max = 0x07FF');
+assertEqual(third1min, 0x0800, 'third 1 min = 0x0800');
+assertEqual(third1max, 0x0FFF, 'third 1 max = 0x0FFF');
+assertEqual(third2min, 0x1000, 'third 2 min = 0x1000');
+
+// ═══════════════════════════════════════════════
+// Full uniqueness check — all 6144 offsets must be unique
+// ═══════════════════════════════════════════════
+section('linearToScrOffset — full coverage');
+
+var seen = {};
+var collision = false;
+var collisionDetail = '';
+for (var y = 0; y < 192; y++) {
+  for (var x = 0; x < 32; x++) {
+    var off = linearToScrOffset(y, x);
+    if (seen[off] !== undefined) {
+      collision = true;
+      collisionDetail = 'offset 0x' + off.toString(16) + ' at (' + y + ',' + x +
+        ') already seen at ' + seen[off];
+      break;
+    }
+    seen[off] = '(' + y + ',' + x + ')';
+  }
+  if (collision) break;
+}
+assert(!collision, 'all 6144 scrOffset values unique', collisionDetail);
+assertEqual(Object.keys(seen).length, 6144, '6144 unique addresses generated');
+
+// All offsets in range [0, 6143]
+var minOff = 99999, maxOff = 0;
+for (var key in seen) {
+  var v = parseInt(key);
+  if (v < minOff) minOff = v;
+  if (v > maxOff) maxOff = v;
+}
+assertEqual(minOff, 0, 'minimum offset = 0');
+assertEqual(maxOff, 6143, 'maximum offset = 6143 (0x17FF)');
+
+// ═══════════════════════════════════════════════
+// Formula verification: manual calculation
+// ═══════════════════════════════════════════════
+section('linearToScrOffset — formula verification');
+
+// Manually verify the formula: third*2048 + pixelRow*256 + cellRow*32 + x
+function manualScrOffset(y, x) {
+  var third = y >> 6;
+  var pixelRow = y & 7;
+  var cellRow = (y >> 3) & 7;
+  return third * 2048 + pixelRow * 256 + cellRow * 32 + x;
+}
+
+// Test a grid of values
+var formulaMatch = true;
+for (var y = 0; y < 192; y += 7) {  // step by prime to cover various combos
+  for (var x = 0; x < 32; x += 3) {
+    if (linearToScrOffset(y, x) !== manualScrOffset(y, x)) {
+      formulaMatch = false;
+      break;
+    }
+  }
+}
+assert(formulaMatch, 'linearToScrOffset matches manual formula for all sampled points');
+
+// Specific tricky values
+assertEqual(linearToScrOffset(65, 15), manualScrOffset(65, 15),
+  'y=65 x=15 matches formula');
+assertEqual(linearToScrOffset(129, 0), manualScrOffset(129, 0),
+  'y=129 x=0 matches formula');
+assertEqual(linearToScrOffset(190, 30), manualScrOffset(190, 30),
+  'y=190 x=30 matches formula');
+
+</script>
+</body>
+</html>

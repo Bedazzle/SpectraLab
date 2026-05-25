@@ -326,6 +326,22 @@ function removePlugin(pluginId) {
 // ============================================================================
 
 /**
+ * Build the SL namespace object exposed to JS plugins.
+ * Only includes modules that are actually loaded.
+ * @returns {Object}
+ */
+function buildPluginContext() {
+  const ctx = {};
+  if (typeof ZX0  !== 'undefined') ctx.ZX0  = ZX0;
+  if (typeof ZX7  !== 'undefined') ctx.ZX7  = ZX7;
+  if (typeof RLE  !== 'undefined') ctx.RLE  = RLE;
+  if (typeof ZXSC !== 'undefined') ctx.ZXSC = ZXSC;
+  if (typeof LC   !== 'undefined') ctx.LC   = LC;
+  if (typeof UPKR !== 'undefined') ctx.UPKR = UPKR;
+  return ctx;
+}
+
+/**
  * Evaluate a JS plugin source and return the plugin object.
  * @param {Object} descriptor
  * @returns {{extract: Function, patch: Function|undefined}}
@@ -335,8 +351,8 @@ function loadJsPlugin(descriptor) {
   const src = Array.isArray(descriptor.jsSource)
     ? descriptor.jsSource.join('\n')
     : descriptor.jsSource;
-  const fn = new Function('let plugin = null;\n' + src + '\nreturn plugin;');
-  const plugin = fn();
+  const fn = new Function('SL', 'let plugin = null;\n' + src + '\nreturn plugin;');
+  const plugin = fn(buildPluginContext());
   if (!plugin || typeof plugin.extract !== 'function') {
     throw new Error('JS plugin must define plugin.extract(fileBytes, snapshot)');
   }
@@ -546,6 +562,59 @@ function applyFixups(fixups, fileBytes, snapshot) {
 }
 
 /**
+ * Replace the currently active picture with a .scr file chosen by the user.
+ */
+function replacePictureFromFile() {
+  if (!activePluginId) {
+    alert('No active plugin session.');
+    return;
+  }
+  if (typeof activePictureIndex === 'undefined' || activePictureIndex < 0 ||
+      activePictureIndex >= openPictures.length) {
+    alert('No active picture to replace.');
+    return;
+  }
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.scr';
+  input.addEventListener('change', function () {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function () {
+      const data = new Uint8Array(/** @type {ArrayBuffer} */ (reader.result));
+      if (data.length !== SCREEN.TOTAL_SIZE) {
+        alert('Invalid .scr file: expected ' + SCREEN.TOTAL_SIZE + ' bytes, got ' + data.length + '.');
+        return;
+      }
+      // Save current state, then replace data
+      if (typeof saveCurrentPictureState === 'function') {
+        saveCurrentPictureState();
+      }
+      const pic = openPictures[activePictureIndex];
+      pic.screenData = data.slice();
+      pic.undoStack = [];
+      pic.redoStack = [];
+      pic.modified = true;
+      // Reload into viewer
+      if (typeof loadPictureState === 'function') {
+        loadPictureState(activePictureIndex);
+      }
+      if (typeof editorRender === 'function') {
+        editorRender();
+      } else if (typeof renderScreen === 'function') {
+        renderScreen();
+      }
+      if (typeof updatePictureTabBar === 'function') {
+        updatePictureTabBar();
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  });
+  input.click();
+}
+
+/**
  * Save patched file — patches all plugin pictures back into the original file.
  */
 function saveWithPlugin() {
@@ -608,8 +677,19 @@ function saveWithPlugin() {
         pagingByte: snapshot.pagingByte
       } : null;
       const result = jsPlugin.patch(patchedFile, pictures, snapshotInfo);
-      const finalBytes = result instanceof Uint8Array ? result : patchedFile;
-      downloadFile(finalBytes, pluginOriginalFileName, 'application/octet-stream');
+      // Support both sync (Uint8Array) and async (Promise) patch results
+      if (result && typeof result.then === 'function') {
+        result.then(function (asyncResult) {
+          if (asyncResult === null) return; // cancelled by user
+          const finalBytes = asyncResult instanceof Uint8Array ? asyncResult : patchedFile;
+          downloadFile(finalBytes, pluginOriginalFileName, 'application/octet-stream');
+        }).catch(function (e) {
+          alert('JS plugin patch error: ' + e.message);
+        });
+      } else {
+        const finalBytes = result instanceof Uint8Array ? result : patchedFile;
+        downloadFile(finalBytes, pluginOriginalFileName, 'application/octet-stream');
+      }
     } catch (e) {
       alert('JS plugin patch error: ' + e.message);
     }
@@ -794,6 +874,11 @@ function initPluginUI() {
   }
 
   // Session bar buttons
+  const replaceBtn = document.getElementById('pluginReplaceBtn');
+  if (replaceBtn) {
+    replaceBtn.addEventListener('click', replacePictureFromFile);
+  }
+
   const saveBtn = document.getElementById('pluginSaveBtn');
   if (saveBtn) {
     saveBtn.addEventListener('click', saveWithPlugin);
@@ -828,7 +913,7 @@ function updatePluginUI() {
           escapeHtmlAttr(desc.description || desc.name) + '">' + escapeHtml(desc.name) + '</span>';
         html += '<button class="plugin-open-btn" data-plugin-id="' + escapeHtmlAttr(desc.id) +
           '" style="font-size:10px;padding:1px 6px;" title="Open file with this plugin">Open\u2026</button>';
-        if (desc.type === 'js') {
+        if (desc.type === 'js' && !desc.session) {
           html += '<button class="plugin-export-btn" data-plugin-id="' + escapeHtmlAttr(desc.id) +
             '" style="font-size:10px;padding:1px 6px;" title="Export current picture with this plugin">Export</button>';
         }
@@ -893,8 +978,7 @@ function updatePluginUI() {
       sessionBar.style.display = 'flex';
       const nameEl = document.getElementById('pluginSessionName');
       if (nameEl) {
-        nameEl.textContent = 'Plugin: ' + pluginRegistry[activePluginId].name +
-          ' — ' + pluginOriginalFileName;
+        nameEl.textContent = pluginOriginalFileName;
       }
       // Disable save button for .z80 files with z80addr pictures (can't write back)
       const saveBtn = document.getElementById('pluginSaveBtn');

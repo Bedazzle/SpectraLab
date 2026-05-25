@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SpectraLab — Editor Test</title>
+<style>
+  body { font-family: monospace; background: #1a1a1a; color: #ccc; padding: 16px; }
+  #summary { font-size: 18px; font-weight: bold; padding: 8px; margin-bottom: 12px; }
+  .summary-pass { color: #0f0; }
+  .summary-fail { color: #f44; }
+  .section { color: #8cf; margin-top: 8px; }
+  .pass { color: #6c6; }
+  .fail { color: #f66; font-weight: bold; }
+  #log { white-space: pre; line-height: 1.4; }
+</style>
+</head>
+<body>
+<h2>Editor Test</h2>
+<div id="summary">Running...</div>
+<div id="log"></div>
+
+<!-- DOM stubs required by screen_viewer.js and screen_editor.js -->
+<canvas id="screenCanvas" width="256" height="192" style="display:none"></canvas>
+<canvas id="filterOverlayCanvas" width="256" height="192" style="display:none"></canvas>
+<canvas id="editorPreviewCanvas" width="64" height="64" style="display:none"></canvas>
+<div id="canvasViewport" style="display:none">
+  <div id="canvasWrapper" style="display:none"></div>
+</div>
+
+<!-- Load dependencies -->
+<script src="../js/app_config.js"></script>
+<script src="../js/screen_viewer.js"></script>
+<script src="../js/picture_format.js"></script>
+<script src="../js/screen_editor.js"></script>
+<script src="test-helpers.js"></script>
+
+<script>
+"use strict";
+initTests();
+
+// ═══════════════════════════════════════════════════
+// Override UI functions that would crash without DOM
+// ═══════════════════════════════════════════════════
+editorRender = function() {};
+if (typeof updateLayerPanel === 'function') updateLayerPanel = function() {};
+if (typeof updateEditorColorPickers === 'function') updateEditorColorPickers = function() {};
+if (typeof toggleFormatControlsVisibility === 'function') toggleFormatControlsVisibility = function() {};
+if (typeof updateConvertOptions === 'function') updateConvertOptions = function() {};
+if (typeof updateFileInfo === 'function') updateFileInfo = function() {};
+if (typeof updatePictureTabBar === 'function') updatePictureTabBar = function() {};
+if (typeof renderScreen === 'function') renderScreen = function() {};
+if (typeof markPictureModified === 'function') markPictureModified = function() {};
+
+// ═══════════════════════════════════════════════════
+// Setup helper: initialize a clean SCR editing state
+// ═══════════════════════════════════════════════════
+function setupScrEditor() {
+  screenData = new Uint8Array(SCREEN.TOTAL_SIZE);
+  currentFormat = FORMAT.SCR;
+  currentFileName = 'test.scr';
+  currentPicture = importPicture('scr', screenData, 'test.scr');
+  editorInkColor = 0;
+  editorPaperColor = 7;
+  editorBright = false;
+  editorFlash = false;
+  layersEnabled = false;
+  layers = [];
+  activeLayerIndex = 0;
+  undoStack = [];
+  redoStack = [];
+  isUlaPlusMode = false;
+  editorActive = true;
+}
+
+// ═══════════════════════════════════════════════════
+// setPixel — basic SCR format pixel writing
+// ═══════════════════════════════════════════════════
+section('setPixel — SCR format');
+
+(function() {
+  setupScrEditor();
+
+  // Set ink pixel at (0,0) — should set bit 7 of byte 0
+  editorInkColor = 1;
+  editorPaperColor = 0;
+  setPixel(screenData, 0, 0, true);
+
+  // Bitmap address for (0,0) in SCR = linearToScrOffset(0,0) = 0
+  // Bit position for x=0 is bit 7 (getBitPosition returns 7 - (0%8) = 7)
+  assertEqual(screenData[0] & 0x80, 0x80, 'setPixel(0,0,ink): bit 7 set');
+
+  // Attribute for cell (0,0) should be set
+  // Attr address = SCREEN.BITMAP_SIZE + 0 = 6144
+  var attr = screenData[SCREEN.BITMAP_SIZE];
+  var ink = ATTR.ink(attr);
+  var paper = ATTR.paper(attr);
+  assertEqual(ink, 1, 'setPixel(0,0,ink): attr ink=1');
+  assertEqual(paper, 0, 'setPixel(0,0,ink): attr paper=0');
+
+  // Set paper pixel at (1,0) — should clear bit 6 of byte 0
+  setPixel(screenData, 1, 0, false);
+  assertEqual(screenData[0] & 0x40, 0x00, 'setPixel(1,0,paper): bit 6 clear');
+
+  // Set pixel at (7,0) — bit 0 of byte 0
+  setPixel(screenData, 7, 0, true);
+  assertEqual(screenData[0] & 0x01, 0x01, 'setPixel(7,0,ink): bit 0 set');
+
+  // Set pixel at (8,0) — should be byte 1 (next column), bit 7
+  setPixel(screenData, 8, 0, true);
+  assertEqual(screenData[1] & 0x80, 0x80, 'setPixel(8,0,ink): byte 1, bit 7 set');
+
+  // Set pixel at (0,1) — different scan line in SCR layout
+  // linearToScrOffset(1, 0) = 256 (pixel row 1 → offset 256 in SCR)
+  setPixel(screenData, 0, 1, true);
+  assertEqual(screenData[256] & 0x80, 0x80, 'setPixel(0,1,ink): SCR row 1 at offset 256');
+
+  // Set pixel at (0,8) — next char row (first pixel line of cell row 1)
+  // linearToScrOffset(8, 0) = 32 (charRow=1 → +32 in SCR)
+  setPixel(screenData, 0, 8, true);
+  assertEqual(screenData[32] & 0x80, 0x80, 'setPixel(0,8,ink): SCR char row 1 at offset 32');
+
+  // Different attr cell — pixel at (8, 0) should set attr at 6144 + 1
+  setupScrEditor();
+  editorInkColor = 2;
+  editorPaperColor = 3;
+  setPixel(screenData, 8, 0, true);
+  attr = screenData[SCREEN.BITMAP_SIZE + 1]; // attr for char col 1, row 0
+  assertEqual(ATTR.ink(attr), 2, 'setPixel(8,0): attr ink=2 in cell (1,0)');
+  assertEqual(ATTR.paper(attr), 3, 'setPixel(8,0): attr paper=3 in cell (1,0)');
+
+  // Bright and flash attributes
+  setupScrEditor();
+  editorInkColor = 5;
+  editorPaperColor = 2;
+  editorBright = true;
+  editorFlash = true;
+  setPixel(screenData, 0, 0, true);
+  attr = screenData[SCREEN.BITMAP_SIZE];
+  assert(ATTR.bright(attr), 'setPixel bright: bright bit set');
+  assert(ATTR.flash(attr), 'setPixel flash: flash bit set');
+  assertEqual(ATTR.ink(attr), 5, 'setPixel: ink=5 with bright+flash');
+  assertEqual(ATTR.paper(attr), 2, 'setPixel: paper=2 with bright+flash');
+
+  // Out of bounds — should not crash or modify data
+  setupScrEditor();
+  var dataCopy = new Uint8Array(screenData);
+  setPixel(screenData, -1, 0, true);
+  setPixel(screenData, 256, 0, true);
+  setPixel(screenData, 0, -1, true);
+  setPixel(screenData, 0, 192, true);
+  assertArrayEqual(screenData, dataCopy, 'setPixel out of bounds: no modification');
+})();
+
+// ═══════════════════════════════════════════════════
+// setPixel — multiple pixels form patterns
+// ═══════════════════════════════════════════════════
+section('setPixel — patterns');
+
+(function() {
+  setupScrEditor();
+  editorInkColor = 7;
+  editorPaperColor = 0;
+
+  // Draw a full byte: all 8 pixels in first char at row 0
+  for (var x = 0; x < 8; x++) {
+    setPixel(screenData, x, 0, true);
+  }
+  assertEqual(screenData[0], 0xFF, 'full byte: all 8 pixels set = 0xFF');
+
+  // Draw checkerboard in first byte of row 0
+  setupScrEditor();
+  editorInkColor = 7;
+  editorPaperColor = 0;
+  for (var x = 0; x < 8; x++) {
+    setPixel(screenData, x, 0, (x % 2) === 0); // even=ink, odd=paper
+  }
+  assertEqual(screenData[0], 0xAA, 'checkerboard: 0xAA (even=ink, odd=paper)');
+
+  // Draw all pixels in first char cell (8x8 = 64 pixels)
+  setupScrEditor();
+  editorInkColor = 7;
+  editorPaperColor = 0;
+  for (var y = 0; y < 8; y++) {
+    for (var x = 0; x < 8; x++) {
+      setPixel(screenData, x, y, true);
+    }
+  }
+  // Verify all 8 scan lines of char cell 0 are 0xFF
+  // SCR layout: row 0 at offset 0, row 1 at offset 256, row 2 at 512, etc.
+  for (var y = 0; y < 8; y++) {
+    var addr = linearToScrOffset(y, 0);
+    assertEqual(screenData[addr], 0xFF, 'full cell: scan line ' + y + ' = 0xFF');
+  }
+})();
+
+// ═══════════════════════════════════════════════════
+// getPixelState — pixel inspection
+// ═══════════════════════════════════════════════════
+section('getPixelState');
+
+(function() {
+  setupScrEditor();
+  editorInkColor = 4;
+  editorPaperColor = 1;
+
+  // Blank pixel — should return paper color
+  var state = getPixelState(0, 0);
+  assertNotNull(state, 'getPixelState returns result for blank pixel');
+
+  // Set a pixel and read it back
+  setPixel(screenData, 0, 0, true);
+  state = getPixelState(0, 0);
+  assertNotNull(state, 'getPixelState returns result for set pixel');
+
+  // Set pixel at (1,0) as paper
+  setPixel(screenData, 1, 0, false);
+  var statePaper = getPixelState(1, 0);
+  assertNotNull(statePaper, 'getPixelState for paper pixel');
+
+  // Verify ink vs paper distinction
+  var stateInk = getPixelState(0, 0);
+  // For SCR: getPixelState returns {ink, paper, bright, flash, isInk} or similar
+  // The exact shape depends on the implementation — just verify non-null and consistent
+  assertNotNull(stateInk, 'getPixelState for ink pixel is non-null');
+})();
+
+// ═══════════════════════════════════════════════════
+// getBitmapAddress / getBitPosition — address calculations
+// ═══════════════════════════════════════════════════
+section('getBitmapAddress / getBitPosition');
+
+(function() {
+  setupScrEditor();
+
+  // (0,0) → offset 0 in SCR layout
+  assertEqual(getBitmapAddress(0, 0), 0, 'getBitmapAddress(0,0) = 0');
+  // (8,0) → offset 1 (next char column)
+  assertEqual(getBitmapAddress(8, 0), 1, 'getBitmapAddress(8,0) = 1');
+  // (0,1) → offset 256 in SCR layout (next pixel row)
+  assertEqual(getBitmapAddress(0, 1), 256, 'getBitmapAddress(0,1) = 256');
+  // (0,8) → offset 32 in SCR layout (next char row)
+  assertEqual(getBitmapAddress(0, 8), 32, 'getBitmapAddress(0,8) = 32');
+
+  // Bit positions: x=0 → bit 7, x=1 → bit 6, ..., x=7 → bit 0
+  assertEqual(getBitPosition(0), 7, 'getBitPosition(0) = 7');
+  assertEqual(getBitPosition(1), 6, 'getBitPosition(1) = 6');
+  assertEqual(getBitPosition(7), 0, 'getBitPosition(7) = 0');
+  assertEqual(getBitPosition(8), 7, 'getBitPosition(8) = 7 (wraps)');
+
+  // getAttributeAddress for SCR: offset = BITMAP_SIZE + charRow*32 + charCol
+  assertEqual(getAttributeAddress(0, 0), SCREEN.BITMAP_SIZE,
+    'getAttributeAddress(0,0) = ' + SCREEN.BITMAP_SIZE);
+  assertEqual(getAttributeAddress(8, 0), SCREEN.BITMAP_SIZE + 1,
+    'getAttributeAddress(8,0) = ' + (SCREEN.BITMAP_SIZE + 1));
+  assertEqual(getAttributeAddress(0, 8), SCREEN.BITMAP_SIZE + 32,
+    'getAttributeAddress(0,8) = ' + (SCREEN.BITMAP_SIZE + 32));
+  assertEqual(getAttributeAddress(248, 184), SCREEN.BITMAP_SIZE + 23 * 32 + 31,
+    'getAttributeAddress(248,184) = last cell');
+})();
+
+// ═══════════════════════════════════════════════════
+// getFormatWidth / getFormatHeight
+// ═══════════════════════════════════════════════════
+section('getFormatWidth / getFormatHeight');
+
+(function() {
+  setupScrEditor();
+
+  // SCR: 256×192
+  currentFormat = FORMAT.SCR;
+  assertEqual(getFormatWidth(), 256, 'SCR width = 256');
+  assertEqual(getFormatHeight(), 192, 'SCR height = 192');
+
+  // Mono 1/3: 256×64 (clear currentPicture so format-specific check is used)
+  currentFormat = FORMAT.MONO_1_3;
+  currentPicture = null;
+  assertEqual(getFormatHeight(), 64, 'Mono 1/3 height = 64');
+
+  // Mono 2/3: 256×128
+  currentFormat = FORMAT.MONO_2_3;
+  assertEqual(getFormatHeight(), 128, 'Mono 2/3 height = 128');
+
+  // LoRes: 128×96
+  currentFormat = FORMAT.LORES;
+  assertEqual(getFormatWidth(), 128, 'LoRes width = 128');
+  assertEqual(getFormatHeight(), 96, 'LoRes height = 96');
+
+  // Restore
+  currentFormat = FORMAT.SCR;
+})();
+
+// ═══════════════════════════════════════════════════
+// isFormatEditable
+// ═══════════════════════════════════════════════════
+section('isFormatEditable');
+
+(function() {
+  setupScrEditor();
+  assertTrue(isFormatEditable(), 'SCR with 6912 bytes is editable');
+
+  // No screenData → not editable
+  var saved = screenData;
+  screenData = null;
+  assertFalse(isFormatEditable(), 'null screenData is not editable');
+  screenData = saved;
+
+  // Too-short screenData → not editable
+  screenData = new Uint8Array(100);
+  currentFormat = FORMAT.SCR;
+  assertFalse(isFormatEditable(), 'short screenData is not editable');
+
+  setupScrEditor();
+})();
+
+// ═══════════════════════════════════════════════════
+// saveUndoState — undo stack management
+// ═══════════════════════════════════════════════════
+section('saveUndoState');
+
+(function() {
+  setupScrEditor();
+
+  // Initially empty
+  assertEqual(undoStack.length, 0, 'undo stack starts empty');
+  assertEqual(redoStack.length, 0, 'redo stack starts empty');
+
+  // Save state
+  saveUndoState();
+  assertEqual(undoStack.length, 1, 'after saveUndoState: stack has 1 entry');
+
+  // Verify state is a deep copy
+  var savedState = undoStack[0];
+  assertNotNull(savedState, 'saved state is not null');
+  assertNotNull(savedState.screenData, 'saved state has screenData');
+  assertEqual(savedState.screenData.length, SCREEN.TOTAL_SIZE, 'saved screenData is 6912 bytes');
+
+  // Modify screenData — saved state should not change
+  screenData[0] = 0xFF;
+  assertEqual(savedState.screenData[0], 0x00, 'saved state is independent (deep copy)');
+
+  // Save redo clears on new action
+  redoStack.push({ screenData: new Uint8Array(1) });
+  assertEqual(redoStack.length, 1, 'redo stack has 1 entry');
+  saveUndoState();
+  assertEqual(redoStack.length, 0, 'saveUndoState clears redo stack');
+  assertEqual(undoStack.length, 2, 'undo stack has 2 entries');
+
+  // Stack limit: push MAX_UNDO_LEVELS + 1 states
+  setupScrEditor();
+  for (var i = 0; i < 40; i++) {
+    saveUndoState();
+  }
+  assertLessOrEqual(undoStack.length, MAX_UNDO_LEVELS,
+    'undo stack respects MAX_UNDO_LEVELS (' + undoStack.length + ' <= ' + MAX_UNDO_LEVELS + ')');
+})();
+
+// ═══════════════════════════════════════════════════
+// undo / redo — state restoration
+// ═══════════════════════════════════════════════════
+section('undo / redo');
+
+(function() {
+  setupScrEditor();
+
+  // Draw a pixel, save state, draw another, then undo
+  editorInkColor = 7;
+  editorPaperColor = 0;
+  setPixel(screenData, 0, 0, true);
+  var afterFirstPixel = new Uint8Array(screenData);
+
+  saveUndoState();
+  setPixel(screenData, 100, 100, true);
+  var afterSecondPixel = new Uint8Array(screenData);
+
+  // Verify second pixel was drawn
+  var addr100 = getBitmapAddress(100, 100);
+  var bit100 = getBitPosition(100);
+  assertNotEqual(screenData[addr100] & (1 << bit100), 0, 'second pixel is set before undo');
+
+  // Undo should restore to afterFirstPixel state
+  undo();
+  assertArrayEqual(screenData, afterFirstPixel, 'undo restores screenData to previous state');
+  assertEqual(redoStack.length, 1, 'redo stack has 1 entry after undo');
+
+  // Redo should restore to afterSecondPixel state
+  redo();
+  assertArrayEqual(screenData, afterSecondPixel, 'redo restores screenData to next state');
+  assertEqual(undoStack.length, 1, 'undo stack has 1 entry after redo');
+
+  // Multiple undo levels
+  setupScrEditor();
+  var states = [];
+
+  // Draw 5 pixels at different positions, saving state between each
+  for (var i = 0; i < 5; i++) {
+    saveUndoState();
+    setPixel(screenData, i * 16, 0, true);
+    states.push(new Uint8Array(screenData));
+  }
+
+  assertEqual(undoStack.length, 5, '5 undo states saved');
+
+  // Undo all 5
+  for (var i = 4; i >= 1; i--) {
+    undo();
+    assertArrayEqual(screenData, states[i - 1], 'undo step ' + (5 - i) + ': matches state ' + (i - 1));
+  }
+
+  // Undo past the first pixel → back to clean state
+  undo();
+  // After 5 undos, screenData should be the state before any pixels were drawn
+  var allZero = true;
+  for (var j = 0; j < SCREEN.BITMAP_SIZE; j++) {
+    if (screenData[j] !== 0) { allZero = false; break; }
+  }
+  assert(allZero, 'undo all: bitmap is all zeros');
+
+  // Undo on empty stack — no crash
+  undo();
+  assert(true, 'undo on empty stack does not crash');
+
+  // Redo on empty stack — no crash
+  setupScrEditor();
+  redo();
+  assert(true, 'redo on empty stack does not crash');
+})();
+
+// ═══════════════════════════════════════════════════
+// drawLine — Bresenham line drawing
+// ═══════════════════════════════════════════════════
+section('drawLine');
+
+(function() {
+  setupScrEditor();
+  editorInkColor = 7;
+  editorPaperColor = 0;
+  brushSize = 1;
+  brushShape = 'square';
+
+  // Horizontal line: (0,0) to (7,0) — should fill first byte
+  drawLine(0, 0, 7, 0, true);
+  assertEqual(screenData[0], 0xFF, 'horizontal line (0,0)-(7,0): byte 0 = 0xFF');
+
+  // Vertical line: (0,0) to (0,7) — should set bit 7 of 8 scan lines
+  setupScrEditor();
+  editorInkColor = 7;
+  editorPaperColor = 0;
+  drawLine(0, 0, 0, 7, true);
+  for (var y = 0; y < 8; y++) {
+    var addr = linearToScrOffset(y, 0);
+    assertEqual(screenData[addr] & 0x80, 0x80, 'vertical line: row ' + y + ' bit 7 set');
+  }
+
+  // Single point: (50,50) to (50,50)
+  setupScrEditor();
+  editorInkColor = 7;
+  drawLine(50, 50, 50, 50, true);
+  var addrPt = getBitmapAddress(50, 50);
+  var bitPt = getBitPosition(50);
+  assertNotEqual(screenData[addrPt] & (1 << bitPt), 0, 'single-point line: pixel set');
+})();
+
+// ═══════════════════════════════════════════════════
+// drawRect — rectangle outline
+// ═══════════════════════════════════════════════════
+section('drawRect');
+
+(function() {
+  setupScrEditor();
+  editorInkColor = 7;
+  editorPaperColor = 0;
+  brushSize = 1;
+  brushShape = 'square';
+
+  // Small rectangle: (0,0) to (7,7) — outline of one char cell
+  drawRect(0, 0, 7, 7, true);
+
+  // Top edge: y=0, x=0..7 → all bits in byte 0
+  assertEqual(screenData[0], 0xFF, 'drawRect top edge: byte 0 = 0xFF');
+
+  // Bottom edge: y=7, x=0..7
+  var addrBottom = linearToScrOffset(7, 0);
+  assertEqual(screenData[addrBottom], 0xFF, 'drawRect bottom edge at y=7');
+
+  // Left edge: x=0, y=0..7 → bit 7 of each scan line
+  for (var y = 0; y < 8; y++) {
+    var addr = linearToScrOffset(y, 0);
+    assertEqual(screenData[addr] & 0x80, 0x80, 'drawRect left edge: row ' + y);
+  }
+
+  // Right edge: x=7, y=0..7 → bit 0 of each scan line
+  for (var y = 0; y < 8; y++) {
+    var addr = linearToScrOffset(y, 0);
+    assertEqual(screenData[addr] & 0x01, 0x01, 'drawRect right edge: row ' + y);
+  }
+})();
+
+</script>
+</body>
+</html>

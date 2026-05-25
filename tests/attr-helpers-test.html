@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SpectraLab — Attribute Helpers Test</title>
+<style>
+  body { font-family: monospace; background: #1a1a1a; color: #ccc; padding: 16px; }
+  #summary { font-size: 18px; font-weight: bold; padding: 8px; margin-bottom: 12px; }
+  .summary-pass { color: #0f0; }
+  .summary-fail { color: #f44; }
+  .section { color: #8cf; margin-top: 8px; }
+  .pass { color: #6c6; }
+  .fail { color: #f66; font-weight: bold; }
+  #log { white-space: pre; line-height: 1.4; }
+</style>
+</head>
+<body>
+<h2>Attribute Helpers Test</h2>
+<div id="summary">Running...</div>
+<div id="log"></div>
+
+<!-- Minimal stubs: screen_viewer.js may reference canvas in functions, but not at load time -->
+<canvas id="screenCanvas" width="1" height="1" style="display:none"></canvas>
+<canvas id="filterOverlayCanvas" width="1" height="1" style="display:none"></canvas>
+
+<!-- Load app config + screen viewer (for ATTR, SCREEN constants) -->
+<script src="../js/app_config.js"></script>
+<script src="../js/screen_viewer.js"></script>
+<script src="test-helpers.js"></script>
+
+<script>
+"use strict";
+initTests();
+
+// ═══════════════════════════════════════════════
+// ATTR.ink — extract ink color (bits 0-2)
+// ═══════════════════════════════════════════════
+section('ATTR.ink');
+assertEqual(ATTR.ink(0x00), 0, 'ink of 0x00 = 0');
+assertEqual(ATTR.ink(0x01), 1, 'ink of 0x01 = 1');
+assertEqual(ATTR.ink(0x07), 7, 'ink of 0x07 = 7');
+assertEqual(ATTR.ink(0xFF), 7, 'ink of 0xFF = 7');
+assertEqual(ATTR.ink(0x38), 0, 'ink of 0x38 = 0 (paper only)');
+assertEqual(ATTR.ink(0x40), 0, 'ink of 0x40 = 0 (bright only)');
+assertEqual(ATTR.ink(0x80), 0, 'ink of 0x80 = 0 (flash only)');
+assertEqual(ATTR.ink(0x45), 5, 'ink of 0x45 = 5 (bright + ink 5)');
+
+// ═══════════════════════════════════════════════
+// ATTR.paper — extract paper color (bits 3-5)
+// ═══════════════════════════════════════════════
+section('ATTR.paper');
+assertEqual(ATTR.paper(0x00), 0, 'paper of 0x00 = 0');
+assertEqual(ATTR.paper(0x08), 1, 'paper of 0x08 = 1');
+assertEqual(ATTR.paper(0x38), 7, 'paper of 0x38 = 7');
+assertEqual(ATTR.paper(0xFF), 7, 'paper of 0xFF = 7');
+assertEqual(ATTR.paper(0x07), 0, 'paper of 0x07 = 0 (ink only)');
+assertEqual(ATTR.paper(0x40), 0, 'paper of 0x40 = 0 (bright only)');
+assertEqual(ATTR.paper(0x80), 0, 'paper of 0x80 = 0 (flash only)');
+assertEqual(ATTR.paper(0x78), 7, 'paper of 0x78 = 7 (paper 7 + bright)');
+
+// ═══════════════════════════════════════════════
+// ATTR.bright — extract bright flag (bit 6)
+// ═══════════════════════════════════════════════
+section('ATTR.bright');
+assertFalse(ATTR.bright(0x00), 'bright of 0x00 = false');
+assertTrue(ATTR.bright(0x40), 'bright of 0x40 = true');
+assertTrue(ATTR.bright(0xFF), 'bright of 0xFF = true');
+assertFalse(ATTR.bright(0x3F), 'bright of 0x3F = false');
+assertTrue(ATTR.bright(0xC0), 'bright of 0xC0 = true (flash+bright)');
+
+// ═══════════════════════════════════════════════
+// ATTR.flash — extract flash flag (bit 7)
+// ═══════════════════════════════════════════════
+section('ATTR.flash');
+assertFalse(ATTR.flash(0x00), 'flash of 0x00 = false');
+assertTrue(ATTR.flash(0x80), 'flash of 0x80 = true');
+assertTrue(ATTR.flash(0xFF), 'flash of 0xFF = true');
+assertFalse(ATTR.flash(0x7F), 'flash of 0x7F = false');
+assertTrue(ATTR.flash(0xC0), 'flash of 0xC0 = true (flash+bright)');
+
+// ═══════════════════════════════════════════════
+// ATTR.make — construct attribute byte
+// ═══════════════════════════════════════════════
+section('ATTR.make');
+assertEqual(ATTR.make(0, 0, false, false), 0x00, 'make(0,0,0,0) = 0x00');
+assertEqual(ATTR.make(7, 0, false, false), 0x07, 'make(7,0,0,0) = 0x07');
+assertEqual(ATTR.make(0, 7, false, false), 0x38, 'make(0,7,0,0) = 0x38');
+assertEqual(ATTR.make(7, 7, false, false), 0x3F, 'make(7,7,0,0) = 0x3F');
+assertEqual(ATTR.make(0, 0, true, false), 0x40, 'make(0,0,1,0) = 0x40');
+assertEqual(ATTR.make(0, 0, false, true), 0x80, 'make(0,0,0,1) = 0x80');
+assertEqual(ATTR.make(7, 7, true, true), 0xFF, 'make(7,7,1,1) = 0xFF');
+assertEqual(ATTR.make(3, 5, true, false), 0x6B, 'make(3,5,1,0) = 0x6B');
+assertEqual(ATTR.make(1, 2, false, true), 0x91, 'make(1,2,0,1) = 0x91');
+
+// ═══════════════════════════════════════════════
+// ATTR roundtrip: make → extract
+// ═══════════════════════════════════════════════
+section('ATTR roundtrip');
+for (var ink = 0; ink < 8; ink++) {
+  for (var paper = 0; paper < 8; paper++) {
+    var byteNB = ATTR.make(ink, paper, false, false);
+    var byteB = ATTR.make(ink, paper, true, false);
+    var byteBF = ATTR.make(ink, paper, true, true);
+    assert(ATTR.ink(byteNB) === ink && ATTR.paper(byteNB) === paper,
+      'roundtrip ink=' + ink + ' paper=' + paper + ' bright=0 flash=0');
+    assert(ATTR.ink(byteB) === ink && ATTR.paper(byteB) === paper && ATTR.bright(byteB) === true,
+      'roundtrip ink=' + ink + ' paper=' + paper + ' bright=1 flash=0');
+    assert(ATTR.ink(byteBF) === ink && ATTR.paper(byteBF) === paper &&
+      ATTR.bright(byteBF) === true && ATTR.flash(byteBF) === true,
+      'roundtrip ink=' + ink + ' paper=' + paper + ' bright=1 flash=1');
+  }
+}
+
+// ═══════════════════════════════════════════════
+// ATTR constants (bit masks)
+// ═══════════════════════════════════════════════
+section('ATTR constants');
+assertEqual(ATTR.INK_MASK, 0x07, 'INK_MASK = 0x07');
+assertEqual(ATTR.PAPER_SHIFT, 3, 'PAPER_SHIFT = 3');
+assertEqual(ATTR.PAPER_MASK, 0x07, 'PAPER_MASK = 0x07');
+assertEqual(ATTR.BRIGHT_BIT, 0x40, 'BRIGHT_BIT = 0x40');
+assertEqual(ATTR.FLASH_BIT, 0x80, 'FLASH_BIT = 0x80');
+
+// ═══════════════════════════════════════════════
+// SCREEN constants
+// ═══════════════════════════════════════════════
+section('SCREEN constants');
+assertEqual(SCREEN.WIDTH, 256, 'WIDTH = 256');
+assertEqual(SCREEN.HEIGHT, 192, 'HEIGHT = 192');
+assertEqual(SCREEN.BITMAP_SIZE, 6144, 'BITMAP_SIZE = 6144');
+assertEqual(SCREEN.ATTR_SIZE, 768, 'ATTR_SIZE = 768');
+assertEqual(SCREEN.TOTAL_SIZE, 6912, 'TOTAL_SIZE = 6912');
+assertEqual(SCREEN.CHAR_ROWS, 24, 'CHAR_ROWS = 24');
+assertEqual(SCREEN.CHAR_COLS, 32, 'CHAR_COLS = 32');
+assertEqual(SCREEN.BITMAP_SIZE + SCREEN.ATTR_SIZE, SCREEN.TOTAL_SIZE,
+  'BITMAP_SIZE + ATTR_SIZE = TOTAL_SIZE');
+assertEqual(SCREEN.CHAR_ROWS * SCREEN.CHAR_COLS, SCREEN.ATTR_SIZE,
+  'CHAR_ROWS * CHAR_COLS = ATTR_SIZE');
+assertEqual(SCREEN.WIDTH / 8 * SCREEN.HEIGHT, SCREEN.BITMAP_SIZE,
+  'WIDTH/8 * HEIGHT = BITMAP_SIZE');
+
+// ═══════════════════════════════════════════════
+// FORMAT constants exist
+// ═══════════════════════════════════════════════
+section('FORMAT constants');
+assertEqual(FORMAT.SCR, 'scr', 'FORMAT.SCR');
+assertEqual(FORMAT.BSC, 'bsc', 'FORMAT.BSC');
+assertEqual(FORMAT.IFL, 'ifl', 'FORMAT.IFL');
+assertEqual(FORMAT.BMC4, 'bmc4', 'FORMAT.BMC4');
+assertEqual(FORMAT.MLT, 'mlt', 'FORMAT.MLT');
+assertEqual(FORMAT.RGB3, 'rgb3', 'FORMAT.RGB3');
+assertEqual(FORMAT.GIGASCREEN, 'img', 'FORMAT.GIGASCREEN');
+assertEqual(FORMAT.ATTR_53C, '53c', 'FORMAT.ATTR_53C');
+assertEqual(FORMAT.NXI, 'nxi', 'FORMAT.NXI');
+assertEqual(FORMAT.SL2, 'sl2', 'FORMAT.SL2');
+assertEqual(FORMAT.SPECSCII, 'specscii', 'FORMAT.SPECSCII');
+assertEqual(FORMAT.LORES, 'lores', 'FORMAT.LORES');
+assertEqual(FORMAT.LORES_RAD, 'lores_rad', 'FORMAT.LORES_RAD');
+assertEqual(FORMAT.GMX, 'gmx', 'FORMAT.GMX');
+assertEqual(FORMAT.GMX160, 'gmx160', 'FORMAT.GMX160');
+assertNotNull(FORMAT.UNKNOWN, 'FORMAT.UNKNOWN exists');
+
+// ═══════════════════════════════════════════════
+// Per-format size constants
+// ═══════════════════════════════════════════════
+section('Format size constants');
+assertEqual(BSC.TOTAL_SIZE, 11136, 'BSC.TOTAL_SIZE');
+assertEqual(IFL.TOTAL_SIZE, 9216, 'IFL.TOTAL_SIZE');
+assertEqual(BMC4.TOTAL_SIZE, 11904, 'BMC4.TOTAL_SIZE');
+assertEqual(MLT.TOTAL_SIZE, 12288, 'MLT.TOTAL_SIZE');
+assertEqual(RGB3.TOTAL_SIZE, 18432, 'RGB3.TOTAL_SIZE');
+assertEqual(GIGASCREEN.TOTAL_SIZE, 13824, 'GIGASCREEN.TOTAL_SIZE');
+assertEqual(ULAPLUS.TOTAL_SIZE, 6976, 'ULAPLUS.TOTAL_SIZE');
+assertEqual(NXI.TOTAL_SIZE, 49664, 'NXI.TOTAL_SIZE');
+
+</script>
+</body>
+</html>

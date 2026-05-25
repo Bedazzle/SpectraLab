@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SpectraLab — All Tests</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: monospace; background: #1a1a1a; color: #ccc; padding: 16px; margin: 0; }
+  h1 { margin: 0 0 12px 0; color: #fff; font-size: 20px; }
+
+  #controls { margin-bottom: 12px; display: flex; gap: 8px; align-items: center; }
+  #controls select { background: #333; color: #ccc; border: 1px solid #555; padding: 4px 8px;
+    font-family: monospace; font-size: 13px; }
+  #controls button { background: #2a6; color: #fff; border: none; padding: 6px 16px;
+    font-family: monospace; font-size: 13px; cursor: pointer; border-radius: 3px; }
+  #controls button:hover { background: #3b7; }
+  #controls button:disabled { background: #555; cursor: default; }
+
+  #totalSummary { font-size: 18px; font-weight: bold; padding: 8px; margin-bottom: 12px; }
+  .summary-pass { color: #0f0; }
+  .summary-fail { color: #f44; }
+  .summary-running { color: #ff0; }
+
+  .suite-row { display: flex; align-items: center; gap: 10px; padding: 4px 0;
+    border-bottom: 1px solid #333; }
+  .suite-name { width: 200px; }
+  .suite-status { width: 120px; }
+  .suite-result { flex: 1; }
+  .status-pending { color: #888; }
+  .status-running { color: #ff0; }
+  .status-pass { color: #0f0; }
+  .status-fail { color: #f66; font-weight: bold; }
+  .status-error { color: #f80; font-weight: bold; }
+  .status-timeout { color: #f80; }
+
+  #iframeContainer { position: absolute; left: -9999px; top: -9999px; }
+  #iframeContainer iframe { width: 800px; height: 600px; }
+
+  .suite-link { color: #8cf; text-decoration: none; font-size: 12px; }
+  .suite-link:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<h1>SpectraLab Test Runner</h1>
+
+<div id="controls">
+  <select id="suiteSelect">
+    <option value="all">Run ALL suites</option>
+  </select>
+  <button id="runBtn" onclick="runTests()">Run</button>
+</div>
+
+<div id="totalSummary" class="summary-running">Ready</div>
+<div id="suiteList"></div>
+<div id="iframeContainer"></div>
+
+<script>
+"use strict";
+
+var SUITES = [
+  { id: 'attr-helpers',       name: 'Attribute Helpers',     src: 'attr-helpers-test.html' },
+  { id: 'bitmap-interleave',  name: 'Bitmap Interleave',     src: 'bitmap-interleave-test.html' },
+  { id: 'compression',        name: 'Compression Codecs',    src: 'compression-test.html' },
+  { id: 'format-detect',      name: 'Format Detection',      src: 'format-detect-test.html' },
+  { id: 'picture-structure',  name: 'Picture Structure',     src: 'picture-structure-test.html' },
+  { id: 'format-roundtrip',   name: 'Format Roundtrip',      src: 'format-roundtrip-test.html' },
+  { id: 'utility-functions',  name: 'Utility Functions',     src: 'utility-functions-test.html' },
+  { id: 'editor',             name: 'Editor',                src: 'editor-test.html' }
+];
+
+var TIMEOUT_MS = 60000;
+var suiteSelect = document.getElementById('suiteSelect');
+var suiteListEl = document.getElementById('suiteList');
+var totalSummaryEl = document.getElementById('totalSummary');
+var iframeContainer = document.getElementById('iframeContainer');
+var runBtn = document.getElementById('runBtn');
+
+// Populate dropdown
+SUITES.forEach(function(s) {
+  var opt = document.createElement('option');
+  opt.value = s.id;
+  opt.textContent = s.name;
+  suiteSelect.appendChild(opt);
+});
+
+// Build suite rows
+var suiteRows = {};
+SUITES.forEach(function(s) {
+  var row = document.createElement('div');
+  row.className = 'suite-row';
+  row.innerHTML =
+    '<span class="suite-name">' + s.name + '</span>' +
+    '<span class="suite-status status-pending" id="status-' + s.id + '">Pending</span>' +
+    '<span class="suite-result" id="result-' + s.id + '"></span>' +
+    '<a class="suite-link" href="' + s.src + '" target="_blank">open</a>';
+  suiteListEl.appendChild(row);
+  suiteRows[s.id] = {
+    statusEl: document.getElementById('status-' + s.id),
+    resultEl: document.getElementById('result-' + s.id)
+  };
+});
+
+function setStatus(suiteId, status, text, resultText) {
+  var row = suiteRows[suiteId];
+  if (!row) return;
+  row.statusEl.className = 'suite-status status-' + status;
+  row.statusEl.textContent = text;
+  if (resultText !== undefined) {
+    row.resultEl.textContent = resultText;
+  }
+}
+
+function resetAll() {
+  SUITES.forEach(function(s) {
+    setStatus(s.id, 'pending', 'Pending', '');
+  });
+  totalSummaryEl.textContent = 'Running...';
+  totalSummaryEl.className = 'summary-running';
+  iframeContainer.innerHTML = '';
+}
+
+function parseSummary(text) {
+  // Format: "Passed: N  Failed: M  Total: T"
+  var match = text.match(/Passed:\s*(\d+)\s+Failed:\s*(\d+)\s+Total:\s*(\d+)/);
+  if (match) {
+    return {
+      passed: parseInt(match[1], 10),
+      failed: parseInt(match[2], 10),
+      total: parseInt(match[3], 10)
+    };
+  }
+  return null;
+}
+
+// Active suite being run — used by postMessage listener
+var activeSuite = null;
+var activeSuiteResolve = null;
+var activeSuiteResolved = false;
+var activeSuiteTimeout = null;
+var activeSuitePoll = null;
+
+// Listen for postMessage from test suite iframes
+window.addEventListener('message', function(event) {
+  var data = event.data;
+  if (!data || data.type !== 'spectralab-test-result') return;
+  if (!activeSuite || activeSuiteResolved) return;
+
+  // Update status with latest results from the iframe
+  var text = 'Passed: ' + data.passed + '  Failed: ' + data.failed + '  Total: ' + data.total;
+  if (data.failed > 0) {
+    setStatus(activeSuite.id, 'fail', 'FAIL', text);
+  } else {
+    setStatus(activeSuite.id, 'pass', 'PASS', text);
+  }
+
+  // Debounce: wait a short moment for more assertions, then resolve
+  // (tests run synchronously, so last message = final result)
+  clearTimeout(activeSuite._debounce);
+  activeSuite._debounce = setTimeout(function() {
+    finishActiveSuite({ passed: data.passed, failed: data.failed, total: data.total });
+  }, 300);
+});
+
+function finishActiveSuite(result) {
+  if (activeSuiteResolved) return;
+  activeSuiteResolved = true;
+  clearInterval(activeSuitePoll);
+  clearTimeout(activeSuiteTimeout);
+  if (activeSuiteResolve) activeSuiteResolve(result);
+}
+
+function runSuite(suite) {
+  return new Promise(function(resolve) {
+    setStatus(suite.id, 'running', 'Running...', '');
+    activeSuite = suite;
+    activeSuiteResolve = resolve;
+    activeSuiteResolved = false;
+
+    var iframe = document.createElement('iframe');
+    iframe.src = suite.src;
+    iframeContainer.appendChild(iframe);
+
+    // Fallback: poll iframe DOM (works when served via HTTP, not file://)
+    activeSuitePoll = setInterval(function() {
+      try {
+        var doc = iframe.contentDocument || iframe.contentWindow.document;
+        var summaryEl = doc.getElementById('summary');
+        if (!summaryEl) return;
+        var text = summaryEl.textContent;
+        if (text === 'Running...') return;
+
+        var result = parseSummary(text);
+        if (result) {
+          if (result.failed > 0) {
+            setStatus(suite.id, 'fail', 'FAIL', text);
+          } else {
+            setStatus(suite.id, 'pass', 'PASS', text);
+          }
+          finishActiveSuite(result);
+        }
+      } catch (e) {
+        // Cross-origin — postMessage will handle it
+      }
+    }, 200);
+
+    activeSuiteTimeout = setTimeout(function() {
+      if (!activeSuiteResolved) {
+        setStatus(suite.id, 'timeout', 'TIMEOUT', 'Exceeded ' + (TIMEOUT_MS / 1000) + 's');
+        finishActiveSuite({ passed: 0, failed: 1, total: 1, timeout: true });
+      }
+    }, TIMEOUT_MS);
+
+    iframe.onerror = function() {
+      setStatus(suite.id, 'error', 'ERROR', 'Failed to load');
+      finishActiveSuite({ passed: 0, failed: 1, total: 1, error: true });
+    };
+  });
+}
+
+async function runTests() {
+  runBtn.disabled = true;
+  resetAll();
+
+  var selected = suiteSelect.value;
+  var suitesToRun = selected === 'all'
+    ? SUITES
+    : SUITES.filter(function(s) { return s.id === selected; });
+
+  // Mark skipped suites
+  SUITES.forEach(function(s) {
+    if (!suitesToRun.some(function(sr) { return sr.id === s.id; })) {
+      setStatus(s.id, 'pending', 'Skipped', '');
+    }
+  });
+
+  var totalPassed = 0;
+  var totalFailed = 0;
+  var totalTotal = 0;
+
+  // Run suites sequentially (iframes share globals, avoid conflicts)
+  for (var i = 0; i < suitesToRun.length; i++) {
+    var result = await runSuite(suitesToRun[i]);
+    totalPassed += result.passed;
+    totalFailed += result.failed;
+    totalTotal += result.total;
+  }
+
+  // Update total summary
+  totalSummaryEl.textContent =
+    'Total — Passed: ' + totalPassed + '  Failed: ' + totalFailed +
+    '  Total: ' + totalTotal;
+  totalSummaryEl.className = totalFailed > 0 ? 'summary-fail' : 'summary-pass';
+  runBtn.disabled = false;
+}
+
+// No auto-run — click "Run" button to start tests
+</script>
+</body>
+</html>

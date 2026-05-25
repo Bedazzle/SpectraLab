@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SpectraLab — Format Detection Test</title>
+<style>
+  body { font-family: monospace; background: #1a1a1a; color: #ccc; padding: 16px; }
+  #summary { font-size: 18px; font-weight: bold; padding: 8px; margin-bottom: 12px; }
+  .summary-pass { color: #0f0; }
+  .summary-fail { color: #f44; }
+  .section { color: #8cf; margin-top: 8px; }
+  .pass { color: #6c6; }
+  .fail { color: #f66; font-weight: bold; }
+  #log { white-space: pre; line-height: 1.4; }
+</style>
+</head>
+<body>
+<h2>Format Detection Test</h2>
+<div id="summary">Running...</div>
+<div id="log"></div>
+
+<!-- Minimal stubs for screen_viewer.js -->
+<canvas id="screenCanvas" width="1" height="1" style="display:none"></canvas>
+<canvas id="filterOverlayCanvas" width="1" height="1" style="display:none"></canvas>
+
+<!-- Load dependencies -->
+<script src="../js/app_config.js"></script>
+<script src="../js/screen_viewer.js"></script>
+<script src="test-helpers.js"></script>
+
+<script>
+"use strict";
+initTests();
+
+// ═══════════════════════════════════════════════════
+// Detection by extension (overrides size)
+// ═══════════════════════════════════════════════════
+section('detectFormat — by extension');
+
+assertEqual(detectFormat('test.53c', 768), FORMAT.ATTR_53C, '.53c → ATTR_53C');
+assertEqual(detectFormat('test.atr', 768), FORMAT.ATTR_53C, '.atr → ATTR_53C');
+assertEqual(detectFormat('test.bsc', 11136), FORMAT.BSC, '.bsc → BSC');
+assertEqual(detectFormat('test.bsp', 1000), FORMAT.BSP, '.bsp → BSP');
+assertEqual(detectFormat('test.ifl', 9216), FORMAT.IFL, '.ifl → IFL');
+assertEqual(detectFormat('test.bmc4', 11904), FORMAT.BMC4, '.bmc4 → BMC4');
+assertEqual(detectFormat('test.mlt', 12288), FORMAT.MLT, '.mlt → MLT');
+assertEqual(detectFormat('test.mc', 12288), FORMAT.MLT, '.mc → MLT');
+assertEqual(detectFormat('test.3', 18432), FORMAT.RGB3, '.3 → RGB3');
+assertEqual(detectFormat('test.specscii', 768), FORMAT.SPECSCII, '.specscii → SPECSCII');
+assertEqual(detectFormat('test.sca', 5000), FORMAT.SCA, '.sca → SCA');
+assertEqual(detectFormat('test.rad', 6144), FORMAT.LORES_RAD, '.rad → LORES_RAD');
+
+// .img requires correct size
+assertEqual(detectFormat('test.img', 13824), FORMAT.GIGASCREEN, '.img 13824 → GIGASCREEN');
+assertEqual(detectFormat('test.img', 1000), FORMAT.UNKNOWN, '.img wrong size → UNKNOWN');
+
+// .hlr requires correct size
+assertEqual(detectFormat('test.hlr', 1628), FORMAT.HLR, '.hlr 1628 → HLR');
+assertEqual(detectFormat('test.hlr', 500), FORMAT.UNKNOWN, '.hlr wrong size → UNKNOWN');
+
+// .stl requires correct size
+assertEqual(detectFormat('test.stl', 3072), FORMAT.STL, '.stl 3072 → STL');
+assertEqual(detectFormat('test.stl', 500), FORMAT.UNKNOWN, '.stl wrong size → UNKNOWN');
+
+// .rcs maps to SCR if size matches
+assertEqual(detectFormat('test.rcs', 6912), FORMAT.SCR, '.rcs 6912 → SCR');
+assertEqual(detectFormat('test.rcs', 1000), FORMAT.UNKNOWN, '.rcs wrong size → UNKNOWN');
+
+// .nxi with valid sizes
+assertEqual(detectFormat('test.nxi', 49664), FORMAT.NXI, '.nxi 49664 → NXI');
+assertEqual(detectFormat('test.nxi', 82432), FORMAT.NXI, '.nxi 82432 → NXI');
+assertEqual(detectFormat('test.nxi', 1000), FORMAT.UNKNOWN, '.nxi wrong size → UNKNOWN');
+
+// .sl2 with valid sizes
+assertEqual(detectFormat('test.sl2', 49152), FORMAT.SL2, '.sl2 49152 → SL2');
+assertEqual(detectFormat('test.sl2', 49280), FORMAT.SL2, '.sl2 49280 → SL2');
+assertEqual(detectFormat('test.sl2', 81920), FORMAT.SL2, '.sl2 81920 → SL2');
+assertEqual(detectFormat('test.sl2', 1000), FORMAT.UNKNOWN, '.sl2 wrong size → UNKNOWN');
+
+// .slr — LoRes / LoRes Radastan
+assertEqual(detectFormat('test.slr', 6144), FORMAT.LORES_RAD, '.slr 6144 → LORES_RAD');
+assertEqual(detectFormat('test.slr', 12288), FORMAT.LORES, '.slr 12288 → LORES');
+
+// .c — Scorpion GMX
+assertEqual(detectFormat('test.c', 32768), FORMAT.GMX, '.c 32768 → GMX');
+assertEqual(detectFormat('test.c', 16128), FORMAT.GMX160, '.c 16128 → GMX160');
+assertEqual(detectFormat('test.c', 1000), FORMAT.UNKNOWN, '.c wrong size → UNKNOWN');
+
+// Compressed format extensions (mapped to SCR for later detection)
+assertEqual(detectFormat('test.zx7', 500), FORMAT.SCR, '.zx7 → SCR (compressed)');
+assertEqual(detectFormat('test.zx7b', 500), FORMAT.SCR, '.zx7b → SCR (compressed)');
+assertEqual(detectFormat('test.zx0', 500), FORMAT.SCR, '.zx0 → SCR (compressed)');
+assertEqual(detectFormat('test.zx0b', 500), FORMAT.SCR, '.zx0b → SCR (compressed)');
+assertEqual(detectFormat('test.lc', 500), FORMAT.SCR, '.lc → SCR (compressed)');
+assertEqual(detectFormat('test.upk', 500), FORMAT.SCR, '.upk → SCR (compressed)');
+
+// ═══════════════════════════════════════════════════
+// Detection by size (no recognized extension)
+// ═══════════════════════════════════════════════════
+section('detectFormat — by size (unknown extension)');
+
+assertEqual(detectFormat('test.dat', 768), FORMAT.ATTR_53C, '768 bytes → ATTR_53C');
+assertEqual(detectFormat('test.dat', 11136), FORMAT.BSC, '11136 bytes → BSC');
+assertEqual(detectFormat('test.dat', 9216), FORMAT.IFL, '9216 bytes → IFL');
+assertEqual(detectFormat('test.dat', 11904), FORMAT.BMC4, '11904 bytes → BMC4');
+assertEqual(detectFormat('test.dat', 12288), FORMAT.MLT, '12288 bytes → MLT');
+assertEqual(detectFormat('test.dat', 18432), FORMAT.RGB3, '18432 bytes → RGB3');
+assertEqual(detectFormat('test.dat', 13824), FORMAT.GIGASCREEN, '13824 bytes → GIGASCREEN');
+assertEqual(detectFormat('test.dat', 6912), FORMAT.SCR, '6912 bytes → SCR');
+assertEqual(detectFormat('test.dat', 6976), FORMAT.SCR_ULAPLUS, '6976 bytes → SCR_ULAPLUS');
+assertEqual(detectFormat('test.dat', 6144), FORMAT.MONO_FULL, '6144 bytes → MONO_FULL');
+assertEqual(detectFormat('test.dat', 4096), FORMAT.MONO_2_3, '4096 bytes → MONO_2_3');
+assertEqual(detectFormat('test.dat', 2048), FORMAT.MONO_1_3, '2048 bytes → MONO_1_3');
+assertEqual(detectFormat('test.dat', 49664), FORMAT.NXI, '49664 bytes → NXI');
+assertEqual(detectFormat('test.dat', 16128), FORMAT.GMX160, '16128 bytes → GMX160');
+assertEqual(detectFormat('test.dat', 1628), FORMAT.HLR, '1628 bytes → HLR');
+
+// MLT with ULA+ palette
+assertEqual(detectFormat('test.dat', 12352), FORMAT.MLT, '12352 bytes → MLT (with ULA+)');
+
+// ═══════════════════════════════════════════════════
+// Extension priority over size
+// ═══════════════════════════════════════════════════
+section('detectFormat — extension priority');
+
+// .53c should win even if size doesn't match attribute size
+assertEqual(detectFormat('test.53c', 6912), FORMAT.ATTR_53C, '.53c with SCR size → ATTR_53C (ext wins)');
+assertEqual(detectFormat('test.bsc', 6912), FORMAT.BSC, '.bsc with SCR size → BSC (ext wins)');
+assertEqual(detectFormat('test.ifl', 6912), FORMAT.IFL, '.ifl with SCR size → IFL (ext wins)');
+assertEqual(detectFormat('test.bmc4', 6912), FORMAT.BMC4, '.bmc4 with SCR size → BMC4 (ext wins)');
+assertEqual(detectFormat('test.mlt', 6912), FORMAT.MLT, '.mlt with SCR size → MLT (ext wins)');
+assertEqual(detectFormat('test.3', 6912), FORMAT.RGB3, '.3 with SCR size → RGB3 (ext wins)');
+assertEqual(detectFormat('test.sca', 6912), FORMAT.SCA, '.sca with SCR size → SCA (ext wins)');
+assertEqual(detectFormat('test.specscii', 6912), FORMAT.SPECSCII, '.specscii with SCR size → SPECSCII (ext wins)');
+
+// ═══════════════════════════════════════════════════
+// Case insensitivity
+// ═══════════════════════════════════════════════════
+section('detectFormat — case insensitivity');
+
+assertEqual(detectFormat('TEST.SCR', 6912), FORMAT.SCR, 'uppercase .SCR → SCR');
+assertEqual(detectFormat('Test.Bsc', 11136), FORMAT.BSC, 'mixed case .Bsc → BSC');
+assertEqual(detectFormat('IMAGE.IFL', 9216), FORMAT.IFL, 'uppercase .IFL → IFL');
+assertEqual(detectFormat('test.53C', 768), FORMAT.ATTR_53C, 'uppercase .53C → ATTR_53C');
+
+// ═══════════════════════════════════════════════════
+// Default fallback
+// ═══════════════════════════════════════════════════
+section('detectFormat — fallback');
+
+// Unknown extension + unrecognized size → defaults to SCR
+assertEqual(detectFormat('test.xyz', 999), FORMAT.SCR, 'unknown ext + size → SCR fallback');
+assertEqual(detectFormat('test.dat', 500), FORMAT.SCR, 'unknown small file → SCR fallback');
+
+// ═══════════════════════════════════════════════════
+// ULANext range detection
+// ═══════════════════════════════════════════════════
+section('detectFormat — ULANext range');
+
+// ULANext files: 6912 SCR + 1 mask byte + palette (variable size)
+// Range: 6945 to 7426 (excluding 6976 which is ULA+)
+assertEqual(detectFormat('test.dat', 6945), FORMAT.SCR_ULANEXT, '6945 bytes → SCR_ULANEXT (min)');
+assertEqual(detectFormat('test.dat', 7426), FORMAT.SCR_ULANEXT, '7426 bytes → SCR_ULANEXT (max)');
+assertEqual(detectFormat('test.dat', 7000), FORMAT.SCR_ULANEXT, '7000 bytes → SCR_ULANEXT (mid)');
+// 6976 should be ULA+ not ULANext (checked before ULANext range)
+assertEqual(detectFormat('test.dat', 6976), FORMAT.SCR_ULAPLUS, '6976 bytes → SCR_ULAPLUS (not ULANext)');
+
+</script>
+</body>
+</html>

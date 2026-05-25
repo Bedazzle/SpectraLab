@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SpectraLab — Utility Functions Test</title>
+<style>
+  body { font-family: monospace; background: #1a1a1a; color: #ccc; padding: 16px; }
+  #summary { font-size: 18px; font-weight: bold; padding: 8px; margin-bottom: 12px; }
+  .summary-pass { color: #0f0; }
+  .summary-fail { color: #f44; }
+  .section { color: #8cf; margin-top: 8px; }
+  .pass { color: #6c6; }
+  .fail { color: #f66; font-weight: bold; }
+  #log { white-space: pre; line-height: 1.4; }
+</style>
+</head>
+<body>
+<h2>Utility Functions Test</h2>
+<div id="summary">Running...</div>
+<div id="log"></div>
+
+<!-- Minimal stubs for screen_viewer.js -->
+<canvas id="screenCanvas" width="1" height="1" style="display:none"></canvas>
+<canvas id="filterOverlayCanvas" width="1" height="1" style="display:none"></canvas>
+
+<!-- Load dependencies -->
+<script src="../js/app_config.js"></script>
+<script src="../js/screen_viewer.js"></script>
+<script src="../js/picture_format.js"></script>
+<script src="test-helpers.js"></script>
+
+<script>
+"use strict";
+initTests();
+
+// ═══════════════════════════════════════════════════
+// deinterleaveBitmap / interleaveBitmap roundtrip
+// ═══════════════════════════════════════════════════
+section('deinterleaveBitmap / interleaveBitmap');
+
+(function() {
+  // Create a synthetic SCR with a recognizable bitmap pattern
+  var scrData = new Uint8Array(6912);
+  for (var i = 0; i < 6144; i++) scrData[i] = ((i * 7 + 3) ^ (i >> 4)) & 0xFF;
+  for (var i = 6144; i < 6912; i++) scrData[i] = 0x07;
+
+  // Deinterleave: SCR layout → linear row-major
+  var linear = deinterleaveBitmap(scrData, 0);
+  assertNotNull(linear, 'deinterleaveBitmap returns result');
+  assertEqual(linear.length, 6144, 'deinterleaveBitmap output is 6144 bytes');
+
+  // Re-interleave: linear → SCR layout
+  var reinterleaved = interleaveBitmap(linear);
+  assertNotNull(reinterleaved, 'interleaveBitmap returns result');
+  assertEqual(reinterleaved.length, 6144, 'interleaveBitmap output is 6144 bytes');
+
+  // Compare original bitmap with re-interleaved result
+  var origBitmap = scrData.slice(0, 6144);
+  assertArrayEqual(reinterleaved, origBitmap, 'deinterleave→interleave roundtrip preserves data');
+
+  // Test reverse direction: start with linear, interleave, deinterleave
+  var linearData = new Uint8Array(6144);
+  for (var i = 0; i < 6144; i++) linearData[i] = ((i * 11 + 5) ^ (i >> 3)) & 0xFF;
+
+  var interleaved = interleaveBitmap(linearData);
+  // Put interleaved data into a buffer with offset 0
+  var deinterleaved = deinterleaveBitmap(interleaved, 0);
+  assertArrayEqual(deinterleaved, linearData, 'interleave→deinterleave roundtrip preserves data');
+
+  // Test with offset into larger buffer
+  var bigBuffer = new Uint8Array(100 + 6144);
+  for (var i = 0; i < 6144; i++) bigBuffer[100 + i] = scrData[i];
+  var fromOffset = deinterleaveBitmap(bigBuffer, 100);
+  assertArrayEqual(fromOffset, linear, 'deinterleaveBitmap with offset works correctly');
+
+  // All zeros (edge case)
+  var zeroScr = new Uint8Array(6144);
+  var zeroLinear = deinterleaveBitmap(zeroScr, 0);
+  var zeroBack = interleaveBitmap(zeroLinear);
+  assertArrayEqual(zeroBack, zeroScr, 'roundtrip all-zeros bitmap');
+
+  // All 0xFF (edge case)
+  var ffScr = new Uint8Array(6144);
+  for (var i = 0; i < 6144; i++) ffScr[i] = 0xFF;
+  var ffLinear = deinterleaveBitmap(ffScr, 0);
+  var ffBack = interleaveBitmap(ffLinear);
+  assertArrayEqual(ffBack, ffScr, 'roundtrip all-0xFF bitmap');
+
+  // Verify linear layout: first 32 bytes should be pixel row 0 (not interleaved)
+  // In SCR layout, row 0 is at offset 0, row 1 is at offset 256, row 8 is at offset 32
+  // In linear layout, row 0 is at offset 0, row 1 is at offset 32, row 2 is at offset 64
+  // Verify row ordering by checking known pixel lines
+  var testScr = new Uint8Array(6144);
+  // Set row 0 to all 0xAA
+  for (var x = 0; x < 32; x++) testScr[x] = 0xAA;
+  // Set row 1 to all 0x55 (in SCR layout, row 1 is at offset 256)
+  for (var x = 0; x < 32; x++) testScr[256 + x] = 0x55;
+  var testLinear = deinterleaveBitmap(testScr, 0);
+  // In linear layout, row 0 at offset 0, row 1 at offset 32
+  for (var x = 0; x < 32; x++) {
+    assertEqual(testLinear[x], 0xAA, 'linear row 0 byte ' + x + ' = 0xAA');
+    assertEqual(testLinear[32 + x], 0x55, 'linear row 1 byte ' + x + ' = 0x55');
+  }
+})();
+
+// ═══════════════════════════════════════════════════
+// bmc4AttrsFromBanks / bmc4AttrsToBanks
+// ═══════════════════════════════════════════════════
+section('bmc4AttrsFromBanks / bmc4AttrsToBanks');
+
+(function() {
+  // Create source with two attribute banks at known offsets
+  var source = new Uint8Array(2048);
+  var bank1Off = 100;
+  var bank2Off = 900;
+  // Bank1: even rows (24 rows × 32 cols = 768 bytes)
+  for (var i = 0; i < 768; i++) source[bank1Off + i] = (i * 3 + 5) & 0xFF;
+  // Bank2: odd rows (24 rows × 32 cols = 768 bytes)
+  for (var i = 0; i < 768; i++) source[bank2Off + i] = (i * 7 + 11) & 0xFF;
+
+  // Expand to interleaved 48-row grid
+  var attrs = new Uint8Array(1536);
+  bmc4AttrsFromBanks(attrs, source, bank1Off, bank2Off);
+
+  // Verify interleaving: even rows from bank1, odd rows from bank2
+  for (var row = 0; row < 48; row++) {
+    for (var col = 0; col < 32; col++) {
+      var idx = row * 32 + col;
+      if (row % 2 === 0) {
+        // Even row → from bank1
+        var bank1Idx = (row / 2) * 32 + col;
+        assertEqual(attrs[idx], source[bank1Off + bank1Idx],
+          'attrs[' + row + '][' + col + '] from bank1');
+      } else {
+        // Odd row → from bank2
+        var bank2Idx = ((row - 1) / 2) * 32 + col;
+        assertEqual(attrs[idx], source[bank2Off + bank2Idx],
+          'attrs[' + row + '][' + col + '] from bank2');
+      }
+    }
+  }
+
+  // Reverse: split interleaved grid back to two banks
+  var target = new Uint8Array(2048);
+  bmc4AttrsToBanks(target, attrs, bank1Off, bank2Off);
+
+  // Verify banks match original source
+  for (var i = 0; i < 768; i++) {
+    assertEqual(target[bank1Off + i], source[bank1Off + i],
+      'bank1 byte ' + i + ' preserved');
+    assertEqual(target[bank2Off + i], source[bank2Off + i],
+      'bank2 byte ' + i + ' preserved');
+  }
+
+  // Full roundtrip: fromBanks→toBanks→fromBanks should be identical
+  var attrs2 = new Uint8Array(1536);
+  bmc4AttrsFromBanks(attrs2, target, bank1Off, bank2Off);
+  assertArrayEqual(attrs2, attrs, 'bmc4 attrs roundtrip: fromBanks→toBanks→fromBanks');
+
+  // Edge case: all zeros
+  var zeroSource = new Uint8Array(2048);
+  var zeroAttrs = new Uint8Array(1536);
+  bmc4AttrsFromBanks(zeroAttrs, zeroSource, 0, 768);
+  var allZero = true;
+  for (var i = 0; i < 1536; i++) { if (zeroAttrs[i] !== 0) { allZero = false; break; } }
+  assert(allZero, 'bmc4 all-zero banks produce all-zero attrs');
+
+  // Edge case: all 0xFF
+  var ffSource = new Uint8Array(2048);
+  for (var i = 0; i < 2048; i++) ffSource[i] = 0xFF;
+  var ffAttrs = new Uint8Array(1536);
+  bmc4AttrsFromBanks(ffAttrs, ffSource, 0, 768);
+  var allFF = true;
+  for (var i = 0; i < 1536; i++) { if (ffAttrs[i] !== 0xFF) { allFF = false; break; } }
+  assert(allFF, 'bmc4 all-0xFF banks produce all-0xFF attrs');
+})();
+
+// ═══════════════════════════════════════════════════
+// normalizeAttrForPaint
+// ═══════════════════════════════════════════════════
+section('normalizeAttrForPaint');
+
+(function() {
+  // normalizeAttrForPaint ensures ink is not darker than paper (swaps if needed)
+  // Attr byte: FBPPPIII — flash(7), bright(6), paper(5:3), ink(2:0)
+
+  // Already normalized: ink=7 (white) paper=0 (black) → ink > paper, no swap needed
+  var attr1 = 0x07; // F=0, B=0, P=000, I=111
+  var norm1 = normalizeAttrForPaint(attr1);
+  assertEqual(norm1, attr1, 'normalize: ink=7 paper=0 stays same');
+
+  // Needs swap: ink=0 paper=7 → should swap to ink=7 paper=0
+  var attr2 = 0x38; // F=0, B=0, P=111, I=000
+  var norm2 = normalizeAttrForPaint(attr2);
+  // After normalization, ink should be >= paper
+  var normInk = norm2 & 0x07;
+  var normPaper = (norm2 >> 3) & 0x07;
+  assert(normInk >= normPaper, 'normalize: ink=0 paper=7 swapped so ink >= paper');
+
+  // Same ink and paper: no swap needed
+  var attr3 = 0x1B; // F=0, B=0, P=011, I=011
+  var norm3 = normalizeAttrForPaint(attr3);
+  assertEqual(norm3 & 0x07, (norm3 >> 3) & 0x07, 'normalize: equal ink/paper preserved');
+
+  // Bright and flash preserved
+  var attr4 = 0xC7; // F=1, B=1, P=000, I=111
+  var norm4 = normalizeAttrForPaint(attr4);
+  assertEqual(norm4 & 0xC0, 0xC0, 'normalize: bright+flash bits preserved');
+
+  // Idempotence: normalizing twice gives same result
+  for (var a = 0; a < 256; a++) {
+    var n1 = normalizeAttrForPaint(a);
+    var n2 = normalizeAttrForPaint(n1);
+    if (n1 !== n2) {
+      assert(false, 'normalize idempotence failed for attr 0x' + a.toString(16));
+      break;
+    }
+  }
+  assert(true, 'normalize: idempotent for all 256 attr values');
+
+  // Flash+bright preserved for all values
+  var bitsPreserved = true;
+  for (var a = 0; a < 256; a++) {
+    var n = normalizeAttrForPaint(a);
+    if ((n & 0xC0) !== (a & 0xC0)) { bitsPreserved = false; break; }
+  }
+  assert(bitsPreserved, 'normalize: flash+bright preserved for all 256 values');
+})();
+
+// ═══════════════════════════════════════════════════
+// clonePicture
+// ═══════════════════════════════════════════════════
+section('clonePicture');
+
+(function() {
+  // Create a picture with known data
+  var pic = makePicture({
+    sourceFormat: 'scr',
+    fileName: 'test.scr',
+    width: 256,
+    height: 192,
+    attrCellHeight: 8,
+    planeCount: 1,
+    colorMode: 'standard'
+  });
+  // Fill with recognizable data
+  for (var i = 0; i < pic.planes[0].bitmap.length; i++) {
+    pic.planes[0].bitmap[i] = (i * 7 + 3) & 0xFF;
+  }
+  for (var i = 0; i < pic.planes[0].attrs.length; i++) {
+    pic.planes[0].attrs[i] = (i * 13 + 5) & 0xFF;
+  }
+
+  var clone = clonePicture(pic);
+  assertNotNull(clone, 'clonePicture returns result');
+
+  // Metadata preserved
+  assertEqual(clone.sourceFormat, pic.sourceFormat, 'clone: sourceFormat preserved');
+  assertEqual(clone.fileName, pic.fileName, 'clone: fileName preserved');
+  assertEqual(clone.width, pic.width, 'clone: width preserved');
+  assertEqual(clone.height, pic.height, 'clone: height preserved');
+  assertEqual(clone.attrCellHeight, pic.attrCellHeight, 'clone: attrCellHeight preserved');
+  assertEqual(clone.planeCount, pic.planeCount, 'clone: planeCount preserved');
+  assertEqual(clone.colorMode, pic.colorMode, 'clone: colorMode preserved');
+
+  // Plane data preserved
+  assertArrayEqual(clone.planes[0].bitmap, pic.planes[0].bitmap, 'clone: bitmap data matches');
+  assertArrayEqual(clone.planes[0].attrs, pic.planes[0].attrs, 'clone: attrs data matches');
+
+  // Deep copy: modifying clone doesn't affect original
+  clone.planes[0].bitmap[0] = 0x99;
+  clone.planes[0].attrs[0] = 0x99;
+  assertNotEqual(pic.planes[0].bitmap[0], 0x99, 'clone: bitmap is independent copy');
+  assertNotEqual(pic.planes[0].attrs[0], 0x99, 'clone: attrs is independent copy');
+
+  // Clone null returns null
+  var nullClone = clonePicture(null);
+  assert(nullClone === null, 'clonePicture(null) returns null');
+
+  // Multi-plane picture
+  var multiPic = makePicture({
+    sourceFormat: 'img',
+    fileName: 'test.img',
+    width: 256,
+    height: 192,
+    planeCount: 2,
+    colorMode: 'gigascreen'
+  });
+  for (var p = 0; p < 2; p++) {
+    for (var i = 0; i < multiPic.planes[p].bitmap.length; i++) {
+      multiPic.planes[p].bitmap[i] = (i * (p + 3) + 7) & 0xFF;
+    }
+    for (var i = 0; i < multiPic.planes[p].attrs.length; i++) {
+      multiPic.planes[p].attrs[i] = (i * (p + 5) + 11) & 0xFF;
+    }
+  }
+  var multiClone = clonePicture(multiPic);
+  assertEqual(multiClone.planeCount, 2, 'multi-plane clone: planeCount = 2');
+  for (var p = 0; p < 2; p++) {
+    assertArrayEqual(multiClone.planes[p].bitmap, multiPic.planes[p].bitmap,
+      'multi-plane clone: plane ' + p + ' bitmap matches');
+    assertArrayEqual(multiClone.planes[p].attrs, multiPic.planes[p].attrs,
+      'multi-plane clone: plane ' + p + ' attrs matches');
+  }
+  // Modify clone plane 1 — original unaffected
+  multiClone.planes[1].bitmap[0] = 0xEE;
+  assertNotEqual(multiPic.planes[1].bitmap[0], 0xEE, 'multi-plane clone: plane 1 independent');
+
+  // Picture with palette
+  var palPic = makePicture({
+    sourceFormat: 'scr+',
+    fileName: 'test.scr',
+    width: 256,
+    height: 192,
+    colorMode: 'ulaplus'
+  });
+  palPic.palette = new Uint8Array(64);
+  for (var i = 0; i < 64; i++) palPic.palette[i] = i * 4;
+  var palClone = clonePicture(palPic);
+  assertNotNull(palClone.palette, 'palette clone: palette exists');
+  assertArrayEqual(palClone.palette, palPic.palette, 'palette clone: palette matches');
+  // Modify palette — original unaffected
+  palClone.palette[0] = 0xFF;
+  assertNotEqual(palPic.palette[0], 0xFF, 'palette clone: palette is independent copy');
+})();
+
+// ═══════════════════════════════════════════════════
+// makePicture factory
+// ═══════════════════════════════════════════════════
+section('makePicture factory');
+
+(function() {
+  // Default options
+  var pic = makePicture({});
+  assertNotNull(pic, 'makePicture({}) returns result');
+  assertEqual(pic.width, 256, 'default width = 256');
+  assertEqual(pic.height, 192, 'default height = 192');
+  assertEqual(pic.planeCount, 1, 'default planeCount = 1');
+  assertNotNull(pic.planes, 'planes array exists');
+  assertNotNull(pic.planes[0], 'plane 0 exists');
+  assertNotNull(pic.planes[0].bitmap, 'plane 0 bitmap allocated');
+  assertNotNull(pic.planes[0].attrs, 'plane 0 attrs allocated');
+  assertEqual(pic.planes[0].bitmap.length, 6144, 'plane 0 bitmap = 6144 bytes');
+  assertEqual(pic.planes[0].attrs.length, 768, 'plane 0 attrs = 768 bytes (24 rows × 32 cols)');
+
+  // Custom dimensions
+  var widePic = makePicture({ width: 512, height: 384, attrCellHeight: 8 });
+  assertNotNull(widePic, 'makePicture with custom dimensions');
+  assertEqual(widePic.width, 512, 'custom width = 512');
+  assertEqual(widePic.height, 384, 'custom height = 384');
+  assertEqual(widePic.planes[0].bitmap.length, (512 / 8) * 384,
+    'custom bitmap size = (512/8) × 384');
+  assertEqual(widePic.planes[0].attrs.length, (512 / 8) * (384 / 8),
+    'custom attrs size = (512/8) × (384/8)');
+
+  // Multicolor (attrCellHeight=1) means attrs = rows×cols
+  var mcPic = makePicture({ attrCellHeight: 1 });
+  assertEqual(mcPic.planes[0].attrs.length, 192 * 32,
+    'multicolor attrs = 192 rows × 32 cols');
+
+  // 3-plane picture
+  var triPic = makePicture({ planeCount: 3 });
+  assertEqual(triPic.planeCount, 3, '3-plane picture');
+  assertNotNull(triPic.planes[2], 'plane 2 exists');
+  assertNotNull(triPic.planes[2].bitmap, 'plane 2 bitmap allocated');
+
+  // Planes have independent buffers
+  triPic.planes[0].bitmap[0] = 0xAA;
+  triPic.planes[1].bitmap[0] = 0xBB;
+  triPic.planes[2].bitmap[0] = 0xCC;
+  assertEqual(triPic.planes[0].bitmap[0], 0xAA, 'plane 0 bitmap independent');
+  assertEqual(triPic.planes[1].bitmap[0], 0xBB, 'plane 1 bitmap independent');
+  assertEqual(triPic.planes[2].bitmap[0], 0xCC, 'plane 2 bitmap independent');
+})();
+
+</script>
+</body>
+</html>

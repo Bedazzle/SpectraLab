@@ -163,24 +163,6 @@ Load an external image as a drawing reference behind the canvas.
 
 Reference images are saved in workspace files.
 
-### Display Filters (collapsible)
-
-Click the "Display Filters" header to expand. Check the **On** checkbox to enable post-processing effects.
-
-| Filter | Description |
-|--------|-------------|
-| Scanlines | Gaussian beam profile simulating CRT scanlines |
-| Noise | Static film grain with optional animation |
-| Composite | Chroma blur simulating composite video color bleed |
-| Phosphor Glow | Blurred overlay simulating phosphor persistence |
-| Vignette | Radial darkening at screen edges |
-| CRT Curvature | Barrel distortion simulating curved CRT glass |
-| Pixel Smoothing | Bilinear interpolation for softer pixel scaling |
-
-**Presets:** None, CRT TV, Composite, VHS, Arcade
-
-Settings persist to localStorage and workspace (.slw) files.
-
 ### File Info (collapsible)
 
 Displays information about the loaded file:
@@ -648,10 +630,6 @@ Available format exports:
 - **Embed** checkbox controls whether pixel data is included as DB lines (embedded) or as INCBIN references to the original file. Palette data is always embedded (small size). For RGB3, data is always embedded.
 - All exports target the **sjasmplus** assembler. Pentagon exports produce .sna snapshots; Next Layer 2 exports produce .nex files via SAVENEX.
 
-### Generate
-
-- **QR Code** — open the QR Code generator dialog
-
 ### Optimize Attributes
 
 Available for **SCR** format only. Automatically flips ink↔paper and inverts bitmap bits in 8×8 cells where the current assignment is suboptimal. The displayed colors remain identical — only the bitmap polarity and ink/paper roles change. Cells with ink == paper or flash are skipped.
@@ -1073,9 +1051,29 @@ Grab sprites from memory view into the sprite list:
 
 ---
 
-## 21. QR Code Generator
+## 21. Display Filters
 
-Open from Transform tab → QR Code button.
+Located in the Tools tab (collapsible section). Click the "Display Filters" header to expand. Check the **On** checkbox to enable post-processing effects.
+
+| Filter | Description |
+|--------|-------------|
+| Scanlines | Gaussian beam profile simulating CRT scanlines |
+| Noise | Static film grain with optional animation |
+| Composite | Chroma blur simulating composite video color bleed |
+| Phosphor Glow | Blurred overlay simulating phosphor persistence |
+| Vignette | Radial darkening at screen edges |
+| CRT Curvature | Barrel distortion simulating curved CRT glass |
+| Pixel Smoothing | Bilinear interpolation for softer pixel scaling |
+
+**Presets:** None, CRT TV, Composite, VHS, Arcade
+
+Settings persist to localStorage and workspace (.slw) files.
+
+---
+
+## 22. QR Code Generator
+
+Open from Tools tab → QR Code button.
 
 - **Text or URL** — input field (auto-uppercased for maximum capacity)
 - **Size (version):** Auto, or V1 (21×21, 20 letters) through V20 (97×97, 970 letters)
@@ -1085,7 +1083,7 @@ Open from Transform tab → QR Code button.
 
 ---
 
-## 22. Fullscreen Mode
+## 23. Fullscreen Mode
 
 Press **F11** to toggle fullscreen mode from any tab — viewer or editor.
 
@@ -1098,7 +1096,7 @@ The floating palette includes all drawing tools, selection/clipboard tools, colo
 
 ---
 
-## 23. Keyboard Shortcuts Reference
+## 24. Keyboard Shortcuts Reference
 
 ### Viewer
 
@@ -1192,7 +1190,7 @@ The floating palette includes all drawing tools, selection/clipboard tools, colo
 
 ---
 
-## 24. Font Editor
+## 25. Font Editor
 
 The Font Editor is a standalone page (`font_editor.html`) for creating and editing ZX Spectrum bitmap fonts. Supports fixed-width 8×8 fonts and FZX proportional fonts. Open it via the **Font** link in the bottom bar of the View tab, or navigate directly to `font_editor.html`.
 
@@ -1357,7 +1355,7 @@ When loading a 2048-byte font file, a modal dialog shows side-by-side previews o
 
 ---
 
-## 25. ZGS Editor
+## 26. ZGS Editor
 
 The ZGS Editor is a standalone page (`zgs_editor.html`) for editing ZGS (ZX Graphics Script) vector scenes used in ZX Spectrum adventure games. ZGS uses a bytecode format with a 128x96 logical coordinate grid rendered to a 256x192 pixel display. Open it via the **ZGS Editor** link in the Tools tab, or navigate directly to `zgs_editor.html`.
 
@@ -1469,7 +1467,7 @@ Drag a `.zgs`, `.zgt`, or `.zgp` file onto the page to open it.
 
 ---
 
-## 26. Plugins — Custom Format Support
+## 27. Plugins — Custom Format Support
 
 SpectraLab supports user-defined plugins that extract and patch pictures from arbitrary binary files (e.g., game snapshots). Plugins are managed in the **Tools** tab → **Plugins** section.
 
@@ -1498,7 +1496,8 @@ Each loaded plugin shows a row with buttons:
 
 When pictures are opened via a JSON descriptor plugin, a session bar appears above the picture tabs. JS plugins can also enable sessions by setting `"session": true` in the descriptor — this is useful for JS plugins that extract multiple pictures from a container file and need to write them back.
 
-- **Save Patched File** — writes all edited pictures back into the original file (at the defined addresses for JSON plugins, or via the `patch()` function for JS plugins) and downloads the patched file
+- **Replace Picture…** — replaces the currently active picture with a `.scr` file chosen from disk. The picture data is replaced immediately; undo history for that picture is cleared
+- **Save Patched File** — writes all edited pictures back into the original file (at the defined addresses for JSON plugins, or via the `patch()` function for JS plugins) and downloads the patched file. JS plugins may show a progress window during compression
 - **Save Raw** — exports each picture as a separate raw format file
 - **×** — closes the session (pictures remain open but lose the link to the original file)
 
@@ -1558,7 +1557,7 @@ Numeric values accept hex strings (`"0x4000"`) or plain numbers (`16384`).
     "    return [{ name: 'Screen', format: 'scr', data: fileBytes.slice(0, 6912) }];",
     "  },",
     "  patch: function(originalBytes, pictures, snapshot) {",
-    "    // Optional: encode/compress and return Uint8Array",
+    "    // Optional: encode/compress and return Uint8Array or Promise",
     "    return new Uint8Array(pictures[0].data);",
     "  }",
     "};"
@@ -1575,6 +1574,34 @@ Numeric values accept hex strings (`"0x4000"`) or plain numbers (`16384`).
 - `snapshot` — parsed snapshot object `{banks: Uint8Array[8], machineType, pagingByte}` or `null` for non-snapshot files. Bank arrays are subarray views into `fileBytes` (zero-copy)
 - `pictures` — array of `{name, format, data}` with the current edited screen data
 
+**Return value:** `patch()` can return a `Uint8Array` (synchronous) or a `Promise<Uint8Array>` (asynchronous). Async return is useful for plugins that need to update the UI during long operations (e.g., progress bars). Return `null` to cancel the save.
+
+**`SL` namespace** — JS plugins receive an `SL` object as a parameter, providing access to SpectraLab's compression modules. Plugins can check availability with `if (SL.ZX0)` before use:
+
+| Property | Module | Key methods |
+|----------|--------|-------------|
+| `SL.ZX0` | ZX0 compressor | `compress(data)` → `{data, delta}`, `decompress(data)` → `Uint8Array` |
+| `SL.ZX7` | ZX7 compressor | `compress(data)`, `decompress(data)` |
+| `SL.RLE` | RLE (PackBits) | `compress(data)`, `decompress(data)` |
+| `SL.ZXSC` | ZXSC (LZF) | `compress(data)`, `decompress(data)` |
+| `SL.LC` | Laser Compact | `compress(data)`, `decompress(data)` |
+| `SL.UPKR` | UPKR | `compress(data)`, `decompress(data)` |
+
+Example usage inside a plugin:
+```javascript
+"jsSource": [
+    "plugin = {",
+    "  extract: function(fileBytes) {",
+    "    var decompressed = SL.ZX0.decompress(fileBytes);",
+    "    return [{ name: 'Screen', format: 'scr', data: decompressed }];",
+    "  },",
+    "  patch: function(originalBytes, pictures) {",
+    "    return SL.ZX0.compress(pictures[0].data).data;",
+    "  }",
+    "};"
+]
+```
+
 ### Example Plugins
 
 Example plugins are provided in the `plugins/` directory:
@@ -1582,12 +1609,145 @@ Example plugins are provided in the `plugins/` directory:
 - `example.slplugin` — JSON descriptor: extracts main and shadow screens from a 128K .sna snapshot
 - `example_js.slpluginjs` — JS plugin: demonstrates extract/patch with snapshot bank access
 - `rle_scr.slpluginjs` — JS plugin (codec): loads and saves RLE-compressed SCR files (0x00/0xFF + count encoding)
-- `maria_sna.slpluginjs` — JS plugin (session): extracts loading screen + 5 RLE-packed screens from Maria's Christmas Box 48K .sna snapshot. Demonstrates cross-bank data handling (packed data spans bank 2 into bank 0) and memory overflow protection (prevents writing past 0xFDFF)
+- `maria_sna.slpluginjs` — JS plugin (session): extracts loading screen + 5 compressed screens (ZX0/RLE auto-detected) from Maria's Christmas Box 48K .sna snapshot. On save-back, patches the Z80 depacker in the snapshot: replaces the inline RLE loop at `$9602` with `CALL $FE90`, injects the 112-byte `dzx0_smartRCS` depacker at `$FE90` (end of memory), and applies RCS bitmap reordering before ZX0 compression. The data block at `$A000` (header + compressed screens) is kept portable for sideloading. Falls back to RLE if `SL.ZX0` is unavailable. ZX0, RCS and `dzx0_smartRCS` by Einar Saukas. Demonstrates Z80 code patching, depacker relocation, cross-bank data handling, `SL` namespace usage, and memory overflow protection
 - `heroquest_128k.slpluginjs` — JS plugin (session): extracts 11 graphics from Hero Quest 128K .sna snapshot across banks 3, 4, 6, and 7. Ten 128×64 px graphics in banks 3/4/7 use linear bitmap+attrs layout converted to/from ZX-interleaved SCR; bank 6 contains the full 256×192 playfield screen as a standard SCR. Unused screen area filled with bright/regular white checkerboard to mark the editable region
 
 ---
 
-## 27. Supported Formats Reference
+## 28. Script Editor — Scripting Engine
+
+The **Script Editor** is a resizable, draggable floating panel that provides an embedded BASIC-style scripting language for automating drawing operations, batch processing, and generative art. Open it from the **Tools** tab → **Script Editor** link. Drag the titlebar to move, drag the bottom-right corner to resize. Panel position and size persist across sessions.
+
+### Script Editor
+
+A monospace text editor with line numbers for entering scripts. Long lines scroll horizontally. Content is auto-saved to localStorage between sessions.
+
+**Toolbar buttons:**
+
+| Button | Action |
+|--------|--------|
+| **▶ Run** | Execute the script (also **Ctrl+Enter**) |
+| **■ Stop** | Interrupt a running script |
+| **Clear Log** | Clear the output log |
+| **Load** | Load a `.slscript` / `.txt` / `.bas` file |
+| **Save** | Download the script as a `.slscript` file |
+| **?** | Open/close the inline language reference overlay |
+
+**Examples dropdown** — loads one of 7 built-in demo scripts (Diagonal Line, Starfield, Gradient Bars, Checkerboard, Sine Wave, Circles, Sierpinski Triangle).
+
+### Output Log
+
+Displays `PRINT` output and status messages. Errors appear in red with line numbers.
+
+### Language Reference
+
+**Variables and assignment:**
+
+```
+LET x = 10
+y = x + 5
+```
+
+Variables default to `0` if not previously assigned. Case-insensitive keywords — `setink`, `SETINK`, `SetInk` all work.
+
+**Control flow:**
+
+```
+FOR i = 0 TO 255 STEP 2
+  PIXEL i i
+NEXT
+
+IF x > 128 THEN
+  SETINK 7
+ELSE
+  SETINK 0
+ENDIF
+
+REPEAT 100
+  PIXEL RANDOM(256) RANDOM(192)
+ENDREPEAT
+
+WHILE x < 256
+  PIXEL x 96
+  x = x + 1
+ENDWHILE
+```
+
+**User-defined functions:**
+
+```
+FUNC drawStar(cx, cy, size)
+  LINE cx - size cy cx + size cy
+  LINE cx cy - size cx cy + size
+ENDFUNC
+
+CALL drawStar(128, 96, 20)
+```
+
+**Comments:** `#` or `REM` — everything after is ignored until end of line.
+
+### Drawing Commands
+
+| Command | Parameters | Description |
+|---------|-----------|-------------|
+| `PIXEL` | x y | Set pixel using current ink color |
+| `PIXELPAPER` | x y | Set pixel using current paper color |
+| `PLOT` | x y | Alias for `PIXEL` |
+| `LINE` | x0 y0 x1 y1 | Draw a line |
+| `RECT` | x0 y0 x1 y1 | Draw rectangle outline |
+| `FILLRECT` | x0 y0 w h | Draw filled rectangle |
+| `CIRCLE` | cx cy rx ry | Draw ellipse (ry defaults to rx) |
+| `FILL` | x y | Flood fill from point |
+| `CLEAR` | [ink paper] | Clear screen (optionally set colors) |
+
+### Attribute Commands
+
+| Command | Parameters | Description |
+|---------|-----------|-------------|
+| `SETINK` | n | Set current ink color (0–7) |
+| `SETPAPER` | n | Set current paper color (0–7) |
+| `SETBRIGHT` | b | Set bright flag (0 or 1) |
+| `SETFLASH` | b | Set flash flag (0 or 1) |
+| `SETATTR` | col row ink paper bright flash | Set attribute at cell (col, row) |
+
+### Screen Operations
+
+| Command | Description |
+|---------|-------------|
+| `RENDER` | Force screen redraw (normally auto at end) |
+| `UNDO` | Undo last change |
+| `REDO` | Redo last undone change |
+
+### Query Functions
+
+| Function | Returns |
+|----------|---------|
+| `GETPIXEL(x, y)` | 1 if pixel set, 0 otherwise |
+| `GETINK(col, row)` | Ink color at attribute cell |
+| `GETPAPER(col, row)` | Paper color at attribute cell |
+| `GETBRIGHT(col, row)` | 1 if bright, 0 otherwise |
+| `WIDTH()` | Current format width in pixels |
+| `HEIGHT()` | Current format height in pixels |
+
+### Math Functions
+
+`SIN(x)`, `COS(x)`, `TAN(x)`, `SQRT(x)`, `ABS(x)`, `FLOOR(x)`, `CEIL(x)`, `ROUND(x)`, `MIN(a,b)`, `MAX(a,b)`, `RANDOM(n)` (0 to n−1), `PI`.
+
+### Operators
+
+Arithmetic: `+`, `-`, `*`, `/`, `%`. Comparison: `=`, `<>`, `!=`, `<`, `>`, `<=`, `>=`. Logical: `AND`, `OR`, `NOT`.
+
+### Execution Details
+
+- Scripts run asynchronously, yielding every 1000 statements to keep the browser responsive
+- A single undo checkpoint is saved before the script starts — the entire script is one undo step
+- The screen renders once when the script finishes (use `RENDER` to force intermediate redraws)
+- Brush size is temporarily set to 1 pixel during script execution
+- The Stop button interrupts execution at the next yield point
+
+---
+
+## 29. Supported Formats Reference
 
 ### Editable Formats
 
