@@ -818,6 +818,10 @@ function exportWithPlugin(pluginId) {
       data: picState.screenData
     }];
     const result = jsPlugin.patch(new Uint8Array(0), pictures, null);
+    if (result === null || result === undefined) {
+      // Plugin handled its own output (e.g. custom dialog + download)
+      return;
+    }
     if (!(result instanceof Uint8Array) || result.length === 0) {
       alert('Plugin returned no data.');
       return;

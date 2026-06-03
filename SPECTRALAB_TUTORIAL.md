@@ -48,7 +48,7 @@ Load a standard `.scr` file by clicking the file input or dragging it anywhere o
 
 ### Toggle Grid Overlay
 
-1. Expand the **View Settings** section (click the header)
+1. Expand the **Grid** section (click the header)
 2. Set the **Paper grid** dropdown to **8px** to see the 8×8 character cell grid
 3. Optionally set a **subgrid** (e.g., 2px or 4px) for finer divisions
 4. Or press **G** to cycle through grid sizes (None → 8 → 16 → 24px)
@@ -56,7 +56,7 @@ Load a standard `.scr` file by clicking the file input or dragging it anywhere o
 ### Change Grid Color
 
 If the grid is hard to see against dark or light artwork:
-1. In **View Settings**, find the **Grid color** dropdown
+1. In the **Grid** section, find the **Grid color** dropdown
 2. Select a color preset: **White**, **Gray**, **Black**, **Orange**, **Red**, or **Green**
 3. **Default** uses the standard blue grid color
 
@@ -361,6 +361,14 @@ In the **Transform** section, choose a dithering method. Default is **None** (ne
 Below the dither dropdown:
 - **Strength** (0–100%) scales error diffusion intensity; on ordered / pattern / blue-noise / a-dither methods, Strength > 0 engages a hybrid ordered+diffusion mode
 - **Serpentine scan** alternates row direction during error diffusion to reduce horizontal banding
+- **Pre-blur** (0–50) blurs cell pixels before choosing the ink/paper color pair. Useful for noisy or highly detailed images where attribute clash is severe. The bitmap detail stays sharp — only the color decision is affected
+
+In the **Source** section:
+- **Colors** dropdown selects the color space for matching: RGB, LAB, or OkLab (default). OkLab generally produces the best results, especially for blues and purples
+- **Pair fit** dropdown selects the strategy for choosing the ink/paper color pair per cell: Best fit (exhaustive nearest-color), Blend fit (line-projection metric that models dithering blend quality), or PCA gradient (PCA-guided candidates with line-projection). Try Blend fit or PCA gradient for smoother color transitions
+
+In the **Output** section:
+- The **palette strip** below the Palette dropdown lets you click individual colors to disable them. Disabled colors won't be used during conversion. This is useful for restricting the output to a specific subset of ZX colors (e.g., disable bright colors to force all-regular output)
 
 ### Set Paper Color Rule
 
@@ -410,6 +418,19 @@ Position, Size, Fit mode, and Align controls are disabled during tiling since ea
 Click **Import** to apply the conversion and load the result as an editable picture.
 
 ![Importing an image](screenshots/tutorial_import.png)
+
+### Compare Settings with A/B
+
+Not sure which dithering or color strategy looks best? Use the A/B comparison to try two sets of settings side by side:
+
+1. Set up your preferred settings — these become slot **A**
+2. Click **B** in the Compare group (right side of the tab bar) to switch to slot B
+3. Change settings (e.g. switch dithering to Floyd-Steinberg, try a different color strategy)
+4. Click **A+B** to see both results side by side — click a panel to switch which slot you're editing
+5. Use **Copy A→B** to duplicate settings from one slot to the other as a starting point
+6. When satisfied, make sure the preferred slot is active and click **Import**
+
+Auto-labels below each preview show a concise summary of each slot's settings for quick reference.
 
 ---
 
@@ -756,7 +777,7 @@ SpectraLab includes built-in [ZX7](https://spectrumcomputing.co.uk/entry/27996/Z
 
 **Direct export:**
 
-1. Select a compressed format — `.scr.zx7`, `.scr.zx0`, `.rcs.zx7`, `.rcs.zx0`, `.scr.lc`, `.scr.lzf`, `.scr.rle`, `.scr.upk`, `.scr.c4` (Chunks 4×4), `.scr.c2` (Chunks 4×2)
+1. Select a compressed format — `.scr.zx7`, `.scr.zx0`, `.rcs.zx7`, `.rcs.zx0`, `.scr.lgk`, `.scr.lc`, `.scr.lzf`, `.scr.rle`, `.scr.upk`, `.scr.c4` (Chunks 4×4), `.scr.c2` (Chunks 4×2)
 2. Click **Export** — downloads the compressed file
 3. Note: Chunks formats (`.scr.c4`, `.scr.c2`) are **lossy monochrome** — they produce fixed-size output by encoding bitmap blocks as 2-bit indices into a 4-pattern dictionary. Attributes are not stored.
 
@@ -770,7 +791,7 @@ SpectraLab includes built-in [ZX7](https://spectrumcomputing.co.uk/entry/27996/Z
 
 **Opening compressed files:**
 
-Open `.scr.zx7`/`.scr.zx7b`/`.scr.zx0`/`.scr.zx0b` or `.rcs.zx7`/`.rcs.zx7b`/`.rcs.zx0`/`.rcs.zx0b` files directly — SpectraLab automatically decompresses the data (forward or backward) and reverses RCS reordering if needed.
+Open `.scr.zx7`/`.scr.zx7b`/`.scr.zx0`/`.scr.zx0b`, `.rcs.zx7`/`.rcs.zx7b`/`.rcs.zx0`/`.rcs.zx0b`, or `.scr.lgk` files directly — SpectraLab automatically decompresses the data (forward or backward) and reverses RCS reordering if needed.
 
 ### Format ASM Export
 
@@ -1171,6 +1192,34 @@ The Hero Quest plugin demonstrates a common scenario: game graphics stored in no
 
 The plugin handles the conversion between the game's linear bitmap+attrs layout and the ZX Spectrum's interleaved screen format automatically.
 
+### Exporting with the Cursor Loader Plugin
+
+The Cursor Loader plugin lets you create a `.tap` file where the screen loads cell by cell in any order you choose, with a bright white cursor sweeping from cell to cell. It supports **multiple source images** — you can load several `.scr` files and paint cell regions from different sources, creating picture-replacement effects during tape loading.
+
+1. Load `cursor_loader.slpluginjs` via the **Tools** tab → **Load Plugin…**
+2. Open or draw a `.scr` screen in the editor
+3. Click **Export** in the plugin bar — the Cursor Loader Export dialog opens
+4. The dialog shows your screen at 2× zoom with a 32×24 grid overlay
+5. **Source tabs** appear above the canvas — "Editor" is source 1 (your current screen). Click **+ Add** to load additional `.scr` files as extra sources. Each source gets a distinct color
+6. Choose a preset to fill all 768 cells from the active source:
+   - **Typewriter** — left to right, top to bottom
+   - **Spiral In** — clockwise spiral from the border inward
+   - **Random** — shuffled order for a scattered loading effect
+7. Or define a custom order interactively:
+   - **Left-click/drag** to add cells from the active source (drag draws smooth lines using Bresenham interpolation)
+   - **Right-click** to set an anchor point (shown with white corner brackets), then right-click another cell to draw a line of cells between them
+   - Switch source tabs to paint cells from different images — the same cell can appear multiple times from different sources
+8. Tools: **Clear**, **Fill remaining** (fills uncovered cells from active source), **Undo** (Ctrl+Z), **Redo** (Ctrl+Y)
+9. **Save** / **Load** — save the entire project (sources + cell order) to a `.json` file and resume later
+10. **Animate** checkbox — preview the loading animation at any time, even with partial coverage
+11. **Initial colors** — use the Ink and Paper dropdowns and the **Bright** checkbox to set the screen's initial attribute fill before loading starts. The border color matches the paper. The color swatch shows a preview of ink on paper at the chosen brightness. Default is black on black
+12. **Cursor** — the "Show cursor during loading" checkbox controls whether a bright white cell appears ahead of the data during tape loading. Uncheck to hide the cursor
+13. **Border stripes** — choose the border stripe color scheme during tape loading: Blue/Yellow (standard), Red/Cyan, Magenta/Green, Black/White, or Solid (no stripes). When Solid is selected, a **Color** dropdown appears to choose any of the 8 ZX Spectrum colors for the solid border
+14. Select download format: **ZIP** (includes .tap + .bin + .asm + .inc) or **TAP only**
+15. Click **Export** when all 768 unique positions are covered (status shows "Entries: N | Unique cells: M / 768")
+
+To test: open the `.tap` in any ZX Spectrum emulator (48K mode) and type `LOAD ""`. The bright white cursor sweeps across the screen in your chosen order, and the picture appears behind it as each cell loads. With multiple sources, you'll see one picture being replaced by another.
+
 ### Writing Your Own Plugin
 
 Open any example plugin in a text editor — the `_doc` field at the top explains all fields and the API. JSON descriptor plugins need no coding — just specify addresses, formats, and lengths. JS plugins use `extract()` and `patch()` functions with full access to snapshot memory banks. Add `"session": true` to a JS plugin descriptor if it needs the Save Patched File / Save Raw workflow.
@@ -1356,7 +1405,7 @@ Open, view, edit, and save `.ch$`/`.chr$`/`.ch-` files — a variable-size inter
 Press **K** to select the Color Picker tool. Works across all editable formats including 53c, ULA+, Gigascreen, and RGB3.
 
 ### Grid Color
-If the grid overlay is hard to see on dark artwork, change the grid color preset in View Settings (White, Gray, Black, Orange, Red, Green).
+If the grid overlay is hard to see on dark artwork, change the grid color preset in the Grid section (White, Gray, Black, Orange, Red, Green).
 
 ### Light/Dark Theme
 Click the moon/sun button (☽/☀) next to the Help button to toggle between light and dark themes. The theme is auto-detected from your OS preference on first visit.

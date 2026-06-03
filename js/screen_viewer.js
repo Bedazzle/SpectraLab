@@ -2738,7 +2738,7 @@ function renderMonoScreen(ctx, borderOffset, thirds) {
  */
 function renderSpecsciiScreen(ctx, borderOffset) {
   // Fill background (black when attributes on, white when attributes off — matches SCR)
-  ctx.fillStyle = showAttributes ? ZX_PALETTE.REGULAR[0] : ZX_PALETTE.REGULAR[7];
+  ctx.fillStyle = showAttributes ? ZX_PALETTE.REGULAR[0] : ZX_PALETTE.BRIGHT[7];
   ctx.fillRect(borderOffset, borderOffset, SCREEN.WIDTH * zoom, SCREEN.HEIGHT * zoom);
 
   // If editor grids are available, render directly from grids (avoids stream round-trip)
@@ -2871,8 +2871,9 @@ function renderSpecsciiScreen(ctx, borderOffset) {
             paper = tmp;
           }
         } else {
-          ink = ZX_PALETTE.REGULAR[0];
-          paper = ZX_PALETTE.REGULAR[7];
+          // Match SCR attrs-off: pure black ink, bright white paper
+          ink = ZX_PALETTE.BRIGHT[0];
+          paper = ZX_PALETTE.BRIGHT[7];
           // Apply per-cell inverse: swap monochrome colors
           if (cellInverse) {
             const tmp = ink;
@@ -9437,6 +9438,18 @@ function loadScreenFile(file) {
           return;
         }
         const innerName = fileName.replace(/\.rle$/i, '');
+        format = detectFormat(innerName, data.length);
+      }
+
+      // LgK compressed files — decompress before further processing
+      if (fileExt === 'lgk' && typeof LgK !== 'undefined') {
+        try {
+          data = LgK.decompress(data);
+        } catch (e) {
+          alert('Failed to decompress LgK file: ' + e.message);
+          return;
+        }
+        const innerName = fileName.replace(/\.lgk$/i, '');
         format = detectFormat(innerName, data.length);
       }
 

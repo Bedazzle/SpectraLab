@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v2.26 -->
+<!-- SpectraLab v2.32 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -1535,7 +1535,7 @@
       <div class="panel-content">
         <!-- File input -->
         <div class="control-group">
-          <input type="file" id="inputFile" multiple accept=".scr,.rcs,.53c,.atr,.bsc,.bsp,.bmc4,.ifl,.mlt,.mc,.3,.img,.mg1,.mg2,.mg4,.mg8,.hlr,.stl,.nxi,.sl2,.slr,.rad,.c,.specscii,.sca,.zxp,.ch$,.chr$,.ch-,.slp,.slw,.sna,.z80,.btile,.wtile,.zx7,.zx7b,.zx0,.zx0b,.lc,.upk,.rle,.lzf,.c4,.c2,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,.slplugin,.slpluginjs,image/*" style="width: 100%; font-size: 11px;">
+          <input type="file" id="inputFile" multiple accept=".scr,.rcs,.53c,.atr,.bsc,.bsp,.bmc4,.ifl,.mlt,.mc,.3,.img,.mg1,.mg2,.mg4,.mg8,.hlr,.stl,.nxi,.sl2,.slr,.rad,.c,.specscii,.sca,.zxp,.ch$,.chr$,.ch-,.slp,.slw,.sna,.z80,.btile,.wtile,.zx7,.zx7b,.zx0,.zx0b,.lc,.upk,.rle,.lzf,.lgk,.c4,.c2,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,.slplugin,.slpluginjs,image/*" style="width: 100%; font-size: 11px;">
         </div>
 
         <!-- New and Save buttons -->
@@ -1650,6 +1650,16 @@
                   Preview
                 </label>
               </div>
+            </div>
+          </div>
+          <div class="control-group" id="gridSettingsSection">
+            <div id="gridSettingsHeader" class="collapsible-header" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 2px 0;">
+              <div style="display: flex; align-items: center; gap: 4px;">
+                <span id="gridSettingsExpandIcon" style="font-size: 10px; width: 12px;">▶</span>
+                <span class="control-group-title" style="margin: 0;">Grid</span>
+              </div>
+            </div>
+            <div id="gridSettingsContent" style="display: none;">
               <div style="display: flex; align-items: center; gap: 6px; margin-top: 4px;">
                 <span style="font-size: 11px; min-width: 60px;">Paper grid:</span>
                 <label style="display: flex; align-items: center; gap: 2px;">
@@ -3612,7 +3622,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 2.26</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 2.32</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">
@@ -3636,7 +3646,8 @@
               <b>exoticorn (Dennis Ranke)</b> — UPKR compression<br>
               <b>Hrumer</b> — Laser Compact packer/depacker<br>
               <b>TomDDG</b> — ZXSC screen compressor<br>
-              <b>Eugene Larchenko</b> — LC improvements
+              <b>Eugene Larchenko</b> — LC improvements<br>
+              <b>Lethargeek</b> — LgK screen compressor
             </div>
           </div>
           <div style="font-size: 12px; font-style: italic; color: var(--text-secondary);">
@@ -3670,7 +3681,7 @@
           <canvas id="importOriginalCanvas" width="512" height="384" style="display: block; background: #000; image-rendering: pixelated;"></canvas>
         </div>
       </div>
-      <div style="display: flex; flex-direction: column; min-width: 0;">
+      <div style="display: flex; flex-direction: column; min-width: 0; min-height: 0; flex: 1 1 auto;">
         <div style="display: flex; align-items: center; gap: 4px; margin-bottom: 4px;">
           <select id="importZoom" style="padding: 1px 2px; font-size: 10px; min-width: 0;">
             <option value="0">Fit</option>
@@ -3685,16 +3696,37 @@
           </label>
           <span style="font-size: 10px; color: var(--text-tertiary);">PREVIEW <span id="importPreviewSize">256x192</span></span>
         </div>
-        <div style="overflow: auto; flex: 1 1 auto; min-height: 0; border: 1px solid var(--border-secondary);">
-          <canvas id="importPreviewCanvas" width="512" height="384" style="display: block; background: #000; image-rendering: pixelated;"></canvas>
+        <div id="importPreviewWrapper" style="display: flex; flex-direction: row; gap: 8px; min-width: 0; min-height: 0; flex: 1 1 auto;">
+          <div id="importPreviewPanelA" style="display: flex; flex-direction: column; min-width: 0; flex: 1 1 0;">
+            <div style="overflow: auto; flex: 1 1 auto; min-height: 0; border: 1px solid var(--border-secondary);">
+              <canvas id="importPreviewCanvas" width="512" height="384" style="display: block; background: #000; image-rendering: pixelated;"></canvas>
+            </div>
+            <div id="importAutoLabelA" style="font-size: 9px; color: var(--text-tertiary); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"></div>
+          </div>
+          <div id="importPreviewPanelB" style="display: none; flex-direction: column; min-width: 0; flex: 1 1 0;">
+            <div style="overflow: auto; flex: 1 1 auto; min-height: 0; border: 1px solid var(--border-secondary);">
+              <canvas id="importPreviewCanvasB" width="512" height="384" style="display: block; background: #000; image-rendering: pixelated;"></canvas>
+            </div>
+            <div id="importAutoLabelB" style="font-size: 9px; color: var(--text-tertiary); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"></div>
+          </div>
         </div>
       </div>
     </div>
-    <!-- Tab buttons -->
-    <div style="display: flex; gap: 0; margin-bottom: 8px; border-bottom: 1px solid var(--border-secondary); flex-shrink: 0;">
+    <!-- A/B comparison bar -->
+    <!-- Tab buttons + A/B compare controls on same row -->
+    <div style="display: flex; align-items: end; margin-bottom: 8px; border-bottom: 1px solid var(--border-secondary); flex-shrink: 0;">
       <button id="importTabImage" class="import-tab active" style="padding: 4px 16px; font-size: 11px; border: 1px solid var(--border-secondary); border-bottom: none; background: var(--bg-secondary); cursor: pointer; margin-bottom: -1px;">Image</button>
       <button id="importTabAdjust" class="import-tab" style="padding: 4px 16px; font-size: 11px; border: 1px solid var(--border-secondary); border-bottom: none; background: var(--bg-primary); cursor: pointer; margin-bottom: -1px; margin-left: -1px;">Adjustments</button>
       <button id="importTabDither" class="import-tab" style="padding: 4px 16px; font-size: 11px; border: 1px solid var(--border-secondary); border-bottom: none; background: var(--bg-primary); cursor: pointer; margin-bottom: -1px; margin-left: -1px;">Dither</button>
+      <div id="importABBar" style="display: flex; align-items: center; gap: 8px; margin-left: auto; margin-bottom: 4px; font-size: 11px;">
+        <span style="font-size: 10px; color: var(--text-tertiary);">Compare:</span>
+        <div style="display: flex; gap: 0;">
+          <button id="importViewA" style="padding: 3px 10px; font-size: 10px; border: 1px solid var(--border-secondary); border-radius: 3px 0 0 3px; cursor: pointer; background: var(--bg-secondary);" title="Show A preview only (editable)">A</button>
+          <button id="importViewB" style="padding: 3px 10px; font-size: 10px; border: 1px solid var(--border-secondary); border-left: none; cursor: pointer; background: var(--bg-primary);" title="Show B preview only (editable)">B</button>
+          <button id="importViewAB" style="padding: 3px 10px; font-size: 10px; border: 1px solid var(--border-secondary); border-left: none; border-radius: 0 3px 3px 0; cursor: pointer; background: var(--bg-primary);" title="Show A+B side by side; click a preview to edit it">A+B</button>
+        </div>
+        <button id="importCopySlot" style="padding: 2px 8px; font-size: 10px;" title="Copy current slot settings to the other slot">Copy A&#x2192;B</button>
+      </div>
     </div>
     <!-- Tab panels wrapper: both panels overlap in same grid cell so height stays constant -->
     <div style="display: grid; margin-bottom: 12px; flex-shrink: 0;">
@@ -3716,8 +3748,21 @@
           <label style="font-size: 10px; margin-left: 4px;" title="Lock 4:3 aspect ratio"><input type="checkbox" id="importCropLock43" checked style="margin: 0 3px 0 0; vertical-align: middle;">4:3</label>
         </div>
         <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-secondary);">
-          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Use LAB color space for more accurate perceptual color matching">
-            <input type="checkbox" id="importUseLab" checked style="margin: 0;">LAB colors
+          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Color space for perceptual color matching">
+            Colors:
+            <select id="importColorSpace" style="padding: 2px; font-size: 11px;">
+              <option value="rgb">RGB</option>
+              <option value="lab">LAB</option>
+              <option value="oklab" selected>OkLab</option>
+            </select>
+          </label>
+          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Strategy for selecting ink/paper color pairs per block">
+            Pair fit:
+            <select id="importColorStrategy" style="padding: 2px; font-size: 11px;">
+              <option value="exhaustive">Best fit</option>
+              <option value="blend">Blend fit</option>
+              <option value="pca">PCA gradient</option>
+            </select>
           </label>
           <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Convert to grayscale before processing">
             <input type="checkbox" id="importGrayscale" style="margin: 0;">Grayscale
@@ -3799,6 +3844,11 @@
           </label>
           <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Alternate row direction during error diffusion to reduce horizontal banding.">
             <input type="checkbox" id="importDitherSerpentine" style="margin: 0;">Serpentine scan
+          </label>
+          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Blur within cells before color pair selection. Stabilizes attribute colors on noisy/detailed images while preserving bitmap sharpness.">
+            <span style="width: 52px;">Pre-blur:</span>
+            <input type="range" id="importPreBlur" min="0" max="50" value="0" style="flex: 1; min-width: 60px;">
+            <span id="importPreBlurValue" style="width: 24px; text-align: right;">0</span>
           </label>
           <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="How to assign ink and paper colors in each cell">
             <span style="width: 52px;">Paper:</span>
@@ -3883,6 +3933,7 @@
             <span style="width: 44px;">Palette:</span>
             <select id="importPalette" style="width: 120px; padding: 2px; font-size: 11px;"></select>
           </label>
+          <div id="importPaletteStrip" style="display: flex; gap: 1px; margin-top: 4px; flex-wrap: wrap;"></div>
           <label id="import53cPatternRow" style="font-size: 11px; display: none; align-items: center; gap: 4px;">
             <span style="width: 44px;">Pattern:</span>
             <select id="import53cPattern" style="width: 90px; padding: 2px; font-size: 11px;">
@@ -4162,6 +4213,7 @@
         <label style="cursor: pointer;"><input type="checkbox" id="cmpFmtUpkr"> upkr (level 1 &amp; 9)</label>
         <label style="cursor: pointer;"><input type="checkbox" id="cmpFmtRle"> RLE</label>
         <label style="cursor: pointer;"><input type="checkbox" id="cmpFmtZxsc"> ZXSC (LZF)</label>
+        <label style="cursor: pointer;"><input type="checkbox" id="cmpFmtLgk"> LgK</label>
         <label style="cursor: pointer;"><input type="checkbox" id="cmpFmtChunks"> Chunks (lossy)</label>
       </div>
       <div style="margin-top: 8px; font-weight: bold; margin-bottom: 6px;">Depacker options</div>
@@ -4361,6 +4413,7 @@
 <script src="js/zxsc.js"></script>
 <script src="js/chunks.js"></script>
 <script src="js/upkr.js"></script>
+<script src="js/lgk.js"></script>
 <script src="js/screen_viewer.js"></script>
 <script src="js/display_filters.js"></script>
 <script src="js/image_import.js"></script>

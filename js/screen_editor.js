@@ -9082,13 +9082,6 @@ function removeHiddenPixels() {
   const attrRows = currentPicture.attrRows;
   let cleaned = 0;
 
-  /** popcount for a byte */
-  function popcount8(v) {
-    v = v - ((v >> 1) & 0x55);
-    v = (v & 0x33) + ((v >> 2) & 0x33);
-    return (v + (v >> 4)) & 0x0F;
-  }
-
   /** Count set bits in a neighbor cell's bitmap area */
   function neighborBits(ar, col) {
     if (ar < 0 || ar >= attrRows || col < 0 || col >= cols) return -1;
@@ -15168,11 +15161,12 @@ function resetUlaPlusColors() {
  * @returns {boolean} - true if colors were picked successfully
  */
 function pickUlaPlusColorFromCanvas(x, y) {
-  if (!screenData || currentFormat !== FORMAT.SCR_ULAPLUS) return false;
+  if (!screenData) return false;
+  if (currentFormat !== FORMAT.SCR_ULAPLUS && !(currentFormat === FORMAT.MLT && isUlaPlusMode)) return false;
   if (x < 0 || x >= SCREEN.WIDTH || y < 0 || y >= SCREEN.HEIGHT) return false;
 
-  // Get attribute for this cell
-  const attrAddr = getAttributeAddress(x, y);
+  // Get attribute for this cell (MLT uses 8×1 addressing, SCR uses 8×8)
+  const attrAddr = currentFormat === FORMAT.MLT ? getMltAttributeAddress(x, y) : getAttributeAddress(x, y);
   const attr = screenData[attrAddr];
 
   // Decode ULA+ attribute:
@@ -15494,6 +15488,48 @@ function pickSpecsciiColorFromCanvas(x, y) {
 }
 
 /**
+ * Picks palette index from LoRes canvas (128×96, 256-color row-major).
+ * @param {number} x
+ * @param {number} y
+ * @param {boolean} isInk
+ * @returns {boolean}
+ */
+function pickLoresColorFromCanvas(x, y, isInk) {
+  if (!screenData) return false;
+  const idx = screenData[y * LORES.WIDTH + x];
+  if (isInk) {
+    editorInkColor = idx;
+  } else {
+    editorPaperColor = idx;
+  }
+  updateNxiPaletteHighlight();
+  updateColorPreview();
+  return true;
+}
+
+/**
+ * Picks palette index from LoRes Radastan canvas (128×96, 4bpp packed nibbles).
+ * @param {number} x
+ * @param {number} y
+ * @param {boolean} isInk
+ * @returns {boolean}
+ */
+function pickLoresRadColorFromCanvas(x, y, isInk) {
+  if (!screenData) return false;
+  const byteOffset = y * LORES_RAD.BYTES_PER_ROW + (x >> 1);
+  const byteVal = screenData[byteOffset] || 0;
+  const idx = (x & 1) ? (byteVal & 0x0F) : ((byteVal >> 4) & 0x0F);
+  if (isInk) {
+    editorInkColor = idx;
+  } else {
+    editorPaperColor = idx;
+  }
+  updateNxiPaletteHighlight();
+  updateColorPreview();
+  return true;
+}
+
+/**
  * Unified color picker: dispatches to format-specific picker function.
  * @param {number} x - X coordinate in pixels
  * @param {number} y - Y coordinate in pixels
@@ -15533,6 +15569,7 @@ function pickColorFromCanvas(x, y, isInk) {
       return pickIflColorFromCanvas(x, y);
 
     case FORMAT.MLT:
+      if (isUlaPlusMode) return pickUlaPlusColorFromCanvas(x, y);
       return pickMltColorFromCanvas(x, y);
 
     case FORMAT.BMC4:
@@ -15544,6 +15581,25 @@ function pickColorFromCanvas(x, y, isInk) {
     case FORMAT.GMX:
     case FORMAT.GMX160:
       return pickGmxColorFromCanvas(x, y);
+
+    case FORMAT.LORES:
+      return pickLoresColorFromCanvas(x, y, isInk);
+
+    case FORMAT.LORES_RAD:
+      return pickLoresRadColorFromCanvas(x, y, isInk);
+
+    case FORMAT.BSP:
+      if (currentPicture && currentPicture.colorMode === 'gigascreen') {
+        return pickGigascreenColorFromCanvas(x, y, isInk);
+      }
+      return pickScrColorFromCanvas(x, y);
+
+    case FORMAT.ZXP:
+    case FORMAT.CHR:
+      if (currentPicture && currentPicture.colorMode === 'gigascreen') {
+        return pickGigascreenColorFromCanvas(x, y, isInk);
+      }
+      return pickScrColorFromCanvas(x, y);
 
     case FORMAT.MONO_FULL:
     case FORMAT.MONO_2_3:
@@ -22017,7 +22073,7 @@ function convertScrToSpecscii() {
       const bright = (attr >> 6) & 0x01;
       const flash = (attr >> 7) & 0x01;
 
-      // Find best matching glyph
+      // Find best matching glyph (try both normal and inverted patterns)
       let bestDist = 65; // max possible = 64 (8 bytes × 8 bits)
       let bestGlyph = 0;
       let bestInverted = false;
@@ -22030,7 +22086,6 @@ function convertScrToSpecscii() {
           normalDist += popcnt8(cellBytes[line] ^ glyphs[gOff + line]);
           invertDist += popcnt8(cellBytes[line] ^ (glyphs[gOff + line] ^ 0xFF));
         }
-        // Prefer normal over inverted on tie (< not <=)
         if (normalDist < bestDist) {
           bestDist = normalDist;
           bestGlyph = g;
@@ -22046,17 +22101,9 @@ function convertScrToSpecscii() {
       // Map glyph index to character code
       const charCode = bestGlyph < 96 ? (bestGlyph + 0x20) : (0x80 + (bestGlyph - 96));
 
-      // Build output attribute
-      let outAttr;
-      if (bestInverted) {
-        // Swap ink and paper, preserve bright and flash
-        outAttr = (paper & 0x07) | ((ink & 0x07) << 3) | (bright << 6) | (flash << 7);
-      } else {
-        outAttr = attr;
-      }
-
       specsciiCharGrid[idx] = charCode;
-      specsciiAttrGrid[idx] = outAttr;
+      specsciiAttrGrid[idx] = attr; // preserve original attribute
+      specsciiInverseGrid[idx] = bestInverted ? 1 : 0;
       specsciiMask[idx] = 1;
     }
   }
@@ -22228,6 +22275,7 @@ function updateExportAsmButton() {
     options.push({ value: 'upkr9', label: '.scr.upk (upkr level 9)' });
     options.push({ value: 'zx0', label: '.scr.zx0 (ZX0 compressed)' });
     options.push({ value: 'zx7', label: '.scr.zx7 (ZX7 compressed)' });
+    options.push({ value: 'lgk', label: '.scr.lgk (LgK compressed)' });
     options.push({ value: 'compare', label: 'Compare compressions...' });
   }
 
@@ -25195,9 +25243,9 @@ let compareBaseName = '';
 // ---------------------------------------------------------------------------
 const COMPARE_SETTINGS_KEY = 'spectralab_compare_settings';
 
-/** @returns {{zx7:boolean, zx0:boolean, rcs:boolean, lc:boolean, upkr:boolean, rle:boolean, zxsc:boolean, chunks:boolean, upkrDepacker:string}} */
+/** @returns {{zx7:boolean, zx0:boolean, rcs:boolean, lc:boolean, upkr:boolean, rle:boolean, zxsc:boolean, lgk:boolean, chunks:boolean, upkrDepacker:string}} */
 function loadCompareSettings() {
-  const defaults = { zx7: false, zx0: true, rcs: true, lc: true, upkr: false, rle: false, zxsc: false, chunks: false, upkrDepacker: 'compact' };
+  const defaults = { zx7: false, zx0: true, rcs: true, lc: true, upkr: false, rle: false, zxsc: false, lgk: false, chunks: false, upkrDepacker: 'compact' };
   try {
     const raw = localStorage.getItem(COMPARE_SETTINGS_KEY);
     if (raw) {
@@ -25223,6 +25271,7 @@ function readCompareSettingsFromUI() {
     upkr: /** @type {HTMLInputElement} */ (document.getElementById('cmpFmtUpkr'))?.checked ?? true,
     rle: /** @type {HTMLInputElement} */ (document.getElementById('cmpFmtRle'))?.checked ?? false,
     zxsc: /** @type {HTMLInputElement} */ (document.getElementById('cmpFmtZxsc'))?.checked ?? false,
+    lgk: /** @type {HTMLInputElement} */ (document.getElementById('cmpFmtLgk'))?.checked ?? false,
     chunks: /** @type {HTMLInputElement} */ (document.getElementById('cmpFmtChunks'))?.checked ?? false,
     upkrDepacker: /** @type {HTMLSelectElement} */ (document.getElementById('cmpUpkrDepacker'))?.value ?? 'compact',
   };
@@ -25238,6 +25287,7 @@ function applyCompareSettingsToUI(s) {
   if (el('cmpFmtUpkr')) /** @type {HTMLInputElement} */ (el('cmpFmtUpkr')).checked = s.upkr;
   if (el('cmpFmtRle'))    /** @type {HTMLInputElement} */ (el('cmpFmtRle')).checked = s.rle;
   if (el('cmpFmtZxsc'))   /** @type {HTMLInputElement} */ (el('cmpFmtZxsc')).checked = s.zxsc;
+  if (el('cmpFmtLgk'))    /** @type {HTMLInputElement} */ (el('cmpFmtLgk')).checked = s.lgk;
   if (el('cmpFmtChunks')) /** @type {HTMLInputElement} */ (el('cmpFmtChunks')).checked = s.chunks;
   if (el('cmpUpkrDepacker')) /** @type {HTMLSelectElement} */ (el('cmpUpkrDepacker')).value = s.upkrDepacker;
 }
@@ -25280,13 +25330,6 @@ function cleanHiddenOnBuffer(buf) {
     const charRowInThird = (y & 63) >> 3;
     const pixelLine = y & 7;
     return third * 2048 + pixelLine * 256 + charRowInThird * 32 + charCol;
-  }
-
-  /** popcount for a byte */
-  function popcount8(v) {
-    v = v - ((v >> 1) & 0x55);
-    v = (v & 0x33) + ((v >> 2) & 0x33);
-    return (v + (v >> 4)) & 0x0F;
   }
 
   /** Count set bits in a neighbor cell's bitmap area */
@@ -25563,6 +25606,7 @@ function runCompareCompressions() {
   const DEPACKER_ZXSC_SCREEN = 80; // full-screen LZF depacker with address calc
   const DEPACKER_CHUNKS_4x4 = 67 + 64; // depacker + 64-byte lookup table (monochrome only)
   const DEPACKER_CHUNKS_4x2 = 56 + 32; // depacker + 32-byte lookup table (monochrome only)
+  const DEPACKER_LGK = 612;
 
   /** @type {Array<{label:string, ext:string, type:string, depacker:number, compress: (() => {data:Uint8Array})|null}>} */
   const jobs = [
@@ -25651,6 +25695,20 @@ function runCompareCompressions() {
       jobs.push({
         label: 'Chunks 4\u00d72', ext: '.scr.c2', type: 'chunks4x2', depacker: DEPACKER_CHUNKS_4x2,
         compress: () => CHUNKS.compress(scrBytes, CHUNKS.MODE_4x2)
+      });
+    }
+  }
+  if (cmpSettings.lgk && typeof LgK !== 'undefined') {
+    if (compareBaseSize === SCREEN.TOTAL_SIZE && segment === 'whole') {
+      jobs.push({
+        label: 'LgK', ext: '.scr.lgk', type: 'lgk',
+        depacker: DEPACKER_LGK,
+        compress: () => ({ data: LgK.compress(scrBytes) })
+      });
+      jobs.push({
+        label: 'LgK (opt)', ext: '.scr.lgk', type: 'lgk_opt',
+        depacker: DEPACKER_LGK,
+        compress: () => ({ data: LgK.compress(scrBytes, { optimizeAttrs: true }) })
       });
     }
   }
@@ -25851,6 +25909,9 @@ function compareSave() {
     } else if (variant.type === 'chunks4x4' || variant.type === 'chunks4x2') {
       const asmText = generateChunksAsm(variant.type, dataFileName);
       downloadFile(new Blob([asmText], { type: 'text/plain' }), compareBaseName + '_chunks.asm');
+    } else if (variant.type === 'lgk' || variant.type === 'lgk_opt') {
+      const asmText = generateLgkAsm(variant.type, dataFileName);
+      downloadFile(new Blob([asmText], { type: 'text/plain' }), compareBaseName + '_lgk.asm');
     } else {
       const isZx0 = variant.type.startsWith('zx0') || variant.type.startsWith('rcs_zx0');
       if (isZx0) {
@@ -27040,6 +27101,415 @@ function generateChunksAsm(type, dataFile) {
   return lines.join('\n');
 }
 
+const LGK_DEPACKER = `; --- LgK 1.1 depacker (Lethargeek Kompakt) ---
+; Entry: HL = compressed LgK data
+; Decompresses directly to screen at $4000/$5800
+; Self-modifying code — must run from RAM
+; copyleft 2016 by Lethargeek
+
+_depack		ld c,(hl)
+		inc hl
+		push hl
+		ld hl,	_ptab		// patcher table
+		ld b,9
+_ibloop		rlc c
+		sbc a
+		and (hl)
+		inc hl
+		xor (hl)
+		inc hl
+		ld e,(hl)
+		inc hl
+		ld d,(hl)
+		inc hl
+		ld (de),a
+		djnz	_ibloop		// now hl -> after ptab = ldir destination
+		pop de
+		ex de,hl
+		bit 2,c
+		ld c,6
+		ldir
+		ld c,(hl)
+		inc hl
+		ld (_ldxmt+1),hl
+		add hl,bc
+		ld c,(hl)
+		jr nz,	$+3
+		inc hl
+		ld (_ldart+1),hl
+		add hl,bc
+		push hl
+		pop ix
+		ld l,b
+		add a			// a was $18 or $FE
+
+		jr c,	_asep
+_amix		ld h,$58		// attributes mixed with tiles
+		ld (hl),l		// 1st a-action code - "load attr"
+		push hl
+_asep		ld h,$40		// attributes separate after the tiles
+		ld c,$80		// if "rl c" used in _fillbits
+
+_nextile	push hl			// shared part
+		push hl
+		call	_tiledepack
+		pop hl
+_ldxmt		ld de,0			// xor filter tree
+		call 	_twalk		// walk the tree
+		ld b,2
+		ld de,	_xmofs-$20
+		call	_jinde		// jump indirect using de
+		pop hl
+_depjr1		jr	_amixp1		// cp* for ASEP
+
+		inc l			// ASEP only part
+		jr nz,	_nextile
+		ld a,h
+		add 8
+		ld h,a
+		sub $58
+		jr nz,	_nextile
+_adbeg		ld (hl),a
+		db $FE
+
+_amixp1		ex (sp),hl		// AMIX only op
+		push hl			// shared part
+		ld a,(_CFAREB)		// it is attribute if BIC
+_adcall		call	_adepack	// no call if BIC
+		pop hl
+		ld b,(hl)		// move a-action code to the next attr
+		ld (hl),a
+_depjr2		jr	_amixp2		// cp* for ASEP
+
+		inc hl			// ASEP only part
+		ld a,h
+		cp $5B
+		ld a,b
+		jr nz,	_adbeg
+		ret
+
+_amixp2		pop de			// AMIX only part
+		inc e
+		jr nz,	_amixp3
+		ld a,d
+		add 8
+		ld d,a
+		cp $58
+		ret z
+_amixp3		inc hl
+		ld (hl),b
+		push hl
+		ex de,hl
+		jr	_nextile
+
+_ptab		db	$18^$FE, $FE	// AMIX
+		dw	_depjr1
+		db	$21^$CD, $CD	// BIC
+		dw	_adcall
+		db	$A7^$37, $37	// GRPt
+		dw	_tiledepack
+		db	$A7^$37, $37	// GRPq
+		dw	_quardepack
+		db	$E1^$E3, $E3	// a5mode
+		dw	_attree+1
+		db	$37^$A7, $A7	// aload1
+		dw	_adrepl
+		db	$C0^$C9, $C9	// alzero
+		dw	_getbits-3
+		db	9^8, 8		// FLoad
+		dw	_getbits-1
+		db	$18^$FE, $FE	// AMIX
+		dw	_depjr2
+
+_CFAREB		db	1		// attribute reference bits (0-6)+1
+_CFARLEB	db	1		// attribute RLE bits (0-8)+1
+_CFVB1		db	$00		// upper border line 1
+_CFVB2		db	$FF		// upper border line 2
+_CFHBs		db	%01		// 2 pixels of the left border
+_CFREB		db	0		// tile reference bits (1-10)*2 + repeat mode bit
+
+_xmofs		db	LOW (_xorri-$)	// xor with the referenced tile & invert
+		db	LOW (_xorre-$)	// xor with the referenced tile
+		db	LOW (_xtinv-$)	// invert this tile
+		db	LOW (_xorh2-$)	// xor 2 pixels left
+		db	LOW (_xorv2-$)	// xor 2 pixels up
+		db	LOW (_xorh1-$)	// xor 1 pixel left
+		db	LOW (_xorv1-$)	// xor 1 pixel up
+		db	LOW (_noxor-$)	// do nothing
+
+_cellcode	ld de,	_cctree
+_twalk		sla c			// walk the tree directed by the bitstream
+		call z,	_fillbits
+		jr nc,	$+3
+		inc de
+		ld a,(de)
+		sub $E0
+		ret c			// returns $20...$FF
+		add e
+		ld e,a
+		jr nc,	_twalk
+		inc d
+		jr	_twalk
+
+_getbit		sla c
+		ret nz
+_fillbits	ld c,(ix)		// for "sla c:call z"
+		inc ix
+		rl c			// if "ld c,$80" @ start
+		ret
+
+
+_xorri		cpl
+_xorre		and a			// also clears carry for rra
+		ld a,(de)		// load opcode @ the entry point
+		ld d,a
+		ld e,$1A
+		push hl
+		ld a,(_CFREB)
+		rra
+		call c,	_getbit
+		jr c,	_ldrpr
+		ld l,b
+		ld h,b
+		ld b,a
+		sla c
+		call z,	_fillbits
+		adc hl,hl
+		djnz	$-7
+		ld (_ldrpr+1),hl
+_ldrpr		ld hl,0
+		ld a,l
+		cpl
+		ld b,h
+		pop hl
+		jr	_xvini
+_xtinv		db $3E
+_xorv2		exa
+		ld a,(_CFVB2)		// upper border
+		exa
+_xorv1		nop
+		ld a,(de)
+		ld e,a
+		add $F0
+		sbc a
+		ld d,a
+		ld a,-32
+_xvini		ld (_xvit),de		// poke the loop
+		add l			// calcref start
+		ld e,a
+		ld a,h
+		inc b			// b=0 after _jinde & _xorr*
+		jr c,	$+4		// skip if same segment
+		sub 8
+		djnz	$-2		// longref loop
+		ld b,a			// calcref end
+		add 6
+		ld d,a
+		cp $40
+		ld a,(_CFVB1)		// upper border
+		jr c,	_xvab		// if the top row
+		ld a,(de)
+		exa
+		inc d
+		ld a,(de)		// 2 bottom lines of the upper tile in af'af
+_xvab		ld d,b			// after border check
+		ld b,8
+_xvit		ld a,$FF		// poked by _xvini
+		xor (hl)
+		ld (hl),a
+		inc h
+		inc d
+		djnz	_xvit
+_noxor		ret
+
+_xorh1		rla			// $17 -> rl a
+_xorh2		ld a,(de)		// $1A -> rr d
+		ld (_xhsmc1),a
+		xor $BD
+		ld (_xhsmc2),a
+		ld e,8
+_xhol		ld a,l			// outer loop
+		and $1F
+		ld a,(_CFHBs)		// left border bits
+		jr z,	_xhab
+		dec l
+		ld a,(hl)
+		inc l
+_xhab		rra			// after border check
+		ld d,(hl)
+		db $CB
+_xhsmc1		db $1A			// rr d|rl a
+		rra
+		ld a,(hl)
+		ld b,4
+_xhil		rr d			// inner loop
+		xor d
+		rr d
+_xhsmc2		and a			// and a|xor d
+		djnz	_xhil
+		ld (hl),a
+		inc h
+		dec e
+		jr nz,	_xhol
+		ret
+
+_tiledepack	and a			// scf if GRP<2
+		ld de,$FEAF		// xor a|cp*
+		call nc,_getbit
+		jr nc,	_xvini		// jump to modified ref loop to clear this tile
+
+		call	_twiqdepack
+_twiqdepack	push hl
+		call	_quardepack
+		pop hl
+_quardepack	and a			// scf if GRP=x0
+		call nc,_getbit
+		sbc a
+		call	_twindepack
+_twindepack	call	_celldepack
+		dec h
+		dec h
+_celldepack	or a
+		call nz,_cellcode	// all zeroes on empty quarter
+		call	_putcellh	// write 2x2 chunk to the screen
+_putcellh	rrca
+		rl (hl)
+		rrca
+		rl (hl)
+		inc h
+		ret
+
+		db	1	// RLE counter+1
+_attree		db	LOW (_adreps-$)-$20	//	0
+		db	$E1,	$E2,	$E3	//	>1	>10	>11
+		db	LOW (_adnorh-$)-$20	//	100
+		db	LOW (_adnorv-$)-$20	//	101
+		db	LOW (_adskil-$)-$20	//	110
+		db	LOW (_adskir-$)-$20	//	111
+
+_cctree		db	%0000,	$E1	// 0		=II	>1
+		db	$E2,	$E7	// 1		>10	>11
+		db	$E2,	$E3	// 10		>100	>101
+		db	%1000,	%0100	// 100		=Ib	=bI
+		db	%0010,	%0001	// 101		=IP	=PI
+		db	$E2,	$E7	// 11		>110	>111
+		db	$E2,	$E3	// 110		>1100	>1101
+		db	%1001,	%1100	// 1100		=Pb	=bb
+		db	%0110,	%0011	// 1101		=bP	=PP
+		db	$E2,	$E3	// 111		>1110	>1111
+		db	%0101,	%1010	// 1110		=BI	=IB
+		db	%1111,	$E1	// 1111		=BB	>11111
+		db	$E2,	$E3	// 11111	>111110	>111111
+		db	%0111,	%1011	// 111110	=BP	=PB
+		db	%1101,	%1110	// 111111	=Bb	=bB
+
+_adepack	ld de,	_attree-1	// attribute decompression
+		ld a,(de)
+		ld b,a			// b=1 after twalk
+		dec a
+		jr nz,	_storle		// go repeat last action
+		inc de
+		call	_twalk		// shared code
+_jinde		add e			// calc (de+(de)) to jump
+		ld e,a
+		jr nc,	$+3
+		inc d
+		ld a,(de)
+		djnz	_jinde		// 2nd indirection for rexoring
+		push de
+		ret
+
+_adreps		ld a,(_CFARLEB)		// adepack, repeat last action
+		call	_getbits
+		inc a			// so it's never zero if no RLE
+_storle		ld (_attree-1),a
+		ld b,(hl)		// check last action code
+		ld a,b
+		add a
+		jr c,	_adresr
+		jr nz,	_adresl
+
+_adrepl		scf			// and a = mode0, scf = mode1
+		call nc,_getbit
+		jr nc,	_getattr
+		ld a,(_CFAREB)		// attribute reference bits
+		call	_getbits
+		ld e,a
+		ld d,b
+_ldart		ld hl,	$0000		// attribute reference table address
+		add hl,de
+		ld a,(hl)
+		ret nz			// ret if no bitstream loads on zero code
+
+_getattr	ld a,8+0		// attribute load from bitstream
+_getbits	ld b,a			// shared code
+		xor a
+		dec b
+		ret z
+		sla c
+		call z,	_fillbits
+		adc a
+		djnz	$-6
+		ret
+
+_adnorh		inc b			// adepack, not a repeat, horizontal
+		dec (hl)
+_adskil		inc b			// skip over the left colour
+		dec (hl)
+		jr z,	_adrepl
+		ld (hl),b
+_adresl		dec b			// repeat action copy left
+		dec hl
+		ld a,(hl)
+		ret nz
+		dec hl
+		cp (hl)
+		jr 	$-4
+
+_adnorv		dec b			// adepack, not a repeat, vertical
+		inc (hl)
+_adskir		dec b			// skip over the right colour
+		inc (hl)
+		jr z,	_adrepl
+		ld (hl),b
+_adresr		inc b			// repeat action copy upper
+		ld de,-32
+		add hl,de
+		ld a,(hl)
+		ret nz
+		inc hl
+		cp (hl)
+		jr	$-4`;
+
+function generateLgkAsm(type, dataFile) {
+  const snaName = dataFile.replace(/\.[^.]+(\.[^.]+)?$/, '') + '.sna';
+  const lines = [];
+
+  lines.push('; LgK (Lethargeek Kompakt 1.1) decompression example — sjasmplus');
+  lines.push('; Generated by SpectraLab');
+  lines.push('; Assemble: sjasmplus ' + dataFile.replace(/\.[^.]+(\.[^.]+)?$/, '') + '_lgk.asm');
+  lines.push('');
+  lines.push('        device  zxspectrum48');
+  lines.push('        org     $8000');
+  lines.push('');
+  lines.push('start:');
+  lines.push('        di');
+  lines.push('        ld      sp, $8000');
+  lines.push('        ld      hl, compressedData');
+  lines.push('        call    _depack');
+  lines.push('        jr      $');
+  lines.push('');
+  lines.push('compressedData:');
+  lines.push('        incbin  "' + dataFile + '"');
+  lines.push('');
+  lines.push(LGK_DEPACKER);
+  lines.push('');
+  lines.push('        savesna "' + snaName + '", start');
+  lines.push('');
+
+  return lines.join('\n');
+}
+
 // ============================================================================
 // Initialization
 // ============================================================================
@@ -27217,6 +27687,7 @@ function initEditor() {
   setupCollapsible('textToolHeader', 'textToolControls', 'textToolExpandIcon', 'spectralab_collapse_textTool', true);
   setupCollapsible('refHeader', 'refControlsContent', 'refExpandIcon', 'spectralab_collapse_reference');
   setupCollapsible('viewSettingsHeader', 'viewSettingsContent', 'viewSettingsExpandIcon', 'spectralab_collapse_viewSettings');
+  setupCollapsible('gridSettingsHeader', 'gridSettingsContent', 'gridSettingsExpandIcon', 'spectralab_collapse_gridSettings');
   setupCollapsible('fileInfoHeader', 'fileInfoContent', 'fileInfoExpandIcon', 'spectralab_collapse_fileInfo');
   setupCollapsible('specsciiPalHeader', 'specsciiPalContent', 'specsciiPalExpandIcon', 'spectralab_collapse_specsciiPal', true);
   setupCollapsible('layerHeader', 'layerControls', 'layerExpandIcon', 'spectralab_collapse_layers');
@@ -27584,6 +28055,12 @@ function initEditor() {
       const compressed = ZXSC.compressScreen(scrBytes);
       const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
       downloadFile(new Blob([compressed.data], { type: 'application/octet-stream' }), baseName + '.scr.lzf');
+    } else if (value === 'lgk') {
+      if (layersEnabled) flattenLayersToScreen();
+      const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
+      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      const compressed = LgK.compress(scrBytes);
+      downloadFile(new Blob([compressed], { type: 'application/octet-stream' }), baseName + '.scr.lgk');
     } else if (value === 'compare') {
       showCompareDialog();
     }

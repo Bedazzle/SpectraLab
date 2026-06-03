@@ -122,6 +122,10 @@ Click the 📂 button next to the dropdown to load a custom palette from a text 
 - **Attrs** — show/hide attribute overlay. When attributes are off, the bitmap is displayed as black ink on white paper (1 bits = black, 0 bits = white)
 - **Preview** — show/hide preview panel (also toggle with **~** key)
 
+### Grid (collapsible)
+
+Click the "Grid" header to expand/collapse.
+
 #### Paper Grid
 - **Grid size:** None, 8px, 16px, 24px, 32px
 - **Subgrid size:** None, 1px, 2px, 4px, 8px, 16px
@@ -540,6 +544,7 @@ For **SCR** format, the Export dropdown includes built-in [ZX7](https://spectrum
 
 - **`.rcs.zx0 (RCS + ZX0)`** — applies RCS reordering first, then ZX0 compression
 - **`.rcs.zx7 (RCS + ZX7)`** — applies RCS reordering first, then ZX7 compression
+- **`.scr.lgk (LgK compressed)`** — compresses the screen data with LgK v1.1rs (tile-based XOR prediction with Huffman-coded transform modes, attribute RLE with palette optimization; 612-byte depacker)
 - **`.scr.lc (LC compressed)`** — compresses the screen data with Laser Compact 5.2.1 (includes LCMP5 header; reordering and segment handling are built-in)
 - **`.scr.c4 (Chunks 4×4)`** — lossy monochrome compression: divides each 8×8 cell into four 4×4 quadrants, encodes each as a 2-bit index into a 4-pattern dictionary. Fixed output: 841 bytes (768B encoded + 64B lookup table + 8B dictionary + 1B mode). Very fast Z80 depacker using nibble-pair lookup
 - **`.scr.c2 (Chunks 4×2)`** — lossy monochrome compression: divides each 8×8 cell into eight 4×2 strips, encodes each as a 2-bit index. Fixed output: 1573 bytes (1536B encoded + 32B lookup table + 4B dictionary + 1B mode). Better quality than 4×4, still fast Z80 depacker
@@ -556,6 +561,7 @@ For **SCR** format, the Export dropdown includes built-in [ZX7](https://spectrum
   - RCS + ZX7 / RCS + ZX7 backwards
   - ZX0 / ZX0 backwards
   - RCS + ZX0 / RCS + ZX0 backwards
+  - LgK / LgK (opt)
   - LC (Laser Compact 5.2.1)
   - upkr level 1 / upkr level 9
   - RLE
@@ -564,7 +570,7 @@ For **SCR** format, the Export dropdown includes built-in [ZX7](https://spectrum
 
   The dialog opens with an empty table (all sizes shown as "—"). Click the **Compare** button to run compressions — results appear one by one, the best variant is highlighted and pre-selected. The dialog stays open after saving, so you can export multiple formats without re-running compression.
 
-  **⚙ Format settings** (gear icon in the title bar) — toggle a settings panel to enable/disable format families (ZX7, ZX0, RCS variants, LC, upkr, RLE, ZXSC, Chunks). Disabled formats are excluded from the comparison table. The upkr depacker variant can be switched between Compact (130B code + 320B probs = 450B total) and Fast (155B code + 320B probs = 475B total, unrolled multiply loop). All settings are saved to localStorage and persist across sessions.
+  **⚙ Format settings** (gear icon in the title bar) — toggle a settings panel to enable/disable format families (ZX7, ZX0, RCS variants, LgK, LC, upkr, RLE, ZXSC, Chunks). Disabled formats are excluded from the comparison table. The upkr depacker variant can be switched between Compact (130B code + 320B probs = 450B total) and Fast (155B code + 320B probs = 475B total, unrolled multiply loop). All settings are saved to localStorage and persist across sessions.
 
   **Data** dropdown — selects which portion of screen data to compress:
   - **Full SCR** (default) — full 6912 bytes (bitmap + attributes)
@@ -583,7 +589,7 @@ For **SCR** format, the Export dropdown includes built-in [ZX7](https://spectrum
 
   Changing any option (Data, Segment, checkboxes) resets the table — click Compare again to re-run.
 
-  **Depacker** column — shows the Z80 depacker size in bytes for each method, including code and any required buffer: ZX7 forward/backward = 69 bytes, ZX0 forward = 68, ZX0 backward = 69. RCS variants use [smart integrated decoders](https://github.com/einar-saukas/RCS) that decompress and decode directly to screen without a temp buffer: RCS+ZX7 = 110, RCS+ZX7 backwards = 110, RCS+ZX0 = 112, RCS+ZX0 backwards = 113. LC = 209 bytes (decompresses directly to screen, no extra buffer). upkr = 450 bytes (130 code + 320-byte probs array). RLE = 23 bytes. ZXSC = 49 bytes (standard) / 80 bytes (screen-scan). Chunks 4×4 = 139 bytes (75 code + 64-byte lookup table), Chunks 4×2 = 97 bytes (65 code + 32-byte lookup table). Plain row has no depacker.
+  **Depacker** column — shows the Z80 depacker size in bytes for each method, including code and any required buffer: ZX7 forward/backward = 69 bytes, ZX0 forward = 68, ZX0 backward = 69. RCS variants use [smart integrated decoders](https://github.com/einar-saukas/RCS) that decompress and decode directly to screen without a temp buffer: RCS+ZX7 = 110, RCS+ZX7 backwards = 110, RCS+ZX0 = 112, RCS+ZX0 backwards = 113. LgK = 612 bytes (self-modifying depacker, decompresses directly to screen). LC = 209 bytes (decompresses directly to screen, no extra buffer). upkr = 450 bytes (130 code + 320-byte probs array). RLE = 23 bytes. ZXSC = 49 bytes (standard) / 80 bytes (screen-scan). Chunks 4×4 = 139 bytes (75 code + 64-byte lookup table), Chunks 4×2 = 97 bytes (65 code + 32-byte lookup table). Plain row has no depacker.
 
   **Total** column — shows real saving: saved bytes minus depacker overhead (saved − depacker). A positive value means compression is beneficial even accounting for the depacker. A negative value (highlighted in red) means the compressed data plus depacker exceeds the original size. For lossy Chunks variants, the "saved" value reflects size reduction only — bitmap quality is approximate. The upkr depacker variant can be switched between Compact (130B code + 320B probs = 450B total) and Fast (155B code + 320B probs = 475B total, unrolled multiply loop). All settings are saved to localStorage and persist across sessions.
 
@@ -604,13 +610,13 @@ For **SCR** format, the Export dropdown includes built-in [ZX7](https://spectrum
 
   Changing any option (Data, Segment, checkboxes) resets the table — click Compare again to re-run.
 
-  **Depacker** column — shows the Z80 depacker size in bytes for each method, including code and any required buffer: ZX7 forward/backward = 69 bytes, ZX0 forward = 68, ZX0 backward = 69. RCS variants use [smart integrated decoders](https://github.com/einar-saukas/RCS) that decompress and decode directly to screen without a temp buffer: RCS+ZX7 = 110, RCS+ZX7 backwards = 110, RCS+ZX0 = 112, RCS+ZX0 backwards = 113. LC = 209 bytes (decompresses directly to screen, no extra buffer). upkr = 450 bytes (130 code + 320-byte probs array). RLE = 23 bytes. ZXSC = 49 bytes (standard) / 80 bytes (screen-scan). Chunks 4×4 = 139 bytes (75 code + 64-byte lookup table), Chunks 4×2 = 97 bytes (65 code + 32-byte lookup table). Plain row has no depacker.
+  **Depacker** column — shows the Z80 depacker size in bytes for each method, including code and any required buffer: ZX7 forward/backward = 69 bytes, ZX0 forward = 68, ZX0 backward = 69. RCS variants use [smart integrated decoders](https://github.com/einar-saukas/RCS) that decompress and decode directly to screen without a temp buffer: RCS+ZX7 = 110, RCS+ZX7 backwards = 110, RCS+ZX0 = 112, RCS+ZX0 backwards = 113. LgK = 612 bytes (self-modifying depacker, decompresses directly to screen). LC = 209 bytes (decompresses directly to screen, no extra buffer). upkr = 450 bytes (130 code + 320-byte probs array). RLE = 23 bytes. ZXSC = 49 bytes (standard) / 80 bytes (screen-scan). Chunks 4×4 = 139 bytes (75 code + 64-byte lookup table), Chunks 4×2 = 97 bytes (65 code + 32-byte lookup table). Plain row has no depacker.
 
   **Total** column — shows real saving: saved bytes minus depacker overhead (saved − depacker). A positive value means compression is beneficial even accounting for the depacker. A negative value (highlighted in red) means the compressed data plus depacker exceeds the original size.
 
-**Create ASM** checkbox — when enabled, saving also generates a sjasmplus `.asm` file alongside the compressed data. ASM generation is only available for Full SCR + Whole mode. The ASM file is a complete working example: it decompresses the data directly to screen memory at `$4000`, includes the appropriate ZX7, ZX0, LC, or upkr decompressor (forward or backward where applicable) and RCS-to-SCR reorder routine where needed, uses `device zxspectrum48` and `savesna` to produce a `.sna` snapshot. The LC variant uses the Laser Compact 5.2 depacker by Hrumer which decompresses LCMP5-headered data directly to screen. The upkr variant uses the Z80 unpacker by Peter Helcmanovsky (IX=packed data, DE'=destination via EXX).
+**Create ASM** checkbox — when enabled, saving also generates a sjasmplus `.asm` file alongside the compressed data. ASM generation is only available for Full SCR + Whole mode. The ASM file is a complete working example: it decompresses the data directly to screen memory at `$4000`, includes the appropriate ZX7, ZX0, LgK, LC, or upkr decompressor (forward or backward where applicable) and RCS-to-SCR reorder routine where needed, uses `device zxspectrum48` and `savesna` to produce a `.sna` snapshot. The LgK variant uses the self-modifying depacker by Lethargeek which decompresses directly to screen (HL=compressed data). The LC variant uses the Laser Compact 5.2 depacker by Hrumer which decompresses LCMP5-headered data directly to screen. The upkr variant uses the Z80 unpacker by Peter Helcmanovsky (IX=packed data, DE'=destination via EXX).
 
-Forward-compressed files use `.zx7`/`.zx0` extensions, backward-compressed use `.zx7b`/`.zx0b`. LC compressed files use `.lc` extension. upkr compressed files use `.upk` extension. All variants can be opened directly — decompression (and RCS reordering reversal where needed) is automatic on load.
+Forward-compressed files use `.zx7`/`.zx0` extensions, backward-compressed use `.zx7b`/`.zx0b`. LgK compressed files use `.lgk` extension. LC compressed files use `.lc` extension. upkr compressed files use `.upk` extension. All variants can be opened directly — decompression (and RCS reordering reversal where needed) is automatic on load.
 
 ### Format ASM Export
 
@@ -850,7 +856,12 @@ Crop the source image:
 - **Full** — use full image
 - **Detect** — auto-detect 256×192 region
 - **4:3** — lock aspect ratio to 4:3
-- **LAB colors** — use LAB color space for perceptual matching
+- **Colors** dropdown — select color space for perceptual matching: **RGB** (weighted Euclidean), **LAB** (CIE76 Delta E), or **OkLab** (default; Björn Ottosson 2020, more uniform for blues/purples). Disabled when Mono output is active
+- **Pair fit** dropdown — select the strategy for choosing the best ink/paper color pair per cell/block:
+  - **Best fit** — exhaustive search over all palette pairs, selecting the pair that minimizes total per-pixel nearest-color distance. The original default algorithm
+  - **Blend fit** — evaluates each pair by projecting every pixel onto the ink–paper line segment and measuring perpendicular distance. Better models how dithering blends between two colors, often producing smoother results
+  - **PCA gradient** — uses Principal Component Analysis to find the dominant color axis in each cell, then tests the top palette matches near the axis extremes using the line-projection metric. Good for cells with a clear color gradient
+  - Works with all ZX block sizes (8×8, 8×2, 8×1, 8×4) and ULA+. Hidden for non-ink/paper formats (NXI, SL2, LoRes). Disabled when Mono output is active
 - **Grayscale** — convert to grayscale before processing
 - **Mono output** — output black and white only (ink 0, paper 7, bright). Works with all formats: SCR, IFL, MLT, BSC, BMC4, GMX, Gigascreen, HLR, STL, RGB3, ULA+, GMX 160×200, 53c, SPECSCII, NXI, SL2, LoRes, Radastan, ZXP
 
@@ -877,6 +888,7 @@ Crop the source image:
 
   - **Strength** slider (0–100%) — scales how much quantization error is propagated during error diffusion. 0 = pure quantization (no diffusion), 100 = classic full-strength diffusion. For ordered / pattern / blue-noise / a-dither methods, Strength > 0 engages a hybrid ordered+diffusion mode (the ordered threshold is used as a bias, and the residual error is then diffused with a Floyd-Steinberg kernel).
   - **Serpentine scan** checkbox — alternates row direction during error diffusion (left-to-right on even rows, right-to-left on odd rows) to reduce horizontal banding artifacts. Applies to all global error-diffusion methods.
+  - **Pre-blur** slider (0–50) — blurs cell/block pixels before color pair selection to stabilize attribute colors on noisy or detailed images. Uses 3-pass separable box blur (Gaussian approximation) with edge clamping. Higher values produce more uniform attribute colors. The bitmap is always generated from original (unblurred) pixels, so pixel detail remains sharp. Works with all ZX block sizes: 8×8 (SCR), 8×2 (IFL), 8×1 (MLT), 8×4 (BMC4).
   - **Dizzy** dither (Liam Appelbe, 2023) — error diffusion with a dynamic denominator: per pixel, the algorithm sums weights of in-bounds *unprocessed* neighbors (orthogonal = 1.0, diagonal = 0.1) and distributes `error × weight / denom` proportionally. No error is lost at image edges; produces blue-noise-like patterns.
   - **a-dither** (arithmetic dither, FFmpeg formula `((x + y·236) · 119) & 0xff`) — hash-based per-pixel threshold. Spatially stable, blue-noise-like, no lookup table.
 
@@ -901,6 +913,7 @@ Crop the source image:
 
 - **Format:** SCR, ULA+, 53c (attr), IFL (8×2), BMC4 (8×4), MLT (8×1), MLT+ULA+, BSC, BSP, RGB3, Gigascreen, HLR, STL, GMX 640×200, GMX 160×200, NXI (256×192, 320×256, 640×256), SL2 (256×192, 320×256, 640×256), SPECSCII, Mono, Mono 2/3, Mono 1/3, LoRes, Radastan, ZXP, chr$, btile (Nirvana 16×16), wtile (Nirvana 24×16)
 - **Palette** selector
+- **Palette strip** — clickable row of 16 color swatches (8 regular + 8 bright) below the Palette dropdown. Click a swatch to disable that color; disabled colors are marked with a white X cross and excluded from ink/paper pair search in all block sizes and from nearest-color lookup. Minimum 2 colors must remain enabled. Resets on palette or format change. Hidden for non-ZX formats (ULA+, NXI, SL2, LoRes)
 - **53c Pattern** (for 53c format): Checker, Stripes, DD/77, Custom. When "Custom" is selected, a hex input field appears where you can enter 8 bytes separated by spaces (e.g. `0F 0F 0F 0F F0 F0 F0 F0`). Each byte defines one row of the 8×8 fill pattern (MSB = leftmost pixel). The custom pattern is used both for single-image 53c import and for animated GIF → SCA type 1 import
 - **SPECSCII Charset** (for SPECSCII format): Full (ROM font + block graphics, 112 glyphs), ASCII (ROM font only, 96 glyphs), UDG (block graphics only, 16 glyphs + space)
 - **ULA+ Palette:** Auto, Load .pal, From picture
@@ -939,6 +952,27 @@ Crop the source image:
 - **Cancel** / **Import** buttons
 
 ![Image import dialog](screenshots/image_import.png)
+
+### A/B Comparison
+
+The import dialog includes an A/B comparison feature for evaluating different conversion settings side by side.
+
+**View buttons** (right side of the tab bar):
+- **A** — show slot A preview only (slot A is active for editing)
+- **B** — show slot B preview only (slot B is active for editing)
+- **A+B** — show both previews side by side; click a panel to select it for editing (highlighted with a blue outline)
+
+**Per-slot settings** — each slot independently stores: dithering method and strength, serpentine scan, format, palette, disabled colors, color space, color strategy, pre-blur, paper rule, all adjustments (contrast, brightness, saturation, gamma, sharpness, smoothing, levels, color balance), grayscale/mono flags, dither region masks, and format-specific options (ULA+ palette, ZXP type, 53c pattern, HLR pattern, chr mode, specscii charset).
+
+**Shared settings** — crop rectangle, fit mode, and alignment affect both slots equally. Changing these re-renders both previews.
+
+**Copy A→B** button — duplicates all settings from the active slot to the other slot. The label updates to reflect the current direction (e.g. "Copy B→A" when B is active).
+
+**Auto-labels** — a concise summary appears below each preview panel showing the key settings for that slot (e.g. "Floyd · SCR · Blend · blur:12 · C:+10").
+
+**Zoom and Grid** — these controls are shared and affect both preview canvases simultaneously.
+
+**Import** — imports the result of the currently active slot (whichever slot's controls are shown in the tabs below).
 
 ---
 
@@ -1586,6 +1620,7 @@ Numeric values accept hex strings (`"0x4000"`) or plain numbers (`16384`).
 | `SL.ZXSC` | ZXSC (LZF) | `compress(data)`, `decompress(data)` |
 | `SL.LC` | Laser Compact | `compress(data)`, `decompress(data)` |
 | `SL.UPKR` | UPKR | `compress(data)`, `decompress(data)` |
+| `SL.LgK` | LgK compressor | `compress(data)`, `decompress(data)` |
 
 Example usage inside a plugin:
 ```javascript
@@ -1611,6 +1646,8 @@ Example plugins are provided in the `plugins/` directory:
 - `rle_scr.slpluginjs` — JS plugin (codec): loads and saves RLE-compressed SCR files (0x00/0xFF + count encoding)
 - `maria_sna.slpluginjs` — JS plugin (session): extracts loading screen + 5 compressed screens (ZX0/RLE auto-detected) from Maria's Christmas Box 48K .sna snapshot. On save-back, patches the Z80 depacker in the snapshot: replaces the inline RLE loop at `$9602` with `CALL $FE90`, injects the 112-byte `dzx0_smartRCS` depacker at `$FE90` (end of memory), and applies RCS bitmap reordering before ZX0 compression. The data block at `$A000` (header + compressed screens) is kept portable for sideloading. Falls back to RLE if `SL.ZX0` is unavailable. ZX0, RCS and `dzx0_smartRCS` by Einar Saukas. Demonstrates Z80 code patching, depacker relocation, cross-bank data handling, `SL` namespace usage, and memory overflow protection
 - `heroquest_128k.slpluginjs` — JS plugin (session): extracts 11 graphics from Hero Quest 128K .sna snapshot across banks 3, 4, 6, and 7. Ten 128×64 px graphics in banks 3/4/7 use linear bitmap+attrs layout converted to/from ZX-interleaved SCR; bank 6 contains the full 256×192 playfield screen as a standard SCR. Unused screen area filled with bright/regular white checkerboard to mark the editable region
+- `tape_loader.slpluginjs` — JS plugin (export): exports the current SCR screen with byte reordering for visual tape loading effects. A custom export dialog lets you choose the loading scheme and download format (ZIP archive with .scr + .asm + .inc, or .scr only). Six schemes: **Backward** reverses all 6912 bytes so the loader stores them from $5AFF down to $4000 — attrs appear first (bottom to top), then bitmap fills from bottom up. **Linear** reorders data in character-row order (8 bitmap lines + 32 attr bytes per row) — picture paints top to bottom with colors appearing after each character row. **Checkerboard 2×2** divides the screen into a 2×2 grid of 16×12 character blocks, loads even-positioned blocks (checkerboard pattern) first, then odd — each block loads bitmap data first then attributes. **Checkerboard 4×3** uses a 4×3 grid of 8×8 character blocks for a finer checkerboard effect. **Checkerboard 8×6** uses an 8×6 grid of 4×4 character blocks for the finest checkerboard pattern. **Turbo Linear (2× speed)** exports a `.tzx` file instead of `.tap` — the TZX contains a standard-speed BASIC block (Block $10) with a custom turbo loader machine code embedded in a REM line, followed by a turbo-speed data block (Block $11) at approximately 2× standard speed (halved pulse timings). The turbo MC copies itself to $8000 (uncontended RAM) and reads data via direct edge-detection on port $FE using a threshold-based bit discriminator (~52 T-states/iteration). Returns to BASIC via RST $08 ("0 OK" report). Based on turbo loading technique from zxctl by iratahack. ZIP export for the turbo scheme includes .tzx + reference .asm + .inc files. The first five schemes use ROM routines ($0562 for pilot/sync/flag detection, $05C6 for byte reading via the DE=0 trick) and save/restore all Z80 registers for clean return to BASIC. The loader include files are provided separately for reuse in other projects
+- `cursor_loader.slpluginjs` — JS plugin (export): exports the current SCR screen with interactive cell-order loading, a running cursor effect, and **multi-source** support. The export dialog displays the screen at 2× zoom (512×384) with a 32×24 character grid overlay. **Multiple sources**: the editor screen is source 1; click **+ Add** to load additional `.scr` files as numbered sources. A colored tab bar shows all sources — click to switch, × to remove. Cells from the active source show at full brightness with a colored border; cells from other sources appear tinted with their source color. Unassigned cells show a dimmed grayscale version of the source image with a diagonal cross overlay, keeping picture structure visible while placing cells. **Interaction**: left-click or drag to add cells from the active source (drag interpolates with Bresenham for smooth lines); right-click to set an anchor (shown with white corner brackets), right-click again to draw a Bresenham line from anchor to target. The same cell position can appear multiple times from different sources, creating picture-replacement effects. Five presets fill all 768 positions from the active source: **Typewriter** (L→R, T→B), **Columns** (T→B, L→R), **Zigzag** (alternating L→R and R→L per row), **Spiral In** (clockwise from border to center), **Random** (Fisher-Yates shuffle). Tools: **Clear** resets the entire order, **Fill remaining** fills uncovered cells from the active source, **Undo** / **Redo** (Ctrl+Z / Ctrl+Y), **Save** / **Load** (project state to/from `.json` file including all sources as base64), **Animate** checkbox (preview the loading animation at any time, even with partial coverage). **Initial colors**: Ink, Paper, and Bright controls set the initial attribute fill and border color before loading. A color swatch shows the ZX ROM "A" glyph in ink on paper. **Cursor toggle**: "Show cursor during loading" checkbox controls whether the bright white cursor cell ($78) appears ahead of the data. **Border stripes**: dropdown selects the border stripe color scheme — Blue/Yellow (standard), Red/Cyan, Magenta/Green, Black/White, or Solid (no stripes); solid mode copies the ROM byte reader to uncontended RAM via LDIR, patches absolute addresses for relocation, and replaces OUT ($FE),A with NOP NOP; a **Color** dropdown appears to choose any of the 8 ZX Spectrum colors for the solid border. Export is enabled once all 768 unique cell positions are covered. Status shows "Entries: N | Unique cells: M / 768". Each cell = 9 bytes (8 bitmap lines + 1 attribute byte). The Z80 loader machine code (~110 bytes) and cell order table (N × 2 bytes) are embedded in a REM line at $5CD0. For each cell the loader: (1) writes $78 (bright white paper) to the attribute address as a visible cursor, (2) reads 8 bitmap bytes from tape and writes them to the correct non-linear screen addresses, (3) reads 1 attribute byte and overwrites the cursor with the real color. Uses ROM routines ($0562 for pilot/sync/flag, $05C6 for byte reading with the DE=0 trick). Output: .tap file with BASIC program (auto-starting at line 10 with `RANDOMIZE USR 23760`) + headless data block (flag $FE, N×9 cell-ordered bytes). Download format: TAP only or ZIP archive with .tap + cell-ordered `.bin` + reference .asm (sjasmplus SAVETAP directives) + .inc (commented Z80 assembly with cell table as DB lines)
 
 ---
 
@@ -1769,6 +1806,7 @@ Arithmetic: `+`, `-`, `*`, `/`, `%`. Comparison: `=`, `<>`, `!=`, `<`, `>`, `<=`
 | .scr.lzf | variable | [ZXSC](https://github.com/TomDDG/ZXSC---ZX-Spectrum-Screen-Compresser) LZF compressed screen — standard or screen-scan mode (auto-decompressed on load) |
 | .scr.rle | variable | RLE (PackBits-style) compressed screen (auto-decompressed on load) |
 | .scr.upk | variable | upkr compressed screen with Z80 settings (auto-decompressed on load) |
+| .scr.lgk | variable | LgK v1.1rs compressed screen (auto-decompressed on load) |
 | .scr | 6976 bytes | ULA+ (64-color palette) |
 | .scr | 6945–7426 bytes | ULANext (Next extended palette, up to 256 colors) |
 | .scr | 6144 bytes | Monochrome full |
@@ -1997,3 +2035,4 @@ When using **Step**, the textarea highlights the source line corresponding to th
 - **Laser Compact 5.2.1** — compression by Hrumer (packer/depacker, 1994–2014), Eugene Larchenko (buffer overflow fix, segment support)
 - **upkr** — compression by phar/Loonies ([GitHub](https://github.com/exoticorn/upkr))
 - **ZXSC** — LZF screen compressor with non-linear cell-scan ordering by [TomDDG](https://github.com/TomDDG/ZXSC---ZX-Spectrum-Screen-Compresser) (MIT license). Z80 depackers and algorithm design from the original project; compressor reimplemented in JavaScript with optimal DP parsing
+- **LgK** — LgK v1.1rs (Lethargeek Kompakt, Row-Sequence edition) tile-based screen compressor by Lethargeek. JavaScript port by Bedazzle
