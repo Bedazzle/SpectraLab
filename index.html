@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v2.32 -->
+<!-- SpectraLab v2.37 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -752,16 +752,38 @@
   .gigascreen-palette-grid {
     display: grid;
     grid-template-columns: repeat(16, 1fr);
-    gap: 1px;
+    gap: 0;
     margin-left: -4px;
   }
 
   .gigascreen-palette-cell {
     aspect-ratio: 1;
     border: 1px solid var(--border-secondary);
+    box-sizing: border-box;
     cursor: pointer;
     min-height: 12px;
   }
+
+  /* Gigascreen Edit Mode Selector */
+  .giga-edit-mode-btn {
+    flex: 1;
+    padding: 3px 6px;
+    font-size: 10px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    margin-left: -1px;
+  }
+  .giga-edit-mode-btn:first-child { margin-left: 0; border-radius: 3px 0 0 3px; }
+  .giga-edit-mode-btn:last-child { border-radius: 0 3px 3px 0; }
+  .giga-edit-mode-btn:hover { background: var(--bg-hover); }
+  .giga-edit-mode-active {
+    background: var(--accent-color);
+    color: #fff;
+    border-color: var(--accent-color);
+  }
+  .giga-edit-mode-active:hover { background: var(--accent-hover); }
 
   .gigascreen-palette-cell:hover {
     border-color: var(--border-primary);
@@ -770,20 +792,24 @@
 
   .gigascreen-palette-cell.ink-selected {
     border-color: #fff;
-    border-width: 2px;
+    outline: 1px solid #fff;
+    outline-offset: -2px;
     z-index: 2;
   }
 
   .gigascreen-palette-cell.paper-selected {
     border-color: #fff;
     border-style: dashed;
-    border-width: 2px;
+    outline: 1px dashed #fff;
+    outline-offset: -2px;
     z-index: 2;
   }
 
   .gigascreen-palette-cell.ink-selected.paper-selected {
     border-color: #fff;
     border-style: solid;
+    outline: 1px solid #fff;
+    outline-offset: -2px;
   }
 
   /* 53c Pattern Color Palette */
@@ -1492,8 +1518,8 @@
     margin-bottom: 2px;
   }
   .sprite-color-cell {
-    width: 14px;
-    height: 14px;
+    width: 18px;
+    height: 18px;
     border: 1px solid var(--border-secondary);
     border-radius: 1px;
     cursor: pointer;
@@ -1535,7 +1561,7 @@
       <div class="panel-content">
         <!-- File input -->
         <div class="control-group">
-          <input type="file" id="inputFile" multiple accept=".scr,.rcs,.53c,.atr,.bsc,.bsp,.bmc4,.ifl,.mlt,.mc,.3,.img,.mg1,.mg2,.mg4,.mg8,.hlr,.stl,.nxi,.sl2,.slr,.rad,.c,.specscii,.sca,.zxp,.ch$,.chr$,.ch-,.slp,.slw,.sna,.z80,.btile,.wtile,.zx7,.zx7b,.zx0,.zx0b,.lc,.upk,.rle,.lzf,.lgk,.c4,.c2,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,.slplugin,.slpluginjs,image/*" style="width: 100%; font-size: 11px;">
+          <input type="file" id="inputFile" multiple accept=".scr,.rcs,.53c,.atr,.bsc,.bsp,.bmc4,.ifl,.mlt,.mc,.3,.img,.ga,.gap,.mg1,.mg2,.mg4,.mg8,.hlr,.stl,.nxi,.sl2,.slr,.rad,.c,.specscii,.sca,.zxp,.ch$,.chr$,.ch-,.slp,.slw,.sna,.z80,.btile,.wtile,.zx7,.zx7b,.zx0,.zx0b,.lc,.upk,.rle,.lzf,.lgk,.c4,.c2,.zip,.png,.gif,.jpg,.jpeg,.webp,.bmp,.slplugin,.slpluginjs,image/*" style="width: 100%; font-size: 11px;">
         </div>
 
         <!-- New and Save buttons -->
@@ -1850,6 +1876,15 @@
             Load a picture or click this tab again to create a new one.
           </div>
           <div id="scrEditorOverlay" class="scr-editor-panel">
+            <!-- Gigascreen Edit Mode Selector (hidden by default) -->
+            <div id="gigascreenEditModeSelector" style="display: none; margin-bottom: 8px;">
+              <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px;">EDIT MODE</div>
+              <div style="display: flex; gap: 0;">
+                <button id="gigaEditScreen1Btn" class="giga-edit-mode-btn" title="Edit Screen 1 only (standard 16-color palette)">Screen 1</button>
+                <button id="gigaEditScreen2Btn" class="giga-edit-mode-btn" title="Edit Screen 2 only (standard 16-color palette)">Screen 2</button>
+                <button id="gigaEditCombinedBtn" class="giga-edit-mode-btn giga-edit-mode-active" title="Edit both screens as Gigascreen (virtual 136-color palette)">Gigascreen</button>
+              </div>
+            </div>
             <!-- Standard Color Section -->
             <div id="editorColorSection">
               <div id="editorPalette" class="editor-palette"></div>
@@ -1909,8 +1944,22 @@
                 <span style="font-size: 10px;">Paper:</span>
                 <div id="gigascreenPaperPreview" style="width: 20px; height: 16px; border: 1px solid var(--border-color); cursor: help;"></div>
               </div>
+              <div id="gigascreenClutTabs" style="display: none; margin-bottom: 4px;">
+                <div style="font-size: 9px; color: var(--text-tertiary); margin-bottom: 2px;">CLUT page:</div>
+                <div style="display: flex; gap: 0;">
+                  <button class="giga-edit-mode-btn giga-edit-mode-active" data-clut="0" title="CLUT 0: bright=0, flash=0">0</button>
+                  <button class="giga-edit-mode-btn" data-clut="1" title="CLUT 1: bright=1, flash=0">1</button>
+                  <button class="giga-edit-mode-btn" data-clut="2" title="CLUT 2: bright=0, flash=1">2</button>
+                  <button class="giga-edit-mode-btn" data-clut="3" title="CLUT 3: bright=1, flash=1">3</button>
+                </div>
+              </div>
               <div id="gigascreenPaletteGrid" class="gigascreen-palette-grid"></div>
-              <div style="font-size: 9px; color: var(--text-tertiary); margin-top: 4px;">Left click = Ink, Right click = Paper</div>
+              <div id="gigascreenPaletteHint" style="font-size: 9px; color: var(--text-tertiary); margin-top: 4px;">Left click = Ink, Right click = Paper</div>
+              <!-- Paper blend strip for dual-palette GAP -->
+              <div id="gigascreenPaperStrip" style="display: none;">
+                <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 8px; margin-bottom: 4px;">PAPER COLORS</div>
+                <div id="gigascreenPaperStripGrid" class="gigascreen-palette-grid"></div>
+              </div>
               <!-- 4-color picker for painting -->
               <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 8px; margin-bottom: 4px;">CELL COLORS</div>
               <div id="gigascreen4ColorPicker" style="display: flex; gap: 4px; flex-wrap: wrap;"></div>
@@ -2613,8 +2662,6 @@
           </div>
           <div class="control-group" id="pluginSection">
             <div class="control-group-title">Plugins</div>
-            <input type="file" id="pluginFileInput" accept=".slplugin,.slpluginjs,.json" style="display:none;">
-            <button id="pluginLoadBtn" style="font-size:11px;margin-bottom:4px;">Load Plugin&#8230;</button>
             <div id="pluginList"></div>
           </div>
         </div>
@@ -2752,8 +2799,7 @@
         <button id="spriteToolMask" class="sprite-tool-btn" title="Toggle mask editing (M)">Mask</button>
         <!-- Attributed mode: color selectors -->
         <div id="spriteAttrControls" style="display:none;">
-          <div id="spriteColorPalette" class="sprite-color-row"></div>
-          <label style="font-size:9px;"><input type="checkbox" id="spriteBrightChk"> Bright</label>
+          <div id="spriteColorPalette"></div>
         </div>
       </div>
     </div>
@@ -3093,6 +3139,12 @@
           </optgroup>
           <optgroup label="Gigascreen">
             <option value="gigascreen">Gigascreen (.img) — 256×192, two-frame blend</option>
+            <option value="gigaattr">Gigaattr (.ga) — 256×192, shared bitmap + two attrs</option>
+            <option value="gigaattr_pat">GA Pattern (.ga) — 256×192, Gigaattr fill pattern</option>
+            <option value="gap">GAP (.gap) — 256×192, shared bitmap + two attrs + ULA+ palette</option>
+            <option value="gap_pat">GAP Pattern (.gap) — 256×192, Gigaattr+ULA+ fill pattern</option>
+            <option value="gap_dual">GAP Dual (.gap) — 256×192, shared bitmap + two attrs + dual ULA+ palette</option>
+            <option value="gap_dual_pat">GAP Dual Pattern (.gap) — 256×192, Gigaattr+ULA+ dual fill pattern</option>
             <option value="mg8">Multiartist mg8 (.mg8) — 256×192, gigascreen 8×8 attrs</option>
             <option value="mg4">Multiartist mg4 (.mg4) — 256×192, gigascreen 8×4 attrs</option>
             <option value="mg2">Multiartist mg2 (.mg2) — 256×192, gigascreen 8×2 attrs</option>
@@ -3165,6 +3217,7 @@
           <option value="vstripe2">Vertical stripes 2px</option>
           <option value="diag-dr">Diagonal down-right</option>
           <option value="diag-ur">Diagonal up-right</option>
+          <option value="dd77">DD77 (127 colors)</option>
           <option value="custom">Custom...</option>
         </select>
       </label>
@@ -3467,6 +3520,12 @@
           <tr><td style="color: var(--text-secondary);">Alt</td><td>Draw from center instead of corner</td></tr>
           <tr><td style="color: var(--text-secondary);">Ctrl+Alt</td><td>Both: square/circle from center</td></tr>
         </table>
+        <div style="font-weight: bold; margin: 12px 0 6px;">Gigascreen</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td style="width: 90px; color: var(--text-secondary);">Alt+1</td><td>Edit Screen 1 (frame 1 only)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Alt+2</td><td>Edit Screen 2 (frame 2 only)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Alt+3</td><td>Edit Gigascreen (combined mode)</td></tr>
+        </table>
         <div style="font-weight: bold; margin: 12px 0 6px;">Custom Brushes</div>
         <table style="width: 100%; font-size: 11px;">
           <tr><td style="width: 90px; color: var(--text-secondary);">Click slot</td><td>Select (empty starts capture)</td></tr>
@@ -3593,6 +3652,7 @@
           <tr><td style="color: var(--text-secondary);">.bmc4</td><td>11904b</td><td>8×4 + border</td></tr>
           <tr><td style="color: var(--text-secondary);">.3</td><td>18432b</td><td>Tricolor RGB</td></tr>
           <tr><td style="color: var(--text-secondary);">.img</td><td>13824b</td><td>Gigascreen (2×SCR)</td></tr>
+          <tr><td style="color: var(--text-secondary);">.ga</td><td>7680b</td><td>Gigaattr (shared bitmap + 2×attrs)</td></tr>
           <tr><td style="color: var(--text-secondary);">.sca</td><td>var</td><td>Animation (full/attr-only)</td></tr>
           <tr><td style="color: var(--text-secondary);">.specscii</td><td>var</td><td>Text mode (32×24 chars + OVER layers)</td></tr>
           <tr><td style="color: var(--text-secondary);">.ch$ / .chr$ / .ch-</td><td>var</td><td>chr$ character array</td></tr>
@@ -3622,7 +3682,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 2.32</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 2.37</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">
@@ -3885,6 +3945,12 @@
               </optgroup>
               <optgroup label="Gigascreen">
                 <option value="gigascreen">Gigascreen</option>
+                <option value="gigaattr">Gigaattr</option>
+                <option value="gigaattr_pat">GA Pattern</option>
+                <option value="gap">GAP</option>
+                <option value="gap_pat">GAP Pattern</option>
+                <option value="gap_dual">GAP Dual</option>
+                <option value="gap_dual_pat">GAP Dual Pat</option>
                 <option value="mg8">MG8</option>
                 <option value="mg4">MG4</option>
                 <option value="mg2">MG2</option>
@@ -3945,6 +4011,23 @@
             <input id="import53cPatternHex" type="text" maxlength="23" value="0F 0F 0F 0F F0 F0 F0 F0" style="width: 130px; padding: 2px; font-size: 11px; font-family: monospace; display: none;" title="8 hex bytes separated by spaces (e.g. 0F 0F 0F 0F F0 F0 F0 F0)">
             <label style="margin-left: 6px; cursor: pointer;" title="Spread color error to neighboring cells (Floyd-Steinberg)"><input type="checkbox" id="import53cDiffusion"> Diffusion</label>
           </label>
+          <label id="importGaPatternRow" style="font-size: 11px; display: none; align-items: center; gap: 4px;">
+            <span style="width: 44px;">Pattern:</span>
+            <select id="importGaPattern" style="width: 120px; padding: 2px; font-size: 11px;">
+              <option value="auto" selected>Auto (best fit)</option>
+              <option value="top-bottom">Top / bottom halves</option>
+              <option value="left-right">Left / right halves</option>
+              <option value="checker1">Checkerboard 1x1</option>
+              <option value="checker2">Checkerboard 2x2</option>
+              <option value="hstripe1">H-stripes 1px</option>
+              <option value="vstripe1">V-stripes 1px</option>
+              <option value="hstripe2">H-stripes 2px</option>
+              <option value="vstripe2">V-stripes 2px</option>
+              <option value="diag-dr">Diagonal down-right</option>
+              <option value="diag-ur">Diagonal up-right</option>
+              <option value="dd77">DD77 (127 colors)</option>
+            </select>
+          </label>
           <label id="importHlrPatternRow" style="font-size: 11px; display: none; align-items: center; gap: 4px;">
             <span style="width: 44px;">Pattern:</span>
             <select id="importHlrPattern" style="width: 120px; padding: 2px; font-size: 11px;">
@@ -3959,6 +4042,7 @@
               <option value="vstripe2">V-stripes 2px</option>
               <option value="diag-dr">Diagonal down-right</option>
               <option value="diag-ur">Diagonal up-right</option>
+              <option value="dd77">DD77 (127 colors)</option>
             </select>
           </label>
           <label id="importChrGigaRow" style="font-size: 11px; display: none; align-items: center; gap: 4px;" title="Gigascreen chr$: two flickering frames simulate ~120 colors">

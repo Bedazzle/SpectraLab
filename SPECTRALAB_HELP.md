@@ -42,7 +42,7 @@ When multiple pictures are open, a tab bar appears above the canvas. Each tab sh
 Click the file input at the top of the left sidebar or **drag and drop** a file onto the canvas.
 
 **Supported input formats:**
-`.scr`, `.rcs`, `.53c`, `.atr`, `.bsc`, `.bsp`, `.bmc4`, `.ifl`, `.mlt`, `.mc`, `.3`, `.img`, `.hlr`, `.stl`, `.nxi`, `.sl2`, `.specscii`, `.sca`, `.btile`, `.wtile`, `.ch$`, `.chr$`, `.ch-`, `.zxp`, `.slp`, `.slw`, `.sna`, `.z80`, `.zip`, `.png`, `.gif`, `.jpg`, `.jpeg`, `.webp`, `.bmp`
+`.scr`, `.rcs`, `.53c`, `.atr`, `.bsc`, `.bsp`, `.bmc4`, `.ifl`, `.mlt`, `.mc`, `.3`, `.img`, `.ga`, `.gap`, `.hlr`, `.stl`, `.nxi`, `.sl2`, `.specscii`, `.sca`, `.btile`, `.wtile`, `.ch$`, `.chr$`, `.ch-`, `.zxp`, `.slp`, `.slw`, `.sna`, `.z80`, `.zip`, `.png`, `.gif`, `.jpg`, `.jpeg`, `.webp`, `.bmp`
 
 ### New Picture
 
@@ -59,6 +59,10 @@ Click the **New** button to open the New Picture dialog. Select a format from th
 | BMC4 | .bmc4 | 384×304, 8×4 multicolor + border |
 | RGB3 | .3 | 256×192, tricolor RGB (8 colors) |
 | Gigascreen | .img | 256×192, two-frame blend |
+| Gigaattr | .ga | 256×192, shared bitmap + two attribute frames |
+| Gigaattr pattern | .ga | 32×24 cells, pattern fill + two attribute frames |
+| Gigaattr+ULA+ | .gap | 256×192, shared bitmap + two attribute frames + ULA+ palette |
+| Gigaattr+ULA+ pattern | .gap | 32×24 cells, pattern fill + two attribute frames + ULA+ palette |
 | Monochrome | .scr | 256×192, bitmap only (ink auto-adjusted if ink=paper) |
 | Monochrome 2/3 | .scr | 256×128, bitmap only (ink auto-adjusted if ink=paper) |
 | Monochrome 1/3 | .scr | 256×64, bitmap only (ink auto-adjusted if ink=paper) |
@@ -146,10 +150,20 @@ For `.3` tricolor format, select display mode:
 - **Emulate flicker** — alternating frame display to simulate real hardware
 
 #### Gigascreen Controls
-For `.img` gigascreen, `.hlr` (High Lores), and `.stl` (Stellar) formats, select display mode:
+For `.img` gigascreen, `.ga` gigaattr, `.gap` gigaattr+ULA+, `.hlr` (High Lores), and `.stl` (Stellar) formats, select display mode:
 - **Blend dark** — simulates perceived brightness on real CRT, accounting for vertical retrace blanking
 - **Blend** — blended view of both frames at full brightness
 - **Emulate flicker** — alternating frame display to simulate real hardware
+
+#### Gigascreen Edit Mode
+When a Gigascreen-family format is loaded, a mode selector appears in the editor sidebar:
+- **Gigascreen** (default) — combined editing with the virtual 136-color palette. Drawing affects both frames simultaneously
+- **Screen 1** — shows frame 1 only on the main canvas with the standard 16-color ZX palette. Drawing affects only frame 1
+- **Screen 2** — shows frame 2 only on the main canvas with the standard 16-color ZX palette. Drawing affects only frame 2
+
+In Screen 1/Screen 2 mode, the floating preview always shows the blended Gigascreen result, so you can see how per-frame edits affect the combined picture. All tools (pencil, line, fill, color picker, copy/paste, clear, undo/redo) work in split mode. The mode resets to Gigascreen on file or format change.
+
+Keyboard shortcuts: **Alt+1** = Screen 1, **Alt+2** = Screen 2, **Alt+3** = Gigascreen (combined).
 
 #### Font Controls
 For SPECSCII format: click **Browse** to load a custom font file (`.bin`, `.SpecCHR`). The default font is the ZX Spectrum ROM font.
@@ -295,13 +309,19 @@ Shown when editing ZX Next indexed-color formats (NXI, SL2, LoRes, LoRes Radasta
 
 ### Gigascreen Palette
 
-Shown for Gigascreen, HLR, and STL formats. A 16-column grid displays all virtual colors created by two-frame alternation.
+Shown for Gigascreen, Gigaattr, Gigaattr+ULA+, HLR, and STL formats in **Gigascreen** edit mode. A 16-column grid displays all virtual colors created by two-frame alternation.
 
 - Left click = select ink
 - Right click = select paper
 - **Cell Colors** section shows the 4 available colors per cell
   - **L** = Left mouse button color
   - **R** = Right mouse button color
+
+**CLUT page tabs** (dual-palette GAP only): when editing a GAP file with dual palettes in Gigascreen mode, the 1024-entry ink and paper grids are split into 4 pages of 256 entries each. Buttons **0–3** switch between CLUT pages (0 = bright=0/flash=0, 1 = bright=1/flash=0, 2 = bright=0/flash=1, 3 = bright=1/flash=1). Each page shows 8 frame 1 inks from one CLUT × all 32 frame 2 colors. Standard gigascreen (136 entries) has no pagination.
+
+**Paper color strip** (dual-palette GAP only): a separate "PAPER COLORS" grid appears below the ink palette grid, showing all cross-blended paper colors from both palettes. Click a paper swatch to set the paper color. Ink and paper selections are independent — the ink grid controls ink, the paper strip controls paper. The Ink/Paper preview swatches at the top show the actual blended colors for each.
+
+When switched to **Screen 1** or **Screen 2** mode, the standard 16-color ZX Spectrum palette is shown instead, allowing direct per-frame attribute editing with ink, paper, bright, and flash controls.
 
 ### 53c/127c Pattern Palette
 
@@ -517,7 +537,9 @@ The active picture is preserved — saving briefly cycles through every open pic
 Use the **Convert to...** dropdown to convert the current picture to a different format.
 
 Available conversions include:
-- **Lossless**: SCR ↔ ATTR, SCR ↔ BSC ↔ BSP, SCR ↔ ULA+, NXI ↔ SL2 (all modes: 256×192, 320×256, 640×256). NXI → SL2 with a custom palette shows a dialog: keep palette (embed in SL2), quantize to default RGB332 (lossy), or strip palette (keep indices unchanged)
+- **Lossless**: SCR ↔ ATTR, SCR ↔ BSC ↔ BSP, SCR ↔ ULA+, GA ↔ GAP (add/strip ULA+ palette), NXI ↔ SL2 (all modes: 256×192, 320×256, 640×256). NXI → SL2 with a custom palette shows a dialog: keep palette (embed in SL2), quantize to default RGB332 (lossy), or strip palette (keep indices unchanged)
+- **GAP palette toggle**: GAP shared palette → GAP dual palette (duplicates palette 1 into palette 2, enabling independent per-frame palettes); GAP dual palette → GAP shared palette (discards palette 2). No format change — only the palette count changes. Gigascreen ↔ GAP conversion also available (strips/adds palette + independent bitmaps)
+- **53c → GA/GAP pattern**: converts ATTR (.53c) to pattern-based GA or GAP. Three options: "GA (Gigaattr pattern)", "GAP (Gigaattr+ULA+ pattern, shared)", "GAP (Gigaattr+ULA+ dual pattern)". Opens a combined settings dialog with: fill pattern grid (thumbnails of all available patterns), border color 1 and border color 2 selectors (8 ZX colors). For GAP variants, a default ULA+ palette is generated automatically. Output is a compact file (1546/1610/1674 bytes) with the selected pattern tile instead of a full bitmap
 - **Lossy (render + re-quantize)**: SCR/ULA+ → NXI 320×256/640×256, NXI/SL2 cross-mode (256↔320↔640), NXI/SL2 → SCR
 - **Character match**: SCR → SPECSCII — matches each 8×8 cell bitmap to the best ROM font character or block graphic, preserving brightness and flash; tries both normal and inverted (ink/paper swap) matching; hidden pixels (ink == paper) are matched to the best glyph so the bitmap pattern is preserved for editing
 
@@ -528,7 +550,7 @@ Available conversions include:
 - **Export** button — export to the selected format
 - **PNG/GIF** button — export the current screen to PNG or animated GIF image
   - Uses all current View tab settings: zoom, border size/color, grid/subgrid, palette, filters
-  - For gigascreen-family formats (Gigascreen, MGH, HLR, STL, BSP-gigascreen, chr$-gigascreen): a dialog lets you choose **Blended** (averaged colors → PNG) or **Flicker** (two alternating frames → animated GIF at ~50fps)
+  - For gigascreen-family formats (Gigascreen, Gigaattr, Gigaattr+ULA+, MGH, HLR, STL, BSP-gigascreen, chr$-gigascreen): a dialog lets you choose **Blended** (averaged colors → PNG) or **Flicker** (two alternating frames → animated GIF at ~50fps)
   - For pictures with flash attributes: a dialog lets you choose **Animated GIF** (two-frame flash animation at 320ms per phase) or **Static PNG** (normal phase only)
   - For all other formats: exports directly as PNG
 
@@ -628,6 +650,8 @@ Available format exports:
 |--------|-------------|--------|--------|
 | BSC | ASM (Pentagon border) | Pentagon 128K | .sna — cycle-exact border color effects |
 | Gigascreen / MGH | ASM (Pentagon dual-screen) | Pentagon 128K | .sna — alternating screen banks |
+| Gigaattr | ASM (48K attr flicker) | ZX Spectrum 48K | .sna — LDIR bitmap once, alternate attrs each frame |
+| Gigaattr+ULA+ | ASM (48K ULA+ flicker) | ZX Spectrum 48K + ULA+ | .sna — ULA+ palette programming + attr flicker (shared: program once; dual: reprogram each frame) |
 | RGB3 | ASM (Pentagon RGB flicker) | Pentagon 128K | .sna — RGB channel flicker |
 | IFL | ASM (Pentagon 8x2 multicolor) | Pentagon 128K | .sna — 8×2 multicolor display |
 | ULA+ | ASM (ULA+ palette) | ZX Spectrum 48K + ULA+ | .sna — 64-entry palette programming |
@@ -793,8 +817,10 @@ Mouse buttons work the same as on the main canvas: **left button** draws ink (se
 ### Color Controls
 
 For Attributed and Multicolour mode sprites:
-- 8-color palette for ink/paper selection
-- **Bright** checkbox
+- Two-row color palette: top row = 8 normal colors, bottom row = 8 bright colors
+- Left-click a swatch to set ink, right-click to set paper
+- Clicking a color in either row sets the bright flag to that row, keeping ink and paper in the same brightness
+- Colors follow the **Palette** selection on the View tab — changing the display palette updates both the swatches and the sprite canvas rendering in real time
 
 ### Preview and Animation
 
@@ -863,7 +889,7 @@ Crop the source image:
   - **PCA gradient** — uses Principal Component Analysis to find the dominant color axis in each cell, then tests the top palette matches near the axis extremes using the line-projection metric. Good for cells with a clear color gradient
   - Works with all ZX block sizes (8×8, 8×2, 8×1, 8×4) and ULA+. Hidden for non-ink/paper formats (NXI, SL2, LoRes). Disabled when Mono output is active
 - **Grayscale** — convert to grayscale before processing
-- **Mono output** — output black and white only (ink 0, paper 7, bright). Works with all formats: SCR, IFL, MLT, BSC, BMC4, GMX, Gigascreen, HLR, STL, RGB3, ULA+, GMX 160×200, 53c, SPECSCII, NXI, SL2, LoRes, Radastan, ZXP
+- **Mono output** — output black and white only (ink 0, paper 7, bright). Works with all formats: SCR, IFL, MLT, BSC, BMC4, GMX, Gigascreen, Gigaattr, GAP, HLR, STL, RGB3, ULA+, GMX 160×200, 53c, SPECSCII, NXI, SL2, LoRes, Radastan, ZXP
 
 #### Transform
 
@@ -911,10 +937,11 @@ Crop the source image:
 
 #### Output
 
-- **Format:** SCR, ULA+, 53c (attr), IFL (8×2), BMC4 (8×4), MLT (8×1), MLT+ULA+, BSC, BSP, RGB3, Gigascreen, HLR, STL, GMX 640×200, GMX 160×200, NXI (256×192, 320×256, 640×256), SL2 (256×192, 320×256, 640×256), SPECSCII, Mono, Mono 2/3, Mono 1/3, LoRes, Radastan, ZXP, chr$, btile (Nirvana 16×16), wtile (Nirvana 24×16)
+- **Format:** SCR, ULA+, 53c (attr), IFL (8×2), BMC4 (8×4), MLT (8×1), MLT+ULA+, BSC, BSP, RGB3, Gigascreen, Gigaattr, GAP, GAP Dual, GA Pattern, GAP Pattern, GAP Dual Pattern, HLR, STL, GMX 640×200, GMX 160×200, NXI (256×192, 320×256, 640×256), SL2 (256×192, 320×256, 640×256), SPECSCII, Mono, Mono 2/3, Mono 1/3, LoRes, Radastan, ZXP, chr$, btile (Nirvana 16×16), wtile (Nirvana 24×16)
 - **Palette** selector
 - **Palette strip** — clickable row of 16 color swatches (8 regular + 8 bright) below the Palette dropdown. Click a swatch to disable that color; disabled colors are marked with a white X cross and excluded from ink/paper pair search in all block sizes and from nearest-color lookup. Minimum 2 colors must remain enabled. Resets on palette or format change. Hidden for non-ZX formats (ULA+, NXI, SL2, LoRes)
 - **53c Pattern** (for 53c format): Checker, Stripes, DD/77, Custom. When "Custom" is selected, a hex input field appears where you can enter 8 bytes separated by spaces (e.g. `0F 0F 0F 0F F0 F0 F0 F0`). Each byte defines one row of the 8×8 fill pattern (MSB = leftmost pixel). The custom pattern is used both for single-image 53c import and for animated GIF → SCA type 1 import
+- **GA Pattern** (for GA/GAP pattern formats): fill pattern dropdown — select the 8×8 fill pattern tile used for the bitmap. Same presets as HLR (solid, top-bottom, left-right, checker, stripes, diagonal, DD/77, etc.). The pattern is fixed for the entire picture; drawing tools modify only attributes (ink/paper colors)
 - **SPECSCII Charset** (for SPECSCII format): Full (ROM font + block graphics, 112 glyphs), ASCII (ROM font only, 96 glyphs), UDG (block graphics only, 16 glyphs + space)
 - **ULA+ Palette:** Auto, Load .pal, From picture
 - **Position:** X, Y offset
@@ -1513,8 +1540,7 @@ SpectraLab supports user-defined plugins that extract and patch pictures from ar
 
 ### Loading a Plugin
 
-- Click **Load Plugin…** in the Tools tab, or
-- Drag-and-drop a `.slplugin` / `.slpluginjs` file onto the application
+Open a `.slplugin` or `.slpluginjs` file through the main browse button, or drag-and-drop it onto the application. The file extension is auto-detected and routed to the plugin loader.
 
 Installed plugins persist across sessions (saved in localStorage).
 
@@ -1646,8 +1672,9 @@ Example plugins are provided in the `plugins/` directory:
 - `rle_scr.slpluginjs` — JS plugin (codec): loads and saves RLE-compressed SCR files (0x00/0xFF + count encoding)
 - `maria_sna.slpluginjs` — JS plugin (session): extracts loading screen + 5 compressed screens (ZX0/RLE auto-detected) from Maria's Christmas Box 48K .sna snapshot. On save-back, patches the Z80 depacker in the snapshot: replaces the inline RLE loop at `$9602` with `CALL $FE90`, injects the 112-byte `dzx0_smartRCS` depacker at `$FE90` (end of memory), and applies RCS bitmap reordering before ZX0 compression. The data block at `$A000` (header + compressed screens) is kept portable for sideloading. Falls back to RLE if `SL.ZX0` is unavailable. ZX0, RCS and `dzx0_smartRCS` by Einar Saukas. Demonstrates Z80 code patching, depacker relocation, cross-bank data handling, `SL` namespace usage, and memory overflow protection
 - `heroquest_128k.slpluginjs` — JS plugin (session): extracts 11 graphics from Hero Quest 128K .sna snapshot across banks 3, 4, 6, and 7. Ten 128×64 px graphics in banks 3/4/7 use linear bitmap+attrs layout converted to/from ZX-interleaved SCR; bank 6 contains the full 256×192 playfield screen as a standard SCR. Unused screen area filled with bright/regular white checkerboard to mark the editable region
-- `tape_loader.slpluginjs` — JS plugin (export): exports the current SCR screen with byte reordering for visual tape loading effects. A custom export dialog lets you choose the loading scheme and download format (ZIP archive with .scr + .asm + .inc, or .scr only). Six schemes: **Backward** reverses all 6912 bytes so the loader stores them from $5AFF down to $4000 — attrs appear first (bottom to top), then bitmap fills from bottom up. **Linear** reorders data in character-row order (8 bitmap lines + 32 attr bytes per row) — picture paints top to bottom with colors appearing after each character row. **Checkerboard 2×2** divides the screen into a 2×2 grid of 16×12 character blocks, loads even-positioned blocks (checkerboard pattern) first, then odd — each block loads bitmap data first then attributes. **Checkerboard 4×3** uses a 4×3 grid of 8×8 character blocks for a finer checkerboard effect. **Checkerboard 8×6** uses an 8×6 grid of 4×4 character blocks for the finest checkerboard pattern. **Turbo Linear (2× speed)** exports a `.tzx` file instead of `.tap` — the TZX contains a standard-speed BASIC block (Block $10) with a custom turbo loader machine code embedded in a REM line, followed by a turbo-speed data block (Block $11) at approximately 2× standard speed (halved pulse timings). The turbo MC copies itself to $8000 (uncontended RAM) and reads data via direct edge-detection on port $FE using a threshold-based bit discriminator (~52 T-states/iteration). Returns to BASIC via RST $08 ("0 OK" report). Based on turbo loading technique from zxctl by iratahack. ZIP export for the turbo scheme includes .tzx + reference .asm + .inc files. The first five schemes use ROM routines ($0562 for pilot/sync/flag detection, $05C6 for byte reading via the DE=0 trick) and save/restore all Z80 registers for clean return to BASIC. The loader include files are provided separately for reuse in other projects
-- `cursor_loader.slpluginjs` — JS plugin (export): exports the current SCR screen with interactive cell-order loading, a running cursor effect, and **multi-source** support. The export dialog displays the screen at 2× zoom (512×384) with a 32×24 character grid overlay. **Multiple sources**: the editor screen is source 1; click **+ Add** to load additional `.scr` files as numbered sources. A colored tab bar shows all sources — click to switch, × to remove. Cells from the active source show at full brightness with a colored border; cells from other sources appear tinted with their source color. Unassigned cells show a dimmed grayscale version of the source image with a diagonal cross overlay, keeping picture structure visible while placing cells. **Interaction**: left-click or drag to add cells from the active source (drag interpolates with Bresenham for smooth lines); right-click to set an anchor (shown with white corner brackets), right-click again to draw a Bresenham line from anchor to target. The same cell position can appear multiple times from different sources, creating picture-replacement effects. Five presets fill all 768 positions from the active source: **Typewriter** (L→R, T→B), **Columns** (T→B, L→R), **Zigzag** (alternating L→R and R→L per row), **Spiral In** (clockwise from border to center), **Random** (Fisher-Yates shuffle). Tools: **Clear** resets the entire order, **Fill remaining** fills uncovered cells from the active source, **Undo** / **Redo** (Ctrl+Z / Ctrl+Y), **Save** / **Load** (project state to/from `.json` file including all sources as base64), **Animate** checkbox (preview the loading animation at any time, even with partial coverage). **Initial colors**: Ink, Paper, and Bright controls set the initial attribute fill and border color before loading. A color swatch shows the ZX ROM "A" glyph in ink on paper. **Cursor toggle**: "Show cursor during loading" checkbox controls whether the bright white cursor cell ($78) appears ahead of the data. **Border stripes**: dropdown selects the border stripe color scheme — Blue/Yellow (standard), Red/Cyan, Magenta/Green, Black/White, or Solid (no stripes); solid mode copies the ROM byte reader to uncontended RAM via LDIR, patches absolute addresses for relocation, and replaces OUT ($FE),A with NOP NOP; a **Color** dropdown appears to choose any of the 8 ZX Spectrum colors for the solid border. Export is enabled once all 768 unique cell positions are covered. Status shows "Entries: N | Unique cells: M / 768". Each cell = 9 bytes (8 bitmap lines + 1 attribute byte). The Z80 loader machine code (~110 bytes) and cell order table (N × 2 bytes) are embedded in a REM line at $5CD0. For each cell the loader: (1) writes $78 (bright white paper) to the attribute address as a visible cursor, (2) reads 8 bitmap bytes from tape and writes them to the correct non-linear screen addresses, (3) reads 1 attribute byte and overwrites the cursor with the real color. Uses ROM routines ($0562 for pilot/sync/flag, $05C6 for byte reading with the DE=0 trick). Output: .tap file with BASIC program (auto-starting at line 10 with `RANDOMIZE USR 23760`) + headless data block (flag $FE, N×9 cell-ordered bytes). Download format: TAP only or ZIP archive with .tap + cell-ordered `.bin` + reference .asm (sjasmplus SAVETAP directives) + .inc (commented Z80 assembly with cell table as DB lines)
+- `tape_loader.slpluginjs` — JS plugin (export): exports the current SCR screen with byte reordering for visual tape loading effects. A custom export dialog lets you choose the loading scheme and download format (ZIP archive with .scr + .asm + .inc, or .scr only). Six schemes: **Backward** reverses all 6912 bytes so the loader stores them from $5AFF down to $4000 — attrs appear first (bottom to top), then bitmap fills from bottom up. **Linear** reorders data in character-row order (8 bitmap lines + 32 attr bytes per row) — picture paints top to bottom with colors appearing after each character row. **Checkerboard 2×2** divides the screen into a 2×2 grid of 16×12 character blocks, loads even-positioned blocks (checkerboard pattern) first, then odd — each block loads bitmap data first then attributes. **Checkerboard 4×3** uses a 4×3 grid of 8×8 character blocks for a finer checkerboard effect. **Checkerboard 8×6** uses an 8×6 grid of 4×4 character blocks for the finest checkerboard pattern. **Turbo Linear (2× speed)** exports a `.tzx` file instead of `.tap` — the TZX contains a standard-speed BASIC block (Block $10) with a custom turbo loader machine code embedded in a REM line, followed by a turbo-speed data block (Block $11) at approximately 2× standard speed (halved pulse timings). The turbo MC copies itself to $8000 (uncontended RAM) and reads data via direct edge-detection on port $FE using a threshold-based bit discriminator (~52 T-states/iteration). Returns to BASIC via RST $08 ("0 OK" report). Based on turbo loading technique from zxctl by iratahack. ZIP export for the turbo scheme includes .tzx + reference .asm + .inc files. The first five schemes use ROM routines ($0562 for pilot/sync/flag detection, $05C6 for byte reading via the DE=0 trick) and save/restore all Z80 registers for clean return to BASIC. The loader include files are provided separately for reuse in other projects. **Disk emulator ASM**: for the five non-turbo schemes, when ZIP format is selected, a "Include disk emulator ASM" checkbox adds a standalone disk emulator to the archive — a `_disk.asm` wrapper and a `disk_*_loader.inc` file containing Z80 assembly that reproduces the same visual loading effect but reads from a RAM buffer (`INCBIN`) instead of tape. Uses the same reordered `.scr` file as the tape loader (monoloader concept — one `.scr` shared by both tape and disk ASMs). Timing matches real tape speed: 4 bytes are written to screen memory per frame via `HALT` (1728 HALTs = ~34.6 seconds at 50fps). Press any key during the reveal to show the remaining screen instantly — the `HALT` in the `check_key` subroutine is patched to `NOP` via self-modifying code (SMC). Assembles with sjasmplus at ORG $8000. Not available for the turbo scheme or non-ZIP formats
+- `sca_diff_analyzer.slpluginjs` — JS plugin (export): opens Type 0 SCA animations and exports frame-to-frame cell-level diffs as a ZIP archive with sjasmplus `.asm` source and binary `.bin` files. Frame 0 is always exported as a full 6912-byte `.bin`. Subsequent frames are compared cell by cell against the previous frame: if the number of changed cells is within a user-defined threshold, the frame is encoded as `DB` directives with row, column, bitmap bytes, and attribute byte per changed cell; otherwise the full frame is exported as a `.bin` file with an `INCBIN` reference. The export dialog provides: **Diff unit** radio (Bitmap + attribute at 9 bytes/cell including 8 bitmap bytes in ZX-interleaved order + 1 attribute byte, or Attribute only at 1 byte/cell); **Threshold** input (1–768, max changed cells before falling back to full binary); **live statistics** showing diff vs full frame counts, estimated total size, and a color-coded histogram of changed cells per frame with a yellow threshold line. The ASM file includes `Frame_NNN:` labels, a `DelayTable:` with per-frame delay values (1/50s units), and a per-frame summary with byte counts and totals. ZIP structure: `animation_diff/animation.asm` + `animation_diff/frame_NNN.bin` for full frames
+- `cursor_loader.slpluginjs` — JS plugin (export): exports the current SCR screen with interactive cell-order loading, a running cursor effect, and **multi-source** support. The export dialog displays the screen at 2× zoom (512×384) with a 32×24 character grid overlay. **Multiple sources**: the editor screen is source 1; click **+ Add** to load additional `.scr` files as numbered sources. A colored tab bar shows all sources — click to switch, × to remove. Cells from the active source show at full brightness with a colored border; cells from other sources appear tinted with their source color. Unassigned cells show a dimmed grayscale version of the source image with a diagonal cross overlay, keeping picture structure visible while placing cells. **Interaction**: left-click or drag to add cells from the active source (drag interpolates with Bresenham for smooth lines); right-click to set an anchor (shown with white corner brackets), right-click again to draw a Bresenham line from anchor to target. The same cell position can appear multiple times from different sources, creating picture-replacement effects. Five presets fill all 768 positions from the active source: **Typewriter** (L→R, T→B), **Columns** (T→B, L→R), **Zigzag** (alternating L→R and R→L per row), **Spiral In** (clockwise from border to center), **Random** (Fisher-Yates shuffle). Tools: **Clear** resets the entire order, **Fill remaining** fills uncovered cells from the active source, **Undo** / **Redo** (Ctrl+Z / Ctrl+Y), **Save** / **Load** (project state to/from `.json` file including all sources as base64), **Animate** checkbox (preview the loading animation at any time, even with partial coverage). **Initial colors**: Ink, Paper, and Bright controls set the initial attribute fill and border color before loading. A color swatch shows the ZX ROM "A" glyph in ink on paper. **Cursor toggle**: "Show cursor during loading" checkbox controls whether the bright white cursor cell ($78) appears ahead of the data. **Border stripes**: dropdown selects the border stripe color scheme — Blue/Yellow (standard), Red/Cyan, Magenta/Green, Black/White, or Solid (no stripes); solid mode copies the ROM byte reader to uncontended RAM via LDIR, patches absolute addresses for relocation, and replaces OUT ($FE),A with NOP NOP; a **Color** dropdown appears to choose any of the 8 ZX Spectrum colors for the solid border. Export is enabled once all 768 unique cell positions are covered. Status shows "Entries: N | Unique cells: M / 768". Each cell = 9 bytes (8 bitmap lines + 1 attribute byte). The Z80 loader machine code (~110 bytes) and cell order table (N × 2 bytes) are embedded in a REM line at $5CD0. For each cell the loader: (1) writes $78 (bright white paper) to the attribute address as a visible cursor, (2) reads 8 bitmap bytes from tape and writes them to the correct non-linear screen addresses, (3) reads 1 attribute byte and overwrites the cursor with the real color. Uses ROM routines ($0562 for pilot/sync/flag, $05C6 for byte reading with the DE=0 trick). Output: .tap file with BASIC program (auto-starting at line 10 with `RANDOMIZE USR 23760`) + headless data block (flag $FE, N×9 cell-ordered bytes). Download format: TAP only or ZIP archive with .tap + cell-ordered `.bin` + reference .asm (sjasmplus SAVETAP directives) + .inc (commented Z80 assembly with cell table as DB lines). **Disk emulator ASM**: when ZIP format is selected, a "Include disk emulator ASM" checkbox adds a standalone disk emulator to the archive — a `_disk.asm` wrapper and a `disk_cursor_loader.inc` file containing Z80 assembly that reproduces the same cell-by-cell visual loading effect with cursor, but reads from a RAM buffer (`INCBIN`) instead of tape. Uses the same compact stream `.bin` file as the tape loader (monoloader concept — one `.bin` shared by both tape and disk ASMs). Timing matches real tape speed: 3 HALTs per cell (~60ms ≈ tape's ~62ms); bitmap bytes appear progressively in monochrome (cursor attribute) across 3 frames, then the attribute byte snaps the color in. Press any key during the reveal to show the remaining screen instantly (HALT patched to NOP via SMC). Assembles with sjasmplus at ORG $8000. Checkbox hidden when TAP format is selected
 
 ---
 
@@ -1820,6 +1847,8 @@ Arithmetic: `+`, `-`, `*`, `/`, `%`. Comparison: `=`, `<>`, `!=`, `<`, `>`, `<=`
 | .bmc4 | 11904 bytes | 8×4 multicolor + border |
 | .3 | 18432 bytes | Tricolor RGB |
 | .img | 13824 bytes | Gigascreen (2×SCR) |
+| .ga | 7680 bytes | Gigaattr (shared bitmap + 2×attrs) |
+| .gap | 7744 / 7808 bytes | Gigaattr+ULA+ (shared palette / dual palette) |
 | .hlr | 1536 bytes | High Lores (32×24 fat pixels, gigascreen) |
 | .stl | 3072 bytes | Stellar (64×48 fat pixels, multicolor gigascreen) |
 | .sca | variable | Animation (full/attr-only frames) |

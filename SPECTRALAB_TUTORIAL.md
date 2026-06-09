@@ -336,7 +336,7 @@ The dialog shows two canvases side by side — ORIGINAL (source) and PREVIEW (co
 
 ### Choose Target Format
 
-In the **Output** section, select the target ZX Spectrum format (SCR, ULA+, IFL, MLT, MLT+ULA+, Gigascreen, HLR, STL, GMX 640×200, GMX 160×200, SPECSCII, ZXP, btile, wtile, etc.).
+In the **Output** section, select the target ZX Spectrum format (SCR, ULA+, IFL, MLT, MLT+ULA+, Gigascreen, Gigaattr, GAP, GAP Dual, HLR, STL, GMX 640×200, GMX 160×200, SPECSCII, ZXP, btile, wtile, etc.).
 
 For **SPECSCII** format, the **Charset** dropdown selects which glyphs are used: **Full** (ROM font + block graphics), **ASCII** (ROM font only), or **UDG** (block graphics only).
 
@@ -458,7 +458,7 @@ In the Sprite Editor:
 - Use the **Erase** tool (E) to clear pixels — left click erases, right click sets
 - Use **Fill** (F) — left click fills with ink, right click fills with paper
 - Use **Line** (L) or **Rectangle** (R) for shapes — left click = ink, right click = paper
-- For Attributed mode, select colors from the color palette
+- For Attributed mode, select colors from the two-row color palette (top = normal, bottom = bright). Left-click sets ink, right-click sets paper. Clicking either row moves both ink and paper to that brightness. The palette colors match the Palette selection on the View tab — switch palettes there to see updated colors in the sprite editor
 
 ### Add Animation Sprites
 
@@ -632,12 +632,27 @@ Drawing works the same as standard SCR — select ink/paper colors, use drawing 
 
 Gigascreen works by alternating two standard SCR frames at ~50Hz. The eye perceives the average of both frames, effectively doubling the available colors. Where a standard screen has 15 colors, Gigascreen can display many more virtual colors.
 
-### Editing Both Frames
+### Editing Both Frames (Combined Mode)
 
 The Gigascreen palette shows all virtual colors as a 16-column grid:
 - Left-click to select ink
 - Right-click to select paper
 - The **Cell Colors** section shows the 4 available colors for the current cell
+
+### Split-Screen Editing (Screen 1 / Screen 2)
+
+For finer control, switch to per-frame editing using the mode selector in the editor sidebar:
+
+1. Press **Alt+1** or **Alt+2** (or click **Screen 1** / **Screen 2**) to edit a single frame
+2. The main canvas shows only that frame as a standard SCR with the normal 16-color palette
+3. Use ink, paper, bright, and flash controls as with any standard SCR
+4. The floating preview always shows the blended Gigascreen result — watch it update as you draw
+5. Press **Alt+3** (or click **Gigascreen**) to return to combined mode with the 136-color virtual palette
+
+This is useful when you need to:
+- Set different bright/flash attributes on each frame independently
+- Fine-tune individual frame details that are hard to control in combined mode
+- Use standard SCR editing techniques on one frame at a time
 
 ### Preview with Blending
 
@@ -663,6 +678,48 @@ Two additional gigascreen-based formats offer low-resolution modes with large "f
 4. File size: 3072 bytes (two interleaved 1536-byte attribute frames)
 
 Both formats use the same gigascreen palette and Blend dark/Blend/Emulate flicker display modes. Drawing tools (pencil, fill, color picker) work on the fat-pixel level. Only pure ink+ink and paper+paper virtual colors are available per cell half.
+
+### Gigaattr: Shared Bitmap Variant
+
+**Gigaattr (.ga)** is a compact gigascreen variant where both frames share a single bitmap but have independent attributes:
+
+1. Click **New** → select **Gigaattr (.ga)** → **Create**
+2. File size: 7680 bytes (6144 bitmap + 768 attrs frame 1 + 768 attrs frame 2)
+3. Each pixel is either SET or CLEAR in both frames simultaneously — giving 2 blended colors per cell (blend of two inks for SET pixels, blend of two papers for CLEAR pixels)
+4. Uses the same gigascreen palette and Blend dark/Blend/Emulate flicker display modes
+5. Editing and importing work the same way as standard Gigascreen
+6. **Image import**: select **Gigaattr** in the Format dropdown of the Image Import dialog — uses the same shared-bitmap + two-attribute-frame algorithm, optimizing blended color pairs from the 136-color Gigascreen palette
+
+The key difference from Gigascreen (.img): standard Gigascreen has independent bitmaps per frame (4 colors per cell), while Gigaattr has a shared bitmap (2 colors per cell) but half the file size. ASM export produces a minimal 48K-compatible viewer using LDIR.
+
+### GA/GAP Pattern Mode: Compact Pattern-Based Variants
+
+GA and GAP also support a **pattern mode** — instead of a full 6144-byte bitmap, the file stores an 8-byte fill pattern tile (same concept as HLR). The pattern is replicated across all 32×24 cells, dividing each cell into ink and paper regions.
+
+**Creating a pattern picture:**
+1. Click **New** → select **GA Pattern (.ga)**, **GAP Pattern (.gap)**, or **GAP Dual Pattern (.gap)** → a settings dialog opens with a fill pattern grid and border color selectors → **Create**
+2. Or convert an existing .53c file via Xform → Convert → "GA (Gigaattr pattern)" / "GAP (Gigaattr+ULA+ pattern, shared)" / "GAP (Gigaattr+ULA+ dual pattern)"
+
+**File sizes:** GA pattern = 1546 bytes, GAP shared pattern = 1610 bytes, GAP dual pattern = 1674 bytes.
+
+**Editing:** Drawing tools in pattern mode modify only attributes (ink/paper colors). The bitmap pattern is fixed and cannot be changed by pixel tools. This is the same editing model as HLR.
+
+**Image import:** Select "GA Pattern", "GAP Pattern", or "GAP Dual Pattern" in the Format dropdown — a fill pattern selector appears to choose the pattern tile.
+
+### Gigaattr+ULA+ (GAP): 64-Color Palette Variant
+
+**Gigaattr+ULA+ (.gap)** extends Gigaattr with a ULA+ 64-color palette, replacing the standard 16 ZX colors:
+
+1. Click **New** → select **Gigaattr+ULA+ (.gap)** → **Create**, or convert an existing GA via Xform → Convert → "→ GAP (add ULA+ palette)"
+2. File size: 7744 bytes (shared palette) or 7808 bytes (dual palette)
+3. In Screen 1 / Screen 2 mode, the ULA+ palette grid appears below the edit mode buttons — click any color to edit it with the RGB sliders
+4. **Shared palette** (default): both frames use the same 64-color palette
+5. **Dual palette**: each frame has its own independent 64-color palette — switch via Xform → Convert → "→ GAP dual palette (separate palette per frame)". Edit Screen 1's palette and Screen 2's palette independently by switching edit modes
+6. In Gigascreen mode with dual palettes, the 1024-entry ink and paper grids are split into 4 CLUT pages (256 entries each). Use the **CLUT page** buttons (0–3) above the palette grid to switch pages. Each page shows 8 frame 1 inks from one CLUT × all 32 frame 2 colors
+7. Convert back via "→ GAP shared palette (discard palette 2)" — palette 2 is discarded, palette 1 is kept
+8. The View tab shows "(shared palette)" or "(dual palette)" in the format info
+9. **Image import**: select **GAP** in the Format dropdown of the Image Import dialog — uses the same conversion algorithm as Gigaattr (shared bitmap, two attribute frames, 136 blended colors) and appends a default ULA+ palette matching standard ZX colors. The palette can be edited after import via the ULA+ palette grid
+10. **GAP Dual import**: select **GAP Dual** in the Format dropdown to generate two independent 64-color ULA+ palettes — one per frame — giving richer color blends. Palette 1 covers the most frequent colors; palette 2 is a complement palette emphasizing colors that palette 1 missed. Output is a 7808-byte .gap file with 128-byte dual palette. In the editor, the ink and paper grids have independent selection — click the ink grid for ink, click the paper strip for paper
 
 ![Gigascreen editing](screenshots/tutorial_gigascreen.png)
 
@@ -711,7 +768,7 @@ Press **Ctrl+S** or click the **Save** button. The file is downloaded in its ori
 2. Use the **Convert to...** dropdown
 3. Select the target format — the picture is converted in place
 
-Conversions include lossless transformations (e.g. NXI ↔ SL2 moves the palette between header and tail) and lossy ones (e.g. SCR → NXI 320×256 renders and upscales the image, NXI/SL2 → SCR downscales and quantizes to ZX attributes). When converting NXI → SL2 with a custom palette, a dialog offers three options: keep palette (embed in SL2), quantize to default RGB332 (lossy), or strip palette (keep pixel indices unchanged). Cross-mode NXI/SL2 conversions between 256×192, 320×256, and 640×256 are also available. SCR → SPECSCII conversion matches each 8×8 cell bitmap to the best ROM font character or block graphic, preserving attributes.
+Conversions include lossless transformations (e.g. NXI ↔ SL2 moves the palette between header and tail, GA ↔ GAP adds/strips ULA+ palette) and lossy ones (e.g. SCR → NXI 320×256 renders and upscales the image, NXI/SL2 → SCR downscales and quantizes to ZX attributes). When converting NXI → SL2 with a custom palette, a dialog offers three options: keep palette (embed in SL2), quantize to default RGB332 (lossy), or strip palette (keep pixel indices unchanged). Cross-mode NXI/SL2 conversions between 256×192, 320×256, and 640×256 are also available. SCR → SPECSCII conversion matches each 8×8 cell bitmap to the best ROM font character or block graphic, preserving attributes. GAP format also supports in-format palette toggle: shared → dual palette (duplicates palette 1 for independent per-frame editing) and dual → shared (discards palette 2).
 
 ### Optimize Attributes (SCR)
 
@@ -803,7 +860,7 @@ SpectraLab can generate complete viewer programs as sjasmplus ASM source for sev
 4. Click **Export** to download the .asm file
 5. Assemble with sjasmplus to produce a .sna (Pentagon) or .nex (Next) file ready to run in an emulator or on real hardware
 
-Supported formats: BSC (border effects), Gigascreen/MGH (dual-screen), RGB3 (RGB flicker), IFL (8×2 multicolor), ULA+ (64-color palette), and NXI/SL2 (Next Layer 2 in all modes: 256×192, 320×256, 640×256).
+Supported formats: BSC (border effects), Gigascreen/MGH (dual-screen), Gigaattr (48K attr flicker), Gigaattr+ULA+ (48K ULA+ attr flicker), RGB3 (RGB flicker), IFL (8×2 multicolor), ULA+ (64-color palette), and NXI/SL2 (Next Layer 2 in all modes: 256×192, 320×256, 640×256).
 
 ### ASM Code Export
 
@@ -1142,9 +1199,8 @@ Plugins let you extract and edit graphics from game snapshots or custom binary f
 
 ### Installing a Plugin
 
-1. Go to **Tools** tab → **Plugins** section
-2. Click **Load Plugin…** and select a `.slplugin` or `.slpluginjs` file (or drag-and-drop it onto the app)
-3. The plugin appears in the list and persists across sessions
+1. Open a `.slplugin` or `.slpluginjs` file through the main browse button, or drag-and-drop it onto the app
+2. The plugin appears in the **Tools** tab → **Plugins** section and persists across sessions
 
 Example plugins are in the `plugins/` folder.
 
@@ -1196,7 +1252,7 @@ The plugin handles the conversion between the game's linear bitmap+attrs layout 
 
 The Cursor Loader plugin lets you create a `.tap` file where the screen loads cell by cell in any order you choose, with a bright white cursor sweeping from cell to cell. It supports **multiple source images** — you can load several `.scr` files and paint cell regions from different sources, creating picture-replacement effects during tape loading.
 
-1. Load `cursor_loader.slpluginjs` via the **Tools** tab → **Load Plugin…**
+1. Open `cursor_loader.slpluginjs` via the main browse button or drag-and-drop to install the plugin
 2. Open or draw a `.scr` screen in the editor
 3. Click **Export** in the plugin bar — the Cursor Loader Export dialog opens
 4. The dialog shows your screen at 2× zoom with a 32×24 grid overlay
@@ -1216,9 +1272,28 @@ The Cursor Loader plugin lets you create a `.tap` file where the screen loads ce
 12. **Cursor** — the "Show cursor during loading" checkbox controls whether a bright white cell appears ahead of the data during tape loading. Uncheck to hide the cursor
 13. **Border stripes** — choose the border stripe color scheme during tape loading: Blue/Yellow (standard), Red/Cyan, Magenta/Green, Black/White, or Solid (no stripes). When Solid is selected, a **Color** dropdown appears to choose any of the 8 ZX Spectrum colors for the solid border
 14. Select download format: **ZIP** (includes .tap + .bin + .asm + .inc) or **TAP only**
-15. Click **Export** when all 768 unique positions are covered (status shows "Entries: N | Unique cells: M / 768")
+15. **Include disk emulator ASM** — when ZIP is selected, check this box to add a standalone disk emulator to the archive (`_disk.asm` + `disk_cursor_loader.inc`). The disk emulator reads from the same `.bin` file but from RAM instead of tape. Bitmap bytes appear progressively in monochrome across 3 frames per cell, then color snaps in — same visual as real tape loading. Press any key to skip the remaining reveal. Assembles with sjasmplus
+16. Click **Export** when all 768 unique positions are covered (status shows "Entries: N | Unique cells: M / 768")
 
 To test: open the `.tap` in any ZX Spectrum emulator (48K mode) and type `LOAD ""`. The bright white cursor sweeps across the screen in your chosen order, and the picture appears behind it as each cell loads. With multiple sources, you'll see one picture being replaced by another.
+
+To test the disk emulator: assemble `_disk.asm` with sjasmplus (`sjasmplus name_disk.asm`), load the resulting binary in an emulator at $8000, and execute it. The same cell-by-cell cursor effect plays from RAM.
+
+### Analyzing SCA Animations with the Diff Analyzer Plugin
+
+The SCA Diff Analyzer plugin opens Type 0 SCA animations and exports frame-to-frame differences as ASM source with binary data — useful for producing optimized animation players that only update changed cells.
+
+1. Open `sca_diff_analyzer.slpluginjs` via the main browse button or drag-and-drop to install the plugin
+2. Open a `.sca` file (must be Type 0, with at least 2 frames) — frame 0 appears in the viewer as a standard SCR
+3. Click **Export** in the plugin bar — the SCA Diff Analyzer dialog opens
+4. **Diff unit** radio selects what data to compare per cell:
+   - **Bitmap + attribute (9 bytes/cell)** — compares 8 bitmap bytes + 1 attribute byte; changed cells export all 9 data bytes plus 2 coordinate bytes (11 bytes/cell total)
+   - **Attribute only (1 byte/cell)** — compares only the attribute byte; changed cells export 1 attribute byte plus 2 coordinate bytes (3 bytes/cell total)
+5. **Threshold** input (1–768) sets the maximum number of changed cells for a frame to be encoded as a diff. Frames exceeding this are exported as full 6912-byte binaries
+6. The **statistics panel** updates live as you adjust settings — shows diff vs full frame counts, estimated sizes in KB, and a color-coded histogram (green = diff frames, red = full frames, yellow dashed line = threshold)
+7. Click **Export** → a ZIP downloads containing:
+   - `animation_diff/animation.asm` — main ASM file with `Frame_NNN:` labels, `DB`/`INCBIN` data, `DelayTable:`, and a per-frame summary
+   - `animation_diff/frame_NNN.bin` — full 6912-byte SCR files for frame 0 and any frames exceeding the diff threshold
 
 ### Writing Your Own Plugin
 

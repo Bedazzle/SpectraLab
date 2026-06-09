@@ -3364,6 +3364,185 @@ function generateOptimalUlaPlusPalette(pixels) {
 }
 
 /**
+ * Generate a complement ULA+ palette that emphasizes colors missed by palette1.
+ * Uses the same CLUT-building algorithm as generateOptimalUlaPlusPalette but
+ * downweights colors that palette1 already covers well.
+ * @param {Float32Array} pixels - Float RGB pixel array (256×192×3)
+ * @param {Uint8Array} palette1 - First 64-byte ULA+ GRB332 palette
+ * @returns {Uint8Array} 64-byte complement palette
+ */
+function generateComplementUlaPlusPalette(pixels, palette1) {
+  // Build RGB lookup for palette1 entries
+  const pal1Rgb = [];
+  for (let i = 0; i < 64; i++) {
+    pal1Rgb.push(grb332ToRgb(palette1[i]));
+  }
+
+  // Count base frequency of each GRB332 color, then reweight by distance to palette1
+  const colorFreq = new Map();
+
+  for (let i = 0; i < 256 * 192; i++) {
+    const r = Math.round(pixels[i * 3]);
+    const g = Math.round(pixels[i * 3 + 1]);
+    const b = Math.round(pixels[i * 3 + 2]);
+    const grb = rgbToGrb332(r, g, b);
+    colorFreq.set(grb, (colorFreq.get(grb) || 0) + 1);
+  }
+
+  // Reweight: colors far from palette1 get full weight, close colors get reduced weight
+  const reweightedFreq = new Map();
+  for (const [grb, freq] of colorFreq) {
+    const rgb = grb332ToRgb(grb);
+    // Find minimum distance to any palette1 entry
+    let minDist = Infinity;
+    for (let i = 0; i < 64; i++) {
+      const pr = pal1Rgb[i];
+      const dr = rgb[0] - pr[0], dg = rgb[1] - pr[1], db = rgb[2] - pr[2];
+      const d = Math.sqrt(dr * dr + dg * dg + db * db);
+      if (d < minDist) minDist = d;
+    }
+    // Weight = frequency × (distance / 128) — distance ~0 → near-zero weight, distance ~442 → full+
+    const weight = freq * (minDist / 128);
+    if (weight > 0) {
+      reweightedFreq.set(grb, weight);
+    }
+  }
+
+  // Sort colors by reweighted frequency
+  const sortedColors = Array.from(reweightedFreq.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(entry => entry[0]);
+
+  // Also include colors with zero reweighted freq (already well-covered) at the end
+  for (const [grb] of colorFreq) {
+    if (!reweightedFreq.has(grb) || reweightedFreq.get(grb) === 0) {
+      sortedColors.push(grb);
+    }
+  }
+
+  // Analyze cells to find which color pairs are used together (same as original)
+  const cellColorPairs = [];
+  for (let cellY = 0; cellY < 24; cellY++) {
+    for (let cellX = 0; cellX < 32; cellX++) {
+      const cellColors = new Map();
+      for (let dy = 0; dy < 8; dy++) {
+        for (let dx = 0; dx < 8; dx++) {
+          const px = cellX * 8 + dx;
+          const py = cellY * 8 + dy;
+          const idx = (py * 256 + px) * 3;
+          const r = Math.round(pixels[idx]);
+          const g = Math.round(pixels[idx + 1]);
+          const b = Math.round(pixels[idx + 2]);
+          const grb = rgbToGrb332(r, g, b);
+          // Use reweighted frequency for cell pair analysis
+          const w = reweightedFreq.get(grb) || 0.01;
+          cellColors.set(grb, (cellColors.get(grb) || 0) + w);
+        }
+      }
+      const topColors = Array.from(cellColors.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 2)
+        .map(e => e[0]);
+      if (topColors.length >= 2) {
+        cellColorPairs.push(topColors);
+      }
+    }
+  }
+
+  // Build 4 CLUTs using color clustering (same algorithm as generateOptimalUlaPlusPalette)
+  const clutColors = [new Set(), new Set(), new Set(), new Set()];
+
+  for (const pair of cellColorPairs) {
+    let bestClut = 0;
+    let bestScore = -Infinity;
+
+    for (let c = 0; c < 4; c++) {
+      const has0 = clutColors[c].has(pair[0]);
+      const has1 = clutColors[c].has(pair[1]);
+      const size = clutColors[c].size;
+
+      let score = 0;
+      if (has0) score += 10;
+      if (has1) score += 10;
+      if (size < 16) score += (16 - size);
+      if (!has0 && !has1 && size >= 14) score = -100;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestClut = c;
+      }
+    }
+
+    if (clutColors[bestClut].size < 16) {
+      clutColors[bestClut].add(pair[0]);
+    }
+    if (clutColors[bestClut].size < 16) {
+      clutColors[bestClut].add(pair[1]);
+    }
+  }
+
+  // Fill remaining slots with most frequent (reweighted) colors not yet used
+  const usedColors = new Set();
+  for (const clut of clutColors) {
+    for (const c of clut) usedColors.add(c);
+  }
+
+  for (const grb of sortedColors) {
+    if (usedColors.has(grb)) continue;
+
+    let minSize = 17;
+    let targetClut = -1;
+    for (let c = 0; c < 4; c++) {
+      if (clutColors[c].size < minSize) {
+        minSize = clutColors[c].size;
+        targetClut = c;
+      }
+    }
+    if (targetClut >= 0 && clutColors[targetClut].size < 16) {
+      clutColors[targetClut].add(grb);
+      usedColors.add(grb);
+    }
+  }
+
+  // Ensure each CLUT has at least black and white for fallback
+  const black = rgbToGrb332(0, 0, 0);
+  const white = rgbToGrb332(255, 255, 255);
+  for (let c = 0; c < 4; c++) {
+    if (clutColors[c].size < 15 && !clutColors[c].has(black)) {
+      clutColors[c].add(black);
+    }
+    if (clutColors[c].size < 16 && !clutColors[c].has(white)) {
+      clutColors[c].add(white);
+    }
+  }
+
+  // Convert to palette array
+  const palette = new Uint8Array(64);
+  for (let c = 0; c < 4; c++) {
+    const colors = Array.from(clutColors[c]);
+    colors.sort((a, b) => {
+      const rgbA = grb332ToRgb(a);
+      const rgbB = grb332ToRgb(b);
+      const lumA = rgbA[0] * 0.299 + rgbA[1] * 0.587 + rgbA[2] * 0.114;
+      const lumB = rgbB[0] * 0.299 + rgbB[1] * 0.587 + rgbB[2] * 0.114;
+      return lumA - lumB;
+    });
+
+    const baseIdx = c * 16;
+    for (let i = 0; i < 8; i++) {
+      const color = i < colors.length ? colors[i] : (i === 0 ? black : white);
+      palette[baseIdx + i] = color;
+    }
+    for (let i = 0; i < 8; i++) {
+      const color = (i + 8) < colors.length ? colors[i + 8] : colors[Math.min(i, colors.length - 1)];
+      palette[baseIdx + 8 + i] = color;
+    }
+  }
+
+  return palette;
+}
+
+/**
  * Find best CLUT and ink/paper for a cell (256x192 shortcut)
  * @param {Float32Array} pixels - Float array of RGB values
  * @param {number} cellX - Cell X position
@@ -6427,6 +6606,849 @@ function convertToGigascreen(sourceCanvas, dithering, brightness, contrast, satu
 }
 
 /**
+ * Precompute valid Gigaattr color pairs.
+ * Gigaattr: shared bitmap, two attr frames. Each cell has 2 blended colors:
+ *   SET pixels  → blend(ink1_color, ink2_color)
+ *   CLEAR pixels → blend(paper1_color, paper2_color)
+ * Enumerates all valid (attr1, attr2) → (setBlend, clearBlend) combinations,
+ * deduplicating by the pair of blend indices.
+ * @param {number[][]} allColors - 16 RGB colors (regular[0..7] + bright[8..15])
+ * @returns {{pairs: Array<{setIdx:number, clearIdx:number, attr1:number, attr2:number, inverted:boolean}>, blendedPalette:number[][]}}
+ */
+function precomputeGigaattrPairs(allColors) {
+  // Build 136-color blend palette (same as Gigascreen)
+  const blendedPalette = new Array(136);
+  for (let c1 = 0; c1 < 16; c1++) {
+    for (let c2 = c1; c2 < 16; c2++) {
+      const bi = gigaBlendIndex(c1, c2);
+      blendedPalette[bi] = [
+        Math.round((allColors[c1][0] + allColors[c2][0]) / 2),
+        Math.round((allColors[c1][1] + allColors[c2][1]) / 2),
+        Math.round((allColors[c1][2] + allColors[c2][2]) / 2)
+      ];
+    }
+  }
+
+  const pairs = [];
+  const seen = new Set();
+
+  for (let bright1 = 0; bright1 <= 1; bright1++) {
+    for (let bright2 = 0; bright2 <= 1; bright2++) {
+      for (let ink1 = 0; ink1 < 8; ink1++) {
+        if (importDisabledColors[bright1][ink1]) continue;
+        for (let paper1 = 0; paper1 < 8; paper1++) {
+          if (importDisabledColors[bright1][paper1]) continue;
+          const ink1Idx = bright1 * 8 + ink1;
+          const paper1Idx = bright1 * 8 + paper1;
+          for (let ink2 = 0; ink2 < 8; ink2++) {
+            if (importDisabledColors[bright2][ink2]) continue;
+            for (let paper2 = 0; paper2 < 8; paper2++) {
+              if (importDisabledColors[bright2][paper2]) continue;
+              const ink2Idx = bright2 * 8 + ink2;
+              const paper2Idx = bright2 * 8 + paper2;
+
+              const setIdx = gigaBlendIndex(ink1Idx, ink2Idx);
+              const clearIdx = gigaBlendIndex(paper1Idx, paper2Idx);
+
+              // Canonicalize: (setIdx, clearIdx) and (clearIdx, setIdx) give same image
+              // (just invert bitmap). Use ordered pair as key.
+              const a = Math.min(setIdx, clearIdx);
+              const b = Math.max(setIdx, clearIdx);
+              const key = a * 136 + b;
+              if (seen.has(key)) continue;
+              seen.add(key);
+
+              const inverted = setIdx > clearIdx;
+              // If inverted, swap ink/paper in attrs so setIdx=a < clearIdx=b
+              const attr1 = inverted
+                ? (bright1 << 6) | (ink1 << 3) | paper1
+                : (bright1 << 6) | (paper1 << 3) | ink1;
+              const attr2 = inverted
+                ? (bright2 << 6) | (ink2 << 3) | paper2
+                : (bright2 << 6) | (paper2 << 3) | ink2;
+
+              pairs.push({ setIdx: a, clearIdx: b, attr1, attr2, inverted });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return { pairs, blendedPalette };
+}
+
+/**
+ * Find the best Gigaattr color pair for a cell.
+ * @param {Float32Array} floatPixels - Source pixels (RGB float, full image)
+ * @param {number} cellCol - Cell column (0-31)
+ * @param {number} cellY - Cell top Y pixel coordinate
+ * @param {number} cellHeight - Cell height in pixels
+ * @param {number} width - Image width
+ * @param {{pairs: Array, blendedPalette: number[][]}} gaData - Precomputed pairs
+ * @returns {{setIdx:number, clearIdx:number, attr1:number, attr2:number, inverted:boolean}}
+ */
+function findGigaattrCellColors(floatPixels, cellCol, cellY, cellHeight, width, gaData) {
+  const pairs = gaData.pairs;
+  const blendedPalette = gaData.blendedPalette;
+  const cellH = Math.min(cellHeight, 192 - cellY);
+  const numPx = cellH * 8;
+
+  // Precompute distance from every cell pixel to every blended palette entry
+  const dists = new Float32Array(numPx * 136);
+  for (let dy = 0; dy < cellH; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const srcIdx = ((cellY + dy) * width + (cellCol * 8 + dx)) * 3;
+      const pr = floatPixels[srcIdx], pg = floatPixels[srcIdx + 1], pb = floatPixels[srcIdx + 2];
+      const p = dy * 8 + dx;
+      const base = p * 136;
+      for (let b = 0; b < 136; b++) {
+        const c = blendedPalette[b];
+        const dr = pr - c[0], dg = pg - c[1], db = pb - c[2];
+        dists[base + b] = dr * dr + dg * dg + db * db;
+      }
+    }
+  }
+
+  // Search all pairs for minimum total error
+  let bestErr = Infinity;
+  let bestPair = pairs[0];
+  for (let pi = 0; pi < pairs.length; pi++) {
+    const pair = pairs[pi];
+    const si = pair.setIdx, ci = pair.clearIdx;
+    let totalErr = 0;
+    for (let p = 0; p < numPx; p++) {
+      const base = p * 136;
+      totalErr += Math.min(dists[base + si], dists[base + ci]);
+      if (totalErr >= bestErr) break;
+    }
+    if (totalErr < bestErr) {
+      bestErr = totalErr;
+      bestPair = pair;
+    }
+  }
+
+  return bestPair;
+}
+
+/**
+ * Convert source image to Gigaattr format.
+ * Gigaattr: one shared bitmap, two attribute frames. Output is 13824-byte
+ * Gigascreen-compatible layout (bitmap duplicated into both frame slots).
+ * The result uses the 136-color blended palette (all pairs of ZX colors)
+ * with 2 blended colors per 8x8 cell.
+ */
+function convertToGigaattr(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput = false) {
+  updateColorDistanceMode();
+
+  const ctx = sourceCanvas.getContext('2d');
+  if (!ctx) throw new Error('Cannot get canvas context');
+  const imageData = ctx.getImageData(0, 0, 256, 192);
+  const pixels = imageData.data;
+  applyImageAdjustments(pixels, 256, 192, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
+  if (monoOutput && !grayscale) {
+    applyGrayscale(pixels);
+  }
+  const floatPixels = rgbaToFloat(pixels, 256 * 192);
+
+  const palette = getCombinedPalette();
+  const allColors = [...palette.regular, ...palette.bright]; // 16 colors
+
+  const gaData = precomputeGigaattrPairs(allColors);
+  const blendedPalette = gaData.blendedPalette;
+
+  // Result: 13824-byte Gigascreen-compatible layout (two 6912-byte frames)
+  const frameSize = 6912;
+  const result = new Uint8Array(frameSize * 2);
+
+  dithering = remapOrderedToCellAware(dithering);
+  const isCellAware = dithering.startsWith('cell-');
+
+  if (!isCellAware) {
+    // Global dithering against the 136-color blended palette
+    const gigaDithering = mapCellDithering(dithering);
+    applyGlobalDither(gigaDithering, floatPixels, 256, 192, blendedPalette);
+  }
+
+  const cellDitherMethod = isCellAware ? dithering.replace('cell-', '') : null;
+
+  // Process each 8x8 cell
+  for (let cellRow = 0; cellRow < 24; cellRow++) {
+    const cellY = cellRow * 8;
+
+    for (let cellCol = 0; cellCol < 32; cellCol++) {
+      const best = findGigaattrCellColors(floatPixels, cellCol, cellY, 8, 256, gaData);
+      const setColor = blendedPalette[best.setIdx];
+      const clearColor = blendedPalette[best.clearIdx];
+
+      if (isCellAware) {
+        // Cell-local dithering using the 2 blended colors as ink/paper
+        let bitmap;
+        switch (cellDitherMethod) {
+          case 'floyd':
+            bitmap = ditherCellFloydSteinberg(floatPixels, cellCol, cellRow, 256, setColor, clearColor);
+            break;
+          case 'atkinson':
+            bitmap = ditherCellAtkinson(floatPixels, cellCol, cellRow, 256, setColor, clearColor);
+            break;
+          case 'ordered':
+            bitmap = ditherCellOrdered(floatPixels, cellCol, cellRow, 256, setColor, clearColor);
+            break;
+          case 'ordered2':
+            bitmap = ditherCellOrdered2(floatPixels, cellCol, cellRow, 256, setColor, clearColor);
+            break;
+          case 'ordered8':
+            bitmap = ditherCellOrdered8(floatPixels, cellCol, cellRow, 256, setColor, clearColor);
+            break;
+          case 'sierra2':
+            bitmap = ditherCellSierra2(floatPixels, cellCol, cellRow, 256, setColor, clearColor);
+            break;
+          case 'serpentine':
+            bitmap = ditherCellSerpentine(floatPixels, cellCol, cellRow, 256, setColor, clearColor);
+            break;
+          case 'riemersma':
+            bitmap = ditherCellRiemersma(floatPixels, cellCol, cellRow, 256, setColor, clearColor);
+            break;
+          case 'blue-noise':
+            bitmap = ditherCellBlueNoise(floatPixels, cellCol, cellRow, 256, setColor, clearColor);
+            break;
+          case 'pattern':
+            bitmap = ditherCellPattern(floatPixels, cellCol, cellRow, 256, setColor, clearColor);
+            break;
+          default:
+            bitmap = ditherCellNone(floatPixels, cellCol, cellRow, 256, setColor, clearColor);
+            break;
+        }
+
+        // If pair was inverted during canonicalization, invert bitmap
+        if (best.inverted) {
+          for (let i = 0; i < 8; i++) bitmap[i] ^= 0xFF;
+        }
+
+        // Write same bitmap to both frames
+        for (let line = 0; line < 8; line++) {
+          const y = cellY + line;
+          const offset = getBitmapOffset(y) + cellCol;
+          result[offset] = bitmap[line];
+          result[frameSize + offset] = bitmap[line];
+        }
+      } else {
+        // Re-map already-dithered pixels to nearest of 2 blended colors
+        for (let dy = 0; dy < 8; dy++) {
+          const y = cellY + dy;
+          let byte = 0;
+          for (let dx = 0; dx < 8; dx++) {
+            const idx = (y * 256 + cellCol * 8 + dx) * 3;
+            const r = floatPixels[idx], g = floatPixels[idx + 1], b = floatPixels[idx + 2];
+            const dr1 = r - setColor[0], dg1 = g - setColor[1], db1 = b - setColor[2];
+            const dr2 = r - clearColor[0], dg2 = g - clearColor[1], db2 = b - clearColor[2];
+            const dSet = dr1 * dr1 + dg1 * dg1 + db1 * db1;
+            const dClear = dr2 * dr2 + dg2 * dg2 + db2 * db2;
+            if (dSet < dClear) byte |= (0x80 >> dx);
+          }
+
+          // If pair was inverted during canonicalization, invert bitmap byte
+          if (best.inverted) byte ^= 0xFF;
+
+          const offset = getBitmapOffset(y) + cellCol;
+          result[offset] = byte;
+          result[frameSize + offset] = byte;
+        }
+      }
+
+      // Write attribute bytes (one per frame)
+      const attrOffset = 6144 + cellRow * 32 + cellCol;
+      result[attrOffset] = best.attr1;
+      result[frameSize + attrOffset] = best.attr2;
+    }
+  }
+
+  return result;
+}
+
+// ============================================================================
+// GAP (GIGAATTR+ULA+) FORMAT CONVERSION
+// ============================================================================
+
+/**
+ * Precompute all valid GAP color pairs for gigaattr-style cell matching.
+ * Each pair is (frame1 CLUT+ink+paper, frame2 CLUT+ink+paper) giving
+ * 2 blended colors: blend(ink1,ink2) for SET pixels, blend(paper1,paper2) for CLEAR.
+ *
+ * ULA+ palette layout: 4 CLUTs × 16 entries each.
+ *   CLUT N inks:   palette[N*16 + 0..7]
+ *   CLUT N papers: palette[N*16 + 8..15]
+ * Within one cell/frame, ink and paper must be from the same CLUT.
+ *
+ * @param {number[][]} inkColors - 32 RGB ink colors (4 CLUTs × 8 inks) for frame 1
+ * @param {number[][]} paperColors - 32 RGB paper colors (4 CLUTs × 8 papers) for frame 1
+ * @param {number[][]|null} [inkColors2=null] - 32 RGB ink colors for frame 2 (dual palette mode)
+ * @param {number[][]|null} [paperColors2=null] - 32 RGB paper colors for frame 2 (dual palette mode)
+ * @returns {{pairs: Array, blendedInks: number[][], blendedPapers: number[][]}}
+ */
+function precomputeGapPairs(inkColors, paperColors, inkColors2 = null, paperColors2 = null) {
+  // In dual mode, frame 1 uses inkColors/paperColors, frame 2 uses inkColors2/paperColors2
+  const inks2 = inkColors2 || inkColors;
+  const papers2 = paperColors2 || paperColors;
+
+  // Build 32×32 = 1024 ink blends and 1024 paper blends
+  const blendedInks = new Array(1024);
+  const blendedPapers = new Array(1024);
+  for (let a = 0; a < 32; a++) {
+    for (let b = 0; b < 32; b++) {
+      const idx = a * 32 + b;
+      blendedInks[idx] = [
+        Math.round((inkColors[a][0] + inks2[b][0]) / 2),
+        Math.round((inkColors[a][1] + inks2[b][1]) / 2),
+        Math.round((inkColors[a][2] + inks2[b][2]) / 2)
+      ];
+      blendedPapers[idx] = [
+        Math.round((paperColors[a][0] + papers2[b][0]) / 2),
+        Math.round((paperColors[a][1] + papers2[b][1]) / 2),
+        Math.round((paperColors[a][2] + papers2[b][2]) / 2)
+      ];
+    }
+  }
+
+  // Enumerate all valid (clut1, ink1, paper1, clut2, ink2, paper2) combinations.
+  // Deduplicate by actual blended color pair — (colorA, colorB) same as (colorB, colorA)
+  // with inverted bitmap. Use RGB values as key since indices from different arrays
+  // (blendedInks vs blendedPapers) aren't comparable.
+  const pairs = [];
+  const seen = new Set();
+
+  for (let clut1 = 0; clut1 < 4; clut1++) {
+    const flash1 = (clut1 >> 1) & 1;
+    const bright1 = clut1 & 1;
+    for (let clut2 = 0; clut2 < 4; clut2++) {
+      const flash2 = (clut2 >> 1) & 1;
+      const bright2 = clut2 & 1;
+      for (let ink1 = 0; ink1 < 8; ink1++) {
+        const ink1Idx = clut1 * 8 + ink1;
+        for (let ink2 = 0; ink2 < 8; ink2++) {
+          const ink2Idx = clut2 * 8 + ink2;
+          const inkBlendIdx = ink1Idx * 32 + ink2Idx;
+          const inkRgb = blendedInks[inkBlendIdx];
+
+          for (let paper1 = 0; paper1 < 8; paper1++) {
+            const paper1Idx = clut1 * 8 + paper1;
+            for (let paper2 = 0; paper2 < 8; paper2++) {
+              const paper2Idx = clut2 * 8 + paper2;
+              const paperBlendIdx = paper1Idx * 32 + paper2Idx;
+              const paperRgb = blendedPapers[paperBlendIdx];
+
+              // Canonicalize by color value: ordered (colorA, colorB) with A <= B
+              const inkKey = (inkRgb[0] << 16) | (inkRgb[1] << 8) | inkRgb[2];
+              const paperKey = (paperRgb[0] << 16) | (paperRgb[1] << 8) | paperRgb[2];
+              const a = Math.min(inkKey, paperKey);
+              const b = Math.max(inkKey, paperKey);
+              const key = a + ',' + b;
+              if (seen.has(key)) continue;
+              seen.add(key);
+
+              const attr1 = (flash1 << 7) | (bright1 << 6) | (paper1 << 3) | ink1;
+              const attr2 = (flash2 << 7) | (bright2 << 6) | (paper2 << 3) | ink2;
+
+              pairs.push({ inkBlendIdx, paperBlendIdx, attr1, attr2 });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return { pairs, blendedInks, blendedPapers };
+}
+
+/**
+ * Find the best GAP color pair for a cell.
+ * Each pair has an ink blend color (SET pixels) and a paper blend color (CLEAR pixels).
+ * @param {Float32Array} floatPixels - Source pixels (RGB float, full image)
+ * @param {number} cellCol - Cell column (0-31)
+ * @param {number} cellY - Cell top Y pixel coordinate
+ * @param {number} width - Image width
+ * @param {{pairs: Array, blendedInks: number[][], blendedPapers: number[][]}} gapData
+ * @returns {{inkBlendIdx:number, paperBlendIdx:number, attr1:number, attr2:number}}
+ */
+function findGapCellColors(floatPixels, cellCol, cellY, width, gapData) {
+  const pairs = gapData.pairs;
+  const cellH = Math.min(8, 192 - cellY);
+  const numPx = cellH * 8;
+
+  // Precompute cell pixel data for fast access
+  const cellPixels = new Float32Array(numPx * 3);
+  for (let dy = 0; dy < cellH; dy++) {
+    for (let dx = 0; dx < 8; dx++) {
+      const srcIdx = ((cellY + dy) * width + (cellCol * 8 + dx)) * 3;
+      const dstIdx = (dy * 8 + dx) * 3;
+      cellPixels[dstIdx] = floatPixels[srcIdx];
+      cellPixels[dstIdx + 1] = floatPixels[srcIdx + 1];
+      cellPixels[dstIdx + 2] = floatPixels[srcIdx + 2];
+    }
+  }
+
+  let bestErr = Infinity;
+  let bestPair = pairs[0];
+
+  for (let pi = 0; pi < pairs.length; pi++) {
+    const pair = pairs[pi];
+    const inkColor = gapData.blendedInks[pair.inkBlendIdx];
+    const paperColor = gapData.blendedPapers[pair.paperBlendIdx];
+
+    let totalErr = 0;
+    for (let p = 0; p < numPx; p++) {
+      const base = p * 3;
+      const pr = cellPixels[base], pg = cellPixels[base + 1], pb = cellPixels[base + 2];
+      const dr1 = pr - inkColor[0], dg1 = pg - inkColor[1], db1 = pb - inkColor[2];
+      const dr2 = pr - paperColor[0], dg2 = pg - paperColor[1], db2 = pb - paperColor[2];
+      totalErr += Math.min(dr1 * dr1 + dg1 * dg1 + db1 * db1, dr2 * dr2 + dg2 * dg2 + db2 * db2);
+      if (totalErr >= bestErr) break;
+    }
+    if (totalErr < bestErr) {
+      bestErr = totalErr;
+      bestPair = pair;
+    }
+  }
+
+  return bestPair;
+}
+
+/**
+ * Convert source image to GAP (Gigaattr+ULA+) format.
+ * Uses the gigaattr algorithm (shared bitmap + two attribute frames) with
+ * ULA+ 64-color palette instead of standard 16 ZX colors.
+ * Output: 13824-byte Gigascreen-compatible layout (two 6912-byte frames).
+ *
+ * @param {HTMLCanvasElement} sourceCanvas
+ * @param {string} dithering
+ * @param {number} brightness
+ * @param {number} contrast
+ * @param {number} saturation
+ * @param {number} gamma
+ * @param {boolean} grayscale
+ * @param {number} sharpness
+ * @param {number} smoothing
+ * @param {number} blackPoint
+ * @param {number} whitePoint
+ * @param {number} balanceR
+ * @param {number} balanceG
+ * @param {number} balanceB
+ * @param {Uint8Array|null} externalPalette - 64-byte ULA+ GRB332 palette or null for auto
+ * @param {boolean} monoOutput
+ * @returns {{data: Uint8Array, palette: Uint8Array}}
+ */
+function convertToGapUlaPlus(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, externalPalette = null, monoOutput = false) {
+  updateColorDistanceMode();
+
+  const ctx = sourceCanvas.getContext('2d');
+  if (!ctx) throw new Error('Cannot get canvas context');
+  const imageData = ctx.getImageData(0, 0, 256, 192);
+  const pixels = imageData.data;
+  applyImageAdjustments(pixels, 256, 192, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
+  if (monoOutput && !grayscale) {
+    applyGrayscale(pixels);
+  }
+  const floatPixels = rgbaToFloat(pixels, 256 * 192);
+
+  // Generate optimal palette or use external one
+  const palette = externalPalette
+    ? new Uint8Array(externalPalette)
+    : generateOptimalUlaPlusPalette(floatPixels);
+
+  // Extract ink and paper RGB arrays from ULA+ palette (32 inks, 32 papers)
+  const inkColors = [];
+  const paperColors = [];
+  for (let clut = 0; clut < 4; clut++) {
+    for (let sub = 0; sub < 8; sub++) {
+      inkColors.push(grb332ToRgb(palette[clut * 16 + sub]));
+      paperColors.push(grb332ToRgb(palette[clut * 16 + 8 + sub]));
+    }
+  }
+
+  const gapData = precomputeGapPairs(inkColors, paperColors);
+
+  // Build a flat blended palette for global dithering (all unique ink+paper blend colors)
+  const allBlendedColors = [];
+  const seenColors = new Set();
+  for (let pi = 0; pi < gapData.pairs.length; pi++) {
+    const pair = gapData.pairs[pi];
+    const inkColor = gapData.blendedInks[pair.inkBlendIdx];
+    const paperColor = gapData.blendedPapers[pair.paperBlendIdx];
+    const ik = (inkColor[0] << 16) | (inkColor[1] << 8) | inkColor[2];
+    const pk = (paperColor[0] << 16) | (paperColor[1] << 8) | paperColor[2];
+    if (!seenColors.has(ik)) { seenColors.add(ik); allBlendedColors.push(inkColor); }
+    if (!seenColors.has(pk)) { seenColors.add(pk); allBlendedColors.push(paperColor); }
+  }
+
+  // Result: 13824-byte Gigascreen-compatible layout (two 6912-byte frames)
+  const frameSize = 6912;
+  const result = new Uint8Array(frameSize * 2);
+
+  dithering = remapOrderedToCellAware(dithering);
+  const isCellAware = dithering.startsWith('cell-');
+
+  if (!isCellAware && dithering !== 'none') {
+    const gigaDithering = mapCellDithering(dithering);
+    applyGlobalDither(gigaDithering, floatPixels, 256, 192, allBlendedColors);
+  }
+
+  const cellDitherMethod = isCellAware ? dithering.replace('cell-', '') : null;
+
+  // Process each 8x8 cell
+  for (let cellRow = 0; cellRow < 24; cellRow++) {
+    const cellY = cellRow * 8;
+
+    for (let cellCol = 0; cellCol < 32; cellCol++) {
+      const best = findGapCellColors(floatPixels, cellCol, cellY, 256, gapData);
+
+      // Ink blend = SET pixels, paper blend = CLEAR pixels
+      const inkColor = gapData.blendedInks[best.inkBlendIdx];
+      const paperColor = gapData.blendedPapers[best.paperBlendIdx];
+
+      if (isCellAware) {
+        let bitmap;
+        switch (cellDitherMethod) {
+          case 'floyd':
+            bitmap = ditherCellFloydSteinberg(floatPixels, cellCol, cellRow, 256, inkColor, paperColor);
+            break;
+          case 'atkinson':
+            bitmap = ditherCellAtkinson(floatPixels, cellCol, cellRow, 256, inkColor, paperColor);
+            break;
+          case 'ordered':
+            bitmap = ditherCellOrdered(floatPixels, cellCol, cellRow, 256, inkColor, paperColor);
+            break;
+          case 'ordered2':
+            bitmap = ditherCellOrdered2(floatPixels, cellCol, cellRow, 256, inkColor, paperColor);
+            break;
+          case 'ordered8':
+            bitmap = ditherCellOrdered8(floatPixels, cellCol, cellRow, 256, inkColor, paperColor);
+            break;
+          case 'sierra2':
+            bitmap = ditherCellSierra2(floatPixels, cellCol, cellRow, 256, inkColor, paperColor);
+            break;
+          case 'serpentine':
+            bitmap = ditherCellSerpentine(floatPixels, cellCol, cellRow, 256, inkColor, paperColor);
+            break;
+          case 'riemersma':
+            bitmap = ditherCellRiemersma(floatPixels, cellCol, cellRow, 256, inkColor, paperColor);
+            break;
+          case 'blue-noise':
+            bitmap = ditherCellBlueNoise(floatPixels, cellCol, cellRow, 256, inkColor, paperColor);
+            break;
+          case 'pattern':
+            bitmap = ditherCellPattern(floatPixels, cellCol, cellRow, 256, inkColor, paperColor);
+            break;
+          default:
+            bitmap = ditherCellNone(floatPixels, cellCol, cellRow, 256, inkColor, paperColor);
+            break;
+        }
+
+        // Write same bitmap to both frames
+        for (let line = 0; line < 8; line++) {
+          const y = cellY + line;
+          const offset = getBitmapOffset(y) + cellCol;
+          result[offset] = bitmap[line];
+          result[frameSize + offset] = bitmap[line];
+        }
+      } else {
+        // Re-map already-dithered pixels to nearest of 2 blended colors
+        for (let dy = 0; dy < 8; dy++) {
+          const y = cellY + dy;
+          let byte = 0;
+          for (let dx = 0; dx < 8; dx++) {
+            const idx = (y * 256 + cellCol * 8 + dx) * 3;
+            const r = floatPixels[idx], g = floatPixels[idx + 1], b = floatPixels[idx + 2];
+            const dr1 = r - inkColor[0], dg1 = g - inkColor[1], db1 = b - inkColor[2];
+            const dr2 = r - paperColor[0], dg2 = g - paperColor[1], db2 = b - paperColor[2];
+            const dInk = dr1 * dr1 + dg1 * dg1 + db1 * db1;
+            const dPaper = dr2 * dr2 + dg2 * dg2 + db2 * db2;
+            if (dInk < dPaper) byte |= (0x80 >> dx);
+          }
+
+          const offset = getBitmapOffset(y) + cellCol;
+          result[offset] = byte;
+          result[frameSize + offset] = byte;
+        }
+      }
+
+      // Write attribute bytes (one per frame)
+      const attrOffset = 6144 + cellRow * 32 + cellCol;
+      result[attrOffset] = best.attr1;
+      result[frameSize + attrOffset] = best.attr2;
+    }
+  }
+
+  return { data: result, palette: palette };
+}
+
+/**
+ * Convert source canvas to a GAP Dual ULA+ format with two independent 64-color palettes.
+ * Same structure as convertToGapUlaPlus but generates/uses two separate palettes — one per
+ * frame — giving more diverse color blends.
+ * @param {HTMLCanvasElement} sourceCanvas
+ * @param {string} dithering
+ * @param {number} brightness
+ * @param {number} contrast
+ * @param {number} saturation
+ * @param {number} gamma
+ * @param {boolean} grayscale
+ * @param {number} sharpness
+ * @param {number} smoothing
+ * @param {number} blackPoint
+ * @param {number} whitePoint
+ * @param {number} balanceR
+ * @param {number} balanceG
+ * @param {number} balanceB
+ * @param {Uint8Array|null} externalPalette - 128-byte dual or 64-byte single palette, or null for auto
+ * @param {boolean} monoOutput
+ * @returns {{data: Uint8Array, palette: Uint8Array}} data is 13824 bytes, palette is 128 bytes
+ */
+function convertToGapDualUlaPlus(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, externalPalette = null, monoOutput = false) {
+  updateColorDistanceMode();
+
+  const ctx = sourceCanvas.getContext('2d');
+  if (!ctx) throw new Error('Cannot get canvas context');
+  const imageData = ctx.getImageData(0, 0, 256, 192);
+  const pixels = imageData.data;
+  applyImageAdjustments(pixels, 256, 192, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
+  if (monoOutput && !grayscale) {
+    applyGrayscale(pixels);
+  }
+  const floatPixels = rgbaToFloat(pixels, 256 * 192);
+
+  // Determine palette1 and palette2
+  let palette1, palette2;
+  if (externalPalette && externalPalette.length >= 128) {
+    // 128-byte external palette → split into two 64-byte palettes
+    palette1 = new Uint8Array(externalPalette.buffer, externalPalette.byteOffset, 64);
+    palette2 = new Uint8Array(externalPalette.buffer, externalPalette.byteOffset + 64, 64);
+  } else if (externalPalette && externalPalette.length >= 64) {
+    // 64-byte external palette → use as palette1, generate complement for palette2
+    palette1 = new Uint8Array(externalPalette.buffer, externalPalette.byteOffset, 64);
+    palette2 = generateComplementUlaPlusPalette(floatPixels, palette1);
+  } else {
+    // No external palette → generate palette1, then complement palette2
+    palette1 = generateOptimalUlaPlusPalette(floatPixels);
+    palette2 = generateComplementUlaPlusPalette(floatPixels, palette1);
+  }
+
+  // Extract ink and paper RGB arrays from BOTH palettes
+  const inkColors1 = [];
+  const paperColors1 = [];
+  const inkColors2 = [];
+  const paperColors2 = [];
+  for (let clut = 0; clut < 4; clut++) {
+    for (let sub = 0; sub < 8; sub++) {
+      inkColors1.push(grb332ToRgb(palette1[clut * 16 + sub]));
+      paperColors1.push(grb332ToRgb(palette1[clut * 16 + 8 + sub]));
+      inkColors2.push(grb332ToRgb(palette2[clut * 16 + sub]));
+      paperColors2.push(grb332ToRgb(palette2[clut * 16 + 8 + sub]));
+    }
+  }
+
+  const gapData = precomputeGapPairs(inkColors1, paperColors1, inkColors2, paperColors2);
+
+  // Build a flat blended palette for global dithering
+  const allBlendedColors = [];
+  const seenColors = new Set();
+  for (let pi = 0; pi < gapData.pairs.length; pi++) {
+    const pair = gapData.pairs[pi];
+    const inkColor = gapData.blendedInks[pair.inkBlendIdx];
+    const paperColor = gapData.blendedPapers[pair.paperBlendIdx];
+    const ik = (inkColor[0] << 16) | (inkColor[1] << 8) | inkColor[2];
+    const pk = (paperColor[0] << 16) | (paperColor[1] << 8) | paperColor[2];
+    if (!seenColors.has(ik)) { seenColors.add(ik); allBlendedColors.push(inkColor); }
+    if (!seenColors.has(pk)) { seenColors.add(pk); allBlendedColors.push(paperColor); }
+  }
+
+  // Result: 13824-byte Gigascreen-compatible layout (two 6912-byte frames)
+  const frameSize = 6912;
+  const result = new Uint8Array(frameSize * 2);
+
+  dithering = remapOrderedToCellAware(dithering);
+  const isCellAware = dithering.startsWith('cell-');
+
+  if (!isCellAware && dithering !== 'none') {
+    const gigaDithering = mapCellDithering(dithering);
+    applyGlobalDither(gigaDithering, floatPixels, 256, 192, allBlendedColors);
+  }
+
+  const cellDitherMethod = isCellAware ? dithering.replace('cell-', '') : null;
+
+  // Process each 8x8 cell
+  for (let cellRow = 0; cellRow < 24; cellRow++) {
+    const cellY = cellRow * 8;
+
+    for (let cellCol = 0; cellCol < 32; cellCol++) {
+      const best = findGapCellColors(floatPixels, cellCol, cellY, 256, gapData);
+
+      const inkColor = gapData.blendedInks[best.inkBlendIdx];
+      const paperColor = gapData.blendedPapers[best.paperBlendIdx];
+
+      if (isCellAware) {
+        let bitmap;
+        switch (cellDitherMethod) {
+          case 'floyd':
+            bitmap = ditherCellFloydSteinberg(floatPixels, cellCol, cellRow, 256, inkColor, paperColor);
+            break;
+          case 'atkinson':
+            bitmap = ditherCellAtkinson(floatPixels, cellCol, cellRow, 256, inkColor, paperColor);
+            break;
+          case 'ordered':
+            bitmap = ditherCellOrdered(floatPixels, cellCol, cellRow, 256, inkColor, paperColor);
+            break;
+          case 'ordered2':
+            bitmap = ditherCellOrdered2(floatPixels, cellCol, cellRow, 256, inkColor, paperColor);
+            break;
+          case 'ordered8':
+            bitmap = ditherCellOrdered8(floatPixels, cellCol, cellRow, 256, inkColor, paperColor);
+            break;
+          case 'sierra2':
+            bitmap = ditherCellSierra2(floatPixels, cellCol, cellRow, 256, inkColor, paperColor);
+            break;
+          case 'serpentine':
+            bitmap = ditherCellSerpentine(floatPixels, cellCol, cellRow, 256, inkColor, paperColor);
+            break;
+          case 'riemersma':
+            bitmap = ditherCellRiemersma(floatPixels, cellCol, cellRow, 256, inkColor, paperColor);
+            break;
+          case 'blue-noise':
+            bitmap = ditherCellBlueNoise(floatPixels, cellCol, cellRow, 256, inkColor, paperColor);
+            break;
+          case 'pattern':
+            bitmap = ditherCellPattern(floatPixels, cellCol, cellRow, 256, inkColor, paperColor);
+            break;
+          default:
+            bitmap = ditherCellNone(floatPixels, cellCol, cellRow, 256, inkColor, paperColor);
+            break;
+        }
+
+        for (let line = 0; line < 8; line++) {
+          const y = cellY + line;
+          const offset = getBitmapOffset(y) + cellCol;
+          result[offset] = bitmap[line];
+          result[frameSize + offset] = bitmap[line];
+        }
+      } else {
+        for (let dy = 0; dy < 8; dy++) {
+          const y = cellY + dy;
+          let byte = 0;
+          for (let dx = 0; dx < 8; dx++) {
+            const idx = (y * 256 + cellCol * 8 + dx) * 3;
+            const r = floatPixels[idx], g = floatPixels[idx + 1], b = floatPixels[idx + 2];
+            const dr1 = r - inkColor[0], dg1 = g - inkColor[1], db1 = b - inkColor[2];
+            const dr2 = r - paperColor[0], dg2 = g - paperColor[1], db2 = b - paperColor[2];
+            const dInk = dr1 * dr1 + dg1 * dg1 + db1 * db1;
+            const dPaper = dr2 * dr2 + dg2 * dg2 + db2 * db2;
+            if (dInk < dPaper) byte |= (0x80 >> dx);
+          }
+
+          const offset = getBitmapOffset(y) + cellCol;
+          result[offset] = byte;
+          result[frameSize + offset] = byte;
+        }
+      }
+
+      const attrOffset = 6144 + cellRow * 32 + cellCol;
+      result[attrOffset] = best.attr1;
+      result[frameSize + attrOffset] = best.attr2;
+    }
+  }
+
+  // Combine palettes into 128-byte array: palette1 at [0..63], palette2 at [64..127]
+  const combinedPalette = new Uint8Array(128);
+  combinedPalette.set(palette1, 0);
+  combinedPalette.set(palette2, 64);
+
+  return { data: result, palette: combinedPalette };
+}
+
+/**
+ * Render a GAP (Gigaattr+ULA+) buffer to canvas using ULA+ palette.
+ * Like renderGigascreenToCanvas but reads colors from ULA+ palette instead
+ * of standard ZX palette. Supports both shared (64-byte) and dual (128-byte) palettes.
+ * @param {Uint8Array} gapData - 13824-byte gigascreen-compatible layout
+ * @param {Uint8Array} palette - 64-byte or 128-byte ULA+ GRB332 palette
+ * @param {HTMLCanvasElement} canvas - Target canvas
+ * @param {number} zoom - Zoom factor
+ */
+function renderGapToCanvas(gapData, palette, canvas, zoom) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  canvas.width = 256 * zoom;
+  canvas.height = 192 * zoom;
+
+  // Build RGB lookup — dual palette (128 bytes) uses separate lookups per frame
+  const isDual = palette.length >= 128;
+  const ulaPlusRgb1 = new Array(64);
+  for (let i = 0; i < 64; i++) {
+    ulaPlusRgb1[i] = grb332ToRgb(palette[i]);
+  }
+  const ulaPlusRgb2 = isDual ? new Array(64) : ulaPlusRgb1;
+  if (isDual) {
+    for (let i = 0; i < 64; i++) {
+      ulaPlusRgb2[i] = grb332ToRgb(palette[64 + i]);
+    }
+  }
+
+  const frameSize = 6912;
+  const imageData = ctx.createImageData(256, 192);
+  const data = imageData.data;
+
+  for (let y = 0; y < 192; y++) {
+    const cellRow = Math.floor(y / 8);
+    const bitmapOffset = getBitmapOffset(y);
+    for (let col = 0; col < 32; col++) {
+      const bm1 = gapData[bitmapOffset + col];
+      const bm2 = gapData[frameSize + bitmapOffset + col];
+      const attr1 = gapData[6144 + cellRow * 32 + col];
+      const attr2 = gapData[frameSize + 6144 + cellRow * 32 + col];
+
+      // Decode attrs: CLUT = (flash<<1)|bright, ink=bits 2-0, paper=bits 5-3
+      const clut1 = ((attr1 >> 7) & 1) * 2 + ((attr1 >> 6) & 1);
+      const ink1Idx = clut1 * 16 + (attr1 & 7);
+      const paper1Idx = clut1 * 16 + 8 + ((attr1 >> 3) & 7);
+      const clut2 = ((attr2 >> 7) & 1) * 2 + ((attr2 >> 6) & 1);
+      const ink2Idx = clut2 * 16 + (attr2 & 7);
+      const paper2Idx = clut2 * 16 + 8 + ((attr2 >> 3) & 7);
+
+      // Frame 1 attrs look up in ulaPlusRgb1, frame 2 attrs look up in ulaPlusRgb2
+      const c1Ink = ulaPlusRgb1[ink1Idx];
+      const c1Paper = ulaPlusRgb1[paper1Idx];
+      const c2Ink = ulaPlusRgb2[ink2Idx];
+      const c2Paper = ulaPlusRgb2[paper2Idx];
+
+      for (let bit = 0; bit < 8; bit++) {
+        const x = col * 8 + bit;
+        const mask = 0x80 >> bit;
+        const f1 = (bm1 & mask) ? c1Ink : c1Paper;
+        const f2 = (bm2 & mask) ? c2Ink : c2Paper;
+        const pixelIndex = (y * 256 + x) * 4;
+        data[pixelIndex] = (f1[0] + f2[0]) >> 1;
+        data[pixelIndex + 1] = (f1[1] + f2[1]) >> 1;
+        data[pixelIndex + 2] = (f1[2] + f2[2]) >> 1;
+        data[pixelIndex + 3] = 255;
+      }
+    }
+  }
+
+  if (zoom === 1) {
+    ctx.putImageData(imageData, 0, 0);
+  } else {
+    const tmpCanvas = document.createElement('canvas');
+    tmpCanvas.width = 256;
+    tmpCanvas.height = 192;
+    const tmpCtx = tmpCanvas.getContext('2d');
+    if (tmpCtx) {
+      tmpCtx.putImageData(imageData, 0, 0);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(tmpCanvas, 0, 0, canvas.width, canvas.height);
+    }
+  }
+}
+
+/**
  * Convert source canvas to a chr$-style Gigascreen buffer at variable
  * dimensions. Output uses linear bitmap+attrs layout (matching ZXP / chr$
  * in-memory layout) rather than the ZX-interleaved layout used by
@@ -6933,6 +7955,350 @@ function convertToHlr(sourceCanvas, dithering, brightness, contrast, saturation,
   // pack the 1628-byte .hlr file and seed the internal Picture's .pattern.
   /** @type {any} */ (result).hlrPattern = pattern;
   return result;
+}
+
+/**
+ * Resolves the GA/GAP fill pattern currently selected in the import dialog's
+ * pattern dropdown. Returns null when the user picked "Auto (best fit)".
+ * @returns {Uint8Array|null}
+ */
+function getSelectedImportGaPattern() {
+  const key = importElements && importElements.gaPattern ? importElements.gaPattern.value : 'auto';
+  if (!key || key === 'auto') return null;
+  if (typeof hlrPatternFromPresetKey === 'function') {
+    return hlrPatternFromPresetKey(key);
+  }
+  return null;
+}
+
+/**
+ * Convert an image to GA Pattern (Gigaattr pattern-only) buffer.
+ *
+ * Reuses the same algorithm as convertToHlr: a fixed 8-byte fill pattern is
+ * tiled across the bitmap, and per-cell attributes are found by matching the
+ * mean ink/paper colors against the 16 standard ZX Spectrum colors.
+ *
+ * The returned buffer is gigascreen-shaped (13824 bytes, two frames of 6912)
+ * with a `.hlrPattern` property containing the resolved 8-byte pattern.
+ *
+ * @param {HTMLCanvasElement} sourceCanvas
+ * @param {string} dithering  (unused — bitmap is fully determined by pattern)
+ * @param {number} brightness
+ * @param {number} contrast
+ * @param {number} saturation
+ * @param {number} gamma
+ * @param {boolean} grayscale
+ * @param {number} sharpness
+ * @param {number} smoothing
+ * @param {number} blackPoint
+ * @param {number} whitePoint
+ * @param {number} balanceR
+ * @param {number} balanceG
+ * @param {number} balanceB
+ * @param {Uint8Array|number[]|null} [patternBytes]  8-byte pattern, or null to auto-detect
+ * @param {boolean} [monoOutput=false]
+ * @returns {Uint8Array} 13824-byte gigascreen-shaped buffer with `.hlrPattern`
+ */
+function convertToGaPattern(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, patternBytes, monoOutput = false) {
+  // GA pattern uses identical cell-matching logic to HLR
+  return convertToHlr(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, patternBytes, monoOutput);
+}
+
+/**
+ * Convert an image to GAP Pattern (Gigaattr + ULA+ palette, pattern-only) buffer.
+ *
+ * Uses the same pattern-based cell partitioning as HLR/GA pattern, but searches
+ * for best colors among ULA+ palette entries instead of the 16 standard colors.
+ * Reuses precomputeGapPairs() / findGapCellColors() from the GAP import path.
+ *
+ * @param {HTMLCanvasElement} sourceCanvas
+ * @param {string} dithering  (unused)
+ * @param {number} brightness
+ * @param {number} contrast
+ * @param {number} saturation
+ * @param {number} gamma
+ * @param {boolean} grayscale
+ * @param {number} sharpness
+ * @param {number} smoothing
+ * @param {number} blackPoint
+ * @param {number} whitePoint
+ * @param {number} balanceR
+ * @param {number} balanceG
+ * @param {number} balanceB
+ * @param {Uint8Array|null} [externalPalette] ULA+ palette (64 bytes), or null for auto
+ * @param {Uint8Array|number[]|null} [patternBytes]  8-byte pattern, or null to auto-detect
+ * @param {boolean} [monoOutput=false]
+ * @returns {{data: Uint8Array, palette: Uint8Array}} gigascreen-shaped buffer + 64-byte palette
+ */
+function convertToGapPattern(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, externalPalette, patternBytes, monoOutput = false) {
+  updateColorDistanceMode();
+
+  const ctx = sourceCanvas.getContext('2d');
+  if (!ctx) throw new Error('Cannot get canvas context');
+  const imageData = ctx.getImageData(0, 0, 256, 192);
+  const pixels = imageData.data;
+  applyImageAdjustments(pixels, 256, 192, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
+  if (monoOutput && !grayscale) applyGrayscale(pixels);
+  const floatPixels = rgbaToFloat(pixels, 256 * 192);
+
+  // Resolve pattern
+  let pattern;
+  if (patternBytes && patternBytes.length === 8) {
+    pattern = new Uint8Array(patternBytes);
+  } else {
+    pattern = findBestHlrPatternFromFloat(floatPixels);
+  }
+
+  // Resolve ULA+ palette
+  let palette;
+  if (externalPalette && externalPalette.length >= 64) {
+    palette = new Uint8Array(externalPalette.subarray(0, 64));
+  } else {
+    // Auto-generate optimized palette from source image
+    const autoResult = convertToGapUlaPlus(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, null, monoOutput);
+    palette = autoResult.palette;
+  }
+
+  // Extract ink/paper RGB arrays from ULA+ palette (32 ink + 32 paper colors)
+  const inkColors = new Array(32);
+  const paperColors = new Array(32);
+  for (let clut = 0; clut < 4; clut++) {
+    for (let i = 0; i < 8; i++) {
+      const inkIdx = clut * 16 + i;
+      const paperIdx = clut * 16 + 8 + i;
+      inkColors[clut * 8 + i] = grb332ToRgb(palette[inkIdx]);
+      paperColors[clut * 8 + i] = grb332ToRgb(palette[paperIdx]);
+    }
+  }
+
+  // Precompute GAP color pairs
+  const gapData = precomputeGapPairs(inkColors, paperColors);
+
+  // Build gigascreen-shaped output
+  const frameSize = 6144 + 768;
+  const result = new Uint8Array(frameSize * 2);
+
+  // Fill both frames' bitmaps with the pattern
+  for (let y = 0; y < 192; y++) {
+    const patByte = pattern[y & 7] & 0xFF;
+    const bitmapAddr = getBitmapOffset(y);
+    for (let col = 0; col < 32; col++) {
+      result[bitmapAddr + col] = patByte;
+      result[frameSize + bitmapAddr + col] = patByte;
+    }
+  }
+
+  // Per-cell attribute search using GAP pairs
+  for (let cellRow = 0; cellRow < 24; cellRow++) {
+    const cellY = cellRow * 8;
+    for (let cellCol = 0; cellCol < 32; cellCol++) {
+      // Compute per-cell float pixel data
+      const cellPixels = new Float32Array(64 * 3);
+      for (let dy = 0; dy < 8; dy++) {
+        for (let dx = 0; dx < 8; dx++) {
+          const x = cellCol * 8 + dx;
+          const y = cellY + dy;
+          const si = (y * 256 + x) * 3;
+          const di = (dy * 8 + dx) * 3;
+          cellPixels[di] = floatPixels[si];
+          cellPixels[di + 1] = floatPixels[si + 1];
+          cellPixels[di + 2] = floatPixels[si + 2];
+        }
+      }
+
+      // Partition pixels by pattern into ink/paper groups and find best match
+      let nInk = 0, nPaper = 0;
+      let sumInkR = 0, sumInkG = 0, sumInkB = 0;
+      let sumPaperR = 0, sumPaperG = 0, sumPaperB = 0;
+      for (let dy = 0; dy < 8; dy++) {
+        const row = pattern[dy] & 0xFF;
+        for (let dx = 0; dx < 8; dx++) {
+          const isInk = (row >> (7 - dx)) & 1;
+          const pi = (dy * 8 + dx) * 3;
+          const r = cellPixels[pi], g = cellPixels[pi + 1], b = cellPixels[pi + 2];
+          if (isInk) { sumInkR += r; sumInkG += g; sumInkB += b; nInk++; }
+          else { sumPaperR += r; sumPaperG += g; sumPaperB += b; nPaper++; }
+        }
+      }
+
+      const mInkR = nInk ? sumInkR / nInk : 0;
+      const mInkG = nInk ? sumInkG / nInk : 0;
+      const mInkB = nInk ? sumInkB / nInk : 0;
+      const mPaperR = nPaper ? sumPaperR / nPaper : 0;
+      const mPaperG = nPaper ? sumPaperG / nPaper : 0;
+      const mPaperB = nPaper ? sumPaperB / nPaper : 0;
+
+      // Find best GAP pair for ink and paper mean colors
+      let bestErr = Infinity, bestAttr1 = 0, bestAttr2 = 0;
+      for (let pi = 0; pi < gapData.pairs.length; pi++) {
+        const pair = gapData.pairs[pi];
+        const inkBlend = gapData.blendedInks[pair.inkBlendIdx];
+        const paperBlend = gapData.blendedPapers[pair.paperBlendIdx];
+
+        const diR = inkBlend[0] - mInkR, diG = inkBlend[1] - mInkG, diB = inkBlend[2] - mInkB;
+        const dpR = paperBlend[0] - mPaperR, dpG = paperBlend[1] - mPaperG, dpB = paperBlend[2] - mPaperB;
+        const err = nInk * (diR * diR + diG * diG + diB * diB) + nPaper * (dpR * dpR + dpG * dpG + dpB * dpB);
+
+        if (err < bestErr) {
+          bestErr = err;
+          bestAttr1 = pair.attr1;
+          bestAttr2 = pair.attr2;
+        }
+      }
+
+      const attrOffset = 6144 + cellRow * 32 + cellCol;
+      result[attrOffset] = bestAttr1;
+      result[frameSize + attrOffset] = bestAttr2;
+    }
+  }
+
+  /** @type {any} */ (result).hlrPattern = pattern;
+  return { data: result, palette: palette };
+}
+
+/**
+ * Convert an image to GAP Dual Pattern (Gigaattr + dual ULA+ palettes, pattern-only) buffer.
+ *
+ * Same as convertToGapPattern but with two independent 64-byte ULA+ palettes.
+ *
+ * @param {HTMLCanvasElement} sourceCanvas
+ * @param {string} dithering  (unused)
+ * @param {number} brightness
+ * @param {number} contrast
+ * @param {number} saturation
+ * @param {number} gamma
+ * @param {boolean} grayscale
+ * @param {number} sharpness
+ * @param {number} smoothing
+ * @param {number} blackPoint
+ * @param {number} whitePoint
+ * @param {number} balanceR
+ * @param {number} balanceG
+ * @param {number} balanceB
+ * @param {Uint8Array|null} [externalPalette] ULA+ palette (64 or 128 bytes), or null for auto
+ * @param {Uint8Array|number[]|null} [patternBytes]  8-byte pattern, or null to auto-detect
+ * @param {boolean} [monoOutput=false]
+ * @returns {{data: Uint8Array, palette: Uint8Array}} gigascreen-shaped buffer + 128-byte dual palette
+ */
+function convertToGapDualPattern(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, externalPalette, patternBytes, monoOutput = false) {
+  updateColorDistanceMode();
+
+  const ctx = sourceCanvas.getContext('2d');
+  if (!ctx) throw new Error('Cannot get canvas context');
+  const imageData = ctx.getImageData(0, 0, 256, 192);
+  const pixels = imageData.data;
+  applyImageAdjustments(pixels, 256, 192, { brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB });
+  if (monoOutput && !grayscale) applyGrayscale(pixels);
+  const floatPixels = rgbaToFloat(pixels, 256 * 192);
+
+  // Resolve pattern
+  let pattern;
+  if (patternBytes && patternBytes.length === 8) {
+    pattern = new Uint8Array(patternBytes);
+  } else {
+    pattern = findBestHlrPatternFromFloat(floatPixels);
+  }
+
+  // Resolve dual ULA+ palette
+  let palette1, palette2;
+  if (externalPalette && externalPalette.length >= 128) {
+    palette1 = new Uint8Array(externalPalette.subarray(0, 64));
+    palette2 = new Uint8Array(externalPalette.subarray(64, 128));
+  } else if (externalPalette && externalPalette.length >= 64) {
+    palette1 = new Uint8Array(externalPalette.subarray(0, 64));
+    palette2 = new Uint8Array(palette1);
+  } else {
+    // Auto-generate from dual GAP converter
+    const autoResult = convertToGapDualUlaPlus(sourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, null, monoOutput);
+    if (autoResult.palette.length >= 128) {
+      palette1 = new Uint8Array(autoResult.palette.subarray(0, 64));
+      palette2 = new Uint8Array(autoResult.palette.subarray(64, 128));
+    } else {
+      palette1 = new Uint8Array(autoResult.palette.subarray(0, 64));
+      palette2 = new Uint8Array(palette1);
+    }
+  }
+
+  // Extract ink/paper RGB arrays from both palettes
+  const inkColors1 = new Array(32), paperColors1 = new Array(32);
+  const inkColors2 = new Array(32), paperColors2 = new Array(32);
+  for (let clut = 0; clut < 4; clut++) {
+    for (let i = 0; i < 8; i++) {
+      inkColors1[clut * 8 + i] = grb332ToRgb(palette1[clut * 16 + i]);
+      paperColors1[clut * 8 + i] = grb332ToRgb(palette1[clut * 16 + 8 + i]);
+      inkColors2[clut * 8 + i] = grb332ToRgb(palette2[clut * 16 + i]);
+      paperColors2[clut * 8 + i] = grb332ToRgb(palette2[clut * 16 + 8 + i]);
+    }
+  }
+
+  const gapData = precomputeGapPairs(inkColors1, paperColors1, inkColors2, paperColors2);
+
+  const frameSize = 6144 + 768;
+  const result = new Uint8Array(frameSize * 2);
+
+  for (let y = 0; y < 192; y++) {
+    const patByte = pattern[y & 7] & 0xFF;
+    const bitmapAddr = getBitmapOffset(y);
+    for (let col = 0; col < 32; col++) {
+      result[bitmapAddr + col] = patByte;
+      result[frameSize + bitmapAddr + col] = patByte;
+    }
+  }
+
+  for (let cellRow = 0; cellRow < 24; cellRow++) {
+    const cellY = cellRow * 8;
+    for (let cellCol = 0; cellCol < 32; cellCol++) {
+      let nInk = 0, nPaper = 0;
+      let sumInkR = 0, sumInkG = 0, sumInkB = 0;
+      let sumPaperR = 0, sumPaperG = 0, sumPaperB = 0;
+      for (let dy = 0; dy < 8; dy++) {
+        const row = pattern[dy] & 0xFF;
+        for (let dx = 0; dx < 8; dx++) {
+          const isInk = (row >> (7 - dx)) & 1;
+          const x = cellCol * 8 + dx;
+          const y = cellY + dy;
+          const pi = (y * 256 + x) * 3;
+          const r = floatPixels[pi], g = floatPixels[pi + 1], b = floatPixels[pi + 2];
+          if (isInk) { sumInkR += r; sumInkG += g; sumInkB += b; nInk++; }
+          else { sumPaperR += r; sumPaperG += g; sumPaperB += b; nPaper++; }
+        }
+      }
+
+      const mInkR = nInk ? sumInkR / nInk : 0;
+      const mInkG = nInk ? sumInkG / nInk : 0;
+      const mInkB = nInk ? sumInkB / nInk : 0;
+      const mPaperR = nPaper ? sumPaperR / nPaper : 0;
+      const mPaperG = nPaper ? sumPaperG / nPaper : 0;
+      const mPaperB = nPaper ? sumPaperB / nPaper : 0;
+
+      let bestErr = Infinity, bestAttr1 = 0, bestAttr2 = 0;
+      for (let pi = 0; pi < gapData.pairs.length; pi++) {
+        const pair = gapData.pairs[pi];
+        const inkBlend = gapData.blendedInks[pair.inkBlendIdx];
+        const paperBlend = gapData.blendedPapers[pair.paperBlendIdx];
+
+        const diR = inkBlend[0] - mInkR, diG = inkBlend[1] - mInkG, diB = inkBlend[2] - mInkB;
+        const dpR = paperBlend[0] - mPaperR, dpG = paperBlend[1] - mPaperG, dpB = paperBlend[2] - mPaperB;
+        const err = nInk * (diR * diR + diG * diG + diB * diB) + nPaper * (dpR * dpR + dpG * dpG + dpB * dpB);
+
+        if (err < bestErr) {
+          bestErr = err;
+          bestAttr1 = pair.attr1;
+          bestAttr2 = pair.attr2;
+        }
+      }
+
+      const attrOffset = 6144 + cellRow * 32 + cellCol;
+      result[attrOffset] = bestAttr1;
+      result[frameSize + attrOffset] = bestAttr2;
+    }
+  }
+
+  /** @type {any} */ (result).hlrPattern = pattern;
+  const dualPalette = new Uint8Array(128);
+  dualPalette.set(palette1, 0);
+  dualPalette.set(palette2, 64);
+  return { data: result, palette: dualPalette };
 }
 
 /**
@@ -11525,6 +12891,9 @@ const importElements = {
   // ZXP palette type (ULA / ULA+)
   /** @type {HTMLElement|null} */ zxpPaletteTypeRow: null,
   /** @type {HTMLSelectElement|null} */ zxpPaletteType: null,
+  // GA/GAP pattern fill pattern selector
+  /** @type {HTMLElement|null} */ gaPatternRow: null,
+  /** @type {HTMLSelectElement|null} */ gaPattern: null,
   // HLR (Gigascreen Lowres) fill pattern selector
   /** @type {HTMLElement|null} */ hlrPatternRow: null,
   /** @type {HTMLSelectElement|null} */ hlrPattern: null,
@@ -12340,6 +13709,150 @@ function convertWithDitherRegions(format, sourceCanvas, dithering, adjustArgs) {
     'bmc4':       { fn: convertToBmc4,        cols: 32, rows: 24, cw: 8, ch: 8, bmp: 6144 },
   };
 
+  // Handle gigaattr: uses dedicated converter (2 blended colors per cell, shared bitmap)
+  if (format === 'gigaattr') {
+    const cellMethodMap = buildCellMethodMap(32, 24, 8, 8, defaultKey);
+    const uniqueKeys = new Set();
+    for (const k of cellMethodMap) uniqueKeys.add(k);
+    const results = {};
+    for (const key of uniqueKeys) {
+      results[key] = runConvertWithStrength(key, convertToGigaattr, sourceCanvas, adjustArgs);
+    }
+    if (uniqueKeys.size === 1 && uniqueKeys.has(defaultKey)) {
+      return results[defaultKey];
+    }
+    const output = new Uint8Array(results[defaultKey].length);
+    output.set(results[defaultKey]);
+    const frameSize = 6912;
+    const bmpSize = 6144;
+
+    // Cell-level attr compositing for both frames
+    for (let cr = 0; cr < 24; cr++) {
+      for (let cc = 0; cc < 32; cc++) {
+        const key = cellMethodMap[cr * 32 + cc];
+        if (key !== defaultKey && results[key]) {
+          for (let frame = 0; frame < 2; frame++) {
+            const attrAddr = frame * frameSize + bmpSize + cr * 32 + cc;
+            output[attrAddr] = results[key][attrAddr];
+          }
+        }
+      }
+    }
+
+    // Pixel-level bitmap compositing (shared bitmap — compose frame 0, copy to frame 1)
+    for (let y = 0; y < 192; y++) {
+      for (let byteCol = 0; byteCol < 32; byteCol++) {
+        const x0 = byteCol * 8;
+        let hasRegion = false;
+        for (let bit = 0; bit < 8; bit++) {
+          const px = x0 + bit;
+          if (px < ditherRegionWidth && y < ditherRegionHeight) {
+            if (ditherRegionMask[y * ditherRegionWidth + px] > 0) {
+              hasRegion = true;
+              break;
+            }
+          }
+        }
+        if (!hasRegion) continue;
+
+        const third = Math.floor(y / 64);
+        const line = y & 7;
+        const charRow = (y >> 3) & 7;
+        const bmpAddr = third * 2048 + line * 256 + charRow * 32 + byteCol;
+
+        let outputByte = 0;
+        for (let bit = 0; bit < 8; bit++) {
+          const px = x0 + bit;
+          const bitMask = 0x80 >> bit;
+          let srcData = results[defaultKey];
+          if (px < ditherRegionWidth && y < ditherRegionHeight) {
+            const reg = ditherRegionMask[y * ditherRegionWidth + px];
+            if (reg > 0 && reg <= 3) {
+              const key = getRegionDitherKey(reg - 1);
+              if (results[key]) srcData = results[key];
+            }
+          }
+          outputByte |= srcData[bmpAddr] & bitMask;
+        }
+        // Same bitmap byte for both frames
+        output[bmpAddr] = outputByte;
+        output[frameSize + bmpAddr] = outputByte;
+      }
+    }
+    return output;
+  }
+
+  // Handle GA pattern: fixed pattern bitmap, only attrs change — dither regions are attr-level only
+  if (format === 'gigaattr_pat') {
+    const gaPattern = getSelectedImportGaPattern();
+    const cellMethodMap = buildCellMethodMap(32, 24, 8, 8, defaultKey);
+    const uniqueKeys = new Set();
+    for (const k of cellMethodMap) uniqueKeys.add(k);
+    const results = {};
+    for (const key of uniqueKeys) {
+      results[key] = runConvertWithStrength(key, convertToGaPattern, sourceCanvas, [...adjustArgs.slice(0, -1), gaPattern, adjustArgs[adjustArgs.length - 1]]);
+    }
+    if (uniqueKeys.size === 1 && uniqueKeys.has(defaultKey)) {
+      return results[defaultKey];
+    }
+    const output = new Uint8Array(results[defaultKey].length);
+    output.set(results[defaultKey]);
+    const frameSize = 6912;
+    const bmpSize = 6144;
+    // Attr-level compositing for both frames (bitmap is fixed by pattern, no bitmap compositing needed)
+    for (let cr = 0; cr < 24; cr++) {
+      for (let cc = 0; cc < 32; cc++) {
+        const key = cellMethodMap[cr * 32 + cc];
+        if (key !== defaultKey && results[key]) {
+          for (let frame = 0; frame < 2; frame++) {
+            const attrAddr = frame * frameSize + bmpSize + cr * 32 + cc;
+            output[attrAddr] = results[key][attrAddr];
+          }
+        }
+      }
+    }
+    return output;
+  }
+
+  // Handle GAP pattern / GAP Dual pattern: fixed pattern bitmap + ULA+ palette attrs
+  if (format === 'gap_pat' || format === 'gap_dual_pat') {
+    const gapPatConverter = format === 'gap_dual_pat' ? convertToGapDualPattern : convertToGapPattern;
+    const gaPattern = getSelectedImportGaPattern();
+    const cellMethodMap = buildCellMethodMap(32, 24, 8, 8, defaultKey);
+    const uniqueKeys = new Set();
+    for (const k of cellMethodMap) uniqueKeys.add(k);
+    const monoOutput = adjustArgs[adjustArgs.length - 1];
+    const adjWithoutMono = adjustArgs.slice(0, -1);
+    const gapPatExtraArgs = [...adjWithoutMono, importUlaPlusPalette, gaPattern, monoOutput];
+    const results = {};
+    for (const key of uniqueKeys) {
+      results[key] = runConvertWithStrength(key, gapPatConverter, sourceCanvas, gapPatExtraArgs);
+    }
+    if (uniqueKeys.size === 1 && uniqueKeys.has(defaultKey)) {
+      return results[defaultKey];
+    }
+    const frameSize = 6912;
+    const bmpSize = 6144;
+    const dataResults = {};
+    for (const key of uniqueKeys) {
+      dataResults[key] = results[key].data;
+    }
+    const output = new Uint8Array(dataResults[defaultKey].length);
+    output.set(dataResults[defaultKey]);
+    // Attr-level compositing for both frames (bitmap is fixed by pattern)
+    for (let cr = 0; cr < 24; cr++) {
+      for (let cc = 0; cc < 32; cc++) {
+        const key = cellMethodMap[cr * 32 + cc];
+        if (key !== defaultKey && dataResults[key]) {
+          const attrAddr = bmpSize + cr * 32 + cc;
+          output[attrAddr] = dataResults[key][attrAddr];
+          output[frameSize + attrAddr] = dataResults[key][frameSize + attrAddr];
+        }
+      }
+    }
+    return { data: output, palette: results[defaultKey].palette };
+  }
+
   // Handle gigascreen variants
   if (format === 'gigascreen' || format === 'mg8' || format === 'mg4' || format === 'mg2' || format === 'mg1') {
     const cellH = format === 'mg4' ? 4 : format === 'mg2' ? 2 : format === 'mg1' ? 1 : 8;
@@ -12493,6 +14006,80 @@ function convertWithDitherRegions(format, sourceCanvas, dithering, adjustArgs) {
       }
     }
     // Palette bytes (6912..6975) are same across all passes — already set from default
+    return { data: output, palette: results[defaultKey].palette };
+  }
+
+  // GAP / GAP Dual format: two-frame gigaattr layout (13824 bytes) + palette
+  // convertToGapUlaPlus returns { data (13824), palette (64) }
+  // convertToGapDualUlaPlus returns { data (13824), palette (128) }
+  if (format === 'gap' || format === 'gap_dual') {
+    const gapConverter = format === 'gap_dual' ? convertToGapDualUlaPlus : convertToGapUlaPlus;
+    const cellMethodMap = buildCellMethodMap(32, 24, 8, 8, defaultKey);
+    const uniqueKeys = new Set();
+    for (const k of cellMethodMap) uniqueKeys.add(k);
+    const monoOutput = adjustArgs[adjustArgs.length - 1];
+    const adjWithoutMono = adjustArgs.slice(0, -1);
+    const gapExtraArgs = [...adjWithoutMono, importUlaPlusPalette, monoOutput];
+    const results = {};
+    for (const key of uniqueKeys) {
+      results[key] = runConvertWithStrength(key, gapConverter, sourceCanvas, gapExtraArgs);
+    }
+    if (uniqueKeys.size === 1 && uniqueKeys.has(defaultKey)) {
+      return results[defaultKey];
+    }
+    // Composite .data arrays at cell level — two frames, each 6912 bytes
+    const frameSize = 6912;
+    const dataResults = {};
+    for (const key of uniqueKeys) {
+      dataResults[key] = results[key].data;
+    }
+    const output = new Uint8Array(dataResults[defaultKey].length);
+    output.set(dataResults[defaultKey]);
+    // Attr compositing (both frames)
+    for (let cr = 0; cr < 24; cr++) {
+      for (let cc = 0; cc < 32; cc++) {
+        const key = cellMethodMap[cr * 32 + cc];
+        if (key !== defaultKey && dataResults[key]) {
+          const attrAddr = 6144 + cr * 32 + cc;
+          output[attrAddr] = dataResults[key][attrAddr];
+          output[frameSize + attrAddr] = dataResults[key][frameSize + attrAddr];
+        }
+      }
+    }
+    // Bitmap compositing (pixel-level, both frames share same bitmap in gigaattr)
+    for (let y = 0; y < 192; y++) {
+      if (y >= ditherRegionHeight) continue;
+      for (let byteCol = 0; byteCol < 32; byteCol++) {
+        const x0 = byteCol * 8;
+        let hasRegion = false;
+        for (let bit = 0; bit < 8; bit++) {
+          if (x0 + bit < ditherRegionWidth && ditherRegionMask[y * ditherRegionWidth + x0 + bit] > 0) {
+            hasRegion = true; break;
+          }
+        }
+        if (!hasRegion) continue;
+        const third = Math.floor(y / 64);
+        const line = y & 7;
+        const charRow = (y >> 3) & 7;
+        const addr = third * 2048 + line * 256 + charRow * 32 + byteCol;
+        let outputByte = 0;
+        for (let bit = 0; bit < 8; bit++) {
+          const px = x0 + bit;
+          const bitMask = 0x80 >> bit;
+          let srcData = dataResults[defaultKey];
+          if (px < ditherRegionWidth) {
+            const reg = ditherRegionMask[y * ditherRegionWidth + px];
+            if (reg > 0 && reg <= 3) {
+              const k = getRegionDitherKey(reg - 1);
+              if (dataResults[k]) srcData = dataResults[k];
+            }
+          }
+          outputByte |= srcData[addr] & bitMask;
+        }
+        output[addr] = outputByte;
+        output[frameSize + addr] = outputByte; // shared bitmap
+      }
+    }
     return { data: output, palette: results[defaultKey].palette };
   }
 
@@ -12708,6 +14295,31 @@ function renderFormatToCanvas(format, ditherMethod, targetCanvas, zoom, params) 
     renderBmc4ToCanvas(convertToBmc4(importSourceCanvasBsc, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom);
   } else if (format === 'rgb3') {
     renderRgb3ToCanvas(convertToRgb3(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom);
+  } else if (format === 'gigaattr') {
+    // Gigaattr: dedicated converter — 2 blended colors per cell, shared bitmap
+    renderGigascreenToCanvas(convertToGigaattr(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), targetCanvas, zoom, 8);
+  } else if (format === 'gap') {
+    // GAP: gigaattr algorithm with ULA+ palette — shared bitmap, 2 blended colors per cell
+    const r = convertToGapUlaPlus(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette, monoOutput);
+    renderGapToCanvas(r.data, r.palette, targetCanvas, zoom);
+  } else if (format === 'gap_dual') {
+    // GAP Dual: two independent ULA+ palettes — shared bitmap, 2 blended colors per cell
+    const r = convertToGapDualUlaPlus(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette, monoOutput);
+    renderGapToCanvas(r.data, r.palette, targetCanvas, zoom);
+  } else if (format === 'gigaattr_pat') {
+    // GA Pattern: same algorithm as HLR — pattern-based cell matching against 16 ZX colors
+    const gaPattern = getSelectedImportGaPattern();
+    renderGigascreenToCanvas(convertToGaPattern(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, gaPattern, monoOutput), targetCanvas, zoom, 8);
+  } else if (format === 'gap_pat') {
+    // GAP Pattern: pattern-based cell matching with ULA+ palette colors
+    const gaPattern = getSelectedImportGaPattern();
+    const r = convertToGapPattern(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette, gaPattern, monoOutput);
+    renderGapToCanvas(r.data, r.palette, targetCanvas, zoom);
+  } else if (format === 'gap_dual_pat') {
+    // GAP Dual Pattern: pattern-based cell matching with dual ULA+ palettes
+    const gaPattern = getSelectedImportGaPattern();
+    const r = convertToGapDualPattern(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette, gaPattern, monoOutput);
+    renderGapToCanvas(r.data, r.palette, targetCanvas, zoom);
   } else if (format === 'gigascreen' || format === 'mg8' || format === 'mg4' || format === 'mg2' || format === 'mg1') {
     const cellH = format === 'mg4' ? 4 : format === 'mg2' ? 2 : format === 'mg1' ? 1 : 8;
     renderGigascreenToCanvas(convertToGigascreen(importSourceCanvas, ditherMethod, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, cellH, monoOutput), targetCanvas, zoom, cellH);
@@ -14091,6 +15703,9 @@ function initImageImport() {
   // ZXP palette type selector
   importElements.zxpPaletteTypeRow = document.getElementById('importZxpPaletteTypeRow');
   importElements.zxpPaletteType = /** @type {HTMLSelectElement} */ (document.getElementById('importZxpPaletteType'));
+  // GA/GAP pattern fill pattern selector
+  importElements.gaPatternRow = document.getElementById('importGaPatternRow');
+  importElements.gaPattern = /** @type {HTMLSelectElement} */ (document.getElementById('importGaPattern'));
   // HLR fill pattern selector
   importElements.hlrPatternRow = document.getElementById('importHlrPatternRow');
   importElements.hlrPattern = /** @type {HTMLSelectElement} */ (document.getElementById('importHlrPattern'));
@@ -14288,6 +15903,30 @@ function initImageImport() {
     } else if (format === 'rgb3') {
       const rgb3Data = convertToRgb3(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderRgb3ToCanvas(rgb3Data, targetCanvas, currentZoom);
+    } else if (format === 'gigaattr') {
+      // Gigaattr: dedicated converter — 2 blended colors per cell, shared bitmap
+      const gaData = convertToGigaattr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      renderGigascreenToCanvas(gaData, targetCanvas, currentZoom, 8);
+    } else if (format === 'gap') {
+      // GAP: gigaattr algorithm with ULA+ palette — shared bitmap, 2 blended colors per cell
+      const r = convertToGapUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette, monoOutput);
+      renderGapToCanvas(r.data, r.palette, targetCanvas, currentZoom);
+    } else if (format === 'gap_dual') {
+      // GAP Dual: two independent ULA+ palettes — shared bitmap, 2 blended colors per cell
+      const r = convertToGapDualUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette, monoOutput);
+      renderGapToCanvas(r.data, r.palette, targetCanvas, currentZoom);
+    } else if (format === 'gigaattr_pat') {
+      const gaPattern = getSelectedImportGaPattern();
+      const gaPatData = convertToGaPattern(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, gaPattern, monoOutput);
+      renderGigascreenToCanvas(gaPatData, targetCanvas, currentZoom, 8);
+    } else if (format === 'gap_pat') {
+      const gaPattern = getSelectedImportGaPattern();
+      const r = convertToGapPattern(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette, gaPattern, monoOutput);
+      renderGapToCanvas(r.data, r.palette, targetCanvas, currentZoom);
+    } else if (format === 'gap_dual_pat') {
+      const gaPattern = getSelectedImportGaPattern();
+      const r = convertToGapDualPattern(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette, gaPattern, monoOutput);
+      renderGapToCanvas(r.data, r.palette, targetCanvas, currentZoom);
     } else if (format === 'gigascreen' || format === 'mg8' || format === 'mg4' || format === 'mg2' || format === 'mg1') {
       const cellH = format === 'mg4' ? 4 : format === 'mg2' ? 2 : format === 'mg1' ? 1 : 8;
       const gigaData = convertToGigascreen(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, cellH, monoOutput);
@@ -14907,7 +16546,7 @@ function initImageImport() {
   const ditherRegionSection = document.getElementById('importDitherRegionsSection');
   const updateDitherRegionVisibility = () => {
     const fmt = formatSelect?.value || 'scr';
-    const hide = fmt === '53c' || fmt === 'hlr' || fmt === 'stl' || fmt === 'specscii';
+    const hide = fmt === '53c' || fmt === 'hlr' || fmt === 'stl' || fmt === 'specscii' || fmt === 'gigaattr_pat' || fmt === 'gap_pat' || fmt === 'gap_dual_pat';
     if (ditherRegionSection) ditherRegionSection.style.display = hide ? 'none' : '';
   };
   updateDitherRegionVisibility();
@@ -14923,6 +16562,10 @@ function initImageImport() {
     if (patternRow) {
       patternRow.style.display = format === '53c' ? 'flex' : 'none';
     }
+    if (importElements.gaPatternRow) {
+      const isGaPat = format === 'gigaattr_pat' || format === 'gap_pat' || format === 'gap_dual_pat';
+      importElements.gaPatternRow.style.display = isGaPat ? 'flex' : 'none';
+    }
     if (importElements.hlrPatternRow) {
       importElements.hlrPatternRow.style.display = format === 'hlr' ? 'flex' : 'none';
     }
@@ -14932,12 +16575,13 @@ function initImageImport() {
     if (importElements.specsciiCharsetRow) {
       importElements.specsciiCharsetRow.style.display = format === 'specscii' ? 'flex' : 'none';
     }
+    const isGaPatFormat = format === 'gigaattr_pat' || format === 'gap_pat' || format === 'gap_dual_pat';
     const ditheringRow = document.getElementById('importDitheringRow');
     if (ditheringRow) {
-      ditheringRow.style.display = (format === '53c' || format === 'hlr' || format === 'stl' || format === 'specscii') ? 'none' : 'flex';
+      ditheringRow.style.display = (format === '53c' || format === 'hlr' || format === 'stl' || format === 'specscii' || isGaPatFormat) ? 'none' : 'flex';
     }
     const cellGroup = document.getElementById('importDitherCellGroup');
-    const noCellFormats = format === 'rgb3' || format === 'mono' || format === 'mono_2_3' || format === 'mono_1_3' || format === 'chunks4x4' || format === 'chunks4x2' || format === 'hlr' || format === 'stl' || format === 'specscii' || format === 'nxi' || format === 'nxi320' || format === 'nxi640' || format === 'sl2' || format === 'sl2_320' || format === 'sl2_640' || format === 'lores' || format === 'lores_rad' || format === 'gmx160';
+    const noCellFormats = format === 'rgb3' || format === 'mono' || format === 'mono_2_3' || format === 'mono_1_3' || format === 'chunks4x4' || format === 'chunks4x2' || format === 'hlr' || format === 'stl' || format === 'specscii' || format === 'nxi' || format === 'nxi320' || format === 'nxi640' || format === 'sl2' || format === 'sl2_320' || format === 'sl2_640' || format === 'lores' || format === 'lores_rad' || format === 'gmx160' || isGaPatFormat;
     if (cellGroup) {
       cellGroup.style.display = noCellFormats ? 'none' : '';
     }
@@ -14951,7 +16595,7 @@ function initImageImport() {
     if (importElements.zxpPaletteTypeRow) {
       importElements.zxpPaletteTypeRow.style.display = format === 'zxp' ? 'flex' : 'none';
     }
-    const showUlaPlusRow = format === 'ulaplus' || format === 'mlt_ula' || zxpUlaPlus;
+    const showUlaPlusRow = format === 'ulaplus' || format === 'mlt_ula' || zxpUlaPlus || format === 'gap_pat' || format === 'gap_dual_pat';
     if (importElements.ulaPlusPaletteRow) {
       importElements.ulaPlusPaletteRow.style.display = showUlaPlusRow ? 'flex' : 'none';
     }
@@ -14970,7 +16614,7 @@ function initImageImport() {
       importElements.zoom.value = '1';
       importZoom = 1;
     }
-    if (format !== 'ulaplus' && format !== 'mlt_ula' && !zxpUlaPlus) {
+    if (format !== 'ulaplus' && format !== 'mlt_ula' && !zxpUlaPlus && format !== 'gap_pat' && format !== 'gap_dual_pat') {
       applyImportPalette(importElements.palette?.value || importPaletteId || 'default');
       importUlaPlusPalette = null;
       lastImportUlaPlusAutoPalette = null;
@@ -15048,6 +16692,7 @@ function initImageImport() {
   });
   importElements.pattern53cHex?.addEventListener('change', updatePreview);
   importElements.pattern53cDiffusion?.addEventListener('change', updatePreview);
+  importElements.gaPattern?.addEventListener('change', updatePreview);
   importElements.hlrPattern?.addEventListener('change', updatePreview);
   importElements.chrMode?.addEventListener('change', updatePreview);
   importElements.specsciiCharset?.addEventListener('change', updatePreview);
@@ -16204,9 +17849,15 @@ function initImageImport() {
     let outputFormat;
     let fileExt;
     let chrIsGigascreen = false;
-    // Deferred ULA+ state: set AFTER addPicture() saves the previous picture
+    // Deferred ULA+ state: applied AFTER addPicture() so the new picture gets the correct palette
     let deferredUlaPlusPalette = null;
     let deferredIsUlaPlusMode = false;
+
+    // Save current picture state BEFORE resetting ULA+, so the active
+    // picture keeps its palette (resetUlaPlusMode clears the globals).
+    if (typeof saveCurrentPictureState === 'function') {
+      saveCurrentPictureState();
+    }
 
     // Reset ULA+ state — formats that need it will re-enable below
     if (typeof resetUlaPlusMode === 'function') {
@@ -16267,10 +17918,56 @@ function initImageImport() {
       outputData = regionImportResult || convertToRgb3(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       outputFormat = FORMAT.RGB3;
       fileExt = '.3';
+    } else if (format === 'gigaattr') {
+      // Gigaattr: dedicated converter — 2 blended colors per cell, shared bitmap
+      outputData = regionImportResult || convertToGigaattr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
+      outputFormat = FORMAT.GIGASCREEN;
+      fileExt = '.ga';
+    } else if (format === 'gap') {
+      // GAP: gigaattr algorithm with ULA+ palette — shared bitmap, 2 blended colors per cell
+      // Both regionImportResult and convertToGapUlaPlus return { data, palette }
+      const result = regionImportResult || convertToGapUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette, monoOutput);
+      outputData = result.data;
+      outputFormat = FORMAT.GIGASCREEN;
+      fileExt = '.gap';
+      deferredUlaPlusPalette = result.palette;
+      deferredIsUlaPlusMode = true;
+    } else if (format === 'gap_dual') {
+      // GAP Dual: two independent ULA+ palettes — shared bitmap, 2 blended colors per cell
+      const result = regionImportResult || convertToGapDualUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette, monoOutput);
+      outputData = result.data;
+      outputFormat = FORMAT.GIGASCREEN;
+      fileExt = '.gap';
+      deferredUlaPlusPalette = result.palette;
+      deferredIsUlaPlusMode = true;
+    } else if (format === 'gigaattr_pat') {
+      // GA Pattern: pattern-based cell matching against 16 ZX colors
+      const gaPattern = getSelectedImportGaPattern();
+      outputData = convertToGaPattern(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, gaPattern, monoOutput);
+      outputFormat = FORMAT.GIGASCREEN;
+      fileExt = '.ga';
+    } else if (format === 'gap_pat') {
+      // GAP Pattern: pattern-based cell matching with ULA+ palette
+      const gaPattern = getSelectedImportGaPattern();
+      const result = convertToGapPattern(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette, gaPattern, monoOutput);
+      outputData = result.data;
+      outputFormat = FORMAT.GIGASCREEN;
+      fileExt = '.gap';
+      deferredUlaPlusPalette = result.palette;
+      deferredIsUlaPlusMode = true;
+    } else if (format === 'gap_dual_pat') {
+      // GAP Dual Pattern: pattern-based cell matching with dual ULA+ palettes
+      const gaPattern = getSelectedImportGaPattern();
+      const result = convertToGapDualPattern(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette, gaPattern, monoOutput);
+      outputData = result.data;
+      outputFormat = FORMAT.GIGASCREEN;
+      fileExt = '.gap';
+      deferredUlaPlusPalette = result.palette;
+      deferredIsUlaPlusMode = true;
     } else if (format === 'gigascreen' || format === 'mg8' || format === 'mg4' || format === 'mg2' || format === 'mg1') {
       const cellH = format === 'mg4' ? 4 : format === 'mg2' ? 2 : format === 'mg1' ? 1 : 8;
       outputData = regionImportResult || convertToGigascreen(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, cellH, monoOutput);
-      outputFormat = (format === 'gigascreen') ? FORMAT.GIGASCREEN : FORMAT.MGH;
+      outputFormat = format === 'gigascreen' ? FORMAT.GIGASCREEN : FORMAT.MGH;
       fileExt = format === 'gigascreen' ? '.img' : '.' + format;
     } else if (format === 'hlr') {
       const hlrPattern = getSelectedImportHlrPattern();
@@ -16497,6 +18194,36 @@ function initImageImport() {
       if (typeof generateGigascreenVirtualPalette === 'function') {
         generateGigascreenVirtualPalette();
       }
+      // Re-tag as Gigaattr if that was the user's chosen format
+      if (format === 'gigaattr' && newInternalPicture) {
+        newInternalPicture.sourceFormat = 'ga';
+        outputFormat = FORMAT.GIGAATTR;
+      }
+      // GAP / GAP Dual: re-tag and attach optimized ULA+ palette
+      if ((format === 'gap' || format === 'gap_dual') && newInternalPicture) {
+        newInternalPicture.sourceFormat = 'gap';
+        newInternalPicture.palette = deferredUlaPlusPalette ? new Uint8Array(deferredUlaPlusPalette) : generateDefaultUlaPlusPalette();
+        outputFormat = FORMAT.GIGAATTR_PLUS;
+      }
+      // GA Pattern: re-tag with pattern contentMode and attach pattern bytes
+      if (format === 'gigaattr_pat' && newInternalPicture) {
+        newInternalPicture.sourceFormat = 'ga';
+        newInternalPicture.contentMode = 'pattern';
+        if (outputData && outputData.hlrPattern) {
+          newInternalPicture.pattern = new Uint8Array(outputData.hlrPattern);
+        }
+        outputFormat = FORMAT.GIGAATTR;
+      }
+      // GAP Pattern / GAP Dual Pattern: re-tag and set pattern mode
+      if ((format === 'gap_pat' || format === 'gap_dual_pat') && newInternalPicture) {
+        newInternalPicture.sourceFormat = 'gap';
+        newInternalPicture.contentMode = 'pattern';
+        newInternalPicture.palette = deferredUlaPlusPalette ? new Uint8Array(deferredUlaPlusPalette) : generateDefaultUlaPlusPalette();
+        if (outputData && outputData.hlrPattern) {
+          newInternalPicture.pattern = new Uint8Array(outputData.hlrPattern);
+        }
+        outputFormat = FORMAT.GIGAATTR_PLUS;
+      }
     }
 
     // Create internal picture for STL (2-plane gigascreen, 8x4 attrs, fixed 0x0F bitmap)
@@ -16582,7 +18309,7 @@ function initImageImport() {
 
     // Use multi-picture system if available
     if (typeof addPicture === 'function') {
-      const result = addPicture(newFileName, outputFormat, outputData, newInternalPicture);
+      const result = addPicture(newFileName, outputFormat, outputData, newInternalPicture, true);
       if (result < 0) {
         // Max pictures reached - still update globals for direct use
         screenData = outputData;
@@ -16618,8 +18345,16 @@ function initImageImport() {
 
     // Apply deferred ULA+ state now that addPicture() has saved previous picture
     if (deferredIsUlaPlusMode && deferredUlaPlusPalette) {
-      ulaPlusPalette = deferredUlaPlusPalette;
       isUlaPlusMode = true;
+      if (deferredUlaPlusPalette.length >= 128) {
+        // Dual palette (GAP Dual): split into primary and secondary
+        ulaPlusPalette = deferredUlaPlusPalette.slice(0, 64);
+        ulaPlusPalette2 = deferredUlaPlusPalette.slice(64, 128);
+      } else {
+        // Shared palette (GAP): single 64-byte palette, clear dual reference
+        ulaPlusPalette = deferredUlaPlusPalette;
+        ulaPlusPalette2 = null;
+      }
       if (typeof resetUlaPlusColors === 'function') {
         resetUlaPlusColors();
       }
@@ -16627,6 +18362,7 @@ function initImageImport() {
       if (typeof openPictures !== 'undefined' && typeof activePictureIndex !== 'undefined' &&
           activePictureIndex >= 0 && activePictureIndex < openPictures.length) {
         openPictures[activePictureIndex].ulaPlusPalette = ulaPlusPalette.slice();
+        openPictures[activePictureIndex].ulaPlusPalette2 = ulaPlusPalette2 ? ulaPlusPalette2.slice() : null;
       }
     }
 
@@ -17138,6 +18874,44 @@ function openImportDialog(file) {
     } else if ((format === 'btile' || format === 'wtile') && importSourceCanvasZxp) {
       const tileData = convertToNirvanaTile(importSourceCanvasZxp, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderZxpToCanvas(tileData, importPreviewCanvas, effectiveZoom, importSourceCanvasZxp.width, importSourceCanvasZxp.height, 2);
+    } else if (format === 'gigaattr') {
+      renderGigascreenToCanvas(convertToGigaattr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), importPreviewCanvas, effectiveZoom, 8);
+    } else if (format === 'gap') {
+      const r = convertToGapUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette, monoOutput);
+      renderGapToCanvas(r.data, r.palette, importPreviewCanvas, effectiveZoom);
+    } else if (format === 'gap_dual') {
+      const r = convertToGapDualUlaPlus(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette, monoOutput);
+      renderGapToCanvas(r.data, r.palette, importPreviewCanvas, effectiveZoom);
+    } else if (format === 'gigaattr_pat') {
+      const gaPattern = getSelectedImportGaPattern();
+      renderGigascreenToCanvas(convertToGaPattern(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, gaPattern, monoOutput), importPreviewCanvas, effectiveZoom, 8);
+    } else if (format === 'gap_pat') {
+      const gaPattern = getSelectedImportGaPattern();
+      const r = convertToGapPattern(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette, gaPattern, monoOutput);
+      renderGapToCanvas(r.data, r.palette, importPreviewCanvas, effectiveZoom);
+    } else if (format === 'gap_dual_pat') {
+      const gaPattern = getSelectedImportGaPattern();
+      const r = convertToGapDualPattern(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, importUlaPlusPalette, gaPattern, monoOutput);
+      renderGapToCanvas(r.data, r.palette, importPreviewCanvas, effectiveZoom);
+    } else if (format === 'gigascreen' || format === 'mg8' || format === 'mg4' || format === 'mg2' || format === 'mg1') {
+      const cellH = format === 'mg4' ? 4 : format === 'mg2' ? 2 : format === 'mg1' ? 1 : 8;
+      renderGigascreenToCanvas(convertToGigascreen(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, cellH, monoOutput), importPreviewCanvas, effectiveZoom, cellH);
+    } else if (format === 'nxi') {
+      renderNxiToCanvas(convertToNxi(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), importPreviewCanvas, effectiveZoom, false);
+    } else if (format === 'nxi320') {
+      renderNxi320ToCanvas(convertToNxi320(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), importPreviewCanvas, effectiveZoom, false);
+    } else if (format === 'nxi640') {
+      renderNxi640ToCanvas(convertToNxi640(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), importPreviewCanvas, effectiveZoom, false);
+    } else if (format === 'sl2') {
+      renderNxiToCanvas(convertToSl2(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), importPreviewCanvas, effectiveZoom, true);
+    } else if (format === 'sl2_320') {
+      renderNxi320ToCanvas(convertToSl2_320(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), importPreviewCanvas, effectiveZoom, true);
+    } else if (format === 'sl2_640') {
+      renderNxi640ToCanvas(convertToSl2_640(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), importPreviewCanvas, effectiveZoom, true);
+    } else if (format === 'lores') {
+      renderLoresToCanvas(convertToLores(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), importPreviewCanvas, effectiveZoom);
+    } else if (format === 'lores_rad') {
+      renderLoresRadToCanvas(convertToLoresRad(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput), importPreviewCanvas, effectiveZoom);
     } else {
       const scrData = convertToScr(importSourceCanvas, dithering, brightness, contrast, saturation, gamma, grayscale, sharpness, smoothing, blackPoint, whitePoint, balanceR, balanceG, balanceB, monoOutput);
       renderScrToCanvas(scrData, importPreviewCanvas, effectiveZoom);

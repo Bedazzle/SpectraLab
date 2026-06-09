@@ -694,6 +694,108 @@ With two frames, the theoretical maximum is 15 x 15 = 225 color combinations per
 
 ---
 
+### Gigaattr -- 7680 bytes
+
+A compact gigascreen variant where both frames share a single bitmap but have independent attribute sets. Instead of storing two full SCR frames (2 × 6912 = 13824 bytes), only one bitmap is stored along with two attribute blocks, halving the bitmap cost.
+
+```
+Offset  Size   Content
+0       6144   Bitmap (ZX-interleaved, shared between both frames)
+6144    768    Attributes frame 1
+6912    768    Attributes frame 2
+```
+
+- File extension: `.ga` (7680 bytes for bitmap mode, 1546 bytes for pattern mode)
+- On real hardware, the display alternates between attribute set 1 and attribute set 2 every frame at 50 Hz, while the bitmap remains constant
+- The viewer only needs to copy the bitmap once, then alternate attributes each frame using LDIR — making it 48K compatible without bank switching
+
+**Color model**: Because both frames share the same bitmap, each pixel is either SET or CLEAR in both frames simultaneously. A SET pixel shows the blend of ink1 and ink2; a CLEAR pixel shows the blend of paper1 and paper2. This gives **2 blended colors per cell** (compared to 4 in standard Gigascreen where each frame can have a different bitmap pattern).
+
+The theoretical palette is 136 unique blended colors: all combinations C(16,2) + 16 identity pairs = 120 + 16 = 136 distinct averaged colors from the 16 ZX Spectrum colors.
+
+**Comparison with standard Gigascreen**:
+- Gigascreen (.img): 13824 bytes, independent bitmaps, 4 colors per cell, requires 128K bank switching for flicker-free display
+- Gigaattr (.ga): 7680 bytes, shared bitmap, 2 colors per cell, runs on 48K with simple LDIR attribute copy
+
+#### Gigaattr pattern variant -- 1546 bytes
+
+A compact variant that replaces the full 6144-byte bitmap with an 8-byte fill pattern tile (same concept as HLR). The pattern is replicated to fill the full bitmap area; each 8x8 cell ends up with the same bit pattern dividing it into ink and paper regions.
+
+```
+Offset  Size   Content
+0       8      Fill pattern (8 bytes, one byte per row of the 8x8 tile)
+8       1      Border color 1 (frame 1, bits 0-2)
+9       1      Border color 2 (frame 2, bits 0-2)
+10      768    Attributes frame 1
+778     768    Attributes frame 2
+```
+
+Detected by file size (1546 bytes) with `.ga` extension. The same fill pattern presets as HLR apply (top-bottom, left-right, checker, stripes, diagonal, etc.).
+
+---
+
+### Gigaattr+ULA+ (GAP) -- 7744 or 7808 bytes
+
+Extends Gigaattr with a ULA+ 64-color palette appended after the attribute data. The bitmap and attribute layout is identical to Gigaattr; the palette replaces the standard 16 ZX colors with 64 ULA+ colors (GRB332 encoding, 1 byte per entry).
+
+Two variants based on file size:
+
+**Shared palette (7744 bytes)**:
+```
+Offset  Size   Content
+0       6144   Bitmap (ZX-interleaved, shared between both frames)
+6144    768    Attributes frame 1
+6912    768    Attributes frame 2
+7680    64     ULA+ palette (GRB332, shared by both frames)
+```
+
+**Dual palette (7808 bytes)**:
+```
+Offset  Size   Content
+0       6144   Bitmap (ZX-interleaved, shared between both frames)
+6144    768    Attributes frame 1
+6912    768    Attributes frame 2
+7680    64     ULA+ palette 1 (GRB332, used by frame 1)
+7744    64     ULA+ palette 2 (GRB332, used by frame 2)
+```
+
+- File extension: `.gap`
+- Shared palette: both frames use the same 64-color palette — program palette once, then alternate attributes
+- Dual palette: each frame has its own independent 64-color palette — reprogram the full palette each frame before displaying its attributes
+- Attribute byte interpretation follows ULA+ CLUT mapping: bits 7-6 select one of 4 CLUTs (16 entries each), bits 2-0 select ink within the CLUT, bits 5-3 select paper within the CLUT
+- On real hardware, the viewer programs the ULA+ palette registers (`$BF3B` group/index, `$FF3B` data), then alternates attributes each frame as with Gigaattr. For dual palette, the palette must be reprogrammed before each frame's attributes are displayed
+
+#### GAP pattern variants -- 1610 or 1674 bytes
+
+Pattern-based variants of GAP, combining the Gigaattr pattern layout with appended ULA+ palette(s).
+
+**Shared pattern (1610 bytes)**:
+```
+Offset  Size   Content
+0       8      Fill pattern (8 bytes)
+8       1      Border color 1 (frame 1, bits 0-2)
+9       1      Border color 2 (frame 2, bits 0-2)
+10      768    Attributes frame 1
+778     768    Attributes frame 2
+1546    64     ULA+ palette (GRB332, shared by both frames)
+```
+
+**Dual pattern (1674 bytes)**:
+```
+Offset  Size   Content
+0       8      Fill pattern (8 bytes)
+8       1      Border color 1 (frame 1, bits 0-2)
+9       1      Border color 2 (frame 2, bits 0-2)
+10      768    Attributes frame 1
+778     768    Attributes frame 2
+1546    64     ULA+ palette 1 (GRB332, used by frame 1)
+1610    64     ULA+ palette 2 (GRB332, used by frame 2)
+```
+
+Detected by file size (1610 or 1674 bytes) with `.gap` extension.
+
+---
+
 ### MGH / Multiartist (Multicolor Gigascreen) -- variable size
 
 Two-frame gigascreen format with multicolor attributes, created by the Multiartist editor. Each file contains a 256-byte header, two SCR-interleaved bitmaps, and attribute data whose size depends on the attribute cell height (mode). Four modes are defined: mg8 (8x8), mg4 (8x4), mg2 (8x2), and mg1 (8x1 with split inner/outer regions).
@@ -2088,6 +2190,9 @@ Quick-reference table for identifying formats by file size when no file extensio
 | 6144         | Mono / RAD   | Monochrome full screen / Next LoRes Radastan 128×96 (ambiguous) |
 | 6160         | RAD          | LoRes Radastan + 16-byte GRB332 palette (ZX-Uno) |
 | 6912         | SCR          | Standard screen                    |
+| 7680         | Gigaattr     | Shared bitmap + 2×attrs            |
+| 7744         | GAP (shared) | Gigaattr + ULA+ palette (1×64)     |
+| 7808         | GAP (dual)   | Gigaattr + ULA+ palette (2×64)     |
 | 6976         | ULA+         | SCR + 64-byte palette              |
 | 6945–7426    | ULANext      | SCR + ink mask + palette (variable) |
 | 9216         | IFL          | 8 x 2 multicolor                  |
@@ -2114,19 +2219,21 @@ Quick-reference table for identifying formats by file size when no file extensio
 
 ### Detection Priority
 
-1. Check file extension first (`.53c`, `.atr`, `.bsc`, `.ifl`, `.bmc4`, `.mlt`, `.mc`, `.3`, `.img`, `.mg1`, `.mg2`, `.mg4`, `.mg8`, `.hlr`, `.stl`, `.nxi`, `.sl2`, `.slr`, `.rad`, `.ch$`, `.chr$`, `.ch-`, `.specscii`, `.sca`, `.zxp`, `.c`)
+1. Check file extension first (`.53c`, `.atr`, `.bsc`, `.ifl`, `.bmc4`, `.mlt`, `.mc`, `.3`, `.img`, `.ga`, `.gap`, `.mg1`, `.mg2`, `.mg4`, `.mg8`, `.hlr`, `.stl`, `.nxi`, `.sl2`, `.slr`, `.rad`, `.ch$`, `.chr$`, `.ch-`, `.specscii`, `.sca`, `.zxp`, `.c`)
 2. For `.zxp` files, read as text and parse (see ZXP section)
 3. For `.img` files, verify size is exactly 13824 bytes
-4. For `.mg1`/`.mg2`/`.mg4`/`.mg8` files, verify `"MGH"` signature at offset 0
-5. For `.hlr` files, verify size is exactly 1628 bytes
-6. For `.stl` files, verify size is exactly 3072 bytes
-7. For `.nxi` files, verify size is 49664 (256×192), 82432 (320×256), or 81952 (640×256) bytes
-8. For `.sl2` files, verify size is 49152, 49280, or 81920 bytes
-9. For `.slr` files: if size is 6144 bytes → Radastan (4bpp); if 12288 bytes → standard LoRes (8bpp)
-10. For `.rad` files, detect as Radastan LoRes (extension-only; 6144 bytes expected)
-11. For `.c` files: if size is 16128 bytes and header is "GMX\x0F" → GMX 160×200; if size is 32768 bytes → GMX 640×200
-12. For `.ch$`/`.chr$`/`.ch-` files, verify `chr$` signature at offset 0
-13. Fall back to file size lookup from the table above
+4. For `.ga` files, verify size is exactly 7680 bytes
+5. For `.gap` files, verify size is 7744 (shared palette) or 7808 (dual palette) bytes
+6. For `.mg1`/`.mg2`/`.mg4`/`.mg8` files, verify `"MGH"` signature at offset 0
+7. For `.hlr` files, verify size is exactly 1628 bytes
+8. For `.stl` files, verify size is exactly 3072 bytes
+9. For `.nxi` files, verify size is 49664 (256×192), 82432 (320×256), or 81952 (640×256) bytes
+10. For `.sl2` files, verify size is 49152, 49280, or 81920 bytes
+11. For `.slr` files: if size is 6144 bytes → Radastan (4bpp); if 12288 bytes → standard LoRes (8bpp)
+12. For `.rad` files, detect as Radastan LoRes (extension-only; 6144 bytes expected)
+13. For `.c` files: if size is 16128 bytes and header is "GMX\x0F" → GMX 160×200; if size is 32768 bytes → GMX 640×200
+14. For `.ch$`/`.chr$`/`.ch-` files, verify `chr$` signature at offset 0
+15. Fall back to file size lookup from the table above
 
 ---
 

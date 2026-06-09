@@ -423,7 +423,9 @@ function initScreenViewerUI() {
   // Show/hide HLR-specific options based on selected format
   function updateHlrOptionsVisibility() {
     const hlrOpts = document.getElementById('newPictureHlrOptions');
-    if (hlrOpts) hlrOpts.style.display = (newPictureFormat && newPictureFormat.value === 'hlr') ? '' : 'none';
+    const fmt = newPictureFormat ? newPictureFormat.value : '';
+    const showPattern = fmt === 'hlr' || fmt === 'gigaattr_pat' || fmt === 'gap_pat' || fmt === 'gap_dual_pat';
+    if (hlrOpts) hlrOpts.style.display = showPattern ? '' : 'none';
   }
 
   newPictureFormat?.addEventListener('change', function() {
@@ -535,7 +537,7 @@ function initScreenViewerUI() {
         localStorage.setItem('spectraLabNewPictureWidth', String(w));
         localStorage.setItem('spectraLabNewPictureHeight', String(h));
         createNewPicture(format, { width: w, height: h });
-      } else if (format === 'hlr') {
+      } else if (format === 'hlr' || format === 'gigaattr_pat' || format === 'gap_pat' || format === 'gap_dual_pat') {
         // Resolve pattern: preset key (if known) or hex input (if custom/invalid)
         const presetKey = newPictureHlrPreset ? newPictureHlrPreset.value : 'top-bottom';
         let hlrPattern = null;
@@ -788,10 +790,12 @@ function initScreenViewerUI() {
       case '3':
       case '4':
       case '5':
-        // Quick zoom shortcuts
-        const newZoom = parseInt(event.key, 10);
-        zoomSelect.value = event.key;
-        setZoom(newZoom);
+        // Quick zoom shortcuts (skip if Alt held — Alt+1/2/3 used for gigascreen mode)
+        if (!event.altKey) {
+          const newZoom = parseInt(event.key, 10);
+          zoomSelect.value = event.key;
+          setZoom(newZoom);
+        }
         break;
 
       case ' ':

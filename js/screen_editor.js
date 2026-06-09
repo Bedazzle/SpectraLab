@@ -30,6 +30,8 @@ function getCSSVar(name, fallback) {
  */
 function isGigascreenEditable() {
   if (currentFormat === FORMAT.GIGASCREEN) return true;
+  if (currentFormat === FORMAT.GIGAATTR) return true;
+  if (currentFormat === FORMAT.GIGAATTR_PLUS) return true;
   // MGH: all modes (mg1/mg2/mg4/mg8) use interleaved layout in screenData
   if (currentFormat === FORMAT.MGH && currentPicture) {
     return true;
@@ -47,6 +49,17 @@ function isGigascreenEditable() {
     return true;
   }
   return false;
+}
+
+/**
+ * Returns true if the current picture is a pattern-based gigascreen format
+ * (GA/GAP pattern). These formats have a fixed bitmap determined by an 8-byte
+ * fill pattern and only allow attribute (color) changes, same as HLR.
+ * @returns {boolean}
+ */
+function isGigaPatternMode() {
+  return currentPicture && currentPicture.contentMode === 'pattern' &&
+    (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS);
 }
 
 /**
@@ -314,6 +327,9 @@ let ditherBrushVisited = new Set();
 // Gigascreen Editor State
 // ============================================================================
 
+/** @type {'combined'|'screen1'|'screen2'} - Gigascreen split-screen editing mode */
+let gigascreenEditMode = 'combined';
+
 /** @type {number} - Virtual ink color index into gigascreenVirtualPalette */
 let gigascreenVirtualInk = 0;
 
@@ -337,10 +353,16 @@ let gigascreenSecondaryColor = 3;
 /** @type {VirtualColor[]} - Virtual palette (136 unique color blends) */
 let gigascreenVirtualPalette = [];
 
+/** @type {number} - Active CLUT page (0-3) for dual ULA+ palette grid pagination */
+let gigascreenClutPage = 0;
+
 /** @type {string[]} - Full color names for virtual palette (16 colors) */
 const GIGASCREEN_COLOR_NAMES = [
   'Black', 'Blue', 'Red', 'Magenta', 'Green', 'Cyan', 'Yellow', 'White',
-  'Black+', 'Blue+', 'Red+', 'Magenta+', 'Green+', 'Cyan+', 'Yellow+', 'White+'
+  'Black+', 'Blue+', 'Red+', 'Magenta+', 'Green+', 'Cyan+', 'Yellow+', 'White+',
+  // CLUT 2-3 names (used only in ULA+ dual palette mode)
+  'C2:0', 'C2:1', 'C2:2', 'C2:3', 'C2:4', 'C2:5', 'C2:6', 'C2:7',
+  'C3:0', 'C3:1', 'C3:2', 'C3:3', 'C3:4', 'C3:5', 'C3:6', 'C3:7'
 ];
 
 /**
@@ -351,21 +373,50 @@ const GIGASCREEN_COLOR_NAMES = [
 function generateGigascreenVirtualPalette() {
   gigascreenVirtualPalette = [];
 
-  // Get RGB values for all 16 colors from current palette
-  const colors = [];
-  for (let i = 0; i < 8; i++) {
-    colors.push(ZX_PALETTE_RGB.REGULAR[i]);
-  }
-  for (let i = 0; i < 8; i++) {
-    colors.push(ZX_PALETTE_RGB.BRIGHT[i]);
+  // Get RGB values for base colors per frame.
+  // Standard: 16 base colors (8 regular + 8 bright) → 136 blended pairs.
+  // GAP dual palette: 32 base colors (all 4 CLUTs × 8 inks) → 528 blended pairs.
+  const frame1Colors = [];
+  const frame2Colors = [];
+  const isDualUlaPlus = currentFormat === FORMAT.GIGAATTR_PLUS && isUlaPlusMode && ulaPlusPalette2;
+
+  // Number of base colors: 32 for ULA+ dual palette, 16 otherwise
+  let baseColorCount;
+
+  if (isDualUlaPlus) {
+    baseColorCount = 32;
+    // Read inks from all 4 CLUTs of both palettes from currentPicture.palette (128 bytes)
+    // CLUT N inks = palette[N*16 + 0..7], for N=0,1,2,3
+    const dualPal = (currentPicture && currentPicture.palette && currentPicture.palette.length >= 128)
+      ? currentPicture.palette : null;
+    for (let clut = 0; clut < 4; clut++) {
+      const clutOffset = clut * 16;
+      for (let i = 0; i < 8; i++) {
+        const idx = clutOffset + i;
+        frame1Colors.push(grb332ToRgb(dualPal ? dualPal[idx] : ulaPlusPalette[idx]));
+        frame2Colors.push(grb332ToRgb(dualPal ? dualPal[64 + idx] : ulaPlusPalette2[idx]));
+      }
+    }
+  } else {
+    baseColorCount = 16;
+    for (let i = 0; i < 8; i++) {
+      frame1Colors.push(ZX_PALETTE_RGB.REGULAR[i]);
+      frame2Colors.push(ZX_PALETTE_RGB.REGULAR[i]);
+    }
+    for (let i = 0; i < 8; i++) {
+      frame1Colors.push(ZX_PALETTE_RGB.BRIGHT[i]);
+      frame2Colors.push(ZX_PALETTE_RGB.BRIGHT[i]);
+    }
   }
 
-  // Generate all unique blends (including solid colors where frame1 == frame2)
-  // Solid colors first (16), then blends (120) = 136 total
-  for (let c1 = 0; c1 < 16; c1++) {
-    for (let c2 = c1; c2 < 16; c2++) {
-      const rgb1 = colors[c1];
-      const rgb2 = colors[c2];
+  // Generate blended pairs.
+  // Standard: symmetric (c2 >= c1) since both frames share the same palette → 136 entries.
+  // Dual ULA+: asymmetric (all c1×c2) since palettes differ → 1024 entries.
+  for (let c1 = 0; c1 < baseColorCount; c1++) {
+    const c2Start = isDualUlaPlus ? 0 : c1;
+    for (let c2 = c2Start; c2 < baseColorCount; c2++) {
+      const rgb1 = frame1Colors[c1];
+      const rgb2 = frame2Colors[c2];
       const blendedRgb = [
         Math.round((rgb1[0] + rgb2[0]) / 2),
         Math.round((rgb1[1] + rgb2[1]) / 2),
@@ -374,9 +425,9 @@ function generateGigascreenVirtualPalette() {
 
       let name;
       if (c1 === c2) {
-        name = GIGASCREEN_COLOR_NAMES[c1];
+        name = GIGASCREEN_COLOR_NAMES[c1] || ('Color ' + c1);
       } else {
-        name = GIGASCREEN_COLOR_NAMES[c1] + ' + ' + GIGASCREEN_COLOR_NAMES[c2];
+        name = (GIGASCREEN_COLOR_NAMES[c1] || ('C' + c1)) + ' + ' + (GIGASCREEN_COLOR_NAMES[c2] || ('C' + c2));
       }
 
       gigascreenVirtualPalette.push({
@@ -386,6 +437,14 @@ function generateGigascreenVirtualPalette() {
         name: name
       });
     }
+  }
+
+  // Clamp selection indices when palette size changes (e.g. 528 → 2080 or back)
+  if (gigascreenVirtualInk >= gigascreenVirtualPalette.length) {
+    gigascreenVirtualInk = 0;
+  }
+  if (gigascreenVirtualPaper >= gigascreenVirtualPalette.length) {
+    gigascreenVirtualPaper = gigascreenVirtualPalette.length - 1;
   }
 }
 
@@ -711,6 +770,7 @@ function toggle53cColorPicker(show) {
  */
 function updateEditorColorPickers() {
   if (!editorActive) return;
+  updateGigascreenEditModeUI();
   const isNext = currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 || currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD;
   toggle53cColorPicker(currentFormat === FORMAT.ATTR_53C);
   toggleGigascreenColorPicker(isGigascreenEditable());
@@ -724,7 +784,18 @@ function updateEditorColorPickers() {
   if (currentFormat === FORMAT.ATTR_53C) build53cPalette();
   if (isGigascreenEditable()) {
     generateGigascreenVirtualPalette();
+    buildGigascreenPalette();
+    buildGigascreenPaperStrip();
     updateGigascreenColorPickerUI();
+  }
+  // GAP: show ULA+ palette grid (shared palette in all modes; dual palette in screen1/screen2)
+  if (currentFormat === FORMAT.GIGAATTR_PLUS && isUlaPlusMode && (!ulaPlusPalette2 || gigascreenEditMode !== 'combined')) {
+    const gapStd = document.getElementById('editorColorSection');
+    if (gapStd) gapStd.style.display = '';
+    updateUlaPlusSectionVisibility();
+    buildUlaPlusGrid();
+    buildUlaPlusClassic();
+    updateUlaPlusPalette();
   }
   if (currentFormat === FORMAT.RGB3) buildRgb3Palette();
   if (isNext) buildNxiPalette();
@@ -1187,22 +1258,39 @@ function getGigascreen4Colors() {
   const inkEntry = gigascreenVirtualPalette[gigascreenVirtualInk];
   const paperEntry = gigascreenVirtualPalette[gigascreenVirtualPaper];
 
-  // Get the frame colors
-  const ink1 = inkEntry.frame1Color;    // Frame 1 ink (0-15)
-  const ink2 = inkEntry.frame2Color;    // Frame 2 ink (0-15)
-  const paper1 = paperEntry.frame1Color; // Frame 1 paper (0-15)
-  const paper2 = paperEntry.frame2Color; // Frame 2 paper (0-15)
+  // Get the frame colors (base color indices: 0-31 ULA+ dual, 0-15 standard)
+  const ink1 = inkEntry.frame1Color;
+  const ink2 = inkEntry.frame2Color;
+  const paper1 = paperEntry.frame1Color;
+  const paper2 = paperEntry.frame2Color;
 
-  // Get RGB values for all colors
-  const getColorRgb = (colorIdx) => {
+  // Get RGB values — shows what the HARDWARE will display for set/clear pixels.
+  // ink position:  palette[CLUT*16 + sub]      (set pixels)
+  // paper position: palette[CLUT*16 + 8 + sub]  (clear pixels)
+  const isDualUla = currentFormat === FORMAT.GIGAATTR_PLUS && isUlaPlusMode && ulaPlusPalette2;
+  const dualPal4c = isDualUla && currentPicture && currentPicture.palette && currentPicture.palette.length >= 128
+    ? currentPicture.palette : null;
+  /**
+   * @param {number} colorIdx - Base color index (0-31 for ULA+ dual, 0-15 standard)
+   * @param {number} frame - 0=frame1, 1=frame2
+   * @param {boolean} isPaper - true to read paper palette entry, false for ink
+   */
+  const getColorRgb = (colorIdx, frame, isPaper) => {
+    if (dualPal4c) {
+      // ULA+ dual palette: base index 0-31, CLUT = index >> 3, sub = index & 7
+      const clut = colorIdx >> 3;  // 0-3
+      const sub = colorIdx & 7;    // 0-7
+      const palIdx = clut * 16 + (isPaper ? 8 : 0) + sub;
+      return grb332ToRgb(dualPal4c[(frame === 1 ? 64 : 0) + palIdx]);
+    }
     if (colorIdx < 8) return ZX_PALETTE_RGB.REGULAR[colorIdx];
     return ZX_PALETTE_RGB.BRIGHT[colorIdx - 8];
   };
 
-  const ink1Rgb = getColorRgb(ink1);
-  const ink2Rgb = getColorRgb(ink2);
-  const paper1Rgb = getColorRgb(paper1);
-  const paper2Rgb = getColorRgb(paper2);
+  const ink1Rgb = getColorRgb(ink1, 0, false);
+  const ink2Rgb = getColorRgb(ink2, 1, false);
+  const paper1Rgb = getColorRgb(paper1, 0, true);
+  const paper2Rgb = getColorRgb(paper2, 1, true);
 
   // Calculate the 4 blended colors
   const blend = (rgb1, rgb2) => [
@@ -1220,9 +1308,11 @@ function getGigascreen4Colors() {
 }
 
 /**
- * Gets Gigascreen virtual ink/paper colors for the specified frame
+ * Gets Gigascreen virtual ink/paper colors for the specified frame.
+ * Base color indices 0-15: standard (CLUTs 0-1).
+ * Base color indices 16-31: extended ULA+ (CLUTs 2-3, flash=1).
  * @param {number} frame - Frame index (0 or 1)
- * @returns {{inkColor: number, paperColor: number, bright: boolean}} Colors for the frame (0-7) and bright flag
+ * @returns {{inkColor: number, paperColor: number, bright: boolean, flash: boolean}} Colors for the frame
  */
 function getGigascreenFrameColors(frame) {
   if (gigascreenVirtualPalette.length === 0) {
@@ -1236,14 +1326,21 @@ function getGigascreenFrameColors(frame) {
   const inkFull = frame === 0 ? inkEntry.frame1Color : inkEntry.frame2Color;
   const paperFull = frame === 0 ? paperEntry.frame1Color : paperEntry.frame2Color;
 
-  // Extract color (0-7) and brightness
-  const inkColor = inkFull % 8;
-  const paperColor = paperFull % 8;
+  // Extract ink (0-7) and CLUT from the base color index
+  // Index 0-7: CLUT 0 (bright=0, flash=0)
+  // Index 8-15: CLUT 1 (bright=1, flash=0)
+  // Index 16-23: CLUT 2 (bright=0, flash=1)
+  // Index 24-31: CLUT 3 (bright=1, flash=1)
+  const inkColor = inkFull & 7;
+  const paperColor = paperFull & 7;
+  const inkClut = inkFull >> 3;    // 0-3
+  const paperClut = paperFull >> 3; // 0-3
+  // Cell CLUT: use the higher CLUT of ink/paper (both share the attribute's bright/flash bits)
+  const clut = Math.max(inkClut, paperClut);
+  const bright = !!(clut & 1);
+  const flash = !!(clut >> 1);
 
-  // If either ink or paper is bright, the cell is bright
-  const bright = inkFull >= 8 || paperFull >= 8;
-
-  return { inkColor, paperColor, bright };
+  return { inkColor, paperColor, bright, flash };
 }
 
 /**
@@ -1256,10 +1353,14 @@ function getGigascreenFrameColors(frame) {
 function setGigascreenPixel(data, x, y, isInk) {
   if (!data || data.length < getGigaFrameSize() * 2) return;
 
-  // HLR (Gigascreen Lowres): bitmap is fixed; drawing only updates the relevant
-  // half of the cell attribute (top 4 rows = ink portion, bottom 4 rows = paper
-  // portion of both attribute frames).
-  if (currentFormat === FORMAT.HLR) {
+  // HLR / GA pattern / GAP pattern: bitmap is fixed; drawing only updates the
+  // relevant half of the cell attribute (ink/paper portion of both attr frames).
+  if (currentFormat === FORMAT.HLR || isGigaPatternMode()) {
+    if (gigascreenEditMode !== 'combined') {
+      // Split mode: write only active frame attribute with standard ink/paper
+      setHlrSplitFrameAttr(data, x, y, isInk);
+      return;
+    }
     setHlrHalfCellColor(data, x, y, isInk);
     return;
   }
@@ -1267,6 +1368,10 @@ function setGigascreenPixel(data, x, y, isInk) {
   // STL (Stellar): bitmap is fixed 0x0F; drawing only updates attributes
   // with multicolor cell height (4 rows).
   if (currentFormat === FORMAT.STL) {
+    if (gigascreenEditMode !== 'combined') {
+      setStlSplitFrameAttr(data, x, y, isInk);
+      return;
+    }
     setStlCellColor(data, x, y, isInk);
     return;
   }
@@ -1275,18 +1380,110 @@ function setGigascreenPixel(data, x, y, isInk) {
   const bit = getBitPosition(x);
   const width = SCREEN.WIDTH;
 
-  // Frame 1 colors and attribute
-  const frame1 = getGigascreenFrameColors(0);
-  const attr1 = buildAttribute(frame1.inkColor, frame1.paperColor, frame1.bright, false);
-
-  // Frame 2 colors and attribute
-  const frame2 = getGigascreenFrameColors(1);
-  const attr2 = buildAttribute(frame2.inkColor, frame2.paperColor, frame2.bright, false);
-
   // Calculate attribute address (8×8 or 8×4 cells)
   const charRow = getGigaAttrRow(y);
   const charCol = Math.floor(x / 8);
   const attrOffset = charRow * 32 + charCol;
+  const gigaFS = getGigaFrameSize();
+
+  // Split-screen mode: edit only the active frame using standard ink/paper
+  // GAP+ULA+ combined mode: treat like screen1 (write same ULA+ attr to both frames)
+  const isGapUlaPlusCombined = currentFormat === FORMAT.GIGAATTR_PLUS && isUlaPlusMode && !ulaPlusPalette2 && gigascreenEditMode === 'combined';
+  const splitFrame = gigascreenEditMode === 'screen1' || isGapUlaPlusCombined ? 0 : gigascreenEditMode === 'screen2' ? 1 : -1;
+  if (splitFrame >= 0) {
+    const attr = getCurrentDrawingAttribute();
+    const bitmapOffset = splitFrame === 0 ? 0 : gigaFS;
+    const attrBase = bitmapOffset + 6144;
+
+    // Layer editing
+    if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
+      const layer = layers[activeLayerIndex];
+      if (layer) {
+        const maskIdx = y * width + x;
+        const bmp = splitFrame === 0 ? layer.bitmap : layer.bitmap2;
+        const attrs = splitFrame === 0 ? layer.attributes : layer.attributesFrame2;
+        if (bmp) {
+          if (isInk) { bmp[bitmapAddr] |= (1 << bit); } else { bmp[bitmapAddr] &= ~(1 << bit); }
+        }
+        // Gigaattr: mirror bitmap to the other layer plane
+        if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+          const otherBmp = splitFrame === 0 ? layer.bitmap2 : layer.bitmap;
+          if (otherBmp) { if (isInk) { otherBmp[bitmapAddr] |= (1 << bit); } else { otherBmp[bitmapAddr] &= ~(1 << bit); } }
+        }
+        layer.mask[maskIdx] = 1;
+        if (attrs) {
+          if (isMg1OuterColumn(charCol)) {
+            const blockStart = Math.floor(y / 8) * 8;
+            for (let dy = 0; dy < 8; dy++) attrs[(blockStart + dy) * 32 + charCol] = attr;
+          } else {
+            attrs[attrOffset] = attr;
+          }
+        }
+        // GAP+ULA+ combined: mirror attribute to frame 2 layer
+        if (isGapUlaPlusCombined && layer.attributesFrame2) {
+          if (isMg1OuterColumn(charCol)) {
+            const blockStart = Math.floor(y / 8) * 8;
+            for (let dy = 0; dy < 8; dy++) layer.attributesFrame2[(blockStart + dy) * 32 + charCol] = attr;
+          } else {
+            layer.attributesFrame2[attrOffset] = attr;
+          }
+        }
+      }
+      return;
+    }
+
+    // Background / no layers: write to screenData
+    if (isInk) { data[bitmapOffset + bitmapAddr] |= (1 << bit); } else { data[bitmapOffset + bitmapAddr] &= ~(1 << bit); }
+    // Gigaattr: mirror bitmap to the other frame (bitmap is shared)
+    if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+      const otherOffset = splitFrame === 0 ? gigaFS : 0;
+      if (isInk) { data[otherOffset + bitmapAddr] |= (1 << bit); } else { data[otherOffset + bitmapAddr] &= ~(1 << bit); }
+    }
+    if (isMg1OuterColumn(charCol)) {
+      replicateMg1OuterAttr(data, attrBase, y, charCol, attr);
+    } else {
+      data[attrBase + attrOffset] = attr;
+    }
+    // GAP+ULA+ combined: mirror attribute to the other frame
+    if (isGapUlaPlusCombined) {
+      const otherAttrBase = gigaFS + 6144;
+      if (isMg1OuterColumn(charCol)) {
+        replicateMg1OuterAttr(data, otherAttrBase, y, charCol, attr);
+      } else {
+        data[otherAttrBase + attrOffset] = attr;
+      }
+    }
+
+    // Sync background layer
+    if (layersEnabled && layers.length > 0 && activeLayerIndex === 0) {
+      const layer = layers[0];
+      if (layer) {
+        const bmp = splitFrame === 0 ? layer.bitmap : layer.bitmap2;
+        const attrs = splitFrame === 0 ? layer.attributes : layer.attributesFrame2;
+        if (bmp) { if (isInk) { bmp[bitmapAddr] |= (1 << bit); } else { bmp[bitmapAddr] &= ~(1 << bit); } }
+        // Gigaattr: mirror bitmap to the other layer plane
+        if ((currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) && layer) {
+          const otherBmp = splitFrame === 0 ? layer.bitmap2 : layer.bitmap;
+          if (otherBmp) { if (isInk) { otherBmp[bitmapAddr] |= (1 << bit); } else { otherBmp[bitmapAddr] &= ~(1 << bit); } }
+        }
+        if (attrs) attrs[attrOffset] = attr;
+        // GAP+ULA+ combined: mirror layer attribute to frame 2
+        if (isGapUlaPlusCombined && layer.attributesFrame2) {
+          layer.attributesFrame2[attrOffset] = attr;
+        }
+      }
+    }
+    return;
+  }
+
+  // Combined mode: write to both frames using virtual colors
+  // Frame 1 colors and attribute
+  const frame1 = getGigascreenFrameColors(0);
+  const attr1 = buildAttribute(frame1.inkColor, frame1.paperColor, frame1.bright, frame1.flash);
+
+  // Frame 2 colors and attribute
+  const frame2 = getGigascreenFrameColors(1);
+  const attr2 = buildAttribute(frame2.inkColor, frame2.paperColor, frame2.bright, frame2.flash);
 
   // Determine frame bit states based on selected color (0-3)
   // Left click uses primary color, right click uses secondary color
@@ -1307,8 +1504,10 @@ function setGigascreenPixel(data, x, y, isInk) {
         layer.bitmap[bitmapAddr] &= ~(1 << bit);
       }
 
-      // Frame 2 bitmap
-      if (activeColorInfo.frame2Set) {
+      // Frame 2 bitmap — Gigaattr: mirror frame 1 bitmap (shared)
+      if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+        layer.bitmap2[bitmapAddr] = (layer.bitmap2[bitmapAddr] & ~(1 << bit)) | (layer.bitmap[bitmapAddr] & (1 << bit));
+      } else if (activeColorInfo.frame2Set) {
         layer.bitmap2[bitmapAddr] |= (1 << bit);
       } else {
         layer.bitmap2[bitmapAddr] &= ~(1 << bit);
@@ -1343,7 +1542,6 @@ function setGigascreenPixel(data, x, y, isInk) {
   }
 
   // Background layer or no layers - modify screenData directly
-  const gigaFS = getGigaFrameSize();
   // Frame 1: bitmap at 0-6143, attributes at 6144+
   if (activeColorInfo.frame1Set) {
     data[bitmapAddr] |= (1 << bit);
@@ -1357,7 +1555,10 @@ function setGigascreenPixel(data, x, y, isInk) {
   }
 
   // Frame 2: bitmap at gigaFS+, attributes at gigaFS+6144+
-  if (activeColorInfo.frame2Set) {
+  // Gigaattr: force frame 2 bitmap to match frame 1 (shared bitmap)
+  if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+    data[gigaFS + bitmapAddr] = (data[gigaFS + bitmapAddr] & ~(1 << bit)) | (data[bitmapAddr] & (1 << bit));
+  } else if (activeColorInfo.frame2Set) {
     data[gigaFS + bitmapAddr] |= (1 << bit);
   } else {
     data[gigaFS + bitmapAddr] &= ~(1 << bit);
@@ -1380,7 +1581,10 @@ function setGigascreenPixel(data, x, y, isInk) {
         }
       }
       if (layer.bitmap2) {
-        if (activeColorInfo.frame2Set) {
+        // Gigaattr: mirror frame 1 bitmap (shared)
+        if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+          layer.bitmap2[bitmapAddr] = (layer.bitmap2[bitmapAddr] & ~(1 << bit)) | (layer.bitmap[bitmapAddr] & (1 << bit));
+        } else if (activeColorInfo.frame2Set) {
           layer.bitmap2[bitmapAddr] |= (1 << bit);
         } else {
           layer.bitmap2[bitmapAddr] &= ~(1 << bit);
@@ -1413,7 +1617,8 @@ const HLR_PATTERN_PRESETS = {
   'hstripe2':   [0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00],
   'vstripe2':   [0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC],
   'diag-dr':    [0x80, 0xC0, 0xE0, 0xF0, 0xF8, 0xFC, 0xFE, 0xFF],
-  'diag-ur':    [0xFF, 0x7F, 0x3F, 0x1F, 0x0F, 0x07, 0x03, 0x01]
+  'diag-ur':    [0xFF, 0x7F, 0x3F, 0x1F, 0x0F, 0x07, 0x03, 0x01],
+  'dd77':       [0xDD, 0x77, 0xDD, 0x77, 0xDD, 0x77, 0xDD, 0x77]
 };
 
 /**
@@ -1547,7 +1752,7 @@ function isHlrPixelInk(x, y) {
  * @param {Uint8Array|number[]} newPattern - 8 bytes, one per scanline
  */
 function applyHlrPatternChange(newPattern) {
-  if (currentFormat !== FORMAT.HLR) return;
+  if (currentFormat !== FORMAT.HLR && !isGigaPatternMode()) return;
   if (!newPattern || newPattern.length !== 8) return;
   if (!screenData || screenData.length < getGigaFrameSize() * 2) return;
 
@@ -1557,11 +1762,12 @@ function applyHlrPatternChange(newPattern) {
   const pattern = new Uint8Array(newPattern);
   if (currentPicture) currentPicture.pattern = new Uint8Array(pattern);
 
-  // Rewrite both frames' bitmaps in screenData (interleaved SCR layout).
+  // Rewrite frames' bitmaps in screenData (interleaved SCR layout).
   // Each third is 2048 bytes; within a third, rows are interleaved so that
   // pixelLine (the scanline within an 8-px char) advances by 256 bytes and
   // charRow advances by 32 bytes.
   const gigaFS = getGigaFrameSize();
+  const splitFrame = gigascreenEditMode === 'screen1' ? 0 : gigascreenEditMode === 'screen2' ? 1 : -1;
   for (let third = 0; third < 3; third++) {
     const thirdBase = third * 2048;
     for (let pixelLine = 0; pixelLine < 8; pixelLine++) {
@@ -1569,8 +1775,8 @@ function applyHlrPatternChange(newPattern) {
       for (let charRow = 0; charRow < 8; charRow++) {
         const rowOff = thirdBase + charRow * 32 + pixelLine * 256;
         for (let col = 0; col < 32; col++) {
-          screenData[rowOff + col] = fill;
-          screenData[gigaFS + rowOff + col] = fill;
+          if (splitFrame === 0 || splitFrame < 0) screenData[rowOff + col] = fill;
+          if (splitFrame === 1 || splitFrame < 0) screenData[gigaFS + rowOff + col] = fill;
         }
       }
     }
@@ -1635,34 +1841,36 @@ function setHlrHalfCellColor(data, x, y, isInk, solid) {
     : gigascreenVirtualPalette[gigascreenVirtualInk];
   if (!entry) return;
 
-  const f1Full = entry.frame1Color; // 0-15 (includes bright bit)
+  const f1Full = entry.frame1Color;
   const f2Full = entry.frame2Color;
   const f1 = f1Full & 7;
   const f2 = f2Full & 7;
-  const bright = (f1Full >= 8) || (f2Full >= 8);
-  const brightBit = bright ? 0x40 : 0;
+  const f1Clut = f1Full >> 3;
+  const f2Clut = f2Full >> 3;
+  const clut = Math.max(f1Clut, f2Clut);
+  const brightBit = (clut & 1) ? 0x40 : 0;
+  const flashBit = (clut >> 1) ? 0x80 : 0;
 
   /**
    * Composes a new attribute byte by replacing the relevant component(s)
    * (ink only, paper only, or both) of an existing attribute and applying
-   * the bright bit. The flash bit (0x80) is preserved from the existing.
+   * the bright/flash bits derived from the virtual color's CLUT.
    * @param {number} existing - Current attribute byte
    * @param {number} colorBits - 3-bit color (0-7)
    * @returns {number}
    */
   const composeAttr = (existing, colorBits) => {
-    const flash = existing & 0x80;
     const cb = colorBits & 7;
     if (isInkComponent === null) {
       // Solid mode: set both ink and paper to the same color
-      return cb | (cb << 3) | brightBit | flash;
+      return cb | (cb << 3) | brightBit | flashBit;
     }
     if (isInkComponent) {
       const paper = existing & 0x38; // bits 3-5 (paper)
-      return cb | paper | brightBit | flash;
+      return cb | paper | brightBit | flashBit;
     }
     const ink = existing & 0x07; // bits 0-2 (ink)
-    return ink | (cb << 3) | brightBit | flash;
+    return ink | (cb << 3) | brightBit | flashBit;
   };
 
   const gigaFS = getGigaFrameSize();
@@ -1752,21 +1960,23 @@ function setStlCellColor(data, x, y, isInk, solid) {
   const f2Full = entry.frame2Color;
   const f1 = f1Full & 7;
   const f2 = f2Full & 7;
-  const bright = (f1Full >= 8) || (f2Full >= 8);
-  const brightBit = bright ? 0x40 : 0;
+  const f1Clut = f1Full >> 3;
+  const f2Clut = f2Full >> 3;
+  const clutStl = Math.max(f1Clut, f2Clut);
+  const brightBitStl = (clutStl & 1) ? 0x40 : 0;
+  const flashBitStl = (clutStl >> 1) ? 0x80 : 0;
 
   const composeAttr = (existing, colorBits) => {
-    const flash = existing & 0x80;
     const cb = colorBits & 7;
     if (isInkComponent === null) {
-      return cb | (cb << 3) | brightBit | flash;
+      return cb | (cb << 3) | brightBitStl | flashBitStl;
     }
     if (isInkComponent) {
       const paper = existing & 0x38;
-      return cb | paper | brightBit | flash;
+      return cb | paper | brightBitStl | flashBitStl;
     }
     const ink = existing & 0x07;
-    return ink | (cb << 3) | brightBit | flash;
+    return ink | (cb << 3) | brightBitStl | flashBitStl;
   };
 
   const gigaFS = getGigaFrameSize();
@@ -1807,6 +2017,112 @@ function setStlCellColor(data, x, y, isInk, solid) {
   }
 }
 
+/**
+ * HLR split-mode: write only the active frame's attribute using standard ink/paper.
+ * @param {Uint8Array} data - Screen data
+ * @param {number} x - X coordinate
+ * @param {number} y - Y coordinate
+ * @param {boolean} isInk - true = ink pixel, false = paper pixel
+ */
+function setHlrSplitFrameAttr(data, x, y, isInk) {
+  if (x < 0 || x >= 256 || y < 0 || y >= 192) return;
+  const charCol = Math.floor(x / 8);
+  const charRow = Math.floor(y / 8);
+  const attrOffset = charRow * 32 + charCol;
+  const gigaFS = getGigaFrameSize();
+  const frameOffset = gigascreenEditMode === 'screen2' ? gigaFS : 0;
+  const splitFrame = gigascreenEditMode === 'screen2' ? 1 : 0;
+  const isInkComponent = isHlrPixelInk(x, y);
+
+  const attr = getCurrentDrawingAttribute();
+  const inkBits = attr & 0x07;
+  const paperBits = (attr >> 3) & 0x07;
+  const brightBit = attr & 0x40;
+  const colorBits = isInk ? inkBits : paperBits;
+
+  const composeAttr = (existing) => {
+    const flash = existing & 0x80;
+    if (isInkComponent) {
+      const paper = existing & 0x38;
+      return colorBits | paper | brightBit | flash;
+    }
+    const ink = existing & 0x07;
+    return ink | (colorBits << 3) | brightBit | flash;
+  };
+
+  const attrAddr = frameOffset + 6144 + attrOffset;
+
+  if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
+    const layer = layers[activeLayerIndex];
+    if (layer) {
+      const maskIdx = y * 256 + x;
+      if (layer.mask) layer.mask[maskIdx] = 1;
+      const attrs = splitFrame === 0 ? layer.attributes : layer.attributesFrame2;
+      if (attrs) attrs[attrOffset] = composeAttr(attrs[attrOffset] || 0);
+    }
+    return;
+  }
+
+  data[attrAddr] = composeAttr(data[attrAddr]);
+  if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0]) {
+    const attrs = splitFrame === 0 ? layers[0].attributes : layers[0].attributesFrame2;
+    if (attrs) attrs[attrOffset] = data[attrAddr];
+  }
+}
+
+/**
+ * STL split-mode: write only the active frame's attribute using standard ink/paper.
+ * @param {Uint8Array} data - Screen data
+ * @param {number} x - X coordinate
+ * @param {number} y - Y coordinate
+ * @param {boolean} isInk - true = ink pixel, false = paper pixel
+ */
+function setStlSplitFrameAttr(data, x, y, isInk) {
+  if (x < 0 || x >= 256 || y < 0 || y >= 192) return;
+  const charCol = Math.floor(x / 8);
+  const charRow = getGigaAttrRow(y); // 4-row cells for STL
+  const attrOffset = charRow * 32 + charCol;
+  const gigaFS = getGigaFrameSize();
+  const frameOffset = gigascreenEditMode === 'screen2' ? gigaFS : 0;
+  const splitFrame = gigascreenEditMode === 'screen2' ? 1 : 0;
+  const isInkComponent = isStlPixelInk(x, y);
+
+  const attr = getCurrentDrawingAttribute();
+  const inkBits = attr & 0x07;
+  const paperBits = (attr >> 3) & 0x07;
+  const brightBit = attr & 0x40;
+  const colorBits = isInk ? inkBits : paperBits;
+
+  const composeAttr = (existing) => {
+    const flash = existing & 0x80;
+    if (isInkComponent) {
+      const paper = existing & 0x38;
+      return colorBits | paper | brightBit | flash;
+    }
+    const ink = existing & 0x07;
+    return ink | (colorBits << 3) | brightBit | flash;
+  };
+
+  const attrAddr = frameOffset + 6144 + attrOffset;
+
+  if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
+    const layer = layers[activeLayerIndex];
+    if (layer) {
+      const maskIdx = y * 256 + x;
+      if (layer.mask) layer.mask[maskIdx] = 1;
+      const attrs = splitFrame === 0 ? layer.attributes : layer.attributesFrame2;
+      if (attrs) attrs[attrOffset] = composeAttr(attrs[attrOffset] || 0);
+    }
+    return;
+  }
+
+  data[attrAddr] = composeAttr(data[attrAddr]);
+  if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0]) {
+    const attrs = splitFrame === 0 ? layers[0].attributes : layers[0].attributesFrame2;
+    if (attrs) attrs[attrOffset] = data[attrAddr];
+  }
+}
+
 // ============================================================================
 // PNG/GIF Export
 // ============================================================================
@@ -1816,7 +2132,7 @@ function setStlCellColor(data, x, y, isInk, solid) {
  * @returns {boolean}
  */
 function isGigascreenExportFormat() {
-  if (currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.MGH ||
+  if (currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS || currentFormat === FORMAT.MGH ||
       currentFormat === FORMAT.HLR || currentFormat === FORMAT.STL) return true;
   if (currentFormat === FORMAT.BSP && currentPicture && currentPicture.colorMode === 'gigascreen') return true;
   if (currentFormat === FORMAT.CHR && currentPicture && currentPicture.colorMode === 'gigascreen') return true;
@@ -2855,7 +3171,14 @@ function saveCurrentPictureState() {
     pic.scrollLeft = container.scrollLeft;
   }
   // Save ULA+ palette if active
-  pic.ulaPlusPalette = ulaPlusPalette ? ulaPlusPalette.slice() : null;
+  // In dual-palette GAP screen2 mode, ulaPlusPalette === ulaPlusPalette2 (same ref),
+  // so read palette 1 from currentPicture.palette to avoid saving palette 2 as both.
+  if (ulaPlusPalette && ulaPlusPalette2 && ulaPlusPalette === ulaPlusPalette2 && currentPicture && currentPicture.palette && currentPicture.palette.length >= 128) {
+    pic.ulaPlusPalette = new Uint8Array(currentPicture.palette.subarray(0, 64));
+  } else {
+    pic.ulaPlusPalette = ulaPlusPalette ? ulaPlusPalette.slice() : null;
+  }
+  pic.ulaPlusPalette2 = ulaPlusPalette2 ? ulaPlusPalette2.slice() : null;
   // Save ULANext state if active
   pic.ulaNextMode = isUlaNextMode;
   pic.ulaNextInkMask = ulaNextInkMask;
@@ -2966,6 +3289,9 @@ function loadPictureState(index) {
   }
 
   // Restore ULA+ palette
+  // Restore ulaPlusPalette2 BEFORE resetUlaPlusColors() — that function triggers
+  // palette grid rebuilds which read ulaPlusPalette2 for dual-palette GAP mode.
+  ulaPlusPalette2 = pic.ulaPlusPalette2 ? pic.ulaPlusPalette2.slice() : null;
   if (pic.ulaPlusPalette) {
     ulaPlusPalette = pic.ulaPlusPalette.slice();
     isUlaPlusMode = true;
@@ -2974,6 +3300,7 @@ function loadPictureState(index) {
     ulaPlusPalette = null;
     isUlaPlusMode = false;
   }
+
 
   // Restore ULANext state
   if (pic.ulaNextMode && pic.ulaNextPalette) {
@@ -2999,6 +3326,14 @@ function loadPictureState(index) {
 
   // Restore internal picture format (deep clone to avoid shared references)
   currentPicture = clonePicture(pic.picture);
+
+  // Restore border color from pattern-mode GA/GAP pictures
+  if (currentPicture && currentPicture.contentMode === 'pattern' &&
+      typeof currentPicture.borderColor1 === 'number') {
+    borderColor = currentPicture.borderColor1;
+    const borderColorSel = document.getElementById('borderColorSelect');
+    if (borderColorSel) /** @type {HTMLSelectElement} */ (borderColorSel).value = String(borderColor);
+  }
 
   // Restore SPECSCII grids
   if (pic.specsciiCharGrid) {
@@ -3084,6 +3419,7 @@ function addPicture(fileName, format, data, internalPicture, skipSave) {
     scrollTop: 0,
     scrollLeft: 0,
     ulaPlusPalette: ulaPlusPalette ? ulaPlusPalette.slice() : null,
+    ulaPlusPalette2: ulaPlusPalette2 ? ulaPlusPalette2.slice() : null,
     ulaNextMode: isUlaNextMode,
     ulaNextInkMask: ulaNextInkMask,
     ulaNextInkBits: ulaNextInkBits,
@@ -3461,6 +3797,10 @@ function getPixel(data, x, y) {
   if (x < 0 || x >= getFormatWidth() || y < 0 || y >= getFormatHeight()) return 0;
   const addr = getBitmapAddress(x, y);
   const bit = getBitPosition(x);
+  // Gigascreen split mode: read from the active frame
+  if (gigascreenEditMode === 'screen2' && isGigascreenEditable()) {
+    return (data[getGigaFrameSize() + addr] >> bit) & 1;
+  }
   return (data[addr] >> bit) & 1;
 }
 
@@ -3628,6 +3968,7 @@ function setPixel(data, x, y, isInk) {
 
   // Set the pixel bit
   const bitmapAddr = getBitmapAddress(x, y);
+  const bitmapAddrData = bitmapAddr;
   const bit = getBitPosition(x);
 
   // When layers are enabled and on non-background layer, only modify the layer bitmap
@@ -3646,9 +3987,9 @@ function setPixel(data, x, y, isInk) {
   } else {
     // No layers, or on background layer - modify screenData directly
     if (isInk) {
-      data[bitmapAddr] |= (1 << bit);
+      data[bitmapAddrData] |= (1 << bit);
     } else {
-      data[bitmapAddr] &= ~(1 << bit);
+      data[bitmapAddrData] &= ~(1 << bit);
     }
 
     // Also update background layer bitmap if layers are enabled
@@ -3788,9 +4129,9 @@ function setPixelBitmapOnly(data, x, y, isInk) {
   const height = getFormatHeight();
   if (x < 0 || x >= width || y < 0 || y >= height) return;
 
-  // HLR: bitmap is loader-tiled from the picture's 8-byte fill pattern
-  // and never edited directly -- only attributes change.
-  if (currentFormat === FORMAT.HLR) return;
+  // HLR / GA pattern / GAP pattern: bitmap is loader-tiled from the picture's
+  // 8-byte fill pattern and never edited directly -- only attributes change.
+  if (currentFormat === FORMAT.HLR || isGigaPatternMode()) return;
 
   // STL: bitmap is fixed 0x0F -- only attributes change.
   if (currentFormat === FORMAT.STL) return;
@@ -3830,6 +4171,93 @@ function setPixelBitmapOnly(data, x, y, isInk) {
   // Set only the pixel bit, no attribute change
   const bitmapAddr = getBitmapAddress(x, y);
   const bit = getBitPosition(x);
+
+  // Gigascreen split/combined mode handling
+  if (isGigascreenEditable()) {
+    const gigaFS = getGigaFrameSize();
+    const splitFrame = gigascreenEditMode === 'screen1' ? 0 : gigascreenEditMode === 'screen2' ? 1 : -1;
+
+    if (splitFrame >= 0) {
+      // Split mode: write only to the active frame
+      const offset = splitFrame === 0 ? 0 : gigaFS;
+      if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
+        const layer = layers[activeLayerIndex];
+        if (layer) {
+          const bmp = splitFrame === 0 ? layer.bitmap : layer.bitmap2;
+          if (bmp) {
+            if (isInk) { bmp[bitmapAddr] |= (1 << bit); }
+            else       { bmp[bitmapAddr] &= ~(1 << bit); }
+          }
+          // Gigaattr: mirror bitmap to the other layer plane
+          if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+            const otherBmp = splitFrame === 0 ? layer.bitmap2 : layer.bitmap;
+            if (otherBmp) { if (isInk) { otherBmp[bitmapAddr] |= (1 << bit); } else { otherBmp[bitmapAddr] &= ~(1 << bit); } }
+          }
+          layer.mask[y * width + x] = 1;
+        }
+      } else {
+        if (isInk) { data[offset + bitmapAddr] |= (1 << bit); }
+        else       { data[offset + bitmapAddr] &= ~(1 << bit); }
+        // Gigaattr: mirror bitmap to the other frame
+        if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+          const otherOffset = splitFrame === 0 ? gigaFS : 0;
+          if (isInk) { data[otherOffset + bitmapAddr] |= (1 << bit); }
+          else       { data[otherOffset + bitmapAddr] &= ~(1 << bit); }
+        }
+        if (layersEnabled && layers.length > 0 && activeLayerIndex === 0) {
+          const layer = layers[0];
+          if (layer) {
+            const bmp = splitFrame === 0 ? layer.bitmap : layer.bitmap2;
+            if (bmp) {
+              if (isInk) { bmp[bitmapAddr] |= (1 << bit); }
+              else       { bmp[bitmapAddr] &= ~(1 << bit); }
+            }
+            // Gigaattr: mirror bitmap to the other layer plane
+            if ((currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) && layer) {
+              const otherBmp = splitFrame === 0 ? layer.bitmap2 : layer.bitmap;
+              if (otherBmp) { if (isInk) { otherBmp[bitmapAddr] |= (1 << bit); } else { otherBmp[bitmapAddr] &= ~(1 << bit); } }
+            }
+          }
+        }
+      }
+    } else {
+      // Combined mode: write to both frames
+      if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
+        const layer = layers[activeLayerIndex];
+        if (layer) {
+          if (isInk) {
+            layer.bitmap[bitmapAddr] |= (1 << bit);
+            if (layer.bitmap2) layer.bitmap2[bitmapAddr] |= (1 << bit);
+          } else {
+            layer.bitmap[bitmapAddr] &= ~(1 << bit);
+            if (layer.bitmap2) layer.bitmap2[bitmapAddr] &= ~(1 << bit);
+          }
+          layer.mask[y * width + x] = 1;
+        }
+      } else {
+        if (isInk) {
+          data[bitmapAddr] |= (1 << bit);
+          data[gigaFS + bitmapAddr] |= (1 << bit);
+        } else {
+          data[bitmapAddr] &= ~(1 << bit);
+          data[gigaFS + bitmapAddr] &= ~(1 << bit);
+        }
+        if (layersEnabled && layers.length > 0 && activeLayerIndex === 0) {
+          const layer = layers[0];
+          if (layer) {
+            if (isInk) {
+              layer.bitmap[bitmapAddr] |= (1 << bit);
+              if (layer.bitmap2) layer.bitmap2[bitmapAddr] |= (1 << bit);
+            } else {
+              layer.bitmap[bitmapAddr] &= ~(1 << bit);
+              if (layer.bitmap2) layer.bitmap2[bitmapAddr] &= ~(1 << bit);
+            }
+          }
+        }
+      }
+    }
+    return;
+  }
 
   // When layers are enabled and on non-background layer, only modify layer data
   if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
@@ -3882,15 +4310,91 @@ function setPixelAttributeOnly(data, x, y) {
     return;
   }
 
-  // HLR: drawing equals recoloring the half-cell (no separate bitmap)
-  if (currentFormat === FORMAT.HLR) {
-    setHlrHalfCellColor(data, x, y, true);
+  // HLR / GA pattern / GAP pattern: drawing equals recoloring the half-cell (no separate bitmap)
+  if (currentFormat === FORMAT.HLR || isGigaPatternMode()) {
+    if (gigascreenEditMode !== 'combined') {
+      setHlrSplitFrameAttr(data, x, y, true);
+    } else {
+      setHlrHalfCellColor(data, x, y, true);
+    }
     return;
   }
 
   // STL: drawing equals recoloring the cell (no separate bitmap)
   if (currentFormat === FORMAT.STL) {
-    setStlCellColor(data, x, y, true);
+    if (gigascreenEditMode !== 'combined') {
+      setStlSplitFrameAttr(data, x, y, true);
+    } else {
+      setStlCellColor(data, x, y, true);
+    }
+    return;
+  }
+
+  // Gigascreen: route to virtual-color or split-frame attribute write
+  if (isGigascreenEditable()) {
+    const gigaFS = getGigaFrameSize();
+    const charRow = getGigaAttrRow(y);
+    const charCol = Math.floor(x / 8);
+    const attrOffset = charRow * 32 + charCol;
+    const isGapUlaPlusCombined = currentFormat === FORMAT.GIGAATTR_PLUS && isUlaPlusMode && !ulaPlusPalette2 && gigascreenEditMode === 'combined';
+    const splitFrame = gigascreenEditMode === 'screen1' || isGapUlaPlusCombined ? 0 : gigascreenEditMode === 'screen2' ? 1 : -1;
+
+    if (splitFrame >= 0) {
+      // Split mode (or GAP+ULA+ combined): write active frame
+      const attr = getCurrentDrawingAttribute();
+      const offset = splitFrame === 0 ? 0 : gigaFS;
+      if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
+        const layer = layers[activeLayerIndex];
+        if (layer) {
+          const attrs = splitFrame === 0 ? layer.attributes : layer.attributesFrame2;
+          if (attrs) attrs[attrOffset] = attr;
+          // GAP+ULA+ combined: mirror attribute to frame 2 layer
+          if (isGapUlaPlusCombined && layer.attributesFrame2) {
+            layer.attributesFrame2[attrOffset] = attr;
+          }
+          layer.mask[y * getFormatWidth() + x] = 1;
+        }
+      } else {
+        data[offset + 6144 + attrOffset] = attr;
+        // GAP+ULA+ combined: mirror attribute to frame 2
+        if (isGapUlaPlusCombined) {
+          data[gigaFS + 6144 + attrOffset] = attr;
+        }
+        if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0]) {
+          const attrs = splitFrame === 0 ? layers[0].attributes : layers[0].attributesFrame2;
+          if (attrs) attrs[attrOffset] = attr;
+          if (isGapUlaPlusCombined && layers[0].attributesFrame2) {
+            layers[0].attributesFrame2[attrOffset] = attr;
+          }
+        }
+      }
+    } else {
+      // Combined mode: write both frames with virtual colors
+      const frame1 = getGigascreenFrameColors(0);
+      const attr1 = buildAttribute(frame1.inkColor, frame1.paperColor, frame1.bright, frame1.flash);
+      const frame2 = getGigascreenFrameColors(1);
+      const attr2 = buildAttribute(frame2.inkColor, frame2.paperColor, frame2.bright, frame2.flash);
+      if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
+        const layer = layers[activeLayerIndex];
+        if (layer) {
+          if (layer.attributes) layer.attributes[attrOffset] = attr1;
+          if (layer.attributesFrame2) layer.attributesFrame2[attrOffset] = attr2;
+          layer.mask[y * getFormatWidth() + x] = 1;
+        }
+      } else {
+        if (isMg1OuterColumn(charCol)) {
+          replicateMg1OuterAttr(data, 6144, y, charCol, attr1);
+          replicateMg1OuterAttr(data, gigaFS + 6144, y, charCol, attr2);
+        } else {
+          data[6144 + attrOffset] = attr1;
+          data[gigaFS + 6144 + attrOffset] = attr2;
+        }
+        if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0]) {
+          if (layers[0].attributes) layers[0].attributes[attrOffset] = attr1;
+          if (layers[0].attributesFrame2) layers[0].attributesFrame2[attrOffset] = attr2;
+        }
+      }
+    }
     return;
   }
 
@@ -4087,7 +4591,7 @@ function getLayerBitmapSize() {
   if (currentFormat === FORMAT.BMC4) return BMC4.BITMAP_SIZE;
   if (currentFormat === FORMAT.IFL) return IFL.BITMAP_SIZE;
   if (currentFormat === FORMAT.MLT) return MLT.BITMAP_SIZE;
-  if (isGigascreenEditable()) return SCREEN.BITMAP_SIZE; // Per-frame bitmap size
+  if (isGigascreenEditable()) return SCREEN.BITMAP_SIZE; // Per-frame bitmap size (combined mode)
   if (currentFormat === FORMAT.SPECSCII) return 768; // 32×24 character grid
   if (currentFormat === FORMAT.ATTR_53C) return 768; // 32×24 attribute grid (no bitmap)
   if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) return 80 * 200; // 16000 bytes (80 cols × 200 rows)
@@ -4382,17 +4886,17 @@ function addLayer(name) {
       newLayer.attributes.fill(defaultAttr);
       newLayer.attributes2.fill(defaultAttr);
     } else if (isGigascreenEditable()) {
-      // Gigascreen: two separate attribute arrays for each frame
-      // Use current virtual colors for default attributes
+      // Gigascreen: two separate attribute arrays for each frame.
+      // Initialize from current screenData so that the shared mask doesn't
+      // cause cross-frame attribute contamination when drawing on one frame only.
       const gigaAS = getGigaAttrSize();
-      const frame1 = getGigascreenFrameColors(0);
-      const frame2 = getGigascreenFrameColors(1);
-      const attr1 = buildAttribute(frame1.inkColor, frame1.paperColor, frame1.bright, false);
-      const attr2 = buildAttribute(frame2.inkColor, frame2.paperColor, frame2.bright, false);
+      const gigaFS = getGigaFrameSize();
       newLayer.attributes = new Uint8Array(gigaAS);
       newLayer.attributesFrame2 = new Uint8Array(gigaAS);
-      newLayer.attributes.fill(attr1);
-      newLayer.attributesFrame2.fill(attr2);
+      for (let i = 0; i < gigaAS; i++) {
+        newLayer.attributes[i] = screenData[SCREEN.BITMAP_SIZE + i];
+        newLayer.attributesFrame2[i] = screenData[gigaFS + SCREEN.BITMAP_SIZE + i];
+      }
       // Frame 2 bitmap
       newLayer.bitmap2 = new Uint8Array(bitmapSize);
     } else {
@@ -4841,7 +5345,7 @@ function flattenLayersToScreen() {
     screenTransparencyMask = new Uint8Array(pixelCount);
   }
 
-  // Start with background layer bitmap (frame 1)
+  // Start with background layer bitmap
   for (let i = 0; i < bitmapSize; i++) {
     if (layers[0].visible) {
       screenData[i] = layers[0].bitmap[i];
@@ -4883,18 +5387,20 @@ function flattenLayersToScreen() {
           const bitmapAddr = getBitmapAddress(x, y);
           const bitMask = 0x80 >> (x % 8);
 
+          const bitmapAddrSD = bitmapAddr;
+
           // MLT (8×1 cells): if background byte is 0xFF (all ink), clear it
           // before compositing so only layer-drawn pixels show as ink.
           // Unmasked pixels become paper, avoiding 8px color bars.
-          if (isMlt && screenData[bitmapAddr] === 0xFF) {
-            screenData[bitmapAddr] = 0;
+          if (isMlt && screenData[bitmapAddrSD] === 0xFF) {
+            screenData[bitmapAddrSD] = 0;
           }
 
-          // Frame 1
+          // Frame 1 (or active frame in split mode)
           if (layer.bitmap[bitmapAddr] & bitMask) {
-            screenData[bitmapAddr] |= bitMask;
+            screenData[bitmapAddrSD] |= bitMask;
           } else {
-            screenData[bitmapAddr] &= ~bitMask & 0xFF;
+            screenData[bitmapAddrSD] &= ~bitMask & 0xFF;
           }
 
           // Gigascreen: also composite frame 2
@@ -7384,69 +7890,128 @@ function fillCell(x, y, isInk) {
         layers[0].attributes2[attrIdx] = attr;
       }
     }
-  } else if (currentFormat === FORMAT.HLR) {
-    // HLR: bitmap is loader-tiled from the picture's 8-byte fill pattern;
-    // fill the entire 8x8 cell with one solid blended color by setting
-    // both ink and paper of both attribute frames to the chosen virtual color.
+  } else if (currentFormat === FORMAT.HLR || isGigaPatternMode()) {
+    // HLR / GA pattern / GAP pattern: bitmap is loader-tiled; fill by setting cell attributes
     if (!screenData || screenData.length < getGigaFrameSize() * 2) return;
-    setHlrHalfCellColor(screenData, x, y, isInk, true);
+    if (gigascreenEditMode !== 'combined') {
+      setHlrSplitFrameAttr(screenData, x, y, isInk);
+    } else {
+      setHlrHalfCellColor(screenData, x, y, isInk, true);
+    }
   } else if (currentFormat === FORMAT.STL) {
-    // STL: bitmap is fixed 0x0F; fill the 8x4 cell with one solid blended
-    // color by setting both ink and paper of both attribute frames.
+    // STL: bitmap is fixed 0x0F; fill by setting cell attributes
     if (!screenData || screenData.length < getGigaFrameSize() * 2) return;
-    setStlCellColor(screenData, x, y, isInk, true);
+    if (gigascreenEditMode !== 'combined') {
+      setStlSplitFrameAttr(screenData, x, y, isInk);
+    } else {
+      setStlCellColor(screenData, x, y, isInk, true);
+    }
   } else if (isGigascreenEditable()) {
-    // Gigascreen: fill both frames with virtual colors
+    // Gigascreen: fill cell with colors
     if (!screenData || screenData.length < getGigaFrameSize() * 2) return;
 
     const cellH = getGigaAttrCellHeight();
     const cellX = Math.floor(x / 8) * 8;
     const cellY = Math.floor(y / cellH) * cellH;
-
-    // Get colors for both frames
-    const frame1 = getGigascreenFrameColors(0);
-    const attr1 = buildAttribute(frame1.inkColor, frame1.paperColor, frame1.bright, false);
-    const frame2 = getGigascreenFrameColors(1);
-    const attr2 = buildAttribute(frame2.inkColor, frame2.paperColor, frame2.bright, false);
-
-    // Attribute offset
     const charRow = getGigaAttrRow(cellY);
     const charCol = Math.floor(cellX / 8);
     const attrOffset = charRow * 32 + charCol;
     const gigaFS = getGigaFrameSize();
+    const isGapUlaPlusCombined = currentFormat === FORMAT.GIGAATTR_PLUS && isUlaPlusMode && !ulaPlusPalette2 && gigascreenEditMode === 'combined';
+    const splitFrame = gigascreenEditMode === 'screen1' || isGapUlaPlusCombined ? 0 : gigascreenEditMode === 'screen2' ? 1 : -1;
 
-    // Fill frame 1
-    if (isMg1OuterColumn(charCol)) {
-      replicateMg1OuterAttr(screenData, 6144, cellY, charCol, attr1);
-    } else {
-      screenData[6144 + attrOffset] = attr1;
-    }
-    for (let py = 0; py < cellH; py++) {
-      const bitmapAddr = getBitmapAddress(cellX, cellY + py);
-      screenData[bitmapAddr] = isInk ? 0xFF : 0x00;
-    }
-
-    // Fill frame 2
-    if (isMg1OuterColumn(charCol)) {
-      replicateMg1OuterAttr(screenData, gigaFS + 6144, cellY, charCol, attr2);
-    } else {
-      screenData[gigaFS + 6144 + attrOffset] = attr2;
-    }
-    for (let py = 0; py < cellH; py++) {
-      const bitmapAddr = getBitmapAddress(cellX, cellY + py);
-      screenData[gigaFS + bitmapAddr] = isInk ? 0xFF : 0x00;
-    }
-
-    // Sync background layer
-    if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0]) {
+    if (splitFrame >= 0) {
+      // Split mode (or GAP+ULA+ combined): fill the active frame
+      const attr = getCurrentDrawingAttribute();
+      const offset = splitFrame === 0 ? 0 : gigaFS;
+      if (isMg1OuterColumn(charCol)) {
+        replicateMg1OuterAttr(screenData, offset + 6144, cellY, charCol, attr);
+      } else {
+        screenData[offset + 6144 + attrOffset] = attr;
+      }
+      // GAP+ULA+ combined: mirror attribute to frame 2
+      if (isGapUlaPlusCombined) {
+        if (isMg1OuterColumn(charCol)) {
+          replicateMg1OuterAttr(screenData, gigaFS + 6144, cellY, charCol, attr);
+        } else {
+          screenData[gigaFS + 6144 + attrOffset] = attr;
+        }
+      }
       const fillByte = isInk ? 0xFF : 0x00;
       for (let py = 0; py < cellH; py++) {
         const bitmapAddr = getBitmapAddress(cellX, cellY + py);
-        if (layers[0].bitmap) layers[0].bitmap[bitmapAddr] = fillByte;
-        if (layers[0].bitmap2) layers[0].bitmap2[bitmapAddr] = fillByte;
+        screenData[offset + bitmapAddr] = fillByte;
       }
-      if (layers[0].attributes) layers[0].attributes[attrOffset] = attr1;
-      if (layers[0].attributesFrame2) layers[0].attributesFrame2[attrOffset] = attr2;
+      // GIGAATTR: mirror bitmap to the other frame (shared bitmap)
+      if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+        const otherOffset = splitFrame === 0 ? gigaFS : 0;
+        for (let py = 0; py < cellH; py++) {
+          const bitmapAddr = getBitmapAddress(cellX, cellY + py);
+          screenData[otherOffset + bitmapAddr] = fillByte;
+        }
+      }
+      // Sync background layer for active frame only
+      if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0]) {
+        for (let py = 0; py < cellH; py++) {
+          const bitmapAddr = getBitmapAddress(cellX, cellY + py);
+          const bmp = splitFrame === 0 ? layers[0].bitmap : layers[0].bitmap2;
+          if (bmp) bmp[bitmapAddr] = fillByte;
+        }
+        // GIGAATTR: mirror bitmap layer to other frame
+        if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+          for (let py = 0; py < cellH; py++) {
+            const bitmapAddr = getBitmapAddress(cellX, cellY + py);
+            const otherBmp = splitFrame === 0 ? layers[0].bitmap2 : layers[0].bitmap;
+            if (otherBmp) otherBmp[bitmapAddr] = fillByte;
+          }
+        }
+        const attrs = splitFrame === 0 ? layers[0].attributes : layers[0].attributesFrame2;
+        if (attrs) attrs[attrOffset] = attr;
+        // GAP+ULA+ combined: mirror layer attribute to frame 2
+        if (isGapUlaPlusCombined && layers[0].attributesFrame2) {
+          layers[0].attributesFrame2[attrOffset] = attr;
+        }
+      }
+    } else {
+      // Combined mode: fill both frames with virtual colors
+      const frame1 = getGigascreenFrameColors(0);
+      const attr1 = buildAttribute(frame1.inkColor, frame1.paperColor, frame1.bright, frame1.flash);
+      const frame2 = getGigascreenFrameColors(1);
+      const attr2 = buildAttribute(frame2.inkColor, frame2.paperColor, frame2.bright, frame2.flash);
+
+      // Fill frame 1
+      if (isMg1OuterColumn(charCol)) {
+        replicateMg1OuterAttr(screenData, 6144, cellY, charCol, attr1);
+      } else {
+        screenData[6144 + attrOffset] = attr1;
+      }
+      for (let py = 0; py < cellH; py++) {
+        const bitmapAddr = getBitmapAddress(cellX, cellY + py);
+        screenData[bitmapAddr] = isInk ? 0xFF : 0x00;
+      }
+
+      // Fill frame 2
+      if (isMg1OuterColumn(charCol)) {
+        replicateMg1OuterAttr(screenData, gigaFS + 6144, cellY, charCol, attr2);
+      } else {
+        screenData[gigaFS + 6144 + attrOffset] = attr2;
+      }
+      for (let py = 0; py < cellH; py++) {
+        const bitmapAddr = getBitmapAddress(cellX, cellY + py);
+        screenData[gigaFS + bitmapAddr] = isInk ? 0xFF : 0x00;
+      }
+
+      // Sync background layer for both frames
+      if (layersEnabled && layers.length > 0 && activeLayerIndex === 0 && layers[0]) {
+        const fillByte = isInk ? 0xFF : 0x00;
+        for (let py = 0; py < cellH; py++) {
+          const bitmapAddr = getBitmapAddress(cellX, cellY + py);
+          if (layers[0].bitmap) layers[0].bitmap[bitmapAddr] = fillByte;
+          if (layers[0].bitmap2) layers[0].bitmap2[bitmapAddr] = fillByte;
+        }
+        if (layers[0].attributes) layers[0].attributes[attrOffset] = attr1;
+        if (layers[0].attributesFrame2) layers[0].attributesFrame2[attrOffset] = attr2;
+      }
     }
   } else if ((currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) && currentPicture) {
     // ZXP/chr$: variable-size cells with linear layout
@@ -7601,11 +8166,19 @@ function getPixelState(x, y) {
       // If pixel is transparent on this layer, treat as "paper" (0)
       if (!layer.mask[maskIdx]) return 0;
 
-      // For Gigascreen, combine both frame states
-      if (isGigascreenEditable() && layer.bitmap2) {
-        const f1 = (layer.bitmap[bitmapAddr] & bitMask) !== 0 ? 1 : 0;
-        const f2 = (layer.bitmap2[bitmapAddr] & bitMask) !== 0 ? 2 : 0;
-        return f1 | f2; // 0-3 representing the 4 color states
+      // For Gigascreen, combine both frame states (or read single frame in split mode)
+      if (isGigascreenEditable()) {
+        if (gigascreenEditMode === 'screen1' && layer.bitmap) {
+          return (layer.bitmap[bitmapAddr] & bitMask) !== 0 ? 1 : 0;
+        }
+        if (gigascreenEditMode === 'screen2' && layer.bitmap2) {
+          return (layer.bitmap2[bitmapAddr] & bitMask) !== 0 ? 1 : 0;
+        }
+        if (layer.bitmap2) {
+          const f1 = (layer.bitmap[bitmapAddr] & bitMask) !== 0 ? 1 : 0;
+          const f2 = (layer.bitmap2[bitmapAddr] & bitMask) !== 0 ? 2 : 0;
+          return f1 | f2; // 0-3 representing the 4 color states
+        }
       }
 
       return (layer.bitmap[bitmapAddr] & bitMask) !== 0 ? 1 : 0;
@@ -7621,8 +8194,14 @@ function getPixelState(x, y) {
     return (r || g || b) ? 1 : 0;
   }
 
-  // Gigascreen: combine both frame states
+  // Gigascreen: combine both frame states (or read single frame in split mode)
   if (isGigascreenEditable()) {
+    if (gigascreenEditMode === 'screen1') {
+      return (screenData[bitmapAddr] & bitMask) !== 0 ? 1 : 0;
+    }
+    if (gigascreenEditMode === 'screen2') {
+      return (screenData[getGigaFrameSize() + bitmapAddr] & bitMask) !== 0 ? 1 : 0;
+    }
     const f1 = (screenData[bitmapAddr] & bitMask) !== 0 ? 1 : 0;
     const f2 = (screenData[getGigaFrameSize() + bitmapAddr] & bitMask) !== 0 ? 2 : 0;
     return f1 | f2; // 0-3 representing the 4 color states
@@ -8026,6 +8605,7 @@ function setPixelDirect(x, y, isInk) {
 
   // Standard formats with attributes (SCR, IFL, MLT, BMC4, BSC)
   const bitmapAddr = getBitmapAddress(x, y);
+  const bitmapAddrSD = bitmapAddr;
   const bitMask = 0x80 >> (x % 8);
   let attr = getCurrentDrawingAttribute();
 
@@ -8044,8 +8624,8 @@ function setPixelDirect(x, y, isInk) {
   // MLT (8×1 cells): same bitmap clearing as in setPixel
   if (currentFormat === FORMAT.MLT && isInk &&
       !(layersEnabled && layers.length > 0 && activeLayerIndex > 0)) {
-    if (screenData[bitmapAddr] === 0xFF) {
-      screenData[bitmapAddr] = bitMask;
+    if (screenData[bitmapAddrSD] === 0xFF) {
+      screenData[bitmapAddrSD] = bitMask;
       if (layersEnabled && layers.length > 0 && activeLayerIndex === 0) {
         const layer = layers[0];
         if (layer) layer.bitmap[bitmapAddr] = bitMask;
@@ -8100,8 +8680,8 @@ function setPixelDirect(x, y, isInk) {
     }
   } else {
     // No layers or on background layer - modify screenData directly
-    if (isInk) screenData[bitmapAddr] |= bitMask;
-    else screenData[bitmapAddr] &= ~bitMask & 0xFF;
+    if (isInk) screenData[bitmapAddrSD] |= bitMask;
+    else screenData[bitmapAddrSD] &= ~bitMask & 0xFF;
     screenData[attrAddr] = attr;
 
     // Also update background layer if layers enabled
@@ -8243,20 +8823,45 @@ function cellInvert(x, y) {
   const attrAddr = SCREEN.BITMAP_SIZE + charRow * SCREEN.CHAR_COLS + charCol;
 
   if (isGigascreenEditable()) {
-    // Gigascreen: invert both frames
     const gigaFS = getGigaFrameSize();
     const attrOffset = getGigaAttrRow(y) * 32 + charCol;
-
-    const attr1 = screenData[6144 + attrOffset];
-    screenData[6144 + attrOffset] = ATTR.make(ATTR.paper(attr1), ATTR.ink(attr1), ATTR.bright(attr1), ATTR.flash(attr1));
-    const attr2 = screenData[gigaFS + 6144 + attrOffset];
-    screenData[gigaFS + 6144 + attrOffset] = ATTR.make(ATTR.paper(attr2), ATTR.ink(attr2), ATTR.bright(attr2), ATTR.flash(attr2));
-
+    const isGapUlaPlusCombined = currentFormat === FORMAT.GIGAATTR_PLUS && isUlaPlusMode && !ulaPlusPalette2 && gigascreenEditMode === 'combined';
+    const splitFrame = gigascreenEditMode === 'screen1' || isGapUlaPlusCombined ? 0 : gigascreenEditMode === 'screen2' ? 1 : -1;
     const cellY = Math.floor(y / 8) * 8;
-    for (let line = 0; line < 8; line++) {
-      const addr = getBitmapAddress(charCol * 8, cellY + line);
-      screenData[addr] ^= 0xFF;
-      screenData[gigaFS + addr] ^= 0xFF;
+
+    if (splitFrame >= 0) {
+      // Split mode (or GAP+ULA+ combined): invert the active frame
+      const offset = splitFrame === 0 ? 0 : gigaFS;
+      const attr = screenData[offset + 6144 + attrOffset];
+      const invAttr = ATTR.make(ATTR.paper(attr), ATTR.ink(attr), ATTR.bright(attr), ATTR.flash(attr));
+      screenData[offset + 6144 + attrOffset] = invAttr;
+      // GAP+ULA+ combined: mirror inverted attribute to frame 2
+      if (isGapUlaPlusCombined) {
+        screenData[gigaFS + 6144 + attrOffset] = invAttr;
+      }
+      for (let line = 0; line < 8; line++) {
+        const addr = getBitmapAddress(charCol * 8, cellY + line);
+        screenData[offset + addr] ^= 0xFF;
+      }
+      // GIGAATTR: mirror bitmap XOR to the other frame (shared bitmap)
+      if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+        const otherOffset = splitFrame === 0 ? gigaFS : 0;
+        for (let line = 0; line < 8; line++) {
+          const addr = getBitmapAddress(charCol * 8, cellY + line);
+          screenData[otherOffset + addr] ^= 0xFF;
+        }
+      }
+    } else {
+      // Combined mode: invert both frames
+      const attr1 = screenData[6144 + attrOffset];
+      screenData[6144 + attrOffset] = ATTR.make(ATTR.paper(attr1), ATTR.ink(attr1), ATTR.bright(attr1), ATTR.flash(attr1));
+      const attr2 = screenData[gigaFS + 6144 + attrOffset];
+      screenData[gigaFS + 6144 + attrOffset] = ATTR.make(ATTR.paper(attr2), ATTR.ink(attr2), ATTR.bright(attr2), ATTR.flash(attr2));
+      for (let line = 0; line < 8; line++) {
+        const addr = getBitmapAddress(charCol * 8, cellY + line);
+        screenData[addr] ^= 0xFF;
+        screenData[gigaFS + addr] ^= 0xFF;
+      }
     }
     syncBackgroundLayerFromScreen();
     return;
@@ -8435,37 +9040,64 @@ function recolorCell(x, y) {
         layers[0].attributes2[attrIdx] = attr;
       }
     }
-  } else if (currentFormat === FORMAT.HLR) {
-    // HLR: recolor entire 8x8 cell with the chosen virtual ink color by
-    // setting both ink and paper of both attribute frames (solid mode).
+  } else if (currentFormat === FORMAT.HLR || isGigaPatternMode()) {
+    // HLR / GA pattern / GAP pattern: recolor entire 8x8 cell
     if (!screenData || screenData.length < getGigaFrameSize() * 2) return;
-    setHlrHalfCellColor(screenData, x, y, true, true);
+    if (gigascreenEditMode !== 'combined') {
+      setHlrSplitFrameAttr(screenData, x, y, true);
+    } else {
+      setHlrHalfCellColor(screenData, x, y, true, true);
+    }
   } else if (currentFormat === FORMAT.STL) {
-    // STL: recolor entire 8x4 cell with the chosen virtual ink color by
-    // setting both ink and paper of both attribute frames (solid mode).
+    // STL: recolor entire 8x4 cell
     if (!screenData || screenData.length < getGigaFrameSize() * 2) return;
-    setStlCellColor(screenData, x, y, true, true);
+    if (gigascreenEditMode !== 'combined') {
+      setStlSplitFrameAttr(screenData, x, y, true);
+    } else {
+      setStlCellColor(screenData, x, y, true, true);
+    }
   } else if (isGigascreenEditable()) {
-    // Gigascreen: set attributes in both frames
+    // Gigascreen: set attributes
     if (!screenData || screenData.length < getGigaFrameSize() * 2) return;
 
     const charRow = getGigaAttrRow(y);
     const charCol = Math.floor(x / 8);
     const attrOffset = charRow * 32 + charCol;
-
-    // Get colors for both frames
-    const frame1 = getGigascreenFrameColors(0);
-    const attr1 = buildAttribute(frame1.inkColor, frame1.paperColor, frame1.bright, false);
-    const frame2 = getGigascreenFrameColors(1);
-    const attr2 = buildAttribute(frame2.inkColor, frame2.paperColor, frame2.bright, false);
-
     const gigaFS = getGigaFrameSize();
-    if (isMg1OuterColumn(charCol)) {
-      replicateMg1OuterAttr(screenData, 6144, y, charCol, attr1);
-      replicateMg1OuterAttr(screenData, gigaFS + 6144, y, charCol, attr2);
+    const isGapUlaPlusCombined = currentFormat === FORMAT.GIGAATTR_PLUS && isUlaPlusMode && !ulaPlusPalette2 && gigascreenEditMode === 'combined';
+    const splitFrame = gigascreenEditMode === 'screen1' || isGapUlaPlusCombined ? 0 : gigascreenEditMode === 'screen2' ? 1 : -1;
+
+    if (splitFrame >= 0) {
+      // Split mode (or GAP+ULA+ combined): recolor the active frame
+      const attr = getCurrentDrawingAttribute();
+      const offset = splitFrame === 0 ? 0 : gigaFS;
+      if (isMg1OuterColumn(charCol)) {
+        replicateMg1OuterAttr(screenData, offset + 6144, y, charCol, attr);
+      } else {
+        screenData[offset + 6144 + attrOffset] = attr;
+      }
+      // GAP+ULA+ combined: mirror attribute to frame 2
+      if (isGapUlaPlusCombined) {
+        if (isMg1OuterColumn(charCol)) {
+          replicateMg1OuterAttr(screenData, gigaFS + 6144, y, charCol, attr);
+        } else {
+          screenData[gigaFS + 6144 + attrOffset] = attr;
+        }
+      }
     } else {
-      screenData[6144 + attrOffset] = attr1;
-      screenData[gigaFS + 6144 + attrOffset] = attr2;
+      // Combined mode: set attributes in both frames with virtual colors
+      const frame1 = getGigascreenFrameColors(0);
+      const attr1 = buildAttribute(frame1.inkColor, frame1.paperColor, frame1.bright, frame1.flash);
+      const frame2 = getGigascreenFrameColors(1);
+      const attr2 = buildAttribute(frame2.inkColor, frame2.paperColor, frame2.bright, frame2.flash);
+
+      if (isMg1OuterColumn(charCol)) {
+        replicateMg1OuterAttr(screenData, 6144, y, charCol, attr1);
+        replicateMg1OuterAttr(screenData, gigaFS + 6144, y, charCol, attr2);
+      } else {
+        screenData[6144 + attrOffset] = attr1;
+        screenData[gigaFS + 6144 + attrOffset] = attr2;
+      }
     }
   } else if ((currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) && currentPicture) {
     // ZXP/chr$: variable-size cells
@@ -8745,15 +9377,19 @@ function copySelection() {
 
     // For dual-plane sources (pure gigascreen editables or chr$ with gigascreen
     // colorMode, both using 8-row attr cells), also capture plane[1].
+    // In split mode, capture only the active frame (single-plane).
     const gigaInfo = getGigaPasteInfo();
-    const captureGiga = gigaInfo.isGiga;
+    const splitFrame = gigascreenEditMode === 'screen1' ? 0 : gigascreenEditMode === 'screen2' ? 1 : -1;
+    const captureGiga = splitFrame < 0 && gigaInfo.isGiga;
     const gigaFS = gigaInfo.frameSize;
+    const copyFrameOffset = (splitFrame === 1 && gigaInfo.isGiga) ? gigaFS : 0;
     const bitmap2 = captureGiga ? new Uint8Array(bitmapBytesPerRow * rect.height) : null;
 
     for (let py = 0; py < rect.height; py++) {
       for (let px = 0; px < rect.width; px++) {
         const sx = rect.left + px;
         const sy = rect.top + py;
+        // getPixel() is already split-mode aware for frame selection
         if (getPixel(screenData, sx, sy)) {
           const byteIdx = py * bitmapBytesPerRow + Math.floor(px / 8);
           const bitIdx = 7 - (px % 8);
@@ -8771,13 +9407,13 @@ function copySelection() {
       }
     }
 
-    // Copy attributes
+    // Copy attributes (with frame offset for split mode)
     const attrs = new Uint8Array(cellCols * cellRows);
     const attrs2 = captureGiga ? new Uint8Array(cellCols * cellRows) : null;
     for (let cr = 0; cr < cellRows; cr++) {
       for (let cc = 0; cc < cellCols; cc++) {
         const srcAddr = getAttributeAddress((cellLeft + cc) * 8, (cellTop + cr) * 8);
-        attrs[cr * cellCols + cc] = screenData[srcAddr];
+        attrs[cr * cellCols + cc] = screenData[copyFrameOffset + srcAddr];
         if (captureGiga) {
           attrs2[cr * cellCols + cc] = screenData[gigaFS + srcAddr];
         }
@@ -8941,6 +9577,25 @@ function invertSelection() {
         screenData[addr] = (ink << 3) | paper | flags;
       }
     }
+  } else if (isGigascreenEditable()) {
+    // Gigascreen: XOR bitmap bits in active frame(s)
+    const gigaFS = getGigaFrameSize();
+    const splitFrame = gigascreenEditMode === 'screen1' ? 0 : gigascreenEditMode === 'screen2' ? 1 : -1;
+    for (let py = 0; py < rect.height; py++) {
+      for (let px = 0; px < rect.width; px++) {
+        const x = rect.left + px;
+        const y = rect.top + py;
+        const addr = getBitmapAddress(x, y);
+        const bitMask = 0x80 >> (x % 8);
+        if (splitFrame === 0 || splitFrame < 0) screenData[addr] ^= bitMask;
+        if (splitFrame === 1 || splitFrame < 0) screenData[gigaFS + addr] ^= bitMask;
+        // GIGAATTR: mirror XOR to the other frame in split mode (shared bitmap)
+        if ((currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) && splitFrame >= 0) {
+          const otherAddr = splitFrame === 0 ? gigaFS + addr : addr;
+          screenData[otherAddr] ^= bitMask;
+        }
+      }
+    }
   } else {
     // SCR/IFL/MLT/BMC4/BSC: XOR bitmap bits (attributes unchanged)
     for (let py = 0; py < rect.height; py++) {
@@ -9065,7 +9720,8 @@ function removeHiddenPixels() {
   if (!currentPicture || !currentPicture.planes || !currentPicture.planes[0]) return 0;
   // Attribute-only formats: fixed bitmap, hidden cells not meaningful
   if (currentFormat === FORMAT.GMX160 || currentFormat === FORMAT.HLR ||
-      currentFormat === FORMAT.ATTR_53C || currentFormat === FORMAT.STL) return 0;
+      currentFormat === FORMAT.ATTR_53C || currentFormat === FORMAT.STL ||
+      isGigaPatternMode()) return 0;
   const cellH = currentPicture.attrCellHeight;
   if (cellH <= 0) return 0;
 
@@ -9206,8 +9862,15 @@ function executePaste(x, y) {
     // If the clipboard came from a gigascreen source it carries bitmap2/attrs2;
     // otherwise (SCR source) we mirror plane[0] data to make both frames identical.
     const pasteGigaInfo = getGigaPasteInfo();
-    const targetGiga = pasteGigaInfo.isGiga;
+    const splitFrame = gigascreenEditMode === 'screen1' ? 0 : gigascreenEditMode === 'screen2' ? 1 : -1;
+    // In split mode, don't treat as dual-frame paste — write to one frame only
+    const targetGiga = splitFrame >= 0 ? false : pasteGigaInfo.isGiga;
     const gigaFS = pasteGigaInfo.frameSize;
+    // Frame offset: 0 for frame 1/combined, gigaFS for frame 2
+    const pasteFrameOffset = (splitFrame === 1 && pasteGigaInfo.isGiga) ? gigaFS : 0;
+    // In split mode for screen2, use frame 2 clipboard data if available
+    const clipBitmapSrc = (splitFrame === 1 && clipboardData.bitmap2) ? clipboardData.bitmap2 : clipboardData.bitmap;
+    const clipAttrsSrc = (splitFrame === 1 && clipboardData.attrs2) ? clipboardData.attrs2 : clipboardData.attrs;
     const clipBitmap2 = clipboardData.bitmap2 || clipboardData.bitmap;
     const clipAttrs2 = clipboardData.attrs2 || clipboardData.attrs;
     const setMode = brushPaintMode === 'set';
@@ -9235,7 +9898,7 @@ function executePaste(x, y) {
               if (px >= clipboardData.width) break;
               const byteIdx = py * bitmapBytesPerRow + (px >> 3);
               const bitIdx = 7 - (px & 7);
-              if ((clipboardData.bitmap[byteIdx] & (1 << bitIdx)) !== 0) {
+              if ((clipBitmapSrc[byteIdx] & (1 << bitIdx)) !== 0) {
                 hasInk = 1;
                 break;
               }
@@ -9258,10 +9921,10 @@ function executePaste(x, y) {
 
           const byteIdx = py * bitmapBytesPerRow + (px >> 3);
           const bitIdx = 7 - (px & 7);
-          const clipBit = (clipboardData.bitmap[byteIdx] & (1 << bitIdx)) !== 0;
+          const clipBit = (clipBitmapSrc[byteIdx] & (1 << bitIdx)) !== 0;
           const clipBit2 = targetGiga ? (clipBitmap2[byteIdx] & (1 << bitIdx)) !== 0 : false;
 
-          const bitmapAddr = getBitmapAddress(dx, dy);
+          const bitmapAddr = pasteFrameOffset + getBitmapAddress(dx, dy);
           const bit = getBitPosition(dx);
           const mask = 1 << bit;
 
@@ -9311,6 +9974,24 @@ function executePaste(x, y) {
       }
     }
 
+    // GIGAATTR: ensure both frames have identical bitmap after paste (shared bitmap)
+    if ((currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) && brushPaintMode !== 'recolor') {
+      const pasteW = getFormatWidth();
+      const pasteH = getFormatHeight();
+      for (let py = 0; py < clipboardData.height; py++) {
+        const dy = y + py;
+        if (dy < 0 || dy >= pasteH) continue;
+        // Sync entire affected byte rows (byte-aligned for efficiency)
+        const byteLeft = Math.max(0, Math.floor(x / 8));
+        const byteRight = Math.min(Math.ceil(pasteW / 8) - 1, Math.floor((x + clipboardData.width - 1) / 8));
+        for (let bx = byteLeft; bx <= byteRight; bx++) {
+          const bitmapAddr = getBitmapAddress(bx * 8, dy);
+          // Frame 1 is the source of truth for bitmap
+          screenData[gigaFS + bitmapAddr] = screenData[bitmapAddr];
+        }
+      }
+    }
+
     // Write attributes from clipboard (skip for retouch mode)
     if (brushPaintMode !== 'retouch') {
       const cellLeft = Math.floor(x / 8);
@@ -9324,8 +10005,8 @@ function executePaste(x, y) {
           if (destCol < 0 || destCol >= fmtCols || destRow < 0 || destRow >= fmtRows) continue;
           const srcIdx = cr * clipboardData.cellCols + cc;
           if (setMode && !cellHasInk[srcIdx]) continue;
-          const destAddr = getAttributeAddress(destCol * 8, destRow * 8);
-          screenData[destAddr] = clipboardData.attrs[srcIdx];
+          const destAddr = pasteFrameOffset + getAttributeAddress(destCol * 8, destRow * 8);
+          screenData[destAddr] = clipAttrsSrc[srcIdx];
           if (targetGiga) {
             screenData[gigaFS + destAddr] = clipAttrs2[srcIdx];
           }
@@ -10775,7 +11456,16 @@ function saveUndoState() {
       fileName: currentFileName
     };
     // Include ULA+ palette if present
-    if (ulaPlusPalette) state.ulaPlusPalette = new Uint8Array(ulaPlusPalette);
+    // In dual-palette GAP screen2 mode, ulaPlusPalette === ulaPlusPalette2 (same ref),
+    // so read palette 1 from currentPicture.palette to avoid saving palette 2 as both.
+    if (ulaPlusPalette) {
+      if (ulaPlusPalette2 && ulaPlusPalette === ulaPlusPalette2 && currentPicture && currentPicture.palette && currentPicture.palette.length >= 128) {
+        state.ulaPlusPalette = new Uint8Array(currentPicture.palette.subarray(0, 64));
+      } else {
+        state.ulaPlusPalette = new Uint8Array(ulaPlusPalette);
+      }
+    }
+    if (ulaPlusPalette2) state.ulaPlusPalette2 = new Uint8Array(ulaPlusPalette2);
     // Include SPECSCII grids if present
     if (specsciiCharGrid) state.specsciiCharGrid = new Uint8Array(specsciiCharGrid);
     if (specsciiAttrGrid) state.specsciiAttrGrid = new Uint8Array(specsciiAttrGrid);
@@ -10815,7 +11505,14 @@ function undo() {
     format: currentFormat,
     fileName: currentFileName
   };
-  if (ulaPlusPalette) state.ulaPlusPalette = new Uint8Array(ulaPlusPalette);
+  if (ulaPlusPalette) {
+    if (ulaPlusPalette2 && ulaPlusPalette === ulaPlusPalette2 && currentPicture && currentPicture.palette && currentPicture.palette.length >= 128) {
+      state.ulaPlusPalette = new Uint8Array(currentPicture.palette.subarray(0, 64));
+    } else {
+      state.ulaPlusPalette = new Uint8Array(ulaPlusPalette);
+    }
+  }
+  if (ulaPlusPalette2) state.ulaPlusPalette2 = new Uint8Array(ulaPlusPalette2);
   if (specsciiCharGrid) state.specsciiCharGrid = new Uint8Array(specsciiCharGrid);
   if (specsciiAttrGrid) state.specsciiAttrGrid = new Uint8Array(specsciiAttrGrid);
   if (specsciiMask) state.specsciiMask = new Uint8Array(specsciiMask);
@@ -10862,9 +11559,10 @@ function undo() {
     if (previousState.ulaPlusPalette) {
       ulaPlusPalette = new Uint8Array(previousState.ulaPlusPalette);
       if (typeof updateUlaPlusPalette === 'function') updateUlaPlusPalette();
-    } else if (previousState.format && previousState.format !== FORMAT.SCR_ULAPLUS) {
+    } else if (previousState.format && previousState.format !== FORMAT.SCR_ULAPLUS && previousState.format !== FORMAT.GIGAATTR_PLUS) {
       ulaPlusPalette = null;
     }
+    ulaPlusPalette2 = previousState.ulaPlusPalette2 ? new Uint8Array(previousState.ulaPlusPalette2) : null;
 
     // Restore SPECSCII grids if present
     if (previousState.specsciiCharGrid) specsciiCharGrid = previousState.specsciiCharGrid;
@@ -10922,7 +11620,14 @@ function redo() {
     format: currentFormat,
     fileName: currentFileName
   };
-  if (ulaPlusPalette) state.ulaPlusPalette = new Uint8Array(ulaPlusPalette);
+  if (ulaPlusPalette) {
+    if (ulaPlusPalette2 && ulaPlusPalette === ulaPlusPalette2 && currentPicture && currentPicture.palette && currentPicture.palette.length >= 128) {
+      state.ulaPlusPalette = new Uint8Array(currentPicture.palette.subarray(0, 64));
+    } else {
+      state.ulaPlusPalette = new Uint8Array(ulaPlusPalette);
+    }
+  }
+  if (ulaPlusPalette2) state.ulaPlusPalette2 = new Uint8Array(ulaPlusPalette2);
   if (specsciiCharGrid) state.specsciiCharGrid = new Uint8Array(specsciiCharGrid);
   if (specsciiAttrGrid) state.specsciiAttrGrid = new Uint8Array(specsciiAttrGrid);
   if (specsciiMask) state.specsciiMask = new Uint8Array(specsciiMask);
@@ -10968,9 +11673,10 @@ function redo() {
     if (redoState.ulaPlusPalette) {
       ulaPlusPalette = new Uint8Array(redoState.ulaPlusPalette);
       if (typeof updateUlaPlusPalette === 'function') updateUlaPlusPalette();
-    } else if (redoState.format && redoState.format !== FORMAT.SCR_ULAPLUS) {
+    } else if (redoState.format && redoState.format !== FORMAT.SCR_ULAPLUS && redoState.format !== FORMAT.GIGAATTR_PLUS) {
       ulaPlusPalette = null;
     }
+    ulaPlusPalette2 = redoState.ulaPlusPalette2 ? new Uint8Array(redoState.ulaPlusPalette2) : null;
 
     // Restore SPECSCII grids if present
     if (redoState.specsciiCharGrid) specsciiCharGrid = redoState.specsciiCharGrid;
@@ -11099,25 +11805,50 @@ function clearScreen() {
     return;
   }
 
-  // Gigascreen: clear both frames with selected virtual colors
+  // Gigascreen: clear frames with selected colors
   if (isGigascreenEditable()) {
-    // Get attributes for both frames from virtual colors
-    const frame1 = getGigascreenFrameColors(0);
-    const frame2 = getGigascreenFrameColors(1);
-    const attr1 = buildAttribute(frame1.inkColor, frame1.paperColor, frame1.bright, false);
-    const attr2 = buildAttribute(frame2.inkColor, frame2.paperColor, frame2.bright, false);
     const gigaFS = getGigaFrameSize();
     const gigaAS = getGigaAttrSize();
+    const isGapUlaPlusCombined = currentFormat === FORMAT.GIGAATTR_PLUS && isUlaPlusMode && !ulaPlusPalette2 && gigascreenEditMode === 'combined';
+    const splitFrame = gigascreenEditMode === 'screen1' || isGapUlaPlusCombined ? 0 : gigascreenEditMode === 'screen2' ? 1 : -1;
 
-    // Clear bitmap in both frames (all pixels = paper)
-    for (let i = 0; i < SCREEN.BITMAP_SIZE; i++) {
-      screenData[i] = 0;
-      screenData[gigaFS + i] = 0;
-    }
-    // Set attributes in both frames
-    for (let i = 0; i < gigaAS; i++) {
-      screenData[SCREEN.BITMAP_SIZE + i] = attr1;
-      screenData[gigaFS + SCREEN.BITMAP_SIZE + i] = attr2;
+    if (splitFrame >= 0) {
+      // Split mode (or GAP+ULA+ combined): clear the active frame
+      const attr = getCurrentDrawingAttribute();
+      const offset = splitFrame === 0 ? 0 : gigaFS;
+      for (let i = 0; i < SCREEN.BITMAP_SIZE; i++) {
+        screenData[offset + i] = 0;
+      }
+      // GIGAATTR: mirror bitmap clear to the other frame (shared bitmap)
+      if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+        const otherOffset = splitFrame === 0 ? gigaFS : 0;
+        for (let i = 0; i < SCREEN.BITMAP_SIZE; i++) {
+          screenData[otherOffset + i] = 0;
+        }
+      }
+      for (let i = 0; i < gigaAS; i++) {
+        screenData[offset + SCREEN.BITMAP_SIZE + i] = attr;
+      }
+      // GAP+ULA+ combined: mirror attribute clear to frame 2
+      if (isGapUlaPlusCombined) {
+        for (let i = 0; i < gigaAS; i++) {
+          screenData[gigaFS + SCREEN.BITMAP_SIZE + i] = attr;
+        }
+      }
+    } else {
+      // Combined mode: clear both frames with virtual colors
+      const frame1 = getGigascreenFrameColors(0);
+      const frame2 = getGigascreenFrameColors(1);
+      const attr1 = buildAttribute(frame1.inkColor, frame1.paperColor, frame1.bright, frame1.flash);
+      const attr2 = buildAttribute(frame2.inkColor, frame2.paperColor, frame2.bright, frame2.flash);
+      for (let i = 0; i < SCREEN.BITMAP_SIZE; i++) {
+        screenData[i] = 0;
+        screenData[gigaFS + i] = 0;
+      }
+      for (let i = 0; i < gigaAS; i++) {
+        screenData[SCREEN.BITMAP_SIZE + i] = attr1;
+        screenData[gigaFS + SCREEN.BITMAP_SIZE + i] = attr2;
+      }
     }
     if (layersEnabled) initLayers();
     editorRender();
@@ -11687,18 +12418,15 @@ function renderPreview() {
             // Frame 1 data
             const byte1 = screenData[bitmapOffset];
             const attr1 = screenData[attrOffset];
-            const ink1Idx = attr1 & 0x07;
-            const paper1Idx = (attr1 >> 3) & 0x07;
-            const bright1 = (attr1 & 0x40) !== 0;
-            const palette1 = bright1 ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
+            const colors1 = getColorsRgb(attr1);
 
-            // Frame 2 data
+            // Frame 2 data — swap ULA+ palette if dual-palette GAP
             const byte2 = screenData[gigaFS + bitmapOffset];
             const attr2 = screenData[gigaFS + attrOffset];
-            const ink2Idx = attr2 & 0x07;
-            const paper2Idx = (attr2 >> 3) & 0x07;
-            const bright2 = (attr2 & 0x40) !== 0;
-            const palette2 = bright2 ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
+            const savedPal = ulaPlusPalette2 ? ulaPlusPalette : null;
+            if (ulaPlusPalette2) ulaPlusPalette = ulaPlusPalette2;
+            const colors2 = getColorsRgb(attr2);
+            if (savedPal) ulaPlusPalette = savedPal;
 
             const x = col * 8;
 
@@ -11709,10 +12437,10 @@ function renderPreview() {
 
               // Get color from each frame
               const isSet1 = (byte1 & (0x80 >> bit)) !== 0;
-              const rgb1 = isSet1 ? palette1[ink1Idx] : palette1[paper1Idx];
+              const rgb1 = isSet1 ? colors1.inkRgb : colors1.paperRgb;
 
               const isSet2 = (byte2 & (0x80 >> bit)) !== 0;
-              const rgb2 = isSet2 ? palette2[ink2Idx] : palette2[paper2Idx];
+              const rgb2 = isSet2 ? colors2.inkRgb : colors2.paperRgb;
 
               // Blend by averaging
               data[pixelIndex] = Math.round((rgb1[0] + rgb2[0]) / 2);
@@ -12784,7 +13512,7 @@ function saveScrFile(filename) {
   const formatExtMap = {
     [FORMAT.ATTR_53C]: '.53c', [FORMAT.BSC]: '.bsc', [FORMAT.IFL]: '.ifl',
     [FORMAT.MLT]: '.mlt', [FORMAT.BMC4]: '.bmc4', [FORMAT.RGB3]: '.3',
-    [FORMAT.GIGASCREEN]: '.img', [FORMAT.MGH]: '.mg8', [FORMAT.HLR]: '.hlr', [FORMAT.STL]: '.stl', [FORMAT.BSP]: '.bsp', [FORMAT.SPECSCII]: '.specscii',
+    [FORMAT.GIGASCREEN]: '.img', [FORMAT.GIGAATTR]: '.ga', [FORMAT.GIGAATTR_PLUS]: '.gap', [FORMAT.MGH]: '.mg8', [FORMAT.HLR]: '.hlr', [FORMAT.STL]: '.stl', [FORMAT.BSP]: '.bsp', [FORMAT.SPECSCII]: '.specscii',
     [FORMAT.MONO_FULL]: '.scr', [FORMAT.MONO_2_3]: '.scr', [FORMAT.MONO_1_3]: '.scr',
     [FORMAT.SCR_ULAPLUS]: '.scr', [FORMAT.SCR_ULANEXT]: '.scr', [FORMAT.SCR]: '.scr',
     [FORMAT.ZXP]: '.zxp',
@@ -13118,8 +13846,35 @@ function saveScrFile(filename) {
     }
     saveData = (typeof exportPicture === 'function') ? exportPicture(currentPicture)
       : screenData.slice(0, MLT.TOTAL_SIZE_ULAPLUS);
+  } else if (currentFormat === FORMAT.GIGAATTR_PLUS && currentPicture && typeof exportPicture === 'function') {
+    // GAP: ensure palette is current before export
+    if (ulaPlusPalette) {
+      if (ulaPlusPalette2) {
+        const dual = new Uint8Array(128);
+        // In screen2 mode ulaPlusPalette === ulaPlusPalette2 (same ref),
+        // so read palette 1 from the existing picture.palette bytes 0-63.
+        if (ulaPlusPalette === ulaPlusPalette2 && currentPicture.palette && currentPicture.palette.length >= 128) {
+          dual.set(currentPicture.palette.subarray(0, 64), 0);
+        } else {
+          dual.set(ulaPlusPalette, 0);
+        }
+        dual.set(ulaPlusPalette2, 64);
+        currentPicture.palette = dual;
+      } else {
+        currentPicture.palette = ulaPlusPalette.slice();
+      }
+    }
+    if (typeof syncPictureFromScreenData === 'function') {
+      syncPictureFromScreenData(screenData, currentPicture);
+    }
+    const exported = exportPicture(currentPicture);
+    saveData = exported || screenData.slice(0, GIGAATTR_PLUS.TOTAL_SIZE_SHARED);
   } else if (currentPicture && typeof exportPicture === 'function') {
     // Use internal picture format export for all formats with currentPicture
+    // Sync picture from screenData first (drawing modifies screenData directly)
+    if (typeof syncPictureFromScreenData === 'function') {
+      syncPictureFromScreenData(screenData, currentPicture);
+    }
     const exported = exportPicture(currentPicture);
     saveData = exported || screenData.slice(0, SCREEN.TOTAL_SIZE);
   } else {
@@ -13127,7 +13882,7 @@ function saveScrFile(filename) {
     const formatSizeMap = {
       [FORMAT.ATTR_53C]: 768, [FORMAT.BSC]: BSC.TOTAL_SIZE, [FORMAT.IFL]: IFL.TOTAL_SIZE,
       [FORMAT.MLT]: MLT.TOTAL_SIZE, [FORMAT.BMC4]: BMC4.TOTAL_SIZE, [FORMAT.RGB3]: RGB3.TOTAL_SIZE,
-      [FORMAT.GIGASCREEN]: GIGASCREEN.TOTAL_SIZE, [FORMAT.HLR]: GIGASCREEN.TOTAL_SIZE, [FORMAT.STL]: 15360, [FORMAT.MONO_FULL]: 6144,
+      [FORMAT.GIGASCREEN]: GIGASCREEN.TOTAL_SIZE, [FORMAT.GIGAATTR]: GIGAATTR.TOTAL_SIZE, [FORMAT.GIGAATTR_PLUS]: GIGAATTR_PLUS.TOTAL_SIZE_SHARED, [FORMAT.HLR]: GIGASCREEN.TOTAL_SIZE, [FORMAT.STL]: 15360, [FORMAT.MONO_FULL]: 6144,
       [FORMAT.MONO_2_3]: 4096, [FORMAT.MONO_1_3]: 2048, [FORMAT.SCR_ULAPLUS]: ULAPLUS.TOTAL_SIZE,
       [FORMAT.SCR]: SCREEN.TOTAL_SIZE
     };
@@ -13146,6 +13901,8 @@ function saveScrFile(filename) {
                  currentFormat === FORMAT.MLT ? 'screen.mlt' :
                  currentFormat === FORMAT.BMC4 ? 'screen.bmc4' :
                  currentFormat === FORMAT.GIGASCREEN ? 'screen.img' :
+                 currentFormat === FORMAT.GIGAATTR ? 'screen.ga' :
+                 currentFormat === FORMAT.GIGAATTR_PLUS ? 'screen.gap' :
                  currentFormat === FORMAT.MGH ? (currentPicture && currentPicture.attrCellHeight === 1 ? 'screen.mg1' : currentPicture && currentPicture.attrCellHeight === 2 ? 'screen.mg2' : currentPicture && currentPicture.attrCellHeight === 4 ? 'screen.mg4' : 'screen.mg8') :
                  currentFormat === FORMAT.HLR ? 'screen.hlr' :
                  currentFormat === FORMAT.STL ? 'screen.stl' :
@@ -13544,17 +14301,50 @@ function createNewPicture(format, params) {
       break;
 
     case 'gigascreen':
-      // Gigascreen: two SCR frames (6912 * 2 = 13824 bytes)
+    case 'gigaattr':
+      // Gigascreen/Gigaattr: two SCR frames (6912 * 2 = 13824 bytes in memory)
       newData = new Uint8Array(GIGASCREEN.TOTAL_SIZE);
-      // Fill attributes in both frames
-      for (let i = SCREEN.BITMAP_SIZE; i < SCREEN.TOTAL_SIZE; i++) {
-        newData[i] = newAttr;
-        newData[GIGASCREEN.FRAME_SIZE + i] = newAttr;
-      }
-      newFormat = FORMAT.GIGASCREEN;
-      newFileName = 'new_screen.img';
-      // Initialize virtual palette
+      // Initialize virtual palette first so getGigascreenFrameColors works
       generateGigascreenVirtualPalette();
+      // Fill attributes: use virtual palette colors for each frame
+      {
+        const f1 = getGigascreenFrameColors(0);
+        const attr1 = buildAttribute(f1.inkColor, f1.paperColor, f1.bright, f1.flash);
+        const f2 = getGigascreenFrameColors(1);
+        const attr2 = buildAttribute(f2.inkColor, f2.paperColor, f2.bright, f2.flash);
+        for (let i = SCREEN.BITMAP_SIZE; i < SCREEN.TOTAL_SIZE; i++) {
+          newData[i] = attr1;
+          newData[GIGASCREEN.FRAME_SIZE + i] = attr2;
+        }
+      }
+      newFormat = format === 'gigaattr' ? FORMAT.GIGAATTR : FORMAT.GIGASCREEN;
+      newFileName = format === 'gigaattr' ? 'new_screen.ga' : 'new_screen.img';
+      break;
+
+    case 'gap':
+      // GAP: Gigaattr + ULA+ palette
+      newData = new Uint8Array(GIGASCREEN.TOTAL_SIZE);
+      generateGigascreenVirtualPalette();
+      {
+        const f1 = getGigascreenFrameColors(0);
+        const attr1 = buildAttribute(f1.inkColor, f1.paperColor, f1.bright, f1.flash);
+        const f2 = getGigascreenFrameColors(1);
+        const attr2 = buildAttribute(f2.inkColor, f2.paperColor, f2.bright, f2.flash);
+        for (let i = SCREEN.BITMAP_SIZE; i < SCREEN.TOTAL_SIZE; i++) {
+          newData[i] = attr1;
+          newData[GIGASCREEN.FRAME_SIZE + i] = attr2;
+        }
+      }
+      newFormat = FORMAT.GIGAATTR_PLUS;
+      newFileName = 'new_screen.gap';
+      {
+        const gapPalette = generateDefaultUlaPlusPalette();
+        ulaPlusPalette = gapPalette.slice();
+        ulaPlusPalette2 = null;
+        isUlaPlusMode = true;
+        resetUlaNextMode();
+        resetUlaPlusColors();
+      }
       break;
 
     case 'mg8':
@@ -13676,6 +14466,248 @@ function createNewPicture(format, params) {
           }
           for (let i = 0; i < 768; i++) {
             newInternalPicture.planes[p].attrs[i] = planeAttrs[p];
+          }
+        }
+      }
+      break;
+    }
+
+    case 'gigaattr_pat': {
+      // GA Pattern: gigascreen layout with fill pattern bitmap + two attr frames.
+      // Identical structure to HLR but tagged as GA format with pattern contentMode.
+      newData = new Uint8Array(GIGASCREEN.TOTAL_SIZE);
+      const gaDefaultPattern = new Uint8Array([0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00]);
+      const gaPattern = (params && params.hlrPattern && params.hlrPattern.length === 8)
+        ? new Uint8Array(params.hlrPattern)
+        : gaDefaultPattern;
+      // Fill both frames' bitmap with the pattern (interleaved SCR layout)
+      for (let third = 0; third < 3; third++) {
+        const thirdBase = third * 2048;
+        for (let pixelLine = 0; pixelLine < 8; pixelLine++) {
+          const fill = gaPattern[pixelLine];
+          for (let charRow = 0; charRow < 8; charRow++) {
+            const rowOff = thirdBase + charRow * 32 + pixelLine * 256;
+            for (let col = 0; col < 32; col++) {
+              newData[rowOff + col] = fill;
+              newData[GIGASCREEN.FRAME_SIZE + rowOff + col] = fill;
+            }
+          }
+        }
+      }
+      // Build per-frame attributes from the current gigascreen virtual ink/paper
+      if (gigascreenVirtualPalette.length === 0) {
+        generateGigascreenVirtualPalette();
+      }
+      let gaAttr1 = newAttr;
+      let gaAttr2 = newAttr;
+      const gaInkEntry = gigascreenVirtualPalette[gigascreenVirtualInk];
+      const gaPaperEntry = gigascreenVirtualPalette[gigascreenVirtualPaper];
+      if (gaInkEntry && gaPaperEntry) {
+        const f1ink = gaInkEntry.frame1Color & 7;
+        const f1paper = gaPaperEntry.frame1Color & 7;
+        const f1bright = gaInkEntry.frame1Color >= 8 || gaPaperEntry.frame1Color >= 8;
+        const f2ink = gaInkEntry.frame2Color & 7;
+        const f2paper = gaPaperEntry.frame2Color & 7;
+        const f2bright = gaInkEntry.frame2Color >= 8 || gaPaperEntry.frame2Color >= 8;
+        gaAttr1 = buildAttribute(f1ink, f1paper, f1bright, false);
+        gaAttr2 = buildAttribute(f2ink, f2paper, f2bright, false);
+      }
+      for (let i = 0; i < 768; i++) {
+        newData[6144 + i] = gaAttr1;
+        newData[GIGASCREEN.FRAME_SIZE + 6144 + i] = gaAttr2;
+      }
+      newFormat = FORMAT.GIGAATTR;
+      newFileName = 'new_screen.ga';
+      // Create internal picture with pattern mode
+      if (typeof makePicture === 'function') {
+        newInternalPicture = makePicture({
+          sourceFormat: 'ga',
+          fileName: newFileName,
+          width: 256,
+          height: 192,
+          attrCellHeight: 8,
+          planeCount: 2,
+          contentMode: 'pattern',
+          colorMode: 'gigascreen'
+        });
+        newInternalPicture.pattern = new Uint8Array(gaPattern);
+        newInternalPicture.borderColor1 = bc;
+        newInternalPicture.borderColor2 = bc;
+        const gaPlaneAttrs = [gaAttr1, gaAttr2];
+        for (let p = 0; p < 2; p++) {
+          const bm = newInternalPicture.planes[p].bitmap;
+          for (let y = 0; y < 192; y++) {
+            const fill = gaPattern[y & 7];
+            const rowOff = y * 32;
+            for (let col = 0; col < 32; col++) {
+              bm[rowOff + col] = fill;
+            }
+          }
+          for (let i = 0; i < 768; i++) {
+            newInternalPicture.planes[p].attrs[i] = gaPlaneAttrs[p];
+          }
+        }
+      }
+      break;
+    }
+
+    case 'gap_pat': {
+      // GAP Pattern (shared ULA+ palette): same as GA pattern + ULA+ palette
+      newData = new Uint8Array(GIGASCREEN.TOTAL_SIZE);
+      const gapDefaultPattern = new Uint8Array([0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00]);
+      const gapPattern = (params && params.hlrPattern && params.hlrPattern.length === 8)
+        ? new Uint8Array(params.hlrPattern)
+        : gapDefaultPattern;
+      for (let third = 0; third < 3; third++) {
+        const thirdBase = third * 2048;
+        for (let pixelLine = 0; pixelLine < 8; pixelLine++) {
+          const fill = gapPattern[pixelLine];
+          for (let charRow = 0; charRow < 8; charRow++) {
+            const rowOff = thirdBase + charRow * 32 + pixelLine * 256;
+            for (let col = 0; col < 32; col++) {
+              newData[rowOff + col] = fill;
+              newData[GIGASCREEN.FRAME_SIZE + rowOff + col] = fill;
+            }
+          }
+        }
+      }
+      generateGigascreenVirtualPalette();
+      {
+        const f1 = getGigascreenFrameColors(0);
+        const attr1 = buildAttribute(f1.inkColor, f1.paperColor, f1.bright, f1.flash);
+        const f2 = getGigascreenFrameColors(1);
+        const attr2 = buildAttribute(f2.inkColor, f2.paperColor, f2.bright, f2.flash);
+        for (let i = SCREEN.BITMAP_SIZE; i < SCREEN.TOTAL_SIZE; i++) {
+          newData[i] = attr1;
+          newData[GIGASCREEN.FRAME_SIZE + i] = attr2;
+        }
+      }
+      newFormat = FORMAT.GIGAATTR_PLUS;
+      newFileName = 'new_screen.gap';
+      {
+        const gapPalette = generateDefaultUlaPlusPalette();
+        ulaPlusPalette = gapPalette.slice();
+        ulaPlusPalette2 = null;
+        isUlaPlusMode = true;
+        resetUlaNextMode();
+        resetUlaPlusColors();
+      }
+      // Create internal picture with pattern mode + ULA+ palette
+      if (typeof makePicture === 'function') {
+        newInternalPicture = makePicture({
+          sourceFormat: 'gap',
+          fileName: newFileName,
+          width: 256,
+          height: 192,
+          attrCellHeight: 8,
+          planeCount: 2,
+          contentMode: 'pattern',
+          colorMode: 'gigascreen'
+        });
+        newInternalPicture.pattern = new Uint8Array(gapPattern);
+        newInternalPicture.borderColor1 = bc;
+        newInternalPicture.borderColor2 = bc;
+        if (ulaPlusPalette) {
+          newInternalPicture.palette = new Uint8Array(ulaPlusPalette);
+        }
+        const f1 = getGigascreenFrameColors(0);
+        const attr1 = buildAttribute(f1.inkColor, f1.paperColor, f1.bright, f1.flash);
+        const f2 = getGigascreenFrameColors(1);
+        const attr2 = buildAttribute(f2.inkColor, f2.paperColor, f2.bright, f2.flash);
+        for (let p = 0; p < 2; p++) {
+          const bm = newInternalPicture.planes[p].bitmap;
+          for (let y = 0; y < 192; y++) {
+            const fill = gapPattern[y & 7];
+            const rowOff = y * 32;
+            for (let col = 0; col < 32; col++) {
+              bm[rowOff + col] = fill;
+            }
+          }
+          for (let i = 0; i < 768; i++) {
+            newInternalPicture.planes[p].attrs[i] = (p === 0) ? attr1 : attr2;
+          }
+        }
+      }
+      break;
+    }
+
+    case 'gap_dual_pat': {
+      // GAP Dual Pattern (dual ULA+ palettes): same as GAP pattern + two palettes
+      newData = new Uint8Array(GIGASCREEN.TOTAL_SIZE);
+      const gapDualDefaultPattern = new Uint8Array([0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00]);
+      const gapDualPattern = (params && params.hlrPattern && params.hlrPattern.length === 8)
+        ? new Uint8Array(params.hlrPattern)
+        : gapDualDefaultPattern;
+      for (let third = 0; third < 3; third++) {
+        const thirdBase = third * 2048;
+        for (let pixelLine = 0; pixelLine < 8; pixelLine++) {
+          const fill = gapDualPattern[pixelLine];
+          for (let charRow = 0; charRow < 8; charRow++) {
+            const rowOff = thirdBase + charRow * 32 + pixelLine * 256;
+            for (let col = 0; col < 32; col++) {
+              newData[rowOff + col] = fill;
+              newData[GIGASCREEN.FRAME_SIZE + rowOff + col] = fill;
+            }
+          }
+        }
+      }
+      generateGigascreenVirtualPalette();
+      {
+        const f1 = getGigascreenFrameColors(0);
+        const attr1 = buildAttribute(f1.inkColor, f1.paperColor, f1.bright, f1.flash);
+        const f2 = getGigascreenFrameColors(1);
+        const attr2 = buildAttribute(f2.inkColor, f2.paperColor, f2.bright, f2.flash);
+        for (let i = SCREEN.BITMAP_SIZE; i < SCREEN.TOTAL_SIZE; i++) {
+          newData[i] = attr1;
+          newData[GIGASCREEN.FRAME_SIZE + i] = attr2;
+        }
+      }
+      newFormat = FORMAT.GIGAATTR_PLUS;
+      newFileName = 'new_screen.gap';
+      {
+        const gapDualPal = generateDefaultUlaPlusPalette();
+        ulaPlusPalette = gapDualPal.slice();
+        ulaPlusPalette2 = gapDualPal.slice();
+        isUlaPlusMode = true;
+        resetUlaNextMode();
+        resetUlaPlusColors();
+      }
+      // Create internal picture with pattern mode + dual ULA+ palettes
+      if (typeof makePicture === 'function') {
+        newInternalPicture = makePicture({
+          sourceFormat: 'gap',
+          fileName: newFileName,
+          width: 256,
+          height: 192,
+          attrCellHeight: 8,
+          planeCount: 2,
+          contentMode: 'pattern',
+          colorMode: 'gigascreen'
+        });
+        newInternalPicture.pattern = new Uint8Array(gapDualPattern);
+        newInternalPicture.borderColor1 = bc;
+        newInternalPicture.borderColor2 = bc;
+        if (ulaPlusPalette && ulaPlusPalette2) {
+          const dualPal = new Uint8Array(128);
+          dualPal.set(ulaPlusPalette, 0);
+          dualPal.set(ulaPlusPalette2, 64);
+          newInternalPicture.palette = dualPal;
+        }
+        const f1 = getGigascreenFrameColors(0);
+        const attr1 = buildAttribute(f1.inkColor, f1.paperColor, f1.bright, f1.flash);
+        const f2 = getGigascreenFrameColors(1);
+        const attr2 = buildAttribute(f2.inkColor, f2.paperColor, f2.bright, f2.flash);
+        for (let p = 0; p < 2; p++) {
+          const bm = newInternalPicture.planes[p].bitmap;
+          for (let y = 0; y < 192; y++) {
+            const fill = gapDualPattern[y & 7];
+            const rowOff = y * 32;
+            for (let col = 0; col < 32; col++) {
+              bm[rowOff + col] = fill;
+            }
+          }
+          for (let i = 0; i < 768; i++) {
+            newInternalPicture.planes[p].attrs[i] = (p === 0) ? attr1 : attr2;
           }
         }
       }
@@ -13841,12 +14873,27 @@ function createNewPicture(format, params) {
       break;
   }
 
-  // Create internal picture for SCR/ULA+ formats (skip if already set, e.g. ZXP)
+  // Create internal picture for SCR/ULA+/Gigaattr formats (skip if already set, e.g. ZXP)
   if (!newInternalPicture) {
     if (newFormat === FORMAT.SCR && typeof importScr === 'function') {
       newInternalPicture = importScr(newData, newFileName);
     } else if (newFormat === FORMAT.SCR_ULAPLUS && typeof importScrUlaPlus === 'function') {
       newInternalPicture = importScrUlaPlus(newData, newFileName);
+    } else if (newFormat === FORMAT.GIGAATTR && typeof importPicture === 'function') {
+      // Gigaattr: newData is 13824-byte Gigascreen layout; import as Gigascreen then re-tag
+      newInternalPicture = importPicture(FORMAT.GIGASCREEN, newData, newFileName);
+      if (newInternalPicture) newInternalPicture.sourceFormat = 'ga';
+    } else if (newFormat === FORMAT.GIGAATTR_PLUS && typeof importPicture === 'function') {
+      // GAP: newData is 13824-byte Gigascreen layout; import as Gigascreen then re-tag with palette
+      newInternalPicture = importPicture(FORMAT.GIGASCREEN, newData, newFileName);
+      if (newInternalPicture) {
+        newInternalPicture.sourceFormat = 'gap';
+        if (ulaPlusPalette) {
+          newInternalPicture.palette = ulaPlusPalette2
+            ? (() => { const p = new Uint8Array(128); p.set(ulaPlusPalette, 0); p.set(ulaPlusPalette2, 64); return p; })()
+            : new Uint8Array(ulaPlusPalette);
+        }
+      }
     }
   }
 
@@ -13994,6 +15041,17 @@ function updateEditorInfo(x, y) {
     return;
   } else if ((currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) && currentPicture) {
     attr = screenData[getAttributeAddress(x, y)];
+  } else if (isGigascreenEditable()) {
+    const gigaFS = getGigaFrameSize();
+    const charRow = getGigaAttrRow(y);
+    const charCol = Math.floor(x / 8);
+    const attrOffset = charRow * 32 + charCol;
+    const splitFrame = gigascreenEditMode === 'screen1' ? 0 : gigascreenEditMode === 'screen2' ? 1 : -1;
+    if (splitFrame === 1) {
+      attr = screenData[gigaFS + 6144 + attrOffset];
+    } else {
+      attr = screenData[6144 + attrOffset];
+    }
   } else {
     if (screenData.length < SCREEN.TOTAL_SIZE) {
       infoEl.textContent = 'No screen loaded';
@@ -14603,6 +15661,126 @@ function updateColorSelectors() {
 }
 
 // ============================================================================
+// Gigascreen Split-Screen Edit Mode
+// ============================================================================
+
+/**
+ * Sets the gigascreen split-screen edit mode and updates all related state.
+ * Screen 1/2 modes route editing through the standard SCR path (one frame only).
+ * Combined mode uses the full gigascreen virtual color path (both frames).
+ * @param {'combined'|'screen1'|'screen2'} mode
+ */
+function setGigascreenEditMode(mode) {
+  gigascreenEditMode = mode;
+  // Update force-frame for the main canvas renderer
+  if (mode === 'screen1') {
+    gigascreenForceFrame = 0;
+  } else if (mode === 'screen2') {
+    gigascreenForceFrame = 1;
+  } else {
+    gigascreenForceFrame = -1;
+  }
+
+  // Switch palette: combined → gigascreen 136-color, screen 1/2 → standard 16-color
+  // GAP with ULA+: show ULA+ grid in screen1/screen2 always; in combined only if shared palette
+  const isGapShowUlaPlus = currentFormat === FORMAT.GIGAATTR_PLUS && isUlaPlusMode &&
+    (mode !== 'combined' || !ulaPlusPalette2);
+  const showGigaPalette = (mode === 'combined') && !isGapShowUlaPlus;
+  toggleGigascreenColorPicker(showGigaPalette);
+  if (showGigaPalette) {
+    generateGigascreenVirtualPalette();
+    buildGigascreenPalette();
+    buildGigascreenPaperStrip();
+    updateGigascreenColorPickerUI();
+  }
+  const stdSection = document.getElementById('editorColorSection');
+  if (isGapShowUlaPlus) {
+    // GAP: show ULA+ palette grid
+    if (stdSection) stdSection.style.display = '';
+    updateUlaPlusSectionVisibility();
+    // Swap to active palette for the selected frame (dual palette)
+    if (ulaPlusPalette2 && currentPicture && currentPicture.palette && currentPicture.palette.length >= 128) {
+      if (mode === 'screen2') {
+        // Sync palette 2 from picture data and make it the active palette
+        ulaPlusPalette2 = new Uint8Array(currentPicture.palette.subarray(64, 128));
+        ulaPlusPalette = ulaPlusPalette2;
+      } else {
+        // Restore palette 1 from picture data
+        ulaPlusPalette = new Uint8Array(currentPicture.palette.subarray(0, 64));
+      }
+    }
+    buildUlaPlusGrid();
+    buildUlaPlusClassic();
+    updateUlaPlusPalette();
+  } else {
+    if (stdSection) stdSection.style.display = showGigaPalette ? 'none' : '';
+  }
+
+  // Update mode selector button states and re-render
+  updateGigascreenEditModeUI();
+  editorRender();
+}
+
+/**
+ * Updates the gigascreen edit mode selector button active states.
+ */
+function updateGigascreenEditModeUI() {
+  const selector = document.getElementById('gigascreenEditModeSelector');
+  if (selector) selector.style.display = isGigascreenEditable() ? '' : 'none';
+  const btn1 = document.getElementById('gigaEditScreen1Btn');
+  const btn2 = document.getElementById('gigaEditScreen2Btn');
+  const btnC = document.getElementById('gigaEditCombinedBtn');
+  if (btn1) btn1.classList.toggle('giga-edit-mode-active', gigascreenEditMode === 'screen1');
+  if (btn2) btn2.classList.toggle('giga-edit-mode-active', gigascreenEditMode === 'screen2');
+  if (btnC) btnC.classList.toggle('giga-edit-mode-active', gigascreenEditMode === 'combined');
+}
+
+/**
+ * Wires up click handlers for gigascreen edit mode selector buttons.
+ */
+function initGigascreenEditModeButtons() {
+  const btn1 = document.getElementById('gigaEditScreen1Btn');
+  const btn2 = document.getElementById('gigaEditScreen2Btn');
+  const btnC = document.getElementById('gigaEditCombinedBtn');
+  if (btn1) btn1.addEventListener('click', () => setGigascreenEditMode('screen1'));
+  if (btn2) btn2.addEventListener('click', () => setGigascreenEditMode('screen2'));
+  if (btnC) btnC.addEventListener('click', () => setGigascreenEditMode('combined'));
+}
+
+/**
+ * Sets the active CLUT page for dual ULA+ palette grid pagination.
+ * Updates tab button highlighting and rebuilds ink/paper grids.
+ * @param {number} page - CLUT page index (0-3)
+ */
+function setGigascreenClutPage(page) {
+  gigascreenClutPage = page;
+  // Update tab button active states
+  const tabs = document.getElementById('gigascreenClutTabs');
+  if (tabs) {
+    tabs.querySelectorAll('.giga-edit-mode-btn').forEach(btn => {
+      btn.classList.toggle('giga-edit-mode-active', parseInt(/** @type {HTMLElement} */ (btn).dataset.clut, 10) === page);
+    });
+  }
+  buildGigascreenPalette();
+  buildGigascreenPaperStrip();
+  updateGigascreenColorPickerUI();
+}
+
+/**
+ * Wires up click handlers for CLUT page tab buttons.
+ */
+function initGigascreenClutTabs() {
+  const tabs = document.getElementById('gigascreenClutTabs');
+  if (!tabs) return;
+  tabs.querySelectorAll('.giga-edit-mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const page = parseInt(/** @type {HTMLElement} */ (btn).dataset.clut, 10);
+      if (!isNaN(page)) setGigascreenClutPage(page);
+    });
+  });
+}
+
+// ============================================================================
 // Gigascreen Virtual Color Picker
 // ============================================================================
 
@@ -14621,10 +15799,10 @@ function toggleGigascreenColorPicker(show) {
     if (a) a.style.display = 'none';
     if (r) r.style.display = 'none';
   }
-  // The "Edit HLR fill pattern..." button only applies to HLR pictures.
+  // The "Edit fill pattern..." button applies to HLR and GA/GAP pattern pictures.
   const hlrBtnRow = document.getElementById('hlrPatternButtonRow');
   if (hlrBtnRow) {
-    hlrBtnRow.style.display = (show && currentFormat === FORMAT.HLR) ? '' : 'none';
+    hlrBtnRow.style.display = (show && (currentFormat === FORMAT.HLR || isGigaPatternMode())) ? '' : 'none';
   }
 }
 
@@ -14770,8 +15948,29 @@ function updateGigascreenColorPickerUI() {
     inkPreview.title = inkColor.name;
   }
   if (paperPreview && paperColor) {
-    paperPreview.style.background = `rgb(${paperColor.rgb[0]},${paperColor.rgb[1]},${paperColor.rgb[2]})`;
-    paperPreview.title = paperColor.name;
+    // In dual ULA+ mode, the virtual palette stores ink blends but the paper preview
+    // needs to show the actual paper blend (different palette positions).
+    const isDualUla = currentFormat === FORMAT.GIGAATTR_PLUS && isUlaPlusMode && ulaPlusPalette2;
+    const dualPal = isDualUla && currentPicture && currentPicture.palette && currentPicture.palette.length >= 128
+      ? currentPicture.palette : null;
+    if (dualPal) {
+      const p1 = paperColor.frame1Color;
+      const p2 = paperColor.frame2Color;
+      const clut1 = p1 >> 3, sub1 = p1 & 7;
+      const clut2 = p2 >> 3, sub2 = p2 & 7;
+      const paper1Rgb = grb332ToRgb(dualPal[clut1 * 16 + 8 + sub1]);
+      const paper2Rgb = grb332ToRgb(dualPal[64 + clut2 * 16 + 8 + sub2]);
+      const blended = [
+        Math.round((paper1Rgb[0] + paper2Rgb[0]) / 2),
+        Math.round((paper1Rgb[1] + paper2Rgb[1]) / 2),
+        Math.round((paper1Rgb[2] + paper2Rgb[2]) / 2)
+      ];
+      paperPreview.style.background = `rgb(${blended[0]},${blended[1]},${blended[2]})`;
+      paperPreview.title = paperColor.name + ' (paper)';
+    } else {
+      paperPreview.style.background = `rgb(${paperColor.rgb[0]},${paperColor.rgb[1]},${paperColor.rgb[2]})`;
+      paperPreview.title = paperColor.name;
+    }
   }
 
   // Update palette grid selection markers
@@ -14792,11 +15991,48 @@ function update4ColorPicker() {
 
   container.innerHTML = '';
 
+  // GIGAATTR: shared bitmap → only 2 colors per cell (ink blend, paper blend).
+  // Show a fixed ink/paper indicator instead of the 4-color picker.
+  // Left button always draws ink blend, right button always draws paper blend.
+  if (typeof FORMAT !== 'undefined' && (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS)) {
+    gigascreenPrimaryColor = 0;    // Ink+Ink
+    gigascreenSecondaryColor = 3;  // Paper+Paper
+
+    [0, 3].forEach((index) => {
+      const color = colors[index];
+      const isInkSwatch = index === 0;
+      const textColor = (color.rgb[0] + color.rgb[1] + color.rgb[2]) > 384 ? '#000' : '#fff';
+      const borderColor = isInkSwatch
+        ? getCSSVar('--accent-color', '#4a9eff')
+        : getCSSVar('--danger-hover', '#ff6b6b');
+
+      const cell = document.createElement('div');
+      cell.style.cssText = `
+        width: 36px;
+        height: 28px;
+        border: 2px solid ${borderColor};
+        border-radius: 3px;
+        background: rgb(${color.rgb[0]},${color.rgb[1]},${color.rgb[2]});
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 9px;
+        color: ${textColor};
+        font-weight: bold;
+        position: relative;
+      `;
+      cell.title = isInkSwatch ? 'Ink blend (left button)' : 'Paper blend (right button)';
+      cell.textContent = isInkSwatch ? 'L' : 'R';
+      container.appendChild(cell);
+    });
+    return;
+  }
+
   // For HLR (Gigascreen Lowres) the bitmap is fixed, so only colors 0
   // (Ink+Ink, top half) and 3 (Paper+Paper, bottom half) are physically
   // displayable. Filter the picker to those two cells and clamp the active
   // primary/secondary selection to a valid index.
-  const isHlr = (typeof FORMAT !== 'undefined' && (currentFormat === FORMAT.HLR || currentFormat === FORMAT.STL));
+  const isHlr = (typeof FORMAT !== 'undefined' && (currentFormat === FORMAT.HLR || currentFormat === FORMAT.STL || isGigaPatternMode()));
   if (isHlr) {
     if (gigascreenPrimaryColor !== 0 && gigascreenPrimaryColor !== 3) {
       gigascreenPrimaryColor = 0;
@@ -14873,10 +16109,23 @@ function updateGigascreenPaletteSelection() {
   if (!container) return;
 
   const cells = container.querySelectorAll('.gigascreen-palette-cell');
-  cells.forEach((cell, index) => {
-    cell.classList.toggle('ink-selected', index === gigascreenVirtualInk);
-    cell.classList.toggle('paper-selected', index === gigascreenVirtualPaper);
+  const hasPaperStrip = !!document.getElementById('gigascreenPaperStripGrid')?.children.length;
+  cells.forEach((cell) => {
+    const idx = parseInt(/** @type {HTMLElement} */ (cell).dataset.index, 10);
+    cell.classList.toggle('ink-selected', idx === gigascreenVirtualInk);
+    // Show paper selection on ink grid only when paper strip is not visible
+    cell.classList.toggle('paper-selected', !hasPaperStrip && idx === gigascreenVirtualPaper);
   });
+
+  // Also update selection markers on paper strip if present (paper selection only)
+  const paperContainer = document.getElementById('gigascreenPaperStripGrid');
+  if (paperContainer) {
+    const paperCells = paperContainer.querySelectorAll('.gigascreen-palette-cell');
+    paperCells.forEach((cell) => {
+      const idx = parseInt(/** @type {HTMLElement} */ (cell).dataset.index, 10);
+      cell.classList.toggle('paper-selected', idx === gigascreenVirtualPaper);
+    });
+  }
 }
 
 /**
@@ -14890,33 +16139,135 @@ function buildGigascreenPalette() {
     generateGigascreenVirtualPalette();
   }
 
+  const isDualUla = currentFormat === FORMAT.GIGAATTR_PLUS && isUlaPlusMode && ulaPlusPalette2;
+
+  // Show/hide CLUT page tabs
+  const clutTabs = document.getElementById('gigascreenClutTabs');
+  if (clutTabs) clutTabs.style.display = (isDualUla && gigascreenEditMode === 'combined') ? '' : 'none';
+
   container.innerHTML = '';
 
+  // For dual ULA+ mode, filter to entries from the active CLUT page.
+  // Each CLUT page shows 8 frame1 inks (page*8 .. page*8+7) × all 32 frame2 colors = 256 entries.
+  const clutStart = gigascreenClutPage * 8;
+  const clutEnd = clutStart + 8;
+
   gigascreenVirtualPalette.forEach((vc, index) => {
+    if (isDualUla && (vc.frame1Color < clutStart || vc.frame1Color >= clutEnd)) return;
+
     const cell = document.createElement('div');
     cell.className = 'gigascreen-palette-cell';
     cell.style.background = `rgb(${vc.rgb[0]},${vc.rgb[1]},${vc.rgb[2]})`;
     cell.title = vc.name;
     cell.dataset.index = String(index);
 
-    // Left click = set ink
-    cell.addEventListener('click', (e) => {
+    // Left mousedown = set ink (mousedown instead of click to avoid missed clicks from slight mouse movement)
+    cell.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
       e.preventDefault();
       gigascreenVirtualInk = index;
       updateGigascreenColorPickerUI();
     });
 
-    // Right click = set paper
+    // Right click = set paper (only when paper strip is not separate)
     cell.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      gigascreenVirtualPaper = index;
-      updateGigascreenColorPickerUI();
+      if (!isDualUla) {
+        gigascreenVirtualPaper = index;
+        updateGigascreenColorPickerUI();
+      }
     });
 
     container.appendChild(cell);
   });
 
   updateGigascreenPaletteSelection();
+}
+
+/**
+ * Builds the paper color reference strip for dual-palette GAP mode.
+ * Shows all cross-blended paper colors from both palettes (32×32 = 1024 entries).
+ * Mirrors the ink virtual palette structure but reads from paper palette positions.
+ * Visible only when dual ULA+ palette is active.
+ */
+function buildGigascreenPaperStrip() {
+  const wrapper = document.getElementById('gigascreenPaperStrip');
+  const container = document.getElementById('gigascreenPaperStripGrid');
+  if (!wrapper || !container) return;
+
+  const isDualUla = currentFormat === FORMAT.GIGAATTR_PLUS && isUlaPlusMode && ulaPlusPalette2;
+  const hint = document.getElementById('gigascreenPaletteHint');
+  if (!isDualUla) {
+    wrapper.style.display = 'none';
+    if (hint) hint.textContent = 'Left click = Ink, Right click = Paper';
+    return;
+  }
+
+  const dualPal = (currentPicture && currentPicture.palette && currentPicture.palette.length >= 128)
+    ? currentPicture.palette : null;
+  if (!dualPal) {
+    wrapper.style.display = 'none';
+    return;
+  }
+
+  wrapper.style.display = '';
+  container.innerHTML = '';
+  if (hint) hint.textContent = 'Click = Ink';
+
+  // Build RGB arrays for paper entries from both palettes (32 per palette)
+  // Paper position: palette[CLUT*16 + 8 + sub], CLUT=0-3, sub=0-7
+  const paper1Colors = [];
+  const paper2Colors = [];
+  for (let clut = 0; clut < 4; clut++) {
+    for (let sub = 0; sub < 8; sub++) {
+      const palIdx = clut * 16 + 8 + sub;
+      paper1Colors.push(grb332ToRgb(dualPal[palIdx]));
+      paper2Colors.push(grb332ToRgb(dualPal[64 + palIdx]));
+    }
+  }
+
+  // Filter by active CLUT page: only show paper1 entries from the current CLUT
+  // (8 papers per CLUT × 32 frame2 papers = 256 per page)
+  const clutStart = gigascreenClutPage * 8;
+  const clutEnd = clutStart + 8;
+
+  for (let p1 = clutStart; p1 < clutEnd; p1++) {
+    for (let p2 = 0; p2 < 32; p2++) {
+      const rgb1 = paper1Colors[p1];
+      const rgb2 = paper2Colors[p2];
+      const blended = [
+        Math.round((rgb1[0] + rgb2[0]) / 2),
+        Math.round((rgb1[1] + rgb2[1]) / 2),
+        Math.round((rgb1[2] + rgb2[2]) / 2)
+      ];
+
+      // Map paper strip cell to corresponding virtual palette index (same frame1/frame2 position)
+      const vpIndex = p1 * 32 + p2;
+
+      const cell = document.createElement('div');
+      cell.className = 'gigascreen-palette-cell';
+      cell.style.background = `rgb(${blended[0]},${blended[1]},${blended[2]})`;
+      const n1 = GIGASCREEN_COLOR_NAMES[p1] || ('P' + p1);
+      const n2 = GIGASCREEN_COLOR_NAMES[p2] || ('P' + p2);
+      cell.title = p1 === p2 ? `Paper ${n1}` : `Paper ${n1} + ${n2}`;
+      cell.dataset.index = String(vpIndex);
+
+      // Left mousedown = set paper (mousedown instead of click to avoid missed clicks from slight mouse movement)
+      cell.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        gigascreenVirtualPaper = vpIndex;
+        updateGigascreenColorPickerUI();
+      });
+
+      // Right click = suppress context menu only
+      cell.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+      });
+
+      container.appendChild(cell);
+    }
+  }
 }
 
 /**
@@ -15021,6 +16372,7 @@ function ulaPlusClearCopySource() {
  */
 function ulaPlusRemapAttrsWithinClut(oldPalette) {
   if (!screenData || !ulaPlusPalette) return;
+  // Remap attributes in frame 1
   const attrStart = SCREEN.BITMAP_SIZE;
   const attrEnd = attrStart + SCREEN.ATTR_SIZE;
   if (screenData.length < attrEnd) return;
@@ -15044,6 +16396,34 @@ function ulaPlusRemapAttrsWithinClut(oldPalette) {
       screenData[pos] = flagBits | (newPaper << 3) | newInk;
     }
   }
+  // GAP: also remap frame 2 attributes (only if editing the shared palette or frame 1 palette)
+  if (currentFormat === FORMAT.GIGAATTR_PLUS) {
+    const gigaFS = getGigaFrameSize();
+    const attr2Start = gigaFS + SCREEN.BITMAP_SIZE;
+    const attr2End = attr2Start + SCREEN.ATTR_SIZE;
+    if (screenData.length >= attr2End) {
+      for (let pos = attr2Start; pos < attr2End; pos++) {
+        const oldAttr = screenData[pos];
+        const oldInk = oldAttr & 0x07;
+        const oldPaper = (oldAttr >> 3) & 0x07;
+        const flagBits = oldAttr & 0xC0;
+        const clutBase = (((oldAttr & 0x80) >> 6) | ((oldAttr & 0x40) >> 6)) * ULAPLUS.CLUT_SIZE;
+        const oldInkColor = oldPalette[clutBase + oldInk];
+        const oldPaperColor = oldPalette[clutBase + 8 + oldPaper];
+        let newInk = -1;
+        for (let k = 0; k < 8; k++) {
+          if (ulaPlusPalette[clutBase + k] === oldInkColor) { newInk = k; break; }
+        }
+        let newPaper = -1;
+        for (let k = 0; k < 8; k++) {
+          if (ulaPlusPalette[clutBase + 8 + k] === oldPaperColor) { newPaper = k; break; }
+        }
+        if (newInk >= 0 && newPaper >= 0) {
+          screenData[pos] = flagBits | (newPaper << 3) | newInk;
+        }
+      }
+    }
+  }
 }
 
 /**
@@ -15058,14 +16438,26 @@ function ulaPlusCopyColor(srcIdx, dstIdx) {
   saveUndoState();
   const oldPalette = new Uint8Array(ulaPlusPalette);
   ulaPlusPalette[dstIdx] = ulaPlusPalette[srcIdx];
-  if (screenData.length >= ULAPLUS.TOTAL_SIZE) {
+  if (currentFormat === FORMAT.SCR_ULAPLUS && screenData.length >= ULAPLUS.TOTAL_SIZE) {
     screenData[ULAPLUS.PALETTE_OFFSET + dstIdx] = ulaPlusPalette[dstIdx];
+  }
+  if (currentFormat === FORMAT.GIGAATTR_PLUS && currentPicture && currentPicture.palette) {
+    const palOff = (ulaPlusPalette2 && gigascreenEditMode === 'screen2') ? 64 : 0;
+    if (currentPicture.palette.length > palOff + dstIdx) {
+      currentPicture.palette[palOff + dstIdx] = ulaPlusPalette[dstIdx];
+    }
   }
   ulaPlusRemapAttrsWithinClut(oldPalette);
   ulaPlusClearCopySource();
   buildUlaPlusGrid();
   buildUlaPlusClassic();
   updateUlaPlusPalette();
+  if (currentFormat === FORMAT.GIGAATTR_PLUS && ulaPlusPalette2) {
+    generateGigascreenVirtualPalette();
+    buildGigascreenPalette();
+    buildGigascreenPaperStrip();
+    updateGigascreenColorPickerUI();
+  }
   editorRender();
   if (typeof renderPreview === 'function') renderPreview();
 }
@@ -15085,15 +16477,30 @@ function ulaPlusSwapColors(idx1, idx2) {
   const tmp = ulaPlusPalette[idx1];
   ulaPlusPalette[idx1] = ulaPlusPalette[idx2];
   ulaPlusPalette[idx2] = tmp;
-  if (screenData.length >= ULAPLUS.TOTAL_SIZE) {
+  if (currentFormat === FORMAT.SCR_ULAPLUS && screenData.length >= ULAPLUS.TOTAL_SIZE) {
     screenData[ULAPLUS.PALETTE_OFFSET + idx1] = ulaPlusPalette[idx1];
     screenData[ULAPLUS.PALETTE_OFFSET + idx2] = ulaPlusPalette[idx2];
+  }
+  if (currentFormat === FORMAT.GIGAATTR_PLUS && currentPicture && currentPicture.palette) {
+    const palOff = (ulaPlusPalette2 && gigascreenEditMode === 'screen2') ? 64 : 0;
+    if (currentPicture.palette.length > palOff + idx1) {
+      currentPicture.palette[palOff + idx1] = ulaPlusPalette[idx1];
+    }
+    if (currentPicture.palette.length > palOff + idx2) {
+      currentPicture.palette[palOff + idx2] = ulaPlusPalette[idx2];
+    }
   }
   ulaPlusRemapAttrsWithinClut(oldPalette);
   ulaPlusClearCopySource();
   buildUlaPlusGrid();
   buildUlaPlusClassic();
   updateUlaPlusPalette();
+  if (currentFormat === FORMAT.GIGAATTR_PLUS && ulaPlusPalette2) {
+    generateGigascreenVirtualPalette();
+    buildGigascreenPalette();
+    buildGigascreenPaperStrip();
+    updateGigascreenColorPickerUI();
+  }
   editorRender();
   if (typeof renderPreview === 'function') renderPreview();
 }
@@ -15162,11 +16569,20 @@ function resetUlaPlusColors() {
  */
 function pickUlaPlusColorFromCanvas(x, y) {
   if (!screenData) return false;
-  if (currentFormat !== FORMAT.SCR_ULAPLUS && !(currentFormat === FORMAT.MLT && isUlaPlusMode)) return false;
+  if (currentFormat !== FORMAT.SCR_ULAPLUS && !(currentFormat === FORMAT.MLT && isUlaPlusMode) && !(currentFormat === FORMAT.GIGAATTR_PLUS && isUlaPlusMode)) return false;
   if (x < 0 || x >= SCREEN.WIDTH || y < 0 || y >= SCREEN.HEIGHT) return false;
 
   // Get attribute for this cell (MLT uses 8×1 addressing, SCR uses 8×8)
-  const attrAddr = currentFormat === FORMAT.MLT ? getMltAttributeAddress(x, y) : getAttributeAddress(x, y);
+  // GAP: gigascreen layout, pick from active frame based on edit mode
+  let attrAddr;
+  if (currentFormat === FORMAT.GIGAATTR_PLUS) {
+    const frameOffset = gigascreenEditMode === 'screen2' ? getGigaFrameSize() : 0;
+    const charRow = Math.floor(y / 8);
+    const charCol = Math.floor(x / 8);
+    attrAddr = frameOffset + SCREEN.BITMAP_SIZE + charRow * SCREEN.CHAR_COLS + charCol;
+  } else {
+    attrAddr = currentFormat === FORMAT.MLT ? getMltAttributeAddress(x, y) : getAttributeAddress(x, y);
+  }
   const attr = screenData[attrAddr];
 
   // Decode ULA+ attribute:
@@ -15242,6 +16658,37 @@ function pickScrColorFromCanvas(x, y) {
 }
 
 /**
+ * Picks standard SCR color from the active gigascreen frame in split mode.
+ * Reads attribute from frame 1 or 2 based on gigascreenEditMode.
+ * @param {number} x - X coordinate
+ * @param {number} y - Y coordinate
+ * @returns {boolean} true if color was picked
+ */
+function pickSplitFrameColorFromCanvas(x, y) {
+  if (!screenData) return false;
+  if (x < 0 || x >= SCREEN.WIDTH || y < 0 || y >= SCREEN.HEIGHT) return false;
+
+  const frameOffset = gigascreenEditMode === 'screen2' ? getGigaFrameSize() : 0;
+  const charRow = getGigaAttrRow(y);
+  const charCol = Math.floor(x / 8);
+  const attrOffset = charRow * 32 + charCol;
+  const attr = screenData[frameOffset + 6144 + attrOffset];
+
+  editorInkColor = attr & 0x07;
+  editorPaperColor = (attr >> 3) & 0x07;
+  editorBright = (attr & 0x40) !== 0;
+  editorFlash = (attr & 0x80) !== 0;
+
+  const brightCheckbox = document.getElementById('brightCheckbox');
+  if (brightCheckbox) /** @type {HTMLInputElement} */ (brightCheckbox).checked = editorBright;
+  const flashCheckbox = document.getElementById('editorFlashCheckbox');
+  if (flashCheckbox) /** @type {HTMLInputElement} */ (flashCheckbox).checked = editorFlash;
+
+  updateColorPreview();
+  return true;
+}
+
+/**
  * Picks Gigascreen virtual colors from canvas at pixel position
  * Left-click picks ink, Right-click picks paper
  * @param {number} x - X coordinate
@@ -15260,11 +16707,20 @@ function pickGigascreenColorFromCanvas(x, y, pickInk) {
   const attr1 = screenData[6144 + attrOffset];
   const attr2 = screenData[getGigaFrameSize() + 6144 + attrOffset];
 
-  // Decode attributes to get ink/paper colors (0-15 including bright)
-  const ink1 = (attr1 & 0x07) + ((attr1 & 0x40) ? 8 : 0);
-  const paper1 = ((attr1 >> 3) & 0x07) + ((attr1 & 0x40) ? 8 : 0);
-  const ink2 = (attr2 & 0x07) + ((attr2 & 0x40) ? 8 : 0);
-  const paper2 = ((attr2 >> 3) & 0x07) + ((attr2 & 0x40) ? 8 : 0);
+  // Decode attributes to get ink/paper base color indices.
+  // Standard: 0-15 (bright bit adds 8).
+  // ULA+ dual: 0-63 (CLUT*16 + isPaper*8 + sub). Each CLUT = 16 entries (8 ink + 8 paper).
+  const isDualUlaPick = currentFormat === FORMAT.GIGAATTR_PLUS && isUlaPlusMode && ulaPlusPalette2;
+  const clutOffset1 = isDualUlaPick
+    ? (((attr1 & 0x80) ? 2 : 0) | ((attr1 & 0x40) ? 1 : 0)) * 8   // CLUT 0-3 → offset 0/8/16/24
+    : ((attr1 & 0x40) ? 8 : 0);
+  const clutOffset2 = isDualUlaPick
+    ? (((attr2 & 0x80) ? 2 : 0) | ((attr2 & 0x40) ? 1 : 0)) * 8
+    : ((attr2 & 0x40) ? 8 : 0);
+  const ink1 = (attr1 & 0x07) + clutOffset1;
+  const paper1 = ((attr1 >> 3) & 0x07) + clutOffset1;
+  const ink2 = (attr2 & 0x07) + clutOffset2;
+  const paper2 = ((attr2 >> 3) & 0x07) + clutOffset2;
 
   // Find matching virtual color indices for ink and paper
   if (gigascreenVirtualPalette.length === 0) {
@@ -15292,24 +16748,32 @@ function pickGigascreenColorFromCanvas(x, y, pickInk) {
     gigascreenVirtualPaper = foundPaperIdx;
   }
 
-  // Now determine which of the 4 cell colors this pixel is
-  const bitmapAddr = getBitmapAddress(x, y);
-  const bit = getBitPosition(x);
-  const pixel1Set = (screenData[bitmapAddr] & (1 << bit)) !== 0;
-  const pixel2Set = (screenData[getGigaFrameSize() + bitmapAddr] & (1 << bit)) !== 0;
-
-  // Map to color index: 0=ink+ink, 1=ink+paper, 2=paper+ink, 3=paper+paper
-  let colorIdx = 0;
-  if (pixel1Set && pixel2Set) colorIdx = 0;      // ink+ink
-  else if (pixel1Set && !pixel2Set) colorIdx = 1; // ink+paper
-  else if (!pixel1Set && pixel2Set) colorIdx = 2; // paper+ink
-  else colorIdx = 3;                              // paper+paper
-
-  // Assign to primary (left) or secondary (right) based on pickInk
-  if (pickInk) {
-    gigascreenPrimaryColor = colorIdx;
+  // GIGAATTR: shared bitmap → only ink blend (L) and paper blend (R).
+  // Eyedropper picks the virtual palette ink/paper from cell attributes above;
+  // primary/secondary color indices are fixed at 0 and 3.
+  if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+    gigascreenPrimaryColor = 0;
+    gigascreenSecondaryColor = 3;
   } else {
-    gigascreenSecondaryColor = colorIdx;
+    // Now determine which of the 4 cell colors this pixel is
+    const bitmapAddr = getBitmapAddress(x, y);
+    const bit = getBitPosition(x);
+    const pixel1Set = (screenData[bitmapAddr] & (1 << bit)) !== 0;
+    const pixel2Set = (screenData[getGigaFrameSize() + bitmapAddr] & (1 << bit)) !== 0;
+
+    // Map to color index: 0=ink+ink, 1=ink+paper, 2=paper+ink, 3=paper+paper
+    let colorIdx = 0;
+    if (pixel1Set && pixel2Set) colorIdx = 0;      // ink+ink
+    else if (pixel1Set && !pixel2Set) colorIdx = 1; // ink+paper
+    else if (!pixel1Set && pixel2Set) colorIdx = 2; // paper+ink
+    else colorIdx = 3;                              // paper+paper
+
+    // Assign to primary (left) or secondary (right) based on pickInk
+    if (pickInk) {
+      gigascreenPrimaryColor = colorIdx;
+    } else {
+      gigascreenSecondaryColor = colorIdx;
+    }
   }
 
   // Update UI
@@ -15549,10 +17013,22 @@ function pickColorFromCanvas(x, y, isInk) {
     case FORMAT.SCR_ULAPLUS:
       return pickUlaPlusColorFromCanvas(x, y);
 
+    case FORMAT.GIGAATTR_PLUS:
+      // Shared palette: always use ULA+ picker (all modes show ULA+ grid)
+      // Dual palette combined: use gigascreen virtual picker (blended view)
+      if (ulaPlusPalette2 && gigascreenEditMode === 'combined') {
+        return pickGigascreenColorFromCanvas(x, y, isInk);
+      }
+      return pickUlaPlusColorFromCanvas(x, y);
+
     case FORMAT.GIGASCREEN:
+    case FORMAT.GIGAATTR:
     case FORMAT.MGH:
     case FORMAT.HLR:
     case FORMAT.STL:
+      if (gigascreenEditMode !== 'combined') {
+        return pickSplitFrameColorFromCanvas(x, y);
+      }
       return pickGigascreenColorFromCanvas(x, y, isInk);
 
     case FORMAT.RGB3:
@@ -15590,6 +17066,7 @@ function pickColorFromCanvas(x, y, isInk) {
 
     case FORMAT.BSP:
       if (currentPicture && currentPicture.colorMode === 'gigascreen') {
+        if (gigascreenEditMode !== 'combined') return pickSplitFrameColorFromCanvas(x, y);
         return pickGigascreenColorFromCanvas(x, y, isInk);
       }
       return pickScrColorFromCanvas(x, y);
@@ -15597,6 +17074,7 @@ function pickColorFromCanvas(x, y, isInk) {
     case FORMAT.ZXP:
     case FORMAT.CHR:
       if (currentPicture && currentPicture.colorMode === 'gigascreen') {
+        if (gigascreenEditMode !== 'combined') return pickSplitFrameColorFromCanvas(x, y);
         return pickGigascreenColorFromCanvas(x, y, isInk);
       }
       return pickScrColorFromCanvas(x, y);
@@ -15647,8 +17125,8 @@ function saveUlaPlusPalette() {
     return;
   }
 
-  // Get palette data from screenData or ulaPlusPalette
-  const palette = screenData.length >= ULAPLUS.TOTAL_SIZE
+  // Get palette data: SCR_ULAPLUS embeds palette in screenData, others use ulaPlusPalette global
+  const palette = (currentFormat === FORMAT.SCR_ULAPLUS && screenData.length >= ULAPLUS.TOTAL_SIZE)
     ? screenData.slice(ULAPLUS.PALETTE_OFFSET, ULAPLUS.PALETTE_OFFSET + 64)
     : ulaPlusPalette;
 
@@ -15686,18 +17164,38 @@ function loadUlaPlusPalette(file) {
     // Save undo state before applying
     saveUndoState();
 
-    // Apply palette to screenData and ulaPlusPalette
-    if (screenData.length >= ULAPLUS.TOTAL_SIZE) {
+    // Apply palette to screenData (only for SCR_ULAPLUS where palette is embedded)
+    if (currentFormat === FORMAT.SCR_ULAPLUS && screenData.length >= ULAPLUS.TOTAL_SIZE) {
       for (let i = 0; i < 64; i++) {
         screenData[ULAPLUS.PALETTE_OFFSET + i] = palette[i];
       }
     }
     ulaPlusPalette = new Uint8Array(palette);
 
+    // GAP: also update picture palette and ulaPlusPalette2 if editing frame 2
+    if (currentFormat === FORMAT.GIGAATTR_PLUS && currentPicture && currentPicture.palette) {
+      if (ulaPlusPalette2 && gigascreenEditMode === 'screen2') {
+        ulaPlusPalette2 = new Uint8Array(palette);
+        if (currentPicture.palette.length >= 128) {
+          currentPicture.palette.set(palette, 64);
+        }
+      } else {
+        currentPicture.palette.set(palette, 0);
+      }
+    }
+
     // Rebuild palette UI
     if (typeof buildUlaPlusGrid === 'function') buildUlaPlusGrid();
     if (typeof buildUlaPlusClassic === 'function') buildUlaPlusClassic();
     if (typeof updateUlaPlusPalette === 'function') updateUlaPlusPalette();
+
+    // Dual-palette GAP: update virtual palette to reflect loaded colors
+    if (currentFormat === FORMAT.GIGAATTR_PLUS && ulaPlusPalette2) {
+      generateGigascreenVirtualPalette();
+      buildGigascreenPalette();
+      buildGigascreenPaperStrip();
+      updateGigascreenColorPickerUI();
+    }
 
     // Re-render
     editorRender();
@@ -15913,9 +17411,23 @@ function applyUlaPlusColor() {
     ulaPlusPalette[ulaPlusEditingColorIndex] = grb;
   }
 
-  // Apply to screenData if ULA+ file
-  if (screenData && screenData.length >= ULAPLUS.TOTAL_SIZE) {
+  // Apply to screenData if SCR_ULAPLUS file (palette embedded in screenData)
+  // GAP stores palette in ulaPlusPalette global, not in screenData
+  if (screenData && currentFormat === FORMAT.SCR_ULAPLUS && screenData.length >= ULAPLUS.TOTAL_SIZE) {
     screenData[ULAPLUS.PALETTE_OFFSET + ulaPlusEditingColorIndex] = grb;
+  }
+
+  // GAP: also update the picture palette for persistence
+  if (currentFormat === FORMAT.GIGAATTR_PLUS && currentPicture && currentPicture.palette) {
+    // Determine which palette we're editing (frame 1 or frame 2 for dual)
+    if (ulaPlusPalette2 && gigascreenEditMode === 'screen2') {
+      ulaPlusPalette2[ulaPlusEditingColorIndex] = grb;
+      if (currentPicture.palette.length >= 128) {
+        currentPicture.palette[64 + ulaPlusEditingColorIndex] = grb;
+      }
+    } else {
+      currentPicture.palette[ulaPlusEditingColorIndex] = grb;
+    }
   }
 
   // Close dialog
@@ -15925,6 +17437,14 @@ function applyUlaPlusColor() {
   buildUlaPlusGrid();
   buildUlaPlusClassic();
   updateUlaPlusPalette();
+
+  // Dual-palette GAP: update virtual palette to reflect changed colors
+  if (currentFormat === FORMAT.GIGAATTR_PLUS && ulaPlusPalette2) {
+    generateGigascreenVirtualPalette();
+    buildGigascreenPalette();
+    buildGigascreenPaperStrip();
+    updateGigascreenColorPickerUI();
+  }
 
   // Re-render
   editorRender();
@@ -18011,6 +19531,7 @@ function isFormatEditable() {
   if (currentFormat === FORMAT.BMC4 && screenData && screenData.length >= BMC4.TOTAL_SIZE) return true;
   if (currentFormat === FORMAT.RGB3 && screenData && screenData.length >= RGB3.TOTAL_SIZE) return true;
   if (currentFormat === FORMAT.GIGASCREEN && screenData && screenData.length >= GIGASCREEN.TOTAL_SIZE) return true;
+  if ((currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) && screenData && screenData.length >= GIGASCREEN.TOTAL_SIZE) return true;
   if (currentFormat === FORMAT.MGH && screenData && screenData.length >= GIGASCREEN.TOTAL_SIZE && isGigascreenEditable()) return true;
   if (currentFormat === FORMAT.HLR && screenData && screenData.length >= GIGASCREEN.TOTAL_SIZE && isGigascreenEditable()) return true;
   if (currentFormat === FORMAT.STL && screenData && screenData.length >= getGigaFrameSize() * 2 && isGigascreenEditable()) return true;
@@ -19426,7 +20947,7 @@ function setEditorEnabled(active, force) {
       currentPicture.attrCellHeight > 0 &&
       currentFormat !== FORMAT.GMX160 && currentFormat !== FORMAT.HLR &&
       currentFormat !== FORMAT.ATTR_53C && currentFormat !== FORMAT.STL &&
-      currentFormat !== FORMAT.SPECSCII;
+      currentFormat !== FORMAT.SPECSCII && !isGigaPatternMode();
     removeHiddenSection.style.display = hasHiddenSupport ? '' : 'none';
   }
 
@@ -19577,12 +21098,31 @@ function setEditorEnabled(active, force) {
     // Re-apply dither brush visibility (format branches reset all tool buttons)
     updateDitherBrushAvailability();
 
+    // Reset gigascreen split-screen mode on format/file change
+    gigascreenEditMode = 'combined';
+    gigascreenForceFrame = -1;
+    updateGigascreenEditModeUI();
+
     // Gigascreen: initialize virtual palette and show virtual color picker
-    if (isGigascreenEditable()) {
+    // Exception: GAP with ULA+ shows the 64-color ULA+ grid instead of 136-color virtual picker
+    const isGapUlaPlusInit = currentFormat === FORMAT.GIGAATTR_PLUS && isUlaPlusMode && !ulaPlusPalette2;
+    if (isGigascreenEditable() && !isGapUlaPlusInit) {
       generateGigascreenVirtualPalette();
+      buildGigascreenPalette();
+      buildGigascreenPaperStrip();
       updateGigascreenColorPickerUI();
     }
-    toggleGigascreenColorPicker(isGigascreenEditable());
+    toggleGigascreenColorPicker(isGigascreenEditable() && !isGapUlaPlusInit);
+
+    // GAP with ULA+: show ULA+ palette grid (all 64 colors) in combined mode
+    if (isGapUlaPlusInit) {
+      const stdSectionInit = document.getElementById('editorColorSection');
+      if (stdSectionInit) stdSectionInit.style.display = '';
+      updateUlaPlusSectionVisibility();
+      buildUlaPlusGrid();
+      buildUlaPlusClassic();
+      updateUlaPlusPalette();
+    }
 
     // 53c: initialize pattern color palette and show picker
     if (currentFormat === FORMAT.ATTR_53C) {
@@ -20451,6 +21991,17 @@ function executePasteAt(x, y) {
   if (!clipboardData || !screenData) return;
 
   if (clipboardData.format === 'scr' && clipboardData.bitmap) {
+    // Determine frame handling for gigascreen split mode
+    const pasteGigaInfo = getGigaPasteInfo();
+    const splitFrame = gigascreenEditMode === 'screen1' ? 0 : gigascreenEditMode === 'screen2' ? 1 : -1;
+    const gigaFS = pasteGigaInfo.frameSize;
+    const dualFrame = splitFrame < 0 && pasteGigaInfo.isGiga;
+    const frameOffset = (splitFrame === 1 && pasteGigaInfo.isGiga) ? gigaFS : 0;
+    const clipBmp = (splitFrame === 1 && clipboardData.bitmap2) ? clipboardData.bitmap2 : clipboardData.bitmap;
+    const clipAtt = (splitFrame === 1 && clipboardData.attrs2) ? clipboardData.attrs2 : clipboardData.attrs;
+    const clipBmp2 = clipboardData.bitmap2 || clipboardData.bitmap;
+    const clipAtt2 = clipboardData.attrs2 || clipboardData.attrs;
+
     // Write bitmap pixels
     const bitmapBytesPerRow = Math.ceil(clipboardData.width / 8);
     for (let py = 0; py < clipboardData.height; py++) {
@@ -20461,15 +22012,39 @@ function executePasteAt(x, y) {
 
         const byteIdx = py * bitmapBytesPerRow + Math.floor(px / 8);
         const bitIdx = 7 - (px % 8);
-        const clipBit = (clipboardData.bitmap[byteIdx] & (1 << bitIdx)) !== 0;
+        const clipBit = (clipBmp[byteIdx] & (1 << bitIdx)) !== 0;
 
         const bitmapAddr = getBitmapAddress(dx, dy);
         const bit = getBitPosition(dx);
 
         if (clipBit) {
-          screenData[bitmapAddr] |= (1 << bit);
+          screenData[frameOffset + bitmapAddr] |= (1 << bit);
         } else {
-          screenData[bitmapAddr] &= ~(1 << bit);
+          screenData[frameOffset + bitmapAddr] &= ~(1 << bit);
+        }
+        if (dualFrame) {
+          const clipBit2 = (clipBmp2[byteIdx] & (1 << bitIdx)) !== 0;
+          if (clipBit2) {
+            screenData[gigaFS + bitmapAddr] |= (1 << bit);
+          } else {
+            screenData[gigaFS + bitmapAddr] &= ~(1 << bit);
+          }
+        }
+      }
+    }
+
+    // GIGAATTR: ensure both frames have identical bitmap after paste (shared bitmap)
+    if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+      const pasteW = getFormatWidth();
+      const pasteH = getFormatHeight();
+      for (let py = 0; py < clipboardData.height; py++) {
+        const dy = y + py;
+        if (dy < 0 || dy >= pasteH) continue;
+        const byteLeft = Math.max(0, Math.floor(x / 8));
+        const byteRight = Math.min(Math.ceil(pasteW / 8) - 1, Math.floor((x + clipboardData.width - 1) / 8));
+        for (let bx = byteLeft; bx <= byteRight; bx++) {
+          const bitmapAddr = getBitmapAddress(bx * 8, dy);
+          screenData[gigaFS + bitmapAddr] = screenData[bitmapAddr];
         }
       }
     }
@@ -20483,7 +22058,10 @@ function executePasteAt(x, y) {
         const destRow = cellTop + cr;
         if (destCol < 0 || destCol >= (getFormatWidth() >> 3) || destRow < 0 || destRow >= Math.ceil(getFormatHeight() / 8)) continue;
         const destAddr = SCREEN.BITMAP_SIZE + destCol + destRow * (getFormatWidth() >> 3);
-        screenData[destAddr] = clipboardData.attrs[cr * clipboardData.cellCols + cc];
+        screenData[frameOffset + destAddr] = clipAtt[cr * clipboardData.cellCols + cc];
+        if (dualFrame) {
+          screenData[gigaFS + destAddr] = clipAtt2[cr * clipboardData.cellCols + cc];
+        }
       }
     }
   } else if (clipboardData.format === '53c') {
@@ -21725,6 +23303,7 @@ function updateConvertOptions() {
     convertSelect.innerHTML += '<option value="scr-to-mlt">→ MLT (8×1 multicolor)</option>';
     convertSelect.innerHTML += '<option value="scr-to-bmc4">→ BMC4 (8×4 + border)</option>';
     convertSelect.innerHTML += '<option value="scr-to-giga">→ Gigascreen (duplicate)</option>';
+    convertSelect.innerHTML += '<option value="scr-to-ga">→ GA (Gigaattr — shared bitmap)</option>';
     convertSelect.innerHTML += '<option value="scr-to-nxi">→ NXI 256×192 (Next Layer 2)</option>';
     convertSelect.innerHTML += '<option value="scr-to-nxi320">→ NXI 320×256 (upscale)</option>';
     convertSelect.innerHTML += '<option value="scr-to-nxi640">→ NXI 640×256 (upscale)</option>';
@@ -21741,6 +23320,9 @@ function updateConvertOptions() {
     // ATTR can convert to SCR or BSC
     convertSelect.innerHTML += '<option value="attr-to-scr">→ SCR (add pattern)</option>';
     convertSelect.innerHTML += '<option value="attr-to-bsc">→ BSC (add pattern + border)</option>';
+    convertSelect.innerHTML += '<option value="attr-to-ga-pattern">→ GA pattern (Gigaattr)</option>';
+    convertSelect.innerHTML += '<option value="attr-to-gap-pattern">→ GAP pattern (Gigaattr+ULA+)</option>';
+    convertSelect.innerHTML += '<option value="attr-to-gap-dual-pattern">→ GAP dual pattern (Gigaattr+ULA+)</option>';
   } else if (currentFormat === FORMAT.BSC) {
     // BSC can convert to SCR, BSP, or BMC4
     convertSelect.innerHTML += '<option value="bsc-to-scr">→ SCR (strip border)</option>';
@@ -21760,8 +23342,23 @@ function updateConvertOptions() {
     // IFL can convert to MLT
     convertSelect.innerHTML += '<option value="ifl-to-mlt">→ MLT (8×1 multicolor)</option>';
   } else if (currentFormat === FORMAT.GIGASCREEN) {
-    // Gigascreen can convert to BSP
+    // Gigascreen can convert to BSP or Gigaattr
     convertSelect.innerHTML += '<option value="giga-to-bsp">→ BSP (add header)</option>';
+    convertSelect.innerHTML += '<option value="giga-to-ga">→ GA (Gigaattr — shared bitmap)</option>';
+    convertSelect.innerHTML += '<option value="giga-to-gap">→ GAP (Gigaattr + ULA+ palette)</option>';
+  } else if (currentFormat === FORMAT.GIGAATTR) {
+    // Gigaattr can convert to Gigascreen or GAP
+    convertSelect.innerHTML += '<option value="ga-to-giga">→ IMG (Gigascreen — independent bitmaps)</option>';
+    convertSelect.innerHTML += '<option value="ga-to-gap">→ GAP (add ULA+ palette)</option>';
+  } else if (currentFormat === FORMAT.GIGAATTR_PLUS) {
+    // GAP can convert to GA or Gigascreen
+    convertSelect.innerHTML += '<option value="gap-to-ga">→ GA (Gigaattr — strip palette)</option>';
+    convertSelect.innerHTML += '<option value="gap-to-giga">→ IMG (Gigascreen — strip palette, independent bitmaps)</option>';
+    if (ulaPlusPalette2) {
+      convertSelect.innerHTML += '<option value="gap-dual-to-shared">→ GAP shared palette (discard palette 2)</option>';
+    } else {
+      convertSelect.innerHTML += '<option value="gap-shared-to-dual">→ GAP dual palette (separate palette per frame)</option>';
+    }
   } else if (currentFormat === FORMAT.NXI) {
     if (nxiLayer2Mode === '256x192') {
       convertSelect.innerHTML += '<option value="nxi-to-sl2">→ SL2 256×192 (strip palette)</option>';
@@ -21841,6 +23438,15 @@ function handleConversion(action) {
     case 'attr-to-bsc':
       showPatternPicker(true);
       break;
+    case 'attr-to-ga-pattern':
+      showGaPatternSettingsDialog(false, false);
+      break;
+    case 'attr-to-gap-pattern':
+      showGaPatternSettingsDialog(true, false);
+      break;
+    case 'attr-to-gap-dual-pattern':
+      showGaPatternSettingsDialog(true, true);
+      break;
     case 'bsc-to-scr':
       convertBscToScr();
       break;
@@ -21865,6 +23471,9 @@ function handleConversion(action) {
     case 'scr-to-giga':
       convertScrToGigascreen();
       break;
+    case 'scr-to-ga':
+      convertScrToGigaattr();
+      break;
     case 'scr-to-nxi':
       convertScrToNxi();
       break;
@@ -21879,6 +23488,30 @@ function handleConversion(action) {
       break;
     case 'giga-to-bsp':
       convertGigascreenToBsp();
+      break;
+    case 'giga-to-ga':
+      convertGigascreenToGigaattr();
+      break;
+    case 'ga-to-giga':
+      convertGigaattrToGigascreen();
+      break;
+    case 'ga-to-gap':
+      convertGigaattrToGap();
+      break;
+    case 'gap-to-ga':
+      convertGapToGigaattr();
+      break;
+    case 'gap-to-giga':
+      convertGapToGigascreen();
+      break;
+    case 'gap-shared-to-dual':
+      convertGapSharedToDual();
+      break;
+    case 'gap-dual-to-shared':
+      convertGapDualToShared();
+      break;
+    case 'giga-to-gap':
+      convertGigascreenToGap();
       break;
     case 'nxi-to-sl2':
       convertNxiToSl2();
@@ -22233,7 +23866,7 @@ function updateExportAsmButton() {
   const embedDataChk = document.getElementById('editorEmbedDataChk');
   if (!exportSelect || !exportBtn) return;
 
-  const supportsAsm = currentFormat === FORMAT.BSC || currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.MGH || currentFormat === FORMAT.RGB3 || currentFormat === FORMAT.IFL || currentFormat === FORMAT.SCR_ULAPLUS || currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 || currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD;
+  const supportsAsm = currentFormat === FORMAT.BSC || currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS || currentFormat === FORMAT.MGH || currentFormat === FORMAT.RGB3 || currentFormat === FORMAT.IFL || currentFormat === FORMAT.SCR_ULAPLUS || currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 || currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD;
   const isSpecscii = currentFormat === FORMAT.SPECSCII;
 
   // Build export options based on current format
@@ -22241,7 +23874,7 @@ function updateExportAsmButton() {
   if (supportsAsm) {
     if (currentFormat === FORMAT.BSC) {
       options.push({ value: 'asm', label: 'ASM (Pentagon border)' });
-    } else if (currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.MGH) {
+    } else if (currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS || currentFormat === FORMAT.MGH) {
       options.push({ value: 'asm', label: 'ASM (Pentagon dual-screen)' });
     } else if (currentFormat === FORMAT.RGB3) {
       options.push({ value: 'asm', label: 'ASM (Pentagon RGB flicker)' });
@@ -22324,7 +23957,8 @@ const BITMAP_PATTERNS = {
   brick: { name: 'Brick', generate: (x, y) => (y % 8 === 0) ? 0xFF : ((Math.floor(y / 4) % 2 === 0) ? 0x80 : 0x08) },
   dither25: { name: '25% Dith', generate: (x, y) => (y % 2 === 0) ? 0x88 : 0x00 },
   dither50: { name: '50% Dith', generate: (x, y) => (y % 2 === 0) ? 0xAA : 0x55 },
-  dither75: { name: '75% Dith', generate: (x, y) => (y % 2 === 0) ? 0xEE : 0xBB }
+  dither75: { name: '75% Dith', generate: (x, y) => (y % 2 === 0) ? 0xEE : 0xBB },
+  dd77: { name: 'DD77', generate: (x, y) => (y % 2 === 0) ? 0xDD : 0x77 }
 };
 
 /**
@@ -22332,7 +23966,7 @@ const BITMAP_PATTERNS = {
  * @param {string} patternId - Pattern identifier
  * @returns {Uint8Array} 6144 bytes of bitmap data
  */
-function generatePatternBitmap(patternId) {
+function generatePatternBitmapById(patternId) {
   const pattern = BITMAP_PATTERNS[patternId] || BITMAP_PATTERNS.empty;
   const bitmap = new Uint8Array(SCREEN.BITMAP_SIZE);
 
@@ -22362,7 +23996,7 @@ function convertAttrToScr(patternId = 'empty') {
   // Create new SCR with pattern bitmap + existing attributes
   const scrData = new Uint8Array(SCREEN.TOTAL_SIZE);
   // Generate bitmap pattern
-  const bitmap = generatePatternBitmap(patternId);
+  const bitmap = generatePatternBitmapById(patternId);
   scrData.set(bitmap, 0);
   // Copy attributes
   scrData.set(screenData.slice(0, SCREEN.ATTR_SIZE), SCREEN.BITMAP_SIZE);
@@ -22410,7 +24044,7 @@ function convertAttrToBsc(patternId, borderColor) {
   const bscData = new Uint8Array(BSC.TOTAL_SIZE);
 
   // Generate bitmap pattern
-  const bitmap = generatePatternBitmap(patternId);
+  const bitmap = generatePatternBitmapById(patternId);
   bscData.set(bitmap, 0);
 
   // Copy attributes
@@ -22513,6 +24147,371 @@ function showPatternPicker(toBsc) {
  */
 function showBorderColorPickerForAttr(patternId) {
   showBorderColorDialog(i => convertAttrToBsc(patternId, i));
+}
+
+/**
+ * Show combined settings dialog for ATTR (.53c) → GA/GAP pattern conversion.
+ * Contains pattern grid, border color 1/2 selectors, and Apply/Cancel.
+ * @param {boolean} withPalette - If true, produce GAP (with ULA+ palette)
+ * @param {boolean} dualPalette - If true, produce GAP with dual palette (128 bytes)
+ */
+function showGaPatternSettingsDialog(withPalette, dualPalette) {
+  const colorNames = ['Black', 'Blue', 'Red', 'Magenta', 'Green', 'Cyan', 'Yellow', 'White'];
+  const colorValues = ['#000', '#0000d7', '#d70000', '#d700d7', '#00d700', '#00d7d7', '#d7d700', '#d7d7d7'];
+  const defaultBorder = typeof borderColor !== 'undefined' ? borderColor : 7;
+
+  let selectedPattern = 'solid';
+  let selectedBorder1 = defaultBorder;
+  let selectedBorder2 = defaultBorder;
+
+  const dialog = document.createElement('div');
+  dialog.style.cssText = `
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.5); display: flex;
+    justify-content: center; align-items: center; z-index: 10000;
+  `;
+
+  const panel = document.createElement('div');
+  panel.style.cssText = `
+    background: var(--bg-primary, #1e1e1e); padding: 16px; border-radius: 8px;
+    border: 1px solid var(--border-color, #444); min-width: 380px; max-width: 420px;
+  `;
+
+  // Title
+  const title = document.createElement('div');
+  const formatName = dualPalette ? 'GAP dual pattern' : withPalette ? 'GAP pattern' : 'GA pattern';
+  title.textContent = 'Convert 53c → ' + formatName;
+  title.style.cssText = 'margin-bottom: 12px; font-size: 13px; font-weight: bold; color: var(--text-primary, #fff);';
+  panel.appendChild(title);
+
+  // --- Pattern section ---
+  const patLabel = document.createElement('div');
+  patLabel.textContent = 'Fill pattern:';
+  patLabel.style.cssText = 'margin-bottom: 6px; font-size: 11px; color: var(--text-secondary, #aaa);';
+  panel.appendChild(patLabel);
+
+  const patterns = document.createElement('div');
+  patterns.style.cssText = 'display: grid; grid-template-columns: repeat(6, 1fr); gap: 3px; margin-bottom: 14px;';
+
+  /** @type {HTMLButtonElement|null} */
+  let activePatternBtn = null;
+
+  for (const [id, pattern] of Object.entries(BITMAP_PATTERNS)) {
+    const btn = document.createElement('button');
+    btn.style.cssText = `
+      padding: 5px 2px; font-size: 9px; cursor: pointer;
+      background: var(--bg-secondary, #2d2d2d); border: 1px solid var(--border-primary, #666);
+      color: var(--text-primary, #fff); white-space: nowrap;
+    `;
+    btn.textContent = pattern.name;
+    if (id === selectedPattern) {
+      btn.style.borderColor = '#4af'; btn.style.background = '#335';
+      activePatternBtn = btn;
+    }
+    btn.addEventListener('click', () => {
+      selectedPattern = id;
+      if (activePatternBtn) { activePatternBtn.style.borderColor = ''; activePatternBtn.style.background = 'var(--bg-secondary, #2d2d2d)'; }
+      btn.style.borderColor = '#4af'; btn.style.background = '#335';
+      activePatternBtn = btn;
+    });
+    patterns.appendChild(btn);
+  }
+  panel.appendChild(patterns);
+
+  // --- Border color helper ---
+  function createBorderRow(labelText, defaultColor, onChange) {
+    const row = document.createElement('div');
+    row.style.cssText = 'margin-bottom: 10px;';
+
+    const lbl = document.createElement('div');
+    lbl.textContent = labelText;
+    lbl.style.cssText = 'margin-bottom: 4px; font-size: 11px; color: var(--text-secondary, #aaa);';
+    row.appendChild(lbl);
+
+    const swatches = document.createElement('div');
+    swatches.style.cssText = 'display: flex; gap: 4px;';
+
+    /** @type {HTMLButtonElement|null} */
+    let activeBtn = null;
+
+    for (let i = 0; i < 8; i++) {
+      const btn = document.createElement('button');
+      btn.style.cssText = `
+        width: 28px; height: 28px; border: 2px solid var(--border-primary, #666); cursor: pointer;
+        background: ${colorValues[i]};
+      `;
+      btn.title = colorNames[i];
+      if (i === defaultColor) {
+        btn.style.borderColor = '#4af';
+        activeBtn = btn;
+      }
+      btn.addEventListener('click', () => {
+        if (activeBtn) activeBtn.style.borderColor = 'var(--border-primary, #666)';
+        btn.style.borderColor = '#4af';
+        activeBtn = btn;
+        onChange(i);
+      });
+      swatches.appendChild(btn);
+    }
+    row.appendChild(swatches);
+    return row;
+  }
+
+  panel.appendChild(createBorderRow('Border color frame 1:', selectedBorder1, v => { selectedBorder1 = v; }));
+  panel.appendChild(createBorderRow('Border color frame 2:', selectedBorder2, v => { selectedBorder2 = v; }));
+
+  // --- Buttons ---
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display: flex; gap: 8px; margin-top: 14px;';
+
+  const applyBtn = document.createElement('button');
+  applyBtn.textContent = 'Apply';
+  applyBtn.style.cssText = 'flex: 1; padding: 6px; font-size: 12px; cursor: pointer; background: #2563eb; color: #fff; border: none; border-radius: 4px;';
+  applyBtn.addEventListener('click', () => {
+    document.body.removeChild(dialog);
+    if (dualPalette) {
+      convertAttrToGapDualPattern(selectedPattern, selectedBorder1, selectedBorder2);
+    } else if (withPalette) {
+      convertAttrToGapPattern(selectedPattern, selectedBorder1, selectedBorder2);
+    } else {
+      convertAttrToGaPattern(selectedPattern, selectedBorder1, selectedBorder2);
+    }
+  });
+  btnRow.appendChild(applyBtn);
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.style.cssText = 'flex: 1; padding: 6px; font-size: 12px; cursor: pointer;';
+  cancelBtn.addEventListener('click', () => document.body.removeChild(dialog));
+  btnRow.appendChild(cancelBtn);
+
+  panel.appendChild(btnRow);
+  dialog.appendChild(panel);
+  dialog.addEventListener('click', (e) => {
+    if (e.target === dialog) document.body.removeChild(dialog);
+  });
+  document.body.appendChild(dialog);
+}
+
+/**
+ * Generate an 8-byte pattern tile from BITMAP_PATTERNS.
+ * @param {string} patternId - Pattern key from BITMAP_PATTERNS
+ * @returns {Uint8Array} 8-byte pattern tile
+ */
+function generatePatternTile(patternId) {
+  const pat = BITMAP_PATTERNS[patternId] || BITMAP_PATTERNS.solid;
+  const tile = new Uint8Array(8);
+  for (let y = 0; y < 8; y++) {
+    tile[y] = pat.generate(0, y) & 0xFF;
+  }
+  return tile;
+}
+
+/**
+ * Convert ATTR (.53c) → GA pattern (Gigaattr pattern-only, 1546 bytes).
+ * Creates a 2-plane GA picture with the selected fill pattern and 53c attrs.
+ * @param {string} patternId - Pattern key from BITMAP_PATTERNS
+ * @param {number} border1 - Border color for frame 1 (0-7)
+ * @param {number} border2 - Border color for frame 2 (0-7)
+ */
+function convertAttrToGaPattern(patternId, border1, border2) {
+  if (!screenData || screenData.length < SCREEN.ATTR_SIZE) {
+    alert('No valid ATTR data to convert');
+    return;
+  }
+
+  saveUndoState();
+
+  const pattern = generatePatternTile(patternId);
+  const attrs = screenData.slice(0, SCREEN.ATTR_SIZE);
+
+  // Build gigascreen-shaped screenData (2 × 6912 = 13824 bytes) for the renderer.
+  // Both frames share the same pattern bitmap; attrs may differ per frame
+  // (here both are identical since source is a single-frame 53c).
+  const interleavedBitmap = generatePatternBitmapById(patternId);
+  const gigaData = new Uint8Array(GIGASCREEN.TOTAL_SIZE);
+
+  // Frame 1: bitmap + attrs
+  gigaData.set(interleavedBitmap, GIGASCREEN.FRAME1_OFFSET);
+  gigaData.set(attrs, GIGASCREEN.FRAME1_OFFSET + SCREEN.BITMAP_SIZE);
+  // Frame 2: same bitmap + same attrs
+  gigaData.set(interleavedBitmap, GIGASCREEN.FRAME2_OFFSET);
+  gigaData.set(attrs, GIGASCREEN.FRAME2_OFFSET + SCREEN.BITMAP_SIZE);
+
+  screenData = gigaData;
+  currentFormat = FORMAT.GIGAATTR;
+  currentFileName = currentFileName.replace(/\.[^.]+$/, '.ga');
+
+  // Build internal picture via importGigaattr on the gigascreen data,
+  // then upgrade to pattern mode with border colors.
+  if (typeof importPicture === 'function') {
+    currentPicture = importPicture(FORMAT.GIGASCREEN, gigaData, currentFileName);
+    if (currentPicture) {
+      currentPicture.sourceFormat = 'ga';
+      currentPicture.contentMode = 'pattern';
+      currentPicture.pattern = pattern;
+      currentPicture.borderColor1 = border1;
+      currentPicture.borderColor2 = border2;
+    }
+  }
+
+  if (typeof generateGigascreenVirtualPalette === 'function') {
+    generateGigascreenVirtualPalette();
+  }
+
+  markPictureModified();
+  saveCurrentPictureState();
+
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+  updateEditorColorPickers();
+  updateExportAsmButton();
+  updateConvertOptions();
+  updateFileInfo();
+  updatePictureTabBar();
+  renderScreen();
+  editorRender();
+}
+
+/**
+ * Convert ATTR (.53c) → GAP pattern (shared ULA+ palette, 1610 bytes).
+ * @param {string} patternId - Pattern key from BITMAP_PATTERNS
+ * @param {number} border1 - Border color for frame 1 (0-7)
+ * @param {number} border2 - Border color for frame 2 (0-7)
+ */
+function convertAttrToGapPattern(patternId, border1, border2) {
+  if (!screenData || screenData.length < SCREEN.ATTR_SIZE) {
+    alert('No valid ATTR data to convert');
+    return;
+  }
+
+  saveUndoState();
+
+  const pattern = generatePatternTile(patternId);
+  const attrs = screenData.slice(0, SCREEN.ATTR_SIZE);
+  const pal = generateDefaultUlaPlusPalette();
+
+  // Build gigascreen-shaped screenData for the renderer
+  const interleavedBitmap = generatePatternBitmapById(patternId);
+  const gigaData = new Uint8Array(GIGASCREEN.TOTAL_SIZE);
+  gigaData.set(interleavedBitmap, GIGASCREEN.FRAME1_OFFSET);
+  gigaData.set(attrs, GIGASCREEN.FRAME1_OFFSET + SCREEN.BITMAP_SIZE);
+  gigaData.set(interleavedBitmap, GIGASCREEN.FRAME2_OFFSET);
+  gigaData.set(attrs, GIGASCREEN.FRAME2_OFFSET + SCREEN.BITMAP_SIZE);
+
+  screenData = gigaData;
+  currentFormat = FORMAT.GIGAATTR_PLUS;
+  currentFileName = currentFileName.replace(/\.[^.]+$/, '.gap');
+
+  if (typeof importPicture === 'function') {
+    currentPicture = importPicture(FORMAT.GIGASCREEN, gigaData, currentFileName);
+    if (currentPicture) {
+      currentPicture.sourceFormat = 'gap';
+      currentPicture.contentMode = 'pattern';
+      currentPicture.pattern = pattern;
+      currentPicture.borderColor1 = border1;
+      currentPicture.borderColor2 = border2;
+      currentPicture.palette = new Uint8Array(pal);
+    }
+  }
+
+  ulaPlusPalette = pal.slice();
+  ulaPlusPalette2 = null;
+  isUlaPlusMode = true;
+
+  if (typeof generateGigascreenVirtualPalette === 'function') {
+    generateGigascreenVirtualPalette();
+  }
+
+  markPictureModified();
+  saveCurrentPictureState();
+
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+  if (typeof buildUlaPlusGrid === 'function') buildUlaPlusGrid();
+  if (typeof buildUlaPlusClassic === 'function') buildUlaPlusClassic();
+  if (typeof updateUlaPlusPalette === 'function') updateUlaPlusPalette();
+  updateEditorColorPickers();
+  updateExportAsmButton();
+  updateConvertOptions();
+  updateFileInfo();
+  updatePictureTabBar();
+  renderScreen();
+  editorRender();
+}
+
+/**
+ * Convert ATTR (.53c) → GAP dual pattern (dual ULA+ palettes, 1674 bytes).
+ * @param {string} patternId - Pattern key from BITMAP_PATTERNS
+ * @param {number} border1 - Border color for frame 1 (0-7)
+ * @param {number} border2 - Border color for frame 2 (0-7)
+ */
+function convertAttrToGapDualPattern(patternId, border1, border2) {
+  if (!screenData || screenData.length < SCREEN.ATTR_SIZE) {
+    alert('No valid ATTR data to convert');
+    return;
+  }
+
+  saveUndoState();
+
+  const pattern = generatePatternTile(patternId);
+  const attrs = screenData.slice(0, SCREEN.ATTR_SIZE);
+  const pal1 = generateDefaultUlaPlusPalette();
+  const pal2 = generateDefaultUlaPlusPalette();
+  const dualPal = new Uint8Array(128);
+  dualPal.set(pal1, 0);
+  dualPal.set(pal2, 64);
+
+  // Build gigascreen-shaped screenData for the renderer
+  const interleavedBitmap = generatePatternBitmapById(patternId);
+  const gigaData = new Uint8Array(GIGASCREEN.TOTAL_SIZE);
+  gigaData.set(interleavedBitmap, GIGASCREEN.FRAME1_OFFSET);
+  gigaData.set(attrs, GIGASCREEN.FRAME1_OFFSET + SCREEN.BITMAP_SIZE);
+  gigaData.set(interleavedBitmap, GIGASCREEN.FRAME2_OFFSET);
+  gigaData.set(attrs, GIGASCREEN.FRAME2_OFFSET + SCREEN.BITMAP_SIZE);
+
+  screenData = gigaData;
+  currentFormat = FORMAT.GIGAATTR_PLUS;
+  currentFileName = currentFileName.replace(/\.[^.]+$/, '.gap');
+
+  if (typeof importPicture === 'function') {
+    currentPicture = importPicture(FORMAT.GIGASCREEN, gigaData, currentFileName);
+    if (currentPicture) {
+      currentPicture.sourceFormat = 'gap';
+      currentPicture.contentMode = 'pattern';
+      currentPicture.pattern = pattern;
+      currentPicture.borderColor1 = border1;
+      currentPicture.borderColor2 = border2;
+      currentPicture.palette = new Uint8Array(dualPal);
+    }
+  }
+
+  ulaPlusPalette = pal1.slice();
+  ulaPlusPalette2 = pal2.slice();
+  isUlaPlusMode = true;
+
+  if (typeof generateGigascreenVirtualPalette === 'function') {
+    generateGigascreenVirtualPalette();
+  }
+
+  markPictureModified();
+  saveCurrentPictureState();
+
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+  if (typeof buildUlaPlusGrid === 'function') buildUlaPlusGrid();
+  if (typeof buildUlaPlusClassic === 'function') buildUlaPlusClassic();
+  if (typeof updateUlaPlusPalette === 'function') updateUlaPlusPalette();
+  updateEditorColorPickers();
+  updateExportAsmButton();
+  updateConvertOptions();
+  updateFileInfo();
+  updatePictureTabBar();
+  renderScreen();
+  editorRender();
 }
 
 /**
@@ -22975,6 +24974,52 @@ function convertScrToGigascreen() {
 }
 
 /**
+ * Convert SCR to Gigaattr - duplicate frame into gigascreen layout, tag as GA
+ */
+function convertScrToGigaattr() {
+  if (!screenData || screenData.length < SCREEN.TOTAL_SIZE) {
+    alert('No valid SCR data to convert');
+    return;
+  }
+
+  saveUndoState();
+
+  const gigaData = new Uint8Array(GIGASCREEN.TOTAL_SIZE);
+
+  // Copy 6912 bytes to frame1 (offset 0) and frame2 (offset 6912)
+  const scrSlice = screenData.slice(0, SCREEN.TOTAL_SIZE);
+  gigaData.set(scrSlice, GIGASCREEN.FRAME1_OFFSET);
+  gigaData.set(scrSlice, GIGASCREEN.FRAME2_OFFSET);
+
+  screenData = gigaData;
+  currentFormat = FORMAT.GIGAATTR;
+  currentFileName = currentFileName.replace(/\.[^.]+$/, '.ga');
+
+  if (typeof importPicture === 'function') {
+    currentPicture = importPicture(FORMAT.GIGASCREEN, gigaData, currentFileName);
+    if (currentPicture) currentPicture.sourceFormat = 'ga';
+  }
+
+  if (typeof generateGigascreenVirtualPalette === 'function') {
+    generateGigascreenVirtualPalette();
+  }
+
+  markPictureModified();
+  saveCurrentPictureState();
+
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+  updateEditorColorPickers();
+  updateExportAsmButton();
+  updateConvertOptions();
+  updateFileInfo();
+  updatePictureTabBar();
+  renderScreen();
+  editorRender();
+}
+
+/**
  * Convert SCR to NXI - convert 1-bit+attrs to 8-bit indexed with embedded palette
  */
 function convertScrToNxi() {
@@ -23192,6 +25237,307 @@ function convertGigascreenToBsp() {
   updateConvertOptions();
   updateFileInfo();
   updatePictureTabBar();
+  renderScreen();
+  editorRender();
+}
+
+/**
+ * Convert Gigascreen to Gigaattr - change format tag (screenData stays in gigascreen layout)
+ */
+function convertGigascreenToGigaattr() {
+  if (!screenData || screenData.length < GIGASCREEN.TOTAL_SIZE) {
+    alert('No valid Gigascreen data to convert');
+    return;
+  }
+
+  saveUndoState();
+
+  // screenData stays unchanged (gigascreen layout: 2×6912 in memory)
+  currentFormat = FORMAT.GIGAATTR;
+  currentFileName = currentFileName.replace(/\.[^.]+$/, '.ga');
+
+  if (currentPicture) {
+    currentPicture.sourceFormat = 'ga';
+  }
+
+  markPictureModified();
+  saveCurrentPictureState();
+
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+  updateEditorColorPickers();
+  updateExportAsmButton();
+  updateConvertOptions();
+  updateFileInfo();
+  updatePictureTabBar();
+  renderScreen();
+  editorRender();
+}
+
+/**
+ * Convert Gigaattr to Gigascreen - change format tag (screenData stays in gigascreen layout)
+ */
+function convertGigaattrToGigascreen() {
+  if (!screenData || screenData.length < GIGASCREEN.TOTAL_SIZE) {
+    alert('No valid Gigaattr data to convert');
+    return;
+  }
+
+  saveUndoState();
+
+  // screenData stays unchanged (gigascreen layout: 2×6912 in memory)
+  currentFormat = FORMAT.GIGASCREEN;
+  currentFileName = currentFileName.replace(/\.[^.]+$/, '.img');
+
+  if (currentPicture) {
+    currentPicture.sourceFormat = 'img';
+  }
+
+  markPictureModified();
+  saveCurrentPictureState();
+
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+  updateEditorColorPickers();
+  updateExportAsmButton();
+  updateConvertOptions();
+  updateFileInfo();
+  updatePictureTabBar();
+  renderScreen();
+  editorRender();
+}
+
+/**
+ * Convert GA to GAP - add default ULA+ palette
+ */
+function convertGigaattrToGap() {
+  if (!screenData || screenData.length < GIGASCREEN.TOTAL_SIZE) {
+    alert('No valid Gigaattr data to convert');
+    return;
+  }
+
+  saveUndoState();
+
+  currentFormat = FORMAT.GIGAATTR_PLUS;
+  currentFileName = currentFileName.replace(/\.[^.]+$/, '.gap');
+
+  const pal = generateDefaultUlaPlusPalette();
+  ulaPlusPalette = pal.slice();
+  ulaPlusPalette2 = null;
+  isUlaPlusMode = true;
+
+  if (currentPicture) {
+    currentPicture.sourceFormat = 'gap';
+    currentPicture.palette = new Uint8Array(pal);
+  }
+
+  markPictureModified();
+  saveCurrentPictureState();
+
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+  if (typeof buildUlaPlusGrid === 'function') buildUlaPlusGrid();
+  if (typeof buildUlaPlusClassic === 'function') buildUlaPlusClassic();
+  if (typeof updateUlaPlusPalette === 'function') updateUlaPlusPalette();
+  updateEditorColorPickers();
+  updateExportAsmButton();
+  updateConvertOptions();
+  updateFileInfo();
+  updatePictureTabBar();
+  renderScreen();
+  editorRender();
+}
+
+/**
+ * Convert GAP to GA - strip ULA+ palette
+ */
+function convertGapToGigaattr() {
+  if (!screenData || screenData.length < GIGASCREEN.TOTAL_SIZE) {
+    alert('No valid GAP data to convert');
+    return;
+  }
+
+  saveUndoState();
+
+  currentFormat = FORMAT.GIGAATTR;
+  currentFileName = currentFileName.replace(/\.[^.]+$/, '.ga');
+
+  ulaPlusPalette = null;
+  ulaPlusPalette2 = null;
+  isUlaPlusMode = false;
+
+  if (currentPicture) {
+    currentPicture.sourceFormat = 'ga';
+    currentPicture.palette = null;
+  }
+
+  markPictureModified();
+  saveCurrentPictureState();
+
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+  if (typeof buildUlaPlusGrid === 'function') buildUlaPlusGrid();
+  if (typeof buildUlaPlusClassic === 'function') buildUlaPlusClassic();
+  if (typeof updateUlaPlusPalette === 'function') updateUlaPlusPalette();
+  updateEditorColorPickers();
+  updateExportAsmButton();
+  updateConvertOptions();
+  updateFileInfo();
+  updatePictureTabBar();
+  renderScreen();
+  editorRender();
+}
+
+/**
+ * Convert GAP to Gigascreen - strip palette, promote to independent bitmaps
+ */
+function convertGapToGigascreen() {
+  if (!screenData || screenData.length < GIGASCREEN.TOTAL_SIZE) {
+    alert('No valid GAP data to convert');
+    return;
+  }
+
+  saveUndoState();
+
+  currentFormat = FORMAT.GIGASCREEN;
+  currentFileName = currentFileName.replace(/\.[^.]+$/, '.img');
+
+  ulaPlusPalette = null;
+  ulaPlusPalette2 = null;
+  isUlaPlusMode = false;
+
+  if (currentPicture) {
+    currentPicture.sourceFormat = 'img';
+    currentPicture.palette = null;
+  }
+
+  markPictureModified();
+  saveCurrentPictureState();
+
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+  if (typeof buildUlaPlusGrid === 'function') buildUlaPlusGrid();
+  if (typeof buildUlaPlusClassic === 'function') buildUlaPlusClassic();
+  if (typeof updateUlaPlusPalette === 'function') updateUlaPlusPalette();
+  updateEditorColorPickers();
+  updateExportAsmButton();
+  updateConvertOptions();
+  updateFileInfo();
+  updatePictureTabBar();
+  renderScreen();
+  editorRender();
+}
+
+/**
+ * Convert Gigascreen to GAP - add palette, enforce shared bitmap
+ */
+function convertGigascreenToGap() {
+  if (!screenData || screenData.length < GIGASCREEN.TOTAL_SIZE) {
+    alert('No valid Gigascreen data to convert');
+    return;
+  }
+
+  saveUndoState();
+
+  currentFormat = FORMAT.GIGAATTR_PLUS;
+  currentFileName = currentFileName.replace(/\.[^.]+$/, '.gap');
+
+  const pal = generateDefaultUlaPlusPalette();
+  ulaPlusPalette = pal.slice();
+  ulaPlusPalette2 = null;
+  isUlaPlusMode = true;
+
+  if (currentPicture) {
+    currentPicture.sourceFormat = 'gap';
+    currentPicture.palette = new Uint8Array(pal);
+  }
+
+  markPictureModified();
+  saveCurrentPictureState();
+
+  if (typeof toggleFormatControlsVisibility === 'function') {
+    toggleFormatControlsVisibility();
+  }
+  if (typeof buildUlaPlusGrid === 'function') buildUlaPlusGrid();
+  if (typeof buildUlaPlusClassic === 'function') buildUlaPlusClassic();
+  if (typeof updateUlaPlusPalette === 'function') updateUlaPlusPalette();
+  updateEditorColorPickers();
+  updateExportAsmButton();
+  updateConvertOptions();
+  updateFileInfo();
+  updatePictureTabBar();
+  renderScreen();
+  editorRender();
+}
+
+/**
+ * Convert GAP shared palette to dual palette.
+ * Duplicates palette 1 into palette 2, enabling independent per-frame palettes.
+ */
+function convertGapSharedToDual() {
+  if (!ulaPlusPalette || currentFormat !== FORMAT.GIGAATTR_PLUS) return;
+
+  saveUndoState();
+
+  // Create palette 2 as a copy of palette 1
+  ulaPlusPalette2 = new Uint8Array(ulaPlusPalette);
+
+  // Update picture.palette to 128-byte (dual) layout
+  if (currentPicture) {
+    const dual = new Uint8Array(128);
+    dual.set(ulaPlusPalette, 0);
+    dual.set(ulaPlusPalette2, 64);
+    currentPicture.palette = dual;
+  }
+
+  markPictureModified();
+  saveCurrentPictureState();
+
+  // Refresh UI: combined mode now shows virtual palette instead of ULA+ grid
+  updateConvertOptions();
+  updateFileInfo();
+  updatePictureTabBar();
+  setGigascreenEditMode(gigascreenEditMode);
+  renderScreen();
+  editorRender();
+}
+
+/**
+ * Convert GAP dual palette to shared palette.
+ * Discards palette 2, keeping only palette 1.
+ */
+function convertGapDualToShared() {
+  if (!ulaPlusPalette || currentFormat !== FORMAT.GIGAATTR_PLUS) return;
+
+  saveUndoState();
+
+  // Discard palette 2, keep palette 1
+  ulaPlusPalette2 = null;
+
+  // Update picture.palette to 64-byte (shared) layout
+  if (currentPicture) {
+    currentPicture.palette = new Uint8Array(ulaPlusPalette);
+  }
+
+  // If currently in Screen 2 edit mode, the active palette was palette 2.
+  // Since palette 2 is gone, switch back to combined mode.
+  if (gigascreenEditMode === 'screen2') {
+    setGigascreenEditMode('combined');
+  }
+
+  markPictureModified();
+  saveCurrentPictureState();
+
+  // Refresh UI: combined mode now shows ULA+ grid instead of virtual palette
+  updateConvertOptions();
+  updateFileInfo();
+  updatePictureTabBar();
+  setGigascreenEditMode(gigascreenEditMode);
   renderScreen();
   editorRender();
 }
@@ -27536,6 +29882,12 @@ function initEditor() {
     });
   });
 
+  // Gigascreen edit mode selector buttons
+  initGigascreenEditModeButtons();
+
+  // Gigascreen CLUT page tabs (dual ULA+ pagination)
+  initGigascreenClutTabs();
+
   // Brush size select
   const brushSizeSelect = document.getElementById('editorBrushSize');
   if (brushSizeSelect) {
@@ -27851,6 +30203,7 @@ function initEditor() {
 
   // Build Gigascreen virtual palette
   buildGigascreenPalette();
+  buildGigascreenPaperStrip();
 
   // Initialize ULA+ palette UI
   initUlaPlusPaletteUI();
@@ -27967,7 +30320,7 @@ function initEditor() {
 
     if (value === 'asm') {
       if (currentFormat === FORMAT.BSC) exportBscAsm();
-      else if (currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.MGH) exportGigascreenAsm();
+      else if (currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS || currentFormat === FORMAT.MGH) exportGigascreenAsm();
       else if (currentFormat === FORMAT.RGB3) exportRgb3Asm();
       else if (currentFormat === FORMAT.IFL) exportIflAsm();
       else if (currentFormat === FORMAT.SCR_ULAPLUS) exportUlaPlusAsm();
@@ -28415,7 +30768,7 @@ function initEditor() {
     });
 
     function openDialog() {
-      if (currentFormat !== FORMAT.HLR) return;
+      if (currentFormat !== FORMAT.HLR && !isGigaPatternMode()) return;
       // Pre-fill dialog with current picture's pattern
       let current = null;
       if (currentPicture && currentPicture.pattern && currentPicture.pattern.length === 8) {
@@ -28619,6 +30972,24 @@ function initEditorKeyboardShortcuts() {
           editorInkColor = editorPaperColor;
           editorPaperColor = tempColor;
           updateColorSelectors();
+          break;
+      }
+    }
+
+    // Alt+1/2/3: Gigascreen edit mode switching
+    if (e.altKey && !e.ctrlKey && !e.shiftKey && isGigascreenEditable()) {
+      switch (e.code) {
+        case 'Digit1':
+          e.preventDefault();
+          setGigascreenEditMode('screen1');
+          break;
+        case 'Digit2':
+          e.preventDefault();
+          setGigascreenEditMode('screen2');
+          break;
+        case 'Digit3':
+          e.preventDefault();
+          setGigascreenEditMode('combined');
           break;
       }
     }

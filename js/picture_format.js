@@ -37,7 +37,9 @@
  * @property {string}  contentMode     - 'pixel' | 'pattern' | 'text'
  * @property {string}  colorMode       - 'standard' | 'gigascreen' | 'rgb3'
  * @property {PictureBorder|null} border - Border data for BSC/BMC4, or null
- * @property {Uint8Array|null} pattern - 8-byte pattern tile for 53c, or null
+ * @property {Uint8Array|null} pattern - 8-byte pattern tile for 53c/GA/GAP pattern mode, or null
+ * @property {number|undefined} borderColor1 - Border color frame 1 (0-7) for GA/GAP pattern mode
+ * @property {number|undefined} borderColor2 - Border color frame 2 (0-7) for GA/GAP pattern mode
  * @property {Uint8Array|null} chars       - Character grid for text mode (768 bytes), or null
  * @property {Uint8Array|null} cellColors  - Cell attribute grid for text mode (768 bytes), or null
  * @property {Uint8Array|null} cellMask    - Cell mask for text mode (768 bytes), or null
@@ -95,6 +97,8 @@ function makePicture(opts) {
     colorMode,
     border: null,
     pattern: null,
+    borderColor1: undefined,
+    borderColor2: undefined,
     chars: null,
     cellColors: null,
     cellMask: null,
@@ -796,6 +800,199 @@ function exportGigascreen(picture) {
     result[6912 + 6144 + i] = picture.planes[1].attrs[i];
   }
 
+  return result;
+}
+
+// ============================================================================
+// Gigaattr Import / Export (shared bitmap + two attribute frames)
+// ============================================================================
+
+/**
+ * Imports a 7680-byte Gigaattr file into a Picture.
+ * Layout: 6144-byte shared bitmap + 768-byte attrs1 + 768-byte attrs2.
+ * In-memory representation uses Gigascreen-compatible dual-frame layout.
+ * @param {Uint8Array} fileBytes
+ * @param {string} fileName
+ * @returns {Picture|null}
+ */
+function importGigaattr(fileBytes, fileName) {
+  const isPattern = fileBytes.length === GIGAATTR.TOTAL_SIZE_PATTERN;
+  if (!isPattern && fileBytes.length < GIGAATTR.TOTAL_SIZE) return null;
+
+  const pic = makePicture({
+    sourceFormat: 'ga',
+    fileName: fileName,
+    width: 256,
+    height: 192,
+    attrCellHeight: 8,
+    planeCount: 2,
+    contentMode: isPattern ? 'pattern' : 'pixel',
+    colorMode: 'gigascreen'
+  });
+
+  if (isPattern) {
+    // Store 8-byte fill pattern
+    pic.pattern = new Uint8Array(fileBytes.subarray(0, 8));
+    // Border colors
+    pic.borderColor1 = fileBytes[GIGAATTR.PATTERN_BORDER1_OFFSET] & 7;
+    pic.borderColor2 = fileBytes[GIGAATTR.PATTERN_BORDER2_OFFSET] & 7;
+    // Generate bitmap from pattern tile (both planes get same bitmap)
+    const bitmap = new Uint8Array(32 * 192);
+    for (let y = 0; y < 192; y++) {
+      const b = pic.pattern[y & 7];
+      for (let col = 0; col < 32; col++) bitmap[y * 32 + col] = b;
+    }
+    pic.planes[0].bitmap = bitmap;
+    pic.planes[1].bitmap = new Uint8Array(bitmap);
+    // Attrs at pattern offsets
+    for (let i = 0; i < 768; i++) pic.planes[0].attrs[i] = fileBytes[GIGAATTR.PATTERN_ATTR1_OFFSET + i];
+    for (let i = 0; i < 768; i++) pic.planes[1].attrs[i] = fileBytes[GIGAATTR.PATTERN_ATTR2_OFFSET + i];
+  } else {
+    // Shared bitmap → both planes get same bitmap
+    const bitmap = deinterleaveBitmap(fileBytes, 0, 256, 192);
+    pic.planes[0].bitmap = bitmap;
+    pic.planes[1].bitmap = new Uint8Array(bitmap);  // copy
+    // Attr frame 1 at offset 6144
+    for (let i = 0; i < 768; i++) pic.planes[0].attrs[i] = fileBytes[GIGAATTR.ATTR1_OFFSET + i];
+    // Attr frame 2 at offset 6912
+    for (let i = 0; i < 768; i++) pic.planes[1].attrs[i] = fileBytes[GIGAATTR.ATTR2_OFFSET + i];
+  }
+  return pic;
+}
+
+/**
+ * Exports a Picture to a Gigaattr file.
+ * Pattern mode: 1546 bytes. Bitmap mode: 7680 bytes.
+ * Bitmap from plane 0 (both planes should be identical; plane 0 is authoritative).
+ * @param {Picture} picture
+ * @returns {Uint8Array}
+ */
+function exportGigaattr(picture) {
+  if (picture.contentMode === 'pattern') {
+    const result = new Uint8Array(GIGAATTR.TOTAL_SIZE_PATTERN);
+    // Fill pattern (8 bytes)
+    if (picture.pattern) result.set(picture.pattern.subarray(0, 8), 0);
+    // Border colors
+    result[GIGAATTR.PATTERN_BORDER1_OFFSET] = (picture.borderColor1 || 0) & 7;
+    result[GIGAATTR.PATTERN_BORDER2_OFFSET] = (picture.borderColor2 || 0) & 7;
+    // Attrs
+    for (let i = 0; i < 768; i++) result[GIGAATTR.PATTERN_ATTR1_OFFSET + i] = picture.planes[0].attrs[i];
+    for (let i = 0; i < 768; i++) result[GIGAATTR.PATTERN_ATTR2_OFFSET + i] = picture.planes[1].attrs[i];
+    return result;
+  }
+  const result = new Uint8Array(GIGAATTR.TOTAL_SIZE);
+  // Bitmap from plane 0
+  const bm = interleaveBitmap(picture.planes[0].bitmap, picture.width, picture.height);
+  result.set(bm, 0);
+  // Attrs frame 1
+  for (let i = 0; i < 768; i++) result[GIGAATTR.ATTR1_OFFSET + i] = picture.planes[0].attrs[i];
+  // Attrs frame 2
+  for (let i = 0; i < 768; i++) result[GIGAATTR.ATTR2_OFFSET + i] = picture.planes[1].attrs[i];
+  return result;
+}
+
+// ============================================================================
+// GAP Import / Export (Gigaattr + ULA+ palette)
+// ============================================================================
+
+/**
+ * Imports a GAP file into a 2-plane Picture with ULA+ palette.
+ * @param {Uint8Array} fileBytes - Raw file bytes (7744/7808 bitmap or 1610/1674 pattern)
+ * @param {string} fileName - Original file name
+ * @returns {Picture|null}
+ */
+function importGigaattrPlus(fileBytes, fileName) {
+  const isPattern = fileBytes.length === GIGAATTR_PLUS.TOTAL_SIZE_SHARED_PATTERN
+                 || fileBytes.length === GIGAATTR_PLUS.TOTAL_SIZE_DUAL_PATTERN;
+  if (!isPattern && fileBytes.length < GIGAATTR_PLUS.TOTAL_SIZE_SHARED) return null;
+
+  const pic = makePicture({
+    sourceFormat: 'gap',
+    fileName: fileName,
+    width: 256,
+    height: 192,
+    attrCellHeight: 8,
+    planeCount: 2,
+    contentMode: isPattern ? 'pattern' : 'pixel',
+    colorMode: 'gigascreen'
+  });
+
+  if (isPattern) {
+    // Store 8-byte fill pattern
+    pic.pattern = new Uint8Array(fileBytes.subarray(0, 8));
+    // Border colors
+    pic.borderColor1 = fileBytes[GIGAATTR.PATTERN_BORDER1_OFFSET] & 7;
+    pic.borderColor2 = fileBytes[GIGAATTR.PATTERN_BORDER2_OFFSET] & 7;
+    // Generate bitmap from pattern tile (both planes get same bitmap)
+    const bitmap = new Uint8Array(32 * 192);
+    for (let y = 0; y < 192; y++) {
+      const b = pic.pattern[y & 7];
+      for (let col = 0; col < 32; col++) bitmap[y * 32 + col] = b;
+    }
+    pic.planes[0].bitmap = bitmap;
+    pic.planes[1].bitmap = new Uint8Array(bitmap);
+    // Attrs at pattern offsets
+    for (let i = 0; i < 768; i++) pic.planes[0].attrs[i] = fileBytes[GIGAATTR.PATTERN_ATTR1_OFFSET + i];
+    for (let i = 0; i < 768; i++) pic.planes[1].attrs[i] = fileBytes[GIGAATTR.PATTERN_ATTR2_OFFSET + i];
+    // Palette(s) from pattern offset
+    const isDual = fileBytes.length === GIGAATTR_PLUS.TOTAL_SIZE_DUAL_PATTERN;
+    const palSize = isDual ? 128 : 64;
+    pic.palette = new Uint8Array(palSize);
+    for (let i = 0; i < palSize; i++) pic.palette[i] = fileBytes[GIGAATTR_PLUS.PATTERN_PALETTE_OFFSET + i];
+  } else {
+    // Shared bitmap → both planes
+    const bitmap = deinterleaveBitmap(fileBytes, 0, 256, 192);
+    pic.planes[0].bitmap = bitmap;
+    pic.planes[1].bitmap = new Uint8Array(bitmap);
+    // Attrs
+    for (let i = 0; i < 768; i++) pic.planes[0].attrs[i] = fileBytes[GIGAATTR.ATTR1_OFFSET + i];
+    for (let i = 0; i < 768; i++) pic.planes[1].attrs[i] = fileBytes[GIGAATTR.ATTR2_OFFSET + i];
+    // Palette(s)
+    const isDual = fileBytes.length >= GIGAATTR_PLUS.TOTAL_SIZE_DUAL;
+    const palSize = isDual ? 128 : 64;
+    pic.palette = new Uint8Array(palSize);
+    for (let i = 0; i < palSize; i++) pic.palette[i] = fileBytes[GIGAATTR_PLUS.PALETTE_OFFSET + i];
+  }
+  return pic;
+}
+
+/**
+ * Exports a Picture to a GAP file.
+ * Pattern mode: 1610/1674 bytes. Bitmap mode: 7744/7808 bytes.
+ * @param {Picture} picture
+ * @returns {Uint8Array}
+ */
+function exportGigaattrPlus(picture) {
+  const isDual = picture.palette && picture.palette.length >= 128;
+
+  if (picture.contentMode === 'pattern') {
+    const totalSize = isDual ? GIGAATTR_PLUS.TOTAL_SIZE_DUAL_PATTERN : GIGAATTR_PLUS.TOTAL_SIZE_SHARED_PATTERN;
+    const result = new Uint8Array(totalSize);
+    // Fill pattern (8 bytes)
+    if (picture.pattern) result.set(picture.pattern.subarray(0, 8), 0);
+    // Border colors
+    result[GIGAATTR.PATTERN_BORDER1_OFFSET] = (picture.borderColor1 || 0) & 7;
+    result[GIGAATTR.PATTERN_BORDER2_OFFSET] = (picture.borderColor2 || 0) & 7;
+    // Attrs
+    for (let i = 0; i < 768; i++) result[GIGAATTR.PATTERN_ATTR1_OFFSET + i] = picture.planes[0].attrs[i];
+    for (let i = 0; i < 768; i++) result[GIGAATTR.PATTERN_ATTR2_OFFSET + i] = picture.planes[1].attrs[i];
+    // Palette
+    if (picture.palette) {
+      result.set(picture.palette.subarray(0, isDual ? 128 : 64), GIGAATTR_PLUS.PATTERN_PALETTE_OFFSET);
+    }
+    return result;
+  }
+
+  const totalSize = isDual ? GIGAATTR_PLUS.TOTAL_SIZE_DUAL : GIGAATTR_PLUS.TOTAL_SIZE_SHARED;
+  const result = new Uint8Array(totalSize);
+  const bm = interleaveBitmap(picture.planes[0].bitmap, picture.width, picture.height);
+  result.set(bm, 0);
+  for (let i = 0; i < 768; i++) result[GIGAATTR.ATTR1_OFFSET + i] = picture.planes[0].attrs[i];
+  for (let i = 0; i < 768; i++) result[GIGAATTR.ATTR2_OFFSET + i] = picture.planes[1].attrs[i];
+  // Palette
+  if (picture.palette) {
+    result.set(picture.palette.subarray(0, isDual ? 128 : 64), GIGAATTR_PLUS.PALETTE_OFFSET);
+  }
   return result;
 }
 
@@ -1667,6 +1864,8 @@ function clonePicture(picture) {
       bottom: new Uint8Array(picture.border.bottom)
     } : null,
     pattern: picture.pattern ? new Uint8Array(picture.pattern) : null,
+    borderColor1: picture.borderColor1,
+    borderColor2: picture.borderColor2,
     chars: picture.chars ? new Uint8Array(picture.chars) : null,
     cellColors: picture.cellColors ? new Uint8Array(picture.cellColors) : null,
     cellMask: picture.cellMask ? new Uint8Array(picture.cellMask) : null,
@@ -1723,7 +1922,7 @@ function syncPictureFromScreenData(scrData, picture) {
     return;
   }
 
-  if (fmt === 'img' || fmt === 'mgh' || fmt === 'hlr' || fmt === 'stl' ||
+  if (fmt === 'img' || fmt === 'ga' || fmt === 'gap' || fmt === 'mgh' || fmt === 'hlr' || fmt === 'stl' ||
       (fmt === 'bsp' && picture.colorMode === 'gigascreen')) {
     // Gigascreen / MGH / HLR / STL / BSP-giga: two complete frames in interleaved layout
     const attrSize = picture.planes[0].attrs.length; // 768 for mg8/.img/.hlr/bsp, 1536 for mg4/stl, 3072 for mg2, 6144 for mg1
@@ -1738,6 +1937,23 @@ function syncPictureFromScreenData(scrData, picture) {
     }
     // BSP giga+border: border is stored on picture.border, NOT in screenData
     // (screenData only has the 13824-byte IMG layout for giga)
+    // GAP: sync ULA+ palette from globals back to picture.palette
+    if (fmt === 'gap' && typeof ulaPlusPalette !== 'undefined' && ulaPlusPalette) {
+      if (typeof ulaPlusPalette2 !== 'undefined' && ulaPlusPalette2) {
+        const dual = new Uint8Array(128);
+        // In screen2 mode ulaPlusPalette === ulaPlusPalette2 (same ref),
+        // so preserve existing palette 1 bytes instead of overwriting with palette 2.
+        if (ulaPlusPalette === ulaPlusPalette2 && picture.palette && picture.palette.length >= 128) {
+          dual.set(picture.palette.subarray(0, 64), 0);
+        } else {
+          dual.set(ulaPlusPalette, 0);
+        }
+        dual.set(ulaPlusPalette2, 64);
+        picture.palette = dual;
+      } else {
+        picture.palette = new Uint8Array(ulaPlusPalette);
+      }
+    }
     return;
   }
 
@@ -2006,6 +2222,8 @@ const PICTURE_FORMAT_HANDLERS = {
   'bsc':          { import: (b, fn) => importBsc(b, fn),        export: exportBsc },
   'bmc4':         { import: (b, fn) => importBmc4(b, fn),       export: exportBmc4 },
   'img':          { import: (b, fn) => importGigascreen(b, fn), export: exportGigascreen },
+  'ga':           { import: (b, fn) => importGigaattr(b, fn),   export: exportGigaattr },
+  'gap':          { import: (b, fn) => importGigaattrPlus(b, fn), export: exportGigaattrPlus },
   'hlr':          { import: (b, fn) => importHlr(b, fn),        export: exportHlr },
   'stl':          { import: (b, fn) => importStl(b, fn),        export: exportStl },
   'bsp':          { import: (b, fn) => importBsp(b, fn),        export: exportBsp },

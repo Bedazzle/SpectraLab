@@ -2,12 +2,6 @@
 // Sprite Editor — multi-tile sprite editing with animation, mask, attributes
 // ============================================================================
 
-// ZX Spectrum standard colors (normal + bright)
-const SPRITE_ZX_COLORS = [
-  '#000000', '#0000D7', '#D70000', '#D700D7', '#00D700', '#00D7D7', '#D7D700', '#D7D7D7',
-  '#000000', '#0000FF', '#FF0000', '#FF00FF', '#00FF00', '#00FFFF', '#FFFF00', '#FFFFFF'
-];
-
 // ---- State ----
 
 /** @type {{sprites: Array, name: string}} */
@@ -152,7 +146,7 @@ function initSpriteEditor() {
     'spriteEditorClose', 'spriteEditorCanvas', 'spritePreviewCanvas',
     'spriteToolDraw', 'spriteToolErase', 'spriteToolFill', 'spriteToolLine',
     'spriteToolRect', 'spriteToolSelect', 'spriteToolMask', 'spriteAttrControls',
-    'spriteColorPalette', 'spriteBrightChk',
+    'spriteColorPalette',
     'spriteOnionSkin', 'spriteShowGrid', 'spriteShowAttrs', 'spriteShowMask',
     'spriteFramePrev', 'spriteFrameInfo', 'spriteFrameNext', 'spriteFrameAdd',
     'spriteFrameDup', 'spriteFrameDel', 'spriteFrameMoveL', 'spriteFrameMoveR',
@@ -343,8 +337,21 @@ function createEmptyFrame(cellsW, cellsH, mode, attrCellH) {
 
 function addSprite(name, cellsW, cellsH, mode, attrCellH) {
   name = name || 'Sprite' + (spriteSheet.sprites.length + 1);
+  // Read size from dropdowns when not explicitly provided
+  if (!cellsW && spriteDOM.spriteCellsW) cellsW = parseInt(spriteDOM.spriteCellsW.value) || 1;
+  if (!cellsH && spriteDOM.spriteCellsH) cellsH = parseInt(spriteDOM.spriteCellsH.value) || 1;
   cellsW = cellsW || 1;
   cellsH = cellsH || 1;
+  // Read mode from dropdown when not explicitly provided
+  if (!mode && spriteDOM.spriteMode) {
+    const dropdownVal = spriteDOM.spriteMode.value;
+    if (dropdownVal.startsWith('multicolour_')) {
+      mode = 'multicolour';
+      attrCellH = attrCellH || parseInt(dropdownVal.split('_')[1]) || 2;
+    } else {
+      mode = dropdownVal;
+    }
+  }
   mode = mode || 'mono';
 
   const sprite = {
@@ -1332,8 +1339,8 @@ function renderFrameToCtx(ctx, sprite, frame, zoom, pixW, pixH, bytesPerRow, isC
         const ink = attr & 7;
         const paper = (attr >> 3) & 7;
         const bright = (attr >> 6) & 1;
-        const inkColor = SPRITE_ZX_COLORS[ink + (bright ? 8 : 0)];
-        const paperColor = SPRITE_ZX_COLORS[paper + (bright ? 8 : 0)];
+        const inkColor = bright ? ZX_PALETTE.BRIGHT[ink] : ZX_PALETTE.REGULAR[ink];
+        const paperColor = bright ? ZX_PALETTE.BRIGHT[paper] : ZX_PALETTE.REGULAR[paper];
 
         for (let py = 0; py < attrCellH; py++) {
           for (let px = 0; px < 8; px++) {
@@ -1355,8 +1362,8 @@ function renderFrameToCtx(ctx, sprite, frame, zoom, pixW, pixH, bytesPerRow, isC
         const ink = attr & 7;
         const paper = (attr >> 3) & 7;
         const bright = (attr >> 6) & 1;
-        const inkColor = SPRITE_ZX_COLORS[ink + (bright ? 8 : 0)];
-        const paperColor = SPRITE_ZX_COLORS[paper + (bright ? 8 : 0)];
+        const inkColor = bright ? ZX_PALETTE.BRIGHT[ink] : ZX_PALETTE.REGULAR[ink];
+        const paperColor = bright ? ZX_PALETTE.BRIGHT[paper] : ZX_PALETTE.REGULAR[paper];
 
         for (let py = 0; py < 8; py++) {
           for (let px = 0; px < 8; px++) {
@@ -1850,49 +1857,59 @@ function buildColorPalettes() {
   const container = spriteDOM.spriteColorPalette;
   if (!container) return;
   container.innerHTML = '';
-  for (let i = 0; i < 8; i++) {
-    const cell = document.createElement('div');
-    cell.className = 'sprite-color-cell';
-    cell.style.background = SPRITE_ZX_COLORS[i];
-    cell.dataset.color = String(i);
-    // Left click = ink
-    cell.addEventListener('click', (e) => {
-      e.preventDefault();
-      spriteInk = i;
-      updatePaletteSelection();
-    });
-    // Right click = paper
-    cell.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      spritePaper = i;
-      updatePaletteSelection();
-    });
-    container.appendChild(cell);
+  // Two rows: normal (bright=false) and bright (bright=true)
+  for (let bright = 0; bright <= 1; bright++) {
+    const row = document.createElement('div');
+    row.className = 'sprite-color-row';
+    for (let i = 0; i < 8; i++) {
+      const cell = document.createElement('div');
+      cell.className = 'sprite-color-cell';
+      cell.style.background = bright ? ZX_PALETTE.BRIGHT[i] : ZX_PALETTE.REGULAR[i];
+      cell.dataset.color = String(i);
+      cell.dataset.bright = String(bright);
+      // Left click = ink; move paper to same row
+      cell.addEventListener('click', (e) => {
+        e.preventDefault();
+        spriteInk = i;
+        spriteBright = !!bright;
+        updatePaletteSelection();
+      });
+      // Right click = paper; move ink to same row
+      cell.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        spritePaper = i;
+        spriteBright = !!bright;
+        updatePaletteSelection();
+      });
+      row.appendChild(cell);
+    }
+    container.appendChild(row);
   }
-  spriteDOM.spriteBrightChk?.addEventListener('change', () => {
-    spriteBright = spriteDOM.spriteBrightChk.checked;
-    updatePaletteSelection();
-  });
   updatePaletteSelection();
 }
 
 function updatePaletteSelection() {
   const container = spriteDOM.spriteColorPalette;
   if (!container) return;
+  const brightRow = spriteBright ? 1 : 0;
   const cells = container.querySelectorAll('.sprite-color-cell');
-  cells.forEach((cell, i) => {
-    cell.style.background = SPRITE_ZX_COLORS[i + (spriteBright ? 8 : 0)];
-    cell.classList.toggle('ink-selected', i === spriteInk);
-    cell.classList.toggle('paper-selected', i === spritePaper);
+  cells.forEach((cell) => {
+    const ci = parseInt(cell.dataset.color);
+    const cb = parseInt(cell.dataset.bright);
+    const isActiveRow = cb === brightRow;
+    // Refresh swatch color from current palette
+    cell.style.background = cb ? ZX_PALETTE.BRIGHT[ci] : ZX_PALETTE.REGULAR[ci];
+    cell.classList.toggle('ink-selected', ci === spriteInk && isActiveRow);
+    cell.classList.toggle('paper-selected', ci === spritePaper && isActiveRow);
     // Remove old markers
     cell.querySelectorAll('.sprite-color-marker').forEach(m => m.remove());
-    if (i === spriteInk) {
+    if (ci === spriteInk && isActiveRow) {
       const m = document.createElement('span');
       m.className = 'sprite-color-marker ink-marker';
       m.textContent = 'I';
       cell.appendChild(m);
     }
-    if (i === spritePaper) {
+    if (ci === spritePaper && isActiveRow) {
       const m = document.createElement('span');
       m.className = 'sprite-color-marker paper-marker';
       m.textContent = 'P';

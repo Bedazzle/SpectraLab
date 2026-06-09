@@ -862,21 +862,6 @@ function closePluginSession() {
 function initPluginUI() {
   loadPluginsFromStorage();
 
-  const loadBtn = document.getElementById('pluginLoadBtn');
-  const fileInput = document.getElementById('pluginFileInput');
-  if (loadBtn && fileInput) {
-    loadBtn.addEventListener('click', function () {
-      fileInput.click();
-    });
-    fileInput.addEventListener('change', function () {
-      const files = /** @type {HTMLInputElement} */ (fileInput).files;
-      if (files && files.length > 0) {
-        loadPluginDescriptorFile(files[0]);
-        /** @type {HTMLInputElement} */ (fileInput).value = '';
-      }
-    });
-  }
-
   // Session bar buttons
   const replaceBtn = document.getElementById('pluginReplaceBtn');
   if (replaceBtn) {
