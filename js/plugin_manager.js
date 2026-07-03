@@ -338,6 +338,8 @@ function buildPluginContext() {
   if (typeof ZXSC !== 'undefined') ctx.ZXSC = ZXSC;
   if (typeof LC   !== 'undefined') ctx.LC   = LC;
   if (typeof UPKR !== 'undefined') ctx.UPKR = UPKR;
+  if (typeof LgK  !== 'undefined') ctx.LgK  = LgK;
+  if (typeof ASC  !== 'undefined') ctx.ASC  = ASC;
   return ctx;
 }
 
@@ -476,7 +478,7 @@ function openFileWithPlugin(file, pluginId) {
     }
 
     // Add extracted pictures to the viewer
-    const baseName = file.name.replace(/\.[^.]+$/, '');
+    const baseName = stripFileExtension(file.name);
     let addedCount = 0;
     for (const extracted of extractedPictures) {
       if (extracted.error) continue;
@@ -752,7 +754,7 @@ function saveRawWithPlugin() {
     saveCurrentPictureState();
   }
 
-  const baseName = pluginOriginalFileName.replace(/\.[^.]+$/, '');
+  const baseName = stripFileExtension(pluginOriginalFileName);
 
   for (const [picId, entry] of pluginPictureMap) {
     const picState = openPictures.find(function (p) { return p.id === picId; });
@@ -828,7 +830,7 @@ function exportWithPlugin(pluginId) {
     }
 
     // Derive file name from current picture name
-    const baseName = picState.fileName.replace(/\.[^.]+$/, '');
+    const baseName = stripFileExtension(picState.fileName);
     const exts = desc.fileExtensions || [];
     const ext = exts.length > 0 ? exts[0] : '.bin';
     const fileName = baseName + ext;

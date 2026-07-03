@@ -9714,6 +9714,24 @@ function loadScreenFile(file) {
         format = detectFormat(innerName, data.length);
       }
 
+      // ASC compressed files — decompress before further processing.
+      // Handles both a real self-extracting block (194-byte stub + tokens) and a
+      // bare token stream (as written by SpectraLab's ASC save).
+      if (fileExt === 'asc' && typeof ASC !== 'undefined') {
+        try {
+          // decompress() auto-skips the 194-byte stub when present, else decodes
+          // the bare token stream from offset 0 — so it handles both forms.
+          data = ASC.decompress(data);
+        } catch (e) {
+          alert('Failed to decompress ASC file: ' + e.message);
+          return;
+        }
+        // ASC always decodes to a standard 6912-byte SCR. Force the format rather
+        // than re-detecting from the inner filename: original ASC tools name screens
+        // "NAME.C", whose ".c" inner extension would otherwise be mis-detected as GMX.
+        format = FORMAT.SCR;
+      }
+
       // Chunks lossy compressed files — decompress before further processing
       if ((fileExt === 'c4' || fileExt === 'c2') && typeof CHUNKS !== 'undefined') {
         try {

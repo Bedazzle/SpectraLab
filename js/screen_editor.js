@@ -52,6 +52,15 @@ function isGigascreenEditable() {
 }
 
 /**
+ * Returns true if the current format is a Gigaattr format (GA `.ga` or GAP `.gap`):
+ * one shared bitmap with two attribute frames. Narrower than isGigascreenEditable().
+ * @returns {boolean}
+ */
+function isGigaattrFormat() {
+  return currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS;
+}
+
+/**
  * Returns true if the current picture is a pattern-based gigascreen format
  * (GA/GAP pattern). These formats have a fixed bitmap determined by an 8-byte
  * fill pattern and only allow attribute (color) changes, same as HLR.
@@ -59,7 +68,7 @@ function isGigascreenEditable() {
  */
 function isGigaPatternMode() {
   return currentPicture && currentPicture.contentMode === 'pattern' &&
-    (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS);
+    isGigaattrFormat();
 }
 
 /**
@@ -560,7 +569,7 @@ function generate53cVirtualPalette(patternArray) {
 
         if (seen.has(key)) continue;
 
-        const attr = (ink & 0x07) | ((paper & 0x07) << 3) | (bright ? 0x40 : 0);
+        const attr = ATTR.make(ink, paper, bright);
         const brightLabel = bright ? ' Bright' : '';
         const name = ink === paper
           ? `${COLOR_NAMES[ink]}${brightLabel}`
@@ -1406,7 +1415,7 @@ function setGigascreenPixel(data, x, y, isInk) {
           if (isInk) { bmp[bitmapAddr] |= (1 << bit); } else { bmp[bitmapAddr] &= ~(1 << bit); }
         }
         // Gigaattr: mirror bitmap to the other layer plane
-        if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+        if (isGigaattrFormat()) {
           const otherBmp = splitFrame === 0 ? layer.bitmap2 : layer.bitmap;
           if (otherBmp) { if (isInk) { otherBmp[bitmapAddr] |= (1 << bit); } else { otherBmp[bitmapAddr] &= ~(1 << bit); } }
         }
@@ -1435,7 +1444,7 @@ function setGigascreenPixel(data, x, y, isInk) {
     // Background / no layers: write to screenData
     if (isInk) { data[bitmapOffset + bitmapAddr] |= (1 << bit); } else { data[bitmapOffset + bitmapAddr] &= ~(1 << bit); }
     // Gigaattr: mirror bitmap to the other frame (bitmap is shared)
-    if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+    if (isGigaattrFormat()) {
       const otherOffset = splitFrame === 0 ? gigaFS : 0;
       if (isInk) { data[otherOffset + bitmapAddr] |= (1 << bit); } else { data[otherOffset + bitmapAddr] &= ~(1 << bit); }
     }
@@ -1462,7 +1471,7 @@ function setGigascreenPixel(data, x, y, isInk) {
         const attrs = splitFrame === 0 ? layer.attributes : layer.attributesFrame2;
         if (bmp) { if (isInk) { bmp[bitmapAddr] |= (1 << bit); } else { bmp[bitmapAddr] &= ~(1 << bit); } }
         // Gigaattr: mirror bitmap to the other layer plane
-        if ((currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) && layer) {
+        if ((isGigaattrFormat()) && layer) {
           const otherBmp = splitFrame === 0 ? layer.bitmap2 : layer.bitmap;
           if (otherBmp) { if (isInk) { otherBmp[bitmapAddr] |= (1 << bit); } else { otherBmp[bitmapAddr] &= ~(1 << bit); } }
         }
@@ -1505,7 +1514,7 @@ function setGigascreenPixel(data, x, y, isInk) {
       }
 
       // Frame 2 bitmap — Gigaattr: mirror frame 1 bitmap (shared)
-      if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+      if (isGigaattrFormat()) {
         layer.bitmap2[bitmapAddr] = (layer.bitmap2[bitmapAddr] & ~(1 << bit)) | (layer.bitmap[bitmapAddr] & (1 << bit));
       } else if (activeColorInfo.frame2Set) {
         layer.bitmap2[bitmapAddr] |= (1 << bit);
@@ -1556,7 +1565,7 @@ function setGigascreenPixel(data, x, y, isInk) {
 
   // Frame 2: bitmap at gigaFS+, attributes at gigaFS+6144+
   // Gigaattr: force frame 2 bitmap to match frame 1 (shared bitmap)
-  if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+  if (isGigaattrFormat()) {
     data[gigaFS + bitmapAddr] = (data[gigaFS + bitmapAddr] & ~(1 << bit)) | (data[bitmapAddr] & (1 << bit));
   } else if (activeColorInfo.frame2Set) {
     data[gigaFS + bitmapAddr] |= (1 << bit);
@@ -1582,7 +1591,7 @@ function setGigascreenPixel(data, x, y, isInk) {
       }
       if (layer.bitmap2) {
         // Gigaattr: mirror frame 1 bitmap (shared)
-        if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+        if (isGigaattrFormat()) {
           layer.bitmap2[bitmapAddr] = (layer.bitmap2[bitmapAddr] & ~(1 << bit)) | (layer.bitmap[bitmapAddr] & (1 << bit));
         } else if (activeColorInfo.frame2Set) {
           layer.bitmap2[bitmapAddr] |= (1 << bit);
@@ -2035,8 +2044,8 @@ function setHlrSplitFrameAttr(data, x, y, isInk) {
   const isInkComponent = isHlrPixelInk(x, y);
 
   const attr = getCurrentDrawingAttribute();
-  const inkBits = attr & 0x07;
-  const paperBits = (attr >> 3) & 0x07;
+  const inkBits = ATTR.ink(attr);
+  const paperBits = ATTR.paper(attr);
   const brightBit = attr & 0x40;
   const colorBits = isInk ? inkBits : paperBits;
 
@@ -2088,8 +2097,8 @@ function setStlSplitFrameAttr(data, x, y, isInk) {
   const isInkComponent = isStlPixelInk(x, y);
 
   const attr = getCurrentDrawingAttribute();
-  const inkBits = attr & 0x07;
-  const paperBits = (attr >> 3) & 0x07;
+  const inkBits = ATTR.ink(attr);
+  const paperBits = ATTR.paper(attr);
   const brightBit = attr & 0x40;
   const colorBits = isInk ? inkBits : paperBits;
 
@@ -2132,7 +2141,7 @@ function setStlSplitFrameAttr(data, x, y, isInk) {
  * @returns {boolean}
  */
 function isGigascreenExportFormat() {
-  if (currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS || currentFormat === FORMAT.MGH ||
+  if (currentFormat === FORMAT.GIGASCREEN || isGigaattrFormat() || currentFormat === FORMAT.MGH ||
       currentFormat === FORMAT.HLR || currentFormat === FORMAT.STL) return true;
   if (currentFormat === FORMAT.BSP && currentPicture && currentPicture.colorMode === 'gigascreen') return true;
   if (currentFormat === FORMAT.CHR && currentPicture && currentPicture.colorMode === 'gigascreen') return true;
@@ -2275,7 +2284,7 @@ function renderToExportCanvas(gigaFrameIndex, flashPhaseOverride) {
  * Uses current view settings; only gigascreen mode is chosen via dialog.
  */
 async function exportImageToFile() {
-  const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+  const baseName = stripFileExtension(currentFileName) || 'screen';
   const isGiga = isGigascreenExportFormat();
   const gigaModeSel = /** @type {HTMLSelectElement|null} */ (document.getElementById('exportImageGigaMode'));
   const wantFlicker = isGiga && gigaModeSel && gigaModeSel.value === 'flicker';
@@ -2459,7 +2468,7 @@ async function saveAllPicturesAsZipOriginals() {
     });
     if (!bytes) { skipped++; continue; }
     const ext = pictureExtFor(pic.format, pic.fileName);
-    const base = (pic.fileName || 'picture').replace(/\.[^.]+$/, '');
+    const base = stripFileExtension(pic.fileName) || 'picture';
     const fname = uniqueFileName(used, base, ext);
     zip.file(fname, bytes);
   }
@@ -2484,7 +2493,7 @@ async function saveAllPicturesAsZipImages() {
   const flashDelay = Math.round((typeof FLASH_INTERVAL !== 'undefined' ? FLASH_INTERVAL : 320) / 10);
   for (let i = 0; i < openPictures.length; i++) {
     const pic = openPictures[i];
-    const base = (pic.fileName || 'picture').replace(/\.[^.]+$/, '');
+    const base = stripFileExtension(pic.fileName) || 'picture';
     let entryBlob = null;
     let entryExt = 'png';
     await withTemporaryPicture(i, async () => {
@@ -4189,7 +4198,7 @@ function setPixelBitmapOnly(data, x, y, isInk) {
             else       { bmp[bitmapAddr] &= ~(1 << bit); }
           }
           // Gigaattr: mirror bitmap to the other layer plane
-          if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+          if (isGigaattrFormat()) {
             const otherBmp = splitFrame === 0 ? layer.bitmap2 : layer.bitmap;
             if (otherBmp) { if (isInk) { otherBmp[bitmapAddr] |= (1 << bit); } else { otherBmp[bitmapAddr] &= ~(1 << bit); } }
           }
@@ -4199,7 +4208,7 @@ function setPixelBitmapOnly(data, x, y, isInk) {
         if (isInk) { data[offset + bitmapAddr] |= (1 << bit); }
         else       { data[offset + bitmapAddr] &= ~(1 << bit); }
         // Gigaattr: mirror bitmap to the other frame
-        if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+        if (isGigaattrFormat()) {
           const otherOffset = splitFrame === 0 ? gigaFS : 0;
           if (isInk) { data[otherOffset + bitmapAddr] |= (1 << bit); }
           else       { data[otherOffset + bitmapAddr] &= ~(1 << bit); }
@@ -4213,7 +4222,7 @@ function setPixelBitmapOnly(data, x, y, isInk) {
               else       { bmp[bitmapAddr] &= ~(1 << bit); }
             }
             // Gigaattr: mirror bitmap to the other layer plane
-            if ((currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) && layer) {
+            if ((isGigaattrFormat()) && layer) {
               const otherBmp = splitFrame === 0 ? layer.bitmap2 : layer.bitmap;
               if (otherBmp) { if (isInk) { otherBmp[bitmapAddr] |= (1 << bit); } else { otherBmp[bitmapAddr] &= ~(1 << bit); } }
             }
@@ -4467,7 +4476,7 @@ function buildAttribute(ink, paper, bright, flash) {
   // Handle transparent colors (use 0/black for attributes)
   const safeInk = ink === COLOR_TRANSPARENT ? 0 : ink;
   const safePaper = paper === COLOR_TRANSPARENT ? 0 : paper;
-  return (safeInk & 0x07) | ((safePaper & 0x07) << 3) | (bright ? 0x40 : 0) | (flash ? 0x80 : 0);
+  return ATTR.make(safeInk, safePaper, bright, flash);
 }
 
 /**
@@ -4496,7 +4505,7 @@ function buildUlaPlusAttribute() {
   const bright = (clut & 1) !== 0;
   const flash = (clut & 2) !== 0;
 
-  return (inkPos & 0x07) | ((paperPos & 0x07) << 3) | (bright ? 0x40 : 0) | (flash ? 0x80 : 0);
+  return ATTR.make(inkPos, paperPos, bright, flash);
 }
 
 /**
@@ -4570,10 +4579,10 @@ function isPaperTransparent() {
  */
 function parseAttribute(attr) {
   return {
-    ink: attr & 0x07,
-    paper: (attr >> 3) & 0x07,
-    bright: (attr & 0x40) !== 0,
-    flash: (attr & 0x80) !== 0
+    ink: ATTR.ink(attr),
+    paper: ATTR.paper(attr),
+    bright: ATTR.bright(attr),
+    flash: ATTR.flash(attr)
   };
 }
 
@@ -6033,14 +6042,11 @@ function saveProject() {
   }
 
   const json = JSON.stringify(project, null, 2);
-  const baseName = currentFileName.replace(/\.[^.]+$/, '') || 'project';
+  const baseName = stripFileExtension(currentFileName) || 'project';
   downloadFile(json, baseName + '.slp', 'application/json');
 
   // Reset modified flag after successful save
-  if (activePictureIndex >= 0 && activePictureIndex < openPictures.length) {
-    openPictures[activePictureIndex].modified = false;
-    updatePictureTabBar();
-  }
+  markPictureUnmodified();
 }
 
 /**
@@ -7943,7 +7949,7 @@ function fillCell(x, y, isInk) {
         screenData[offset + bitmapAddr] = fillByte;
       }
       // GIGAATTR: mirror bitmap to the other frame (shared bitmap)
-      if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+      if (isGigaattrFormat()) {
         const otherOffset = splitFrame === 0 ? gigaFS : 0;
         for (let py = 0; py < cellH; py++) {
           const bitmapAddr = getBitmapAddress(cellX, cellY + py);
@@ -7958,7 +7964,7 @@ function fillCell(x, y, isInk) {
           if (bmp) bmp[bitmapAddr] = fillByte;
         }
         // GIGAATTR: mirror bitmap layer to other frame
-        if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+        if (isGigaattrFormat()) {
           for (let py = 0; py < cellH; py++) {
             const bitmapAddr = getBitmapAddress(cellX, cellY + py);
             const otherBmp = splitFrame === 0 ? layers[0].bitmap2 : layers[0].bitmap;
@@ -8844,7 +8850,7 @@ function cellInvert(x, y) {
         screenData[offset + addr] ^= 0xFF;
       }
       // GIGAATTR: mirror bitmap XOR to the other frame (shared bitmap)
-      if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+      if (isGigaattrFormat()) {
         const otherOffset = splitFrame === 0 ? gigaFS : 0;
         for (let line = 0; line < 8; line++) {
           const addr = getBitmapAddress(charCol * 8, cellY + line);
@@ -9137,7 +9143,7 @@ function recolorCell(x, y) {
  * @param {number} y - Y coordinate (0-191)
  */
 function recolorCell53c(x, y) {
-  if (!screenData || screenData.length < 768) return;
+  if (!screenData || screenData.length < SCREEN.ATTR_SIZE) return;
   const addr = Math.floor(x / 8) + Math.floor(y / 8) * 32;
   const attr = getCurrentDrawingAttribute();
   if (layersEnabled && layers.length > 0) {
@@ -9157,7 +9163,7 @@ function recolorCell53c(x, y) {
  * on background layer resets to default attribute (ink=7, paper=0).
  */
 function eraseCell53c(x, y) {
-  if (!screenData || screenData.length < 768) return;
+  if (!screenData || screenData.length < SCREEN.ATTR_SIZE) return;
   const addr = Math.floor(x / 8) + Math.floor(y / 8) * 32;
   if (layersEnabled && layers.length > 0 && activeLayerIndex > 0) {
     const layer = layers[activeLayerIndex];
@@ -9571,8 +9577,8 @@ function invertSelection() {
       for (let cx = cellLeft; cx < cellRight; cx++) {
         const addr = cx + cy * 32;
         const attr = screenData[addr];
-        const ink = attr & 0x07;
-        const paper = (attr >> 3) & 0x07;
+        const ink = ATTR.ink(attr);
+        const paper = ATTR.paper(attr);
         const flags = attr & 0xC0;  // bright and flash
         screenData[addr] = (ink << 3) | paper | flags;
       }
@@ -9590,7 +9596,7 @@ function invertSelection() {
         if (splitFrame === 0 || splitFrame < 0) screenData[addr] ^= bitMask;
         if (splitFrame === 1 || splitFrame < 0) screenData[gigaFS + addr] ^= bitMask;
         // GIGAATTR: mirror XOR to the other frame in split mode (shared bitmap)
-        if ((currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) && splitFrame >= 0) {
+        if ((isGigaattrFormat()) && splitFrame >= 0) {
           const otherAddr = splitFrame === 0 ? gigaFS + addr : addr;
           screenData[otherAddr] ^= bitMask;
         }
@@ -9753,8 +9759,8 @@ function removeHiddenPixels() {
   for (let ar = 0; ar < attrRows; ar++) {
     for (let col = 0; col < cols; col++) {
       const attr = attrs[ar * cols + col];
-      const ink = attr & 0x07;
-      const paper = (attr >> 3) & 0x07;
+      const ink = ATTR.ink(attr);
+      const paper = ATTR.paper(attr);
       if (ink !== paper) continue;
 
       // Check if bitmap is non-trivial (not all-0x00 and not all-0xFF)
@@ -9975,7 +9981,7 @@ function executePaste(x, y) {
     }
 
     // GIGAATTR: ensure both frames have identical bitmap after paste (shared bitmap)
-    if ((currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) && brushPaintMode !== 'recolor') {
+    if ((isGigaattrFormat()) && brushPaintMode !== 'recolor') {
       const pasteW = getFormatWidth();
       const pasteH = getFormatHeight();
       for (let py = 0; py < clipboardData.height; py++) {
@@ -10143,8 +10149,8 @@ function executePaste(x, y) {
         if (brushPaintMode === 'invert') {
           // Swap ink/paper of destination cell and toggle inverse
           const old = specsciiAttrGrid[destIdx];
-          const oldInk = old & 0x07;
-          const oldPaper = (old >> 3) & 0x07;
+          const oldInk = ATTR.ink(old);
+          const oldPaper = ATTR.paper(old);
           specsciiAttrGrid[destIdx] = (oldPaper & 0x07) | ((oldInk & 0x07) << 3) | (old & 0xC0);
           if (specsciiInverseGrid) specsciiInverseGrid[destIdx] ^= 1;
         } else if (brushPaintMode === 'recolor') {
@@ -10612,8 +10618,8 @@ function _handleEditorMouseDownCoords(event, coords) {
             let ch, attr;
             if (brushPaintMode === 'invert') {
               const old = specsciiAttrGrid[idx];
-              const oldInk = old & 0x07;
-              const oldPaper = (old >> 3) & 0x07;
+              const oldInk = ATTR.ink(old);
+              const oldPaper = ATTR.paper(old);
               attr = (oldPaper & 0x07) | ((oldInk & 0x07) << 3) | (old & 0xC0);
               ch = specsciiCharGrid[idx];
             } else if (brushPaintMode === 'recolor') {
@@ -11820,7 +11826,7 @@ function clearScreen() {
         screenData[offset + i] = 0;
       }
       // GIGAATTR: mirror bitmap clear to the other frame (shared bitmap)
-      if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+      if (isGigaattrFormat()) {
         const otherOffset = splitFrame === 0 ? gigaFS : 0;
         for (let i = 0; i < SCREEN.BITMAP_SIZE; i++) {
           screenData[otherOffset + i] = 0;
@@ -12064,8 +12070,8 @@ function renderPreview() {
         for (let ccol = 0; ccol < SPECSCII.CHAR_COLS; ccol++) {
           const ci = crow * 32 + ccol;
           const attr = cellAttr[ci];
-          const aInk = attr & 0x07, aPaper = (attr >> 3) & 0x07;
-          const aBright = (attr & 0x40) !== 0, aFlash = (attr & 0x80) !== 0;
+          const aInk = ATTR.ink(attr), aPaper = ATTR.paper(attr);
+          const aBright = ATTR.bright(attr), aFlash = ATTR.flash(attr);
           const pal = aBright ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
           let inkRgb, paperRgb;
           if (aFlash && flashPhase && flashEnabled) {
@@ -12119,10 +12125,10 @@ function renderPreview() {
             const attrOffset = IFL.BITMAP_SIZE + attrRow * 32 + col;
             const attr = screenData[attrOffset];
 
-            let inkIndex = attr & 0x07;
-            let paperIndex = (attr >> 3) & 0x07;
-            const isBright = (attr & 0x40) !== 0;
-            const isFlash = (attr & 0x80) !== 0;
+            let inkIndex = ATTR.ink(attr);
+            let paperIndex = ATTR.paper(attr);
+            const isBright = ATTR.bright(attr);
+            const isFlash = ATTR.flash(attr);
 
             if (isFlash && flashPhase && flashEnabled) {
               const tmp = inkIndex;
@@ -12185,7 +12191,7 @@ function renderPreview() {
         let inkRgb = colors.inkRgb;
         let paperRgb = colors.paperRgb;
 
-        const isFlash = (attr & 0x80) !== 0;
+        const isFlash = ATTR.flash(attr);
         if (isFlash && flashPhase && flashEnabled) {
           const tmp = inkRgb;
           inkRgb = paperRgb;
@@ -12236,10 +12242,10 @@ function renderPreview() {
             const attrOffset = (pixelLine < 4) ? BMC4.ATTR1_OFFSET : BMC4.ATTR2_OFFSET;
             const attr = screenData[attrOffset + charRow * 32 + col];
 
-            let inkIndex = attr & 0x07;
-            let paperIndex = (attr >> 3) & 0x07;
-            const isBright = (attr & 0x40) !== 0;
-            const isFlash = (attr & 0x80) !== 0;
+            let inkIndex = ATTR.ink(attr);
+            let paperIndex = ATTR.paper(attr);
+            const isBright = ATTR.bright(attr);
+            const isFlash = ATTR.flash(attr);
 
             if (isFlash && flashPhase && flashEnabled) {
               const tmp = inkIndex;
@@ -12574,7 +12580,7 @@ function renderPreview() {
         let ink = colors.inkRgb;
         let paper = colors.paperRgb;
         if (!isUlaPlusMode && !isUlaNextMode) {
-          const isFlash = (attr & 0x80) !== 0;
+          const isFlash = ATTR.flash(attr);
           if (isFlash && flashPhase && flashEnabled) {
             const tmp = ink; ink = paper; paper = tmp;
           }
@@ -12621,7 +12627,7 @@ function renderPreview() {
 
             // Flash only applies in standard mode (in ULA+/ULANext all 8 attribute bits are palette indices)
             if (!isUlaPlusMode && !isUlaNextMode) {
-              const isFlash = (attr & 0x80) !== 0;
+              const isFlash = ATTR.flash(attr);
               if (isFlash && flashPhase && flashEnabled) {
                 const tmp = ink;
                 ink = paper;
@@ -12796,10 +12802,10 @@ function renderBscPreview(ctx) {
           const attrOffset = section.attrAddr + col + row * 32;
           const attr = screenData[attrOffset];
 
-          let inkIndex = attr & 0x07;
-          let paperIndex = (attr >> 3) & 0x07;
-          const isBright = (attr & 0x40) !== 0;
-          const isFlash = (attr & 0x80) !== 0;
+          let inkIndex = ATTR.ink(attr);
+          let paperIndex = ATTR.paper(attr);
+          const isBright = ATTR.bright(attr);
+          const isFlash = ATTR.flash(attr);
 
           if (isFlash && flashPhase && flashEnabled) {
             const tmp = inkIndex;
@@ -12908,10 +12914,10 @@ function renderBspGigaBorderPreview(ctx) {
           const byte2 = screenData[gigaFS + bitmapOffset];
           const attr2 = screenData[gigaFS + attrOffset];
 
-          const pal1 = (attr1 & 0x40) ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
-          const pal2 = (attr2 & 0x40) ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
-          const ink1 = pal1[attr1 & 7], paper1 = pal1[(attr1 >> 3) & 7];
-          const ink2 = pal2[attr2 & 7], paper2 = pal2[(attr2 >> 3) & 7];
+          const pal1 = ATTR.bright(attr1) ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
+          const pal2 = ATTR.bright(attr2) ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
+          const ink1 = pal1[ATTR.ink(attr1)], paper1 = pal1[ATTR.paper(attr1)];
+          const ink2 = pal2[ATTR.ink(attr2)], paper2 = pal2[ATTR.paper(attr2)];
 
           const frameY = mainTop + sy;
           const frameXBase = mainLeft + col * 8;
@@ -12945,6 +12951,9 @@ function setPreviewZoom(newZoom) {
   const label = document.getElementById('previewZoomLevel');
   if (label) label.textContent = 'x' + previewZoom;
   renderPreview();
+  // Panel just changed size — re-clamp so it can't slip off-screen while
+  // sitting near an edge (e.g. zooming out after dragging to the left edge).
+  clampPreviewPanel();
 }
 
 /**
@@ -12954,6 +12963,7 @@ function showPreviewPanel() {
   const panel = document.getElementById('editorPreviewPanel');
   if (panel) panel.classList.add('active');
   renderPreview();
+  clampPreviewPanel();
 }
 
 /**
@@ -12976,6 +12986,7 @@ function togglePreviewPanel() {
     if (previewVisible) {
       panel.classList.add('active');
       renderPreview();
+      clampPreviewPanel();
     } else {
       panel.classList.remove('active');
     }
@@ -12998,6 +13009,7 @@ function setPreviewVisible(visible) {
     if (previewVisible) {
       panel.classList.add('active');
       renderPreview();
+      clampPreviewPanel();
     } else {
       panel.classList.remove('active');
     }
@@ -13014,6 +13026,109 @@ let isDraggingPreview = false;
 /** @type {{x: number, y: number}} */
 let dragOffset = { x: 0, y: 0 };
 
+/** Minimum px of the panel (its left side, which holds the drag handle) kept on-screen. */
+const PREVIEW_MIN_VISIBLE = 80;
+
+/**
+ * Clamps a desired top-left position so the panel's header (and thus its drag
+ * handle) always stays reachable. The handle sits at the left of the header, so
+ * we never allow the panel off the left or top edge, and keep at least
+ * PREVIEW_MIN_VISIBLE px on-screen when pushed right/down.
+ * @param {number} x
+ * @param {number} y
+ * @param {HTMLElement} panel
+ * @returns {{x: number, y: number}}
+ */
+function clampPreviewPosition(x, y, panel) {
+  const header = /** @type {HTMLElement|null} */ (panel.querySelector('.editor-preview-header'));
+  const headerH = header ? header.offsetHeight : 28;
+  const minX = 0;
+  const minY = 0;
+  const maxX = Math.max(minX, window.innerWidth - PREVIEW_MIN_VISIBLE);
+  const maxY = Math.max(minY, window.innerHeight - headerH);
+  return {
+    x: Math.max(minX, Math.min(x, maxX)),
+    y: Math.max(minY, Math.min(y, maxY)),
+  };
+}
+
+/** localStorage key for the persisted preview panel position. */
+const PREVIEW_POS_KEY = 'spectraLabPreviewPos';
+
+/** Inset (px) used when nudging a clamped panel away from the viewport edge. */
+const PREVIEW_EDGE_MARGIN = 12;
+
+/**
+ * Re-clamps the panel to the viewport using its current inline position and
+ * persists the result. Called after the panel is resized (zoom change), the
+ * window is resized, or the panel is shown (e.g. restoring a saved position),
+ * so it can never end up fully off-screen and unrecoverable.
+ *
+ * When the position had to be pulled back onto the screen, it is nudged a small
+ * margin inward rather than left flush against the edge — this makes a bad saved
+ * position visibly recover instead of hugging the very edge.
+ */
+function clampPreviewPanel() {
+  const panel = document.getElementById('editorPreviewPanel');
+  // Only re-clamp if the panel was actually moved (has an inline position) and
+  // is currently visible (so offset measurements are valid). Otherwise it stays
+  // anchored to its default bottom-right CSS position.
+  if (!panel || !panel.style.left || !panel.classList.contains('active')) return;
+
+  const x = parseFloat(panel.style.left) || 0;
+  const y = parseFloat(panel.style.top) || 0;
+  const c = clampPreviewPosition(x, y, panel);
+  let nx = c.x;
+  let ny = c.y;
+
+  const header = /** @type {HTMLElement|null} */ (panel.querySelector('.editor-preview-header'));
+  const headerH = header ? header.offsetHeight : 28;
+  const maxX = Math.max(0, window.innerWidth - PREVIEW_MIN_VISIBLE);
+  const maxY = Math.max(0, window.innerHeight - headerH);
+  if (nx !== x) nx = nx <= 0 ? Math.min(PREVIEW_EDGE_MARGIN, maxX) : Math.max(0, maxX - PREVIEW_EDGE_MARGIN);
+  if (ny !== y) ny = ny <= 0 ? Math.min(PREVIEW_EDGE_MARGIN, maxY) : Math.max(0, maxY - PREVIEW_EDGE_MARGIN);
+
+  panel.style.left = nx + 'px';
+  panel.style.top = ny + 'px';
+  panel.style.right = 'auto';
+  panel.style.bottom = 'auto';
+  savePreviewPosition();
+}
+
+/**
+ * Persists the current panel position to localStorage.
+ */
+function savePreviewPosition() {
+  const panel = document.getElementById('editorPreviewPanel');
+  if (!panel || !panel.style.left) return;
+  try {
+    localStorage.setItem(PREVIEW_POS_KEY, JSON.stringify({
+      x: parseFloat(panel.style.left) || 0,
+      y: parseFloat(panel.style.top) || 0,
+    }));
+  } catch (e) { /* ignore quota/availability errors */ }
+}
+
+/**
+ * Restores the saved panel position (if any) as an inline position. The value
+ * is applied verbatim here; clampPreviewPanel() corrects an off-screen position
+ * the first time the panel is shown (when its dimensions are measurable).
+ */
+function restorePreviewPosition() {
+  const panel = document.getElementById('editorPreviewPanel');
+  if (!panel) return;
+  let raw = null;
+  try { raw = localStorage.getItem(PREVIEW_POS_KEY); } catch (e) { return; }
+  if (!raw) return;
+  let pos;
+  try { pos = JSON.parse(raw); } catch (e) { return; }
+  if (!pos || typeof pos.x !== 'number' || typeof pos.y !== 'number') return;
+  panel.style.left = pos.x + 'px';
+  panel.style.top = pos.y + 'px';
+  panel.style.right = 'auto';
+  panel.style.bottom = 'auto';
+}
+
 /**
  * Initializes preview panel drag functionality
  */
@@ -13022,6 +13137,9 @@ function initPreviewDrag() {
   const header = panel?.querySelector('.editor-preview-header');
 
   if (!panel || !header) return;
+
+  // Restore a previously saved position (corrected on first show).
+  restorePreviewPosition();
 
   header.addEventListener('mousedown', (e) => {
     isDraggingPreview = true;
@@ -13034,24 +13152,21 @@ function initPreviewDrag() {
   document.addEventListener('mousemove', (e) => {
     if (!isDraggingPreview) return;
 
-    const x = e.clientX - dragOffset.x;
-    const y = e.clientY - dragOffset.y;
-
-    // Allow panel to go 3/4 outside viewport (keep 1/4 visible)
-    const minX = -panel.offsetWidth * 0.75;
-    const minY = -panel.offsetHeight * 0.75;
-    const maxX = window.innerWidth - panel.offsetWidth * 0.25;
-    const maxY = window.innerHeight - panel.offsetHeight * 0.25;
-
-    panel.style.left = Math.max(minX, Math.min(x, maxX)) + 'px';
-    panel.style.top = Math.max(minY, Math.min(y, maxY)) + 'px';
+    const c = clampPreviewPosition(e.clientX - dragOffset.x, e.clientY - dragOffset.y, panel);
+    panel.style.left = c.x + 'px';
+    panel.style.top = c.y + 'px';
     panel.style.right = 'auto';
     panel.style.bottom = 'auto';
   });
 
   document.addEventListener('mouseup', () => {
+    if (!isDraggingPreview) return;
     isDraggingPreview = false;
+    savePreviewPosition();
   });
+
+  // Keep the panel reachable if the window shrinks under it.
+  window.addEventListener('resize', clampPreviewPanel);
 }
 
 // ============================================================================
@@ -13489,6 +13604,17 @@ function updateReferenceUI() {
 // ============================================================================
 
 /**
+ * Clears the modified flag on the active picture and refreshes the tab bar.
+ * Called after a successful save/export.
+ */
+function markPictureUnmodified() {
+  if (activePictureIndex >= 0 && activePictureIndex < openPictures.length) {
+    openPictures[activePictureIndex].modified = false;
+    if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
+  }
+}
+
+/**
  * Saves current screen as .scr file
  * @param {string} [filename]
  */
@@ -13502,6 +13628,15 @@ function saveScrFile(filename) {
   if (layersEnabled && layers.length > 0) {
     flattenLayersToScreen();
   }
+
+  // Download `data` and clear the modified flag. The filename comes from the
+  // explicit `filename` argument if set, otherwise the current file's base name
+  // (or `defaultBase` when no file is open) plus `ext`.
+  const finalizeSave = (data, ext, defaultBase, mime) => {
+    const fn = filename || ((stripFileExtension(currentFileName) || defaultBase) + ext);
+    downloadFile(new Blob([data], { type: mime || 'application/octet-stream' }), fn);
+    markPictureUnmodified();
+  };
 
   /** @type {Uint8Array} */
   let saveData;
@@ -13529,35 +13664,17 @@ function saveScrFile(filename) {
 
   if (currentFormat === FORMAT.CHR && currentPicture && typeof exportChrFile === 'function') {
     // chr$: binary format export (interleaved cells)
-    if (typeof syncPictureFromScreenData === 'function') {
-      syncPictureFromScreenData(screenData, currentPicture);
-    }
-    const chrData = exportChrFile(currentPicture);
-    if (!filename) {
-      if (currentFileName) {
-        const baseName = currentFileName.replace(/\.[^.]+$/, '');
-        filename = baseName + '_edited.ch$';
-      } else {
-        filename = 'screen.ch$';
-      }
-    }
-    downloadFile(new Blob([chrData], { type: 'application/octet-stream' }), filename);
-    if (activePictureIndex >= 0 && activePictureIndex < openPictures.length) {
-      openPictures[activePictureIndex].modified = false;
-      if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
-    }
+    syncCurrentPicture();
+    finalizeSave(exportChrFile(currentPicture), '.ch$', 'screen');
     return;
   }
 
   if (currentFormat === FORMAT.ZXP && currentPicture && currentPicture.nirvanaTileInfo) {
     // Nirvana btile/wtile: convert linear bitmap+attrs back to tile format
-    if (typeof syncPictureFromScreenData === 'function') {
-      syncPictureFromScreenData(screenData, currentPicture);
-    }
+    syncCurrentPicture();
     const ti = currentPicture.nirvanaTileInfo;
     const tCellsW = ti.cellsW;
     const tCellsH = ti.cellsH;
-    const tPixW = tCellsW * 8;
     const tPixH = tCellsH * 8;
     const tBitmapSize = tPixH * tCellsW;
     const tAttrSize = tCellsW * tCellsH * 4;
@@ -13592,133 +13709,46 @@ function saveScrFile(filename) {
       }
     }
 
-    if (!filename) {
-      const tileExt = ti.isBtile ? '.btile' : '.wtile';
-      if (currentFileName) {
-        const baseName = currentFileName.replace(/\.[^.]+$/, '');
-        filename = baseName + '_edited' + tileExt;
-      } else {
-        filename = 'tiles' + tileExt;
-      }
-    }
-    downloadFile(new Blob([tileData], { type: 'application/octet-stream' }), filename);
-    if (activePictureIndex >= 0 && activePictureIndex < openPictures.length) {
-      openPictures[activePictureIndex].modified = false;
-      if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
-    }
+    finalizeSave(tileData, ti.isBtile ? '.btile' : '.wtile', 'tiles');
     return;
   }
 
   if (currentFormat === FORMAT.ZXP && currentPicture && typeof exportZxp === 'function') {
     // ZXP: text format export
-    if (typeof syncPictureFromScreenData === 'function') {
-      syncPictureFromScreenData(screenData, currentPicture);
-    }
-    const zxpText = exportZxp(currentPicture);
-    if (!filename) {
-      if (currentFileName) {
-        const baseName = currentFileName.replace(/\.[^.]+$/, '');
-        filename = baseName + '_edited.zxp';
-      } else {
-        filename = 'screen.zxp';
-      }
-    }
-    downloadFile(new Blob([zxpText], { type: 'text/plain' }), filename);
-    if (activePictureIndex >= 0 && activePictureIndex < openPictures.length) {
-      openPictures[activePictureIndex].modified = false;
-      if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
-    }
+    syncCurrentPicture();
+    finalizeSave(exportZxp(currentPicture), '.zxp', 'screen', 'text/plain');
     return;
   }
 
   if (currentFormat === FORMAT.MGH && currentPicture && typeof exportMgh === 'function') {
     // MGH: sync screenData (gigascreen layout) back to picture, then export with header
-    if (typeof syncPictureFromScreenData === 'function') {
-      syncPictureFromScreenData(screenData, currentPicture);
-    }
+    syncCurrentPicture();
     const mghData = exportMgh(currentPicture);
     const mghExt = currentPicture.attrCellHeight === 1 ? '.mg1' : currentPicture.attrCellHeight === 2 ? '.mg2' : currentPicture.attrCellHeight === 4 ? '.mg4' : '.mg8';
-    if (!filename) {
-      if (currentFileName) {
-        const baseName = currentFileName.replace(/\.[^.]+$/, '');
-        filename = baseName + '_edited' + mghExt;
-      } else {
-        filename = 'screen' + mghExt;
-      }
-    }
-    downloadFile(new Blob([mghData], { type: 'application/octet-stream' }), filename);
-    if (activePictureIndex >= 0 && activePictureIndex < openPictures.length) {
-      openPictures[activePictureIndex].modified = false;
-      if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
-    }
+    finalizeSave(mghData, mghExt, 'screen');
     return;
   }
 
   if (currentFormat === FORMAT.HLR && currentPicture && typeof exportHlr === 'function') {
     // HLR: sync screenData (gigascreen layout) back to picture, then export with Z80 loader prefix
-    if (typeof syncPictureFromScreenData === 'function') {
-      syncPictureFromScreenData(screenData, currentPicture);
-    }
-    const hlrData = exportHlr(currentPicture);
-    if (!filename) {
-      if (currentFileName) {
-        const baseName = currentFileName.replace(/\.[^.]+$/, '');
-        filename = baseName + '_edited.hlr';
-      } else {
-        filename = 'screen.hlr';
-      }
-    }
-    downloadFile(new Blob([hlrData], { type: 'application/octet-stream' }), filename);
-    if (activePictureIndex >= 0 && activePictureIndex < openPictures.length) {
-      openPictures[activePictureIndex].modified = false;
-      if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
-    }
+    syncCurrentPicture();
+    finalizeSave(exportHlr(currentPicture), '.hlr', 'screen');
     return;
   }
 
   if (currentFormat === FORMAT.STL && currentPicture && typeof exportStl === 'function') {
     // STL: sync screenData back to picture, then export interleaved attrs
-    if (typeof syncPictureFromScreenData === 'function') {
-      syncPictureFromScreenData(screenData, currentPicture);
-    }
-    const stlData = exportStl(currentPicture);
-    if (!filename) {
-      if (currentFileName) {
-        const baseName = currentFileName.replace(/\.[^.]+$/, '');
-        filename = baseName + '_edited.stl';
-      } else {
-        filename = 'screen.stl';
-      }
-    }
-    downloadFile(new Blob([stlData], { type: 'application/octet-stream' }), filename);
-    if (activePictureIndex >= 0 && activePictureIndex < openPictures.length) {
-      openPictures[activePictureIndex].modified = false;
-      if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
-    }
+    syncCurrentPicture();
+    finalizeSave(exportStl(currentPicture), '.stl', 'screen');
     return;
   }
 
   if (currentFormat === FORMAT.BSP && currentPicture && typeof exportBsp === 'function') {
     // BSP: sync screenData back to picture, then export with header + RLE border
-    if (typeof syncPictureFromScreenData === 'function') {
-      syncPictureFromScreenData(screenData, currentPicture);
-    }
+    syncCurrentPicture();
     const bspData = exportBsp(currentPicture);
-    if (!filename) {
-      if (currentFileName) {
-        const baseName = currentFileName.replace(/\.[^.]+$/, '');
-        filename = baseName + '_edited.bsp';
-      } else {
-        filename = 'screen.bsp';
-      }
-    }
-    if (bspData) {
-      downloadFile(new Blob([bspData], { type: 'application/octet-stream' }), filename);
-      if (activePictureIndex >= 0 && activePictureIndex < openPictures.length) {
-        openPictures[activePictureIndex].modified = false;
-        if (typeof updatePictureTabBar === 'function') updatePictureTabBar();
-      }
-    }
+    // exportBsp may return null (e.g. border too large to RLE-encode) — skip save then.
+    if (bspData) finalizeSave(bspData, '.bsp', 'screen');
     return;
   }
 
@@ -13841,9 +13871,7 @@ function saveScrFile(filename) {
   } else if (currentFormat === FORMAT.MLT && currentPicture && currentPicture.sourceFormat === 'mlt_ula') {
     // MLT+ULA+: ensure palette is current before export
     if (ulaPlusPalette) currentPicture.palette = ulaPlusPalette.slice();
-    if (typeof syncPictureFromScreenData === 'function') {
-      syncPictureFromScreenData(screenData, currentPicture);
-    }
+    syncCurrentPicture();
     saveData = (typeof exportPicture === 'function') ? exportPicture(currentPicture)
       : screenData.slice(0, MLT.TOTAL_SIZE_ULAPLUS);
   } else if (currentFormat === FORMAT.GIGAATTR_PLUS && currentPicture && typeof exportPicture === 'function') {
@@ -13864,17 +13892,13 @@ function saveScrFile(filename) {
         currentPicture.palette = ulaPlusPalette.slice();
       }
     }
-    if (typeof syncPictureFromScreenData === 'function') {
-      syncPictureFromScreenData(screenData, currentPicture);
-    }
+    syncCurrentPicture();
     const exported = exportPicture(currentPicture);
     saveData = exported || screenData.slice(0, GIGAATTR_PLUS.TOTAL_SIZE_SHARED);
   } else if (currentPicture && typeof exportPicture === 'function') {
     // Use internal picture format export for all formats with currentPicture
     // Sync picture from screenData first (drawing modifies screenData directly)
-    if (typeof syncPictureFromScreenData === 'function') {
-      syncPictureFromScreenData(screenData, currentPicture);
-    }
+    syncCurrentPicture();
     const exported = exportPicture(currentPicture);
     saveData = exported || screenData.slice(0, SCREEN.TOTAL_SIZE);
   } else {
@@ -13892,8 +13916,8 @@ function saveScrFile(filename) {
 
   if (!filename) {
     if (currentFileName) {
-      const baseName = currentFileName.replace(/\.[^.]+$/, '');
-      filename = baseName + '_edited' + defaultExt;
+      const baseName = stripFileExtension(currentFileName);
+      filename = baseName + defaultExt;
     } else {
       filename = currentFormat === FORMAT.ATTR_53C ? 'attributes.53c' :
                  currentFormat === FORMAT.BSC ? 'screen.bsc' :
@@ -13922,10 +13946,7 @@ function saveScrFile(filename) {
   downloadFile(new Blob([saveData], { type: 'application/octet-stream' }), filename);
 
   // Reset modified flag after successful save
-  if (activePictureIndex >= 0 && activePictureIndex < openPictures.length) {
-    openPictures[activePictureIndex].modified = false;
-    updatePictureTabBar();
-  }
+  markPictureUnmodified();
 }
 
 
@@ -14973,8 +14994,8 @@ function updateEditorInfo(x, y) {
       const charName = cell.char === 0x20 ? 'Space' :
                        cell.char <= 0x7F ? String.fromCharCode(cell.char) :
                        'Block';
-      const ink = cell.attr & 0x07;
-      const paper = (cell.attr >> 3) & 0x07;
+      const ink = ATTR.ink(cell.attr);
+      const paper = ATTR.paper(cell.attr);
       const bright = (cell.attr & 0x40) ? ' Bright' : '';
       const flash = (cell.attr & 0x80) ? ' Flash' : '';
       infoEl.innerHTML =
@@ -14988,7 +15009,7 @@ function updateEditorInfo(x, y) {
   /** @type {number} */
   let attr;
   if (currentFormat === FORMAT.ATTR_53C) {
-    if (screenData.length < 768) {
+    if (screenData.length < SCREEN.ATTR_SIZE) {
       infoEl.textContent = 'No screen loaded';
       return;
     }
@@ -15994,7 +16015,7 @@ function update4ColorPicker() {
   // GIGAATTR: shared bitmap → only 2 colors per cell (ink blend, paper blend).
   // Show a fixed ink/paper indicator instead of the 4-color picker.
   // Left button always draws ink blend, right button always draws paper blend.
-  if (typeof FORMAT !== 'undefined' && (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS)) {
+  if (typeof FORMAT !== 'undefined' && (isGigaattrFormat())) {
     gigascreenPrimaryColor = 0;    // Ink+Ink
     gigascreenSecondaryColor = 3;  // Paper+Paper
 
@@ -16378,8 +16399,8 @@ function ulaPlusRemapAttrsWithinClut(oldPalette) {
   if (screenData.length < attrEnd) return;
   for (let pos = attrStart; pos < attrEnd; pos++) {
     const oldAttr = screenData[pos];
-    const oldInk = oldAttr & 0x07;
-    const oldPaper = (oldAttr >> 3) & 0x07;
+    const oldInk = ATTR.ink(oldAttr);
+    const oldPaper = ATTR.paper(oldAttr);
     const flagBits = oldAttr & 0xC0;
     const clutBase = (((oldAttr & 0x80) >> 6) | ((oldAttr & 0x40) >> 6)) * ULAPLUS.CLUT_SIZE;
     const oldInkColor = oldPalette[clutBase + oldInk];
@@ -16404,8 +16425,8 @@ function ulaPlusRemapAttrsWithinClut(oldPalette) {
     if (screenData.length >= attr2End) {
       for (let pos = attr2Start; pos < attr2End; pos++) {
         const oldAttr = screenData[pos];
-        const oldInk = oldAttr & 0x07;
-        const oldPaper = (oldAttr >> 3) & 0x07;
+        const oldInk = ATTR.ink(oldAttr);
+        const oldPaper = ATTR.paper(oldAttr);
         const flagBits = oldAttr & 0xC0;
         const clutBase = (((oldAttr & 0x80) >> 6) | ((oldAttr & 0x40) >> 6)) * ULAPLUS.CLUT_SIZE;
         const oldInkColor = oldPalette[clutBase + oldInk];
@@ -16589,8 +16610,8 @@ function pickUlaPlusColorFromCanvas(x, y) {
   // bits 0-2: ink color (0-7)
   // bits 3-5: paper color (0-7)
   // bits 6-7: CLUT (0-3)
-  const inkColor = attr & 0x07;
-  const paperColor = (attr >> 3) & 0x07;
+  const inkColor = ATTR.ink(attr);
+  const paperColor = ATTR.paper(attr);
   const clut = (attr >> 6) & 0x03;
 
   // Calculate palette indices
@@ -16636,10 +16657,10 @@ function pickScrColorFromCanvas(x, y) {
   // bits 3-5: paper color (0-7)
   // bit 6: bright
   // bit 7: flash
-  editorInkColor = attr & 0x07;
-  editorPaperColor = (attr >> 3) & 0x07;
-  editorBright = (attr & 0x40) !== 0;
-  editorFlash = (attr & 0x80) !== 0;
+  editorInkColor = ATTR.ink(attr);
+  editorPaperColor = ATTR.paper(attr);
+  editorBright = ATTR.bright(attr);
+  editorFlash = ATTR.flash(attr);
 
   // Update checkboxes
   const brightCheckbox = document.getElementById('brightCheckbox');
@@ -16674,10 +16695,10 @@ function pickSplitFrameColorFromCanvas(x, y) {
   const attrOffset = charRow * 32 + charCol;
   const attr = screenData[frameOffset + 6144 + attrOffset];
 
-  editorInkColor = attr & 0x07;
-  editorPaperColor = (attr >> 3) & 0x07;
-  editorBright = (attr & 0x40) !== 0;
-  editorFlash = (attr & 0x80) !== 0;
+  editorInkColor = ATTR.ink(attr);
+  editorPaperColor = ATTR.paper(attr);
+  editorBright = ATTR.bright(attr);
+  editorFlash = ATTR.flash(attr);
 
   const brightCheckbox = document.getElementById('brightCheckbox');
   if (brightCheckbox) /** @type {HTMLInputElement} */ (brightCheckbox).checked = editorBright;
@@ -16751,7 +16772,7 @@ function pickGigascreenColorFromCanvas(x, y, pickInk) {
   // GIGAATTR: shared bitmap → only ink blend (L) and paper blend (R).
   // Eyedropper picks the virtual palette ink/paper from cell attributes above;
   // primary/secondary color indices are fixed at 0 and 3.
-  if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+  if (isGigaattrFormat()) {
     gigascreenPrimaryColor = 0;
     gigascreenSecondaryColor = 3;
   } else {
@@ -16854,10 +16875,10 @@ function pickIflColorFromCanvas(x, y) {
   const attrAddr = getIflAttributeAddress(x, y);
   const attr = screenData[attrAddr];
 
-  editorInkColor = attr & 0x07;
-  editorPaperColor = (attr >> 3) & 0x07;
-  editorBright = (attr & 0x40) !== 0;
-  editorFlash = (attr & 0x80) !== 0;
+  editorInkColor = ATTR.ink(attr);
+  editorPaperColor = ATTR.paper(attr);
+  editorBright = ATTR.bright(attr);
+  editorFlash = ATTR.flash(attr);
 
   updateColorSelectors();
   return true;
@@ -16876,10 +16897,10 @@ function pickMltColorFromCanvas(x, y) {
   const attrAddr = getMltAttributeAddress(x, y);
   const attr = screenData[attrAddr];
 
-  editorInkColor = attr & 0x07;
-  editorPaperColor = (attr >> 3) & 0x07;
-  editorBright = (attr & 0x40) !== 0;
-  editorFlash = (attr & 0x80) !== 0;
+  editorInkColor = ATTR.ink(attr);
+  editorPaperColor = ATTR.paper(attr);
+  editorBright = ATTR.bright(attr);
+  editorFlash = ATTR.flash(attr);
 
   updateColorSelectors();
   return true;
@@ -16919,10 +16940,10 @@ function pickBmc4ColorFromCanvas(x, y) {
   const attrAddr = getBmc4AttributeAddress(x, y);
   const attr = screenData[attrAddr];
 
-  editorInkColor = attr & 0x07;
-  editorPaperColor = (attr >> 3) & 0x07;
-  editorBright = (attr & 0x40) !== 0;
-  editorFlash = (attr & 0x80) !== 0;
+  editorInkColor = ATTR.ink(attr);
+  editorPaperColor = ATTR.paper(attr);
+  editorBright = ATTR.bright(attr);
+  editorFlash = ATTR.flash(attr);
 
   updateColorSelectors();
   return true;
@@ -16942,10 +16963,10 @@ function pickSpecsciiColorFromCanvas(x, y) {
   const idx = g.row * 32 + g.col;
   const attr = specsciiAttrGrid[idx];
 
-  editorInkColor = attr & 0x07;
-  editorPaperColor = (attr >> 3) & 0x07;
-  editorBright = (attr & 0x40) !== 0;
-  editorFlash = (attr & 0x80) !== 0;
+  editorInkColor = ATTR.ink(attr);
+  editorPaperColor = ATTR.paper(attr);
+  editorBright = ATTR.bright(attr);
+  editorFlash = ATTR.flash(attr);
 
   updateColorSelectors();
   return true;
@@ -17130,7 +17151,7 @@ function saveUlaPlusPalette() {
     ? screenData.slice(ULAPLUS.PALETTE_OFFSET, ULAPLUS.PALETTE_OFFSET + 64)
     : ulaPlusPalette;
 
-  const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'palette';
+  const baseName = stripFileExtension(currentFileName) || 'palette';
   downloadFile(new Blob([palette], { type: 'application/octet-stream' }), baseName + '.pal');
 }
 
@@ -17235,7 +17256,7 @@ function saveNxiPalette() {
     }
   }
 
-  const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'palette';
+  const baseName = stripFileExtension(currentFileName) || 'palette';
   downloadFile(new Blob([paletteBytes], { type: 'application/octet-stream' }), baseName + '.nxp');
 }
 
@@ -18362,7 +18383,7 @@ function specsciiStreamToGrids() {
     if (col < SPECSCII.CHAR_COLS && row < SPECSCII.CHAR_ROWS) {
       const idx = row * 32 + col;
       curCharGrid[idx] = byte;
-      curAttrGrid[idx] = (ink & 0x07) | ((paper & 0x07) << 3) | (bright ? 0x40 : 0) | (flash ? 0x80 : 0);
+      curAttrGrid[idx] = ATTR.make(ink, paper, bright, flash);
       if (curMask) curMask[idx] = 1;
       if (curInverseGrid) curInverseGrid[idx] = inverse;
     }
@@ -18461,10 +18482,13 @@ function specsciiGridsToStream() {
   // INVERSE defaults to 0 after CLS/PRINT start per ROM, so skip emitting "14 00" at start
   let curInk = -1, curPaper = -1, curBright = -1, curFlash = -1, curInverse = 0;
   const hasMask = specsciiMask !== null;
+  // When false, bake inverse into ink/paper instead of emitting INVERSE control codes
+  // (visually identical, compatible with viewers like ZXArt that ignore the INVERSE code).
+  const emitInverse = (typeof specsciiEmitInverse === 'undefined') ? false : specsciiEmitInverse;
   // Only emit INVERSE control codes if the user actually used inverse on any cell.
   // Avoids polluting streams for pictures drawn entirely without inverse mode.
   let hasAnyInverse = false;
-  if (specsciiInverseGrid) {
+  if (emitInverse && specsciiInverseGrid) {
     for (let i = 0; i < specsciiInverseGrid.length; i++) {
       if (specsciiInverseGrid[i]) { hasAnyInverse = true; break; }
     }
@@ -18499,10 +18523,15 @@ function specsciiGridsToStream() {
       const attr = specsciiAttrGrid[idx];
       const ch = specsciiCharGrid[idx];
 
-      const ink = attr & 0x07;
-      const paper = (attr >> 3) & 0x07;
+      let ink = ATTR.ink(attr);
+      let paper = ATTR.paper(attr);
       const bright = (attr >> 6) & 0x01;
       const flash = (attr >> 7) & 0x01;
+
+      // Bake inverse by swapping ink/paper when not emitting INVERSE codes
+      if (!emitInverse && specsciiInverseGrid && specsciiInverseGrid[idx]) {
+        const t = ink; ink = paper; paper = t;
+      }
 
       // Emit attribute changes (sticky)
       if (ink !== curInk) {
@@ -18555,8 +18584,8 @@ function specsciiPlotCell(col, row) {
   if (brushPaintMode === 'invert') {
     // Invert: toggle per-cell inverse flag, keep character and attribute
     const old = specsciiAttrGrid[idx];
-    const ink = old & 0x07;
-    const paper = (old >> 3) & 0x07;
+    const ink = ATTR.ink(old);
+    const paper = ATTR.paper(old);
     attr = (paper & 0x07) | ((ink & 0x07) << 3) | (old & 0xC0); // swap ink<->paper, keep bright+flash
     ch = specsciiCharGrid[idx];
     inv = specsciiInverseGrid ? specsciiInverseGrid[idx] ^ 1 : 0;
@@ -18799,10 +18828,10 @@ function specsciiEraseCell(col, row) {
  * @param {number} [inverse=0] - Inverse flag (1=swap ink/paper before rendering)
  */
 function specsciiRenderGlyph(imgData, imgWidth, charCode, attr, px, py, inverse = 0) {
-  const inkIdx = attr & 0x07;
-  const paperIdx = (attr >> 3) & 0x07;
-  const isBright = (attr & 0x40) !== 0;
-  const isFlash = (attr & 0x80) !== 0;
+  const inkIdx = ATTR.ink(attr);
+  const paperIdx = ATTR.paper(attr);
+  const isBright = ATTR.bright(attr);
+  const isFlash = ATTR.flash(attr);
 
   const palette = isBright ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
 
@@ -18888,6 +18917,11 @@ const SPECSCII_PAL_ROWS = SPECSCII_PAL_ROM_ROWS + SPECSCII_PAL_BLK_ROWS; // 14
 let specsciiPaletteSortByWeight = true;
 /** @type {boolean} - Current SPECSCII inverse drawing mode (true = new cells stored as inverse) */
 let specsciiInverse = false;
+/** @type {boolean} - Whether to emit INVERSE (0x14) control codes when encoding the .specscii stream.
+ *  When false, inverted cells are baked in by swapping ink/paper (visually identical, compatible with
+ *  viewers like ZXArt that don't support the INVERSE control code). Default off for
+ *  maximum viewer compatibility. */
+let specsciiEmitInverse = false;
 /** @type {number[]|null} - Lazily built ROM char order sorted by pixel popcount */
 let specsciiRomWeightOrder = null;
 
@@ -19155,10 +19189,10 @@ function specsciiPickFromCell(col, row) {
   if (!cell) return;
 
   specsciiSelectedChar = cell.char;
-  editorInkColor = cell.attr & 0x07;
-  editorPaperColor = (cell.attr >> 3) & 0x07;
-  editorBright = (cell.attr & 0x40) !== 0;
-  editorFlash = (cell.attr & 0x80) !== 0;
+  editorInkColor = ATTR.ink(cell.attr);
+  editorPaperColor = ATTR.paper(cell.attr);
+  editorBright = ATTR.bright(cell.attr);
+  editorFlash = ATTR.flash(cell.attr);
 
   // Update UI
   updateColorPreview();
@@ -19192,6 +19226,9 @@ function specsciiSyncToStream() {
  */
 function specsciiLayersToStream() {
   const buf = [];
+  // When false, bake inverse into ink/paper instead of emitting INVERSE control codes
+  // (visually identical, compatible with viewers like ZXArt that ignore the INVERSE code).
+  const emitInverse = (typeof specsciiEmitInverse === 'undefined') ? false : specsciiEmitInverse;
 
   for (let layerIdx = 0; layerIdx < layers.length; layerIdx++) {
     const layer = layers[layerIdx];
@@ -19206,7 +19243,7 @@ function specsciiLayersToStream() {
     let curInk = -1, curPaper = -1, curBright = -1, curFlash = -1, curInverse = 0;
     // Only emit INVERSE control codes if this layer actually uses inverse on any cell
     let layerHasAnyInverse = false;
-    if (layer.inverse) {
+    if (emitInverse && layer.inverse) {
       for (let i = 0; i < layer.inverse.length; i++) {
         if (layer.inverse[i]) { layerHasAnyInverse = true; break; }
       }
@@ -19237,10 +19274,15 @@ function specsciiLayersToStream() {
         }
 
         const attr = layer.attributes ? layer.attributes[ci] : 0x38;
-        const ink = attr & 0x07;
-        const paper = (attr >> 3) & 0x07;
+        let ink = ATTR.ink(attr);
+        let paper = ATTR.paper(attr);
         const bright = (attr >> 6) & 0x01;
         const flash = (attr >> 7) & 0x01;
+
+        // Bake inverse by swapping ink/paper when not emitting INVERSE codes
+        if (!emitInverse && layer.inverse && layer.inverse[ci]) {
+          const t = ink; ink = paper; paper = t;
+        }
 
         if (ink !== curInk) { buf.push(SPECSCII.CC_INK, ink); curInk = ink; }
         if (paper !== curPaper) { buf.push(SPECSCII.CC_PAPER, paper); curPaper = paper; }
@@ -19524,18 +19566,18 @@ function isFormatEditable() {
   if (currentFormat === FORMAT.SCR && screenData && screenData.length >= SCREEN.TOTAL_SIZE) return true;
   if (currentFormat === FORMAT.SCR_ULAPLUS && screenData && screenData.length >= SCREEN.TOTAL_SIZE) return true;
   if (currentFormat === FORMAT.SCR_ULANEXT && screenData && screenData.length >= SCREEN.TOTAL_SIZE) return true;
-  if (currentFormat === FORMAT.ATTR_53C && screenData && screenData.length >= 768) return true;
+  if (currentFormat === FORMAT.ATTR_53C && screenData && screenData.length >= SCREEN.ATTR_SIZE) return true;
   if (currentFormat === FORMAT.BSC && screenData && screenData.length >= BSC.TOTAL_SIZE) return true;
   if (currentFormat === FORMAT.IFL && screenData && screenData.length >= IFL.TOTAL_SIZE) return true;
   if (currentFormat === FORMAT.MLT && screenData && screenData.length >= MLT.TOTAL_SIZE) return true;
   if (currentFormat === FORMAT.BMC4 && screenData && screenData.length >= BMC4.TOTAL_SIZE) return true;
   if (currentFormat === FORMAT.RGB3 && screenData && screenData.length >= RGB3.TOTAL_SIZE) return true;
   if (currentFormat === FORMAT.GIGASCREEN && screenData && screenData.length >= GIGASCREEN.TOTAL_SIZE) return true;
-  if ((currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) && screenData && screenData.length >= GIGASCREEN.TOTAL_SIZE) return true;
+  if ((isGigaattrFormat()) && screenData && screenData.length >= GIGASCREEN.TOTAL_SIZE) return true;
   if (currentFormat === FORMAT.MGH && screenData && screenData.length >= GIGASCREEN.TOTAL_SIZE && isGigascreenEditable()) return true;
   if (currentFormat === FORMAT.HLR && screenData && screenData.length >= GIGASCREEN.TOTAL_SIZE && isGigascreenEditable()) return true;
   if (currentFormat === FORMAT.STL && screenData && screenData.length >= getGigaFrameSize() * 2 && isGigascreenEditable()) return true;
-  if (currentFormat === FORMAT.MONO_FULL && screenData && screenData.length >= 6144) return true;
+  if (currentFormat === FORMAT.MONO_FULL && screenData && screenData.length >= SCREEN.BITMAP_SIZE) return true;
   if (currentFormat === FORMAT.MONO_2_3 && screenData && screenData.length >= 4096) return true;
   if (currentFormat === FORMAT.MONO_1_3 && screenData && screenData.length >= 2048) return true;
   if (currentFormat === FORMAT.SPECSCII && screenData) return true;
@@ -22034,7 +22076,7 @@ function executePasteAt(x, y) {
     }
 
     // GIGAATTR: ensure both frames have identical bitmap after paste (shared bitmap)
-    if (currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS) {
+    if (isGigaattrFormat()) {
       const pasteW = getFormatWidth();
       const pasteH = getFormatHeight();
       for (let py = 0; py < clipboardData.height; py++) {
@@ -23700,8 +23742,8 @@ function convertScrToSpecscii() {
 
       // Read attribute
       const attr = screenData[6144 + cy * 32 + cx];
-      const ink = attr & 0x07;
-      const paper = (attr >> 3) & 0x07;
+      const ink = ATTR.ink(attr);
+      const paper = ATTR.paper(attr);
       const idx = cy * 32 + cx;
       const bright = (attr >> 6) & 0x01;
       const flash = (attr >> 7) & 0x01;
@@ -23866,7 +23908,7 @@ function updateExportAsmButton() {
   const embedDataChk = document.getElementById('editorEmbedDataChk');
   if (!exportSelect || !exportBtn) return;
 
-  const supportsAsm = currentFormat === FORMAT.BSC || currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS || currentFormat === FORMAT.MGH || currentFormat === FORMAT.RGB3 || currentFormat === FORMAT.IFL || currentFormat === FORMAT.SCR_ULAPLUS || currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 || currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD;
+  const supportsAsm = currentFormat === FORMAT.BSC || currentFormat === FORMAT.GIGASCREEN || isGigaattrFormat() || currentFormat === FORMAT.MGH || currentFormat === FORMAT.RGB3 || currentFormat === FORMAT.IFL || currentFormat === FORMAT.SCR_ULAPLUS || currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 || currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD;
   const isSpecscii = currentFormat === FORMAT.SPECSCII;
 
   // Build export options based on current format
@@ -23874,7 +23916,7 @@ function updateExportAsmButton() {
   if (supportsAsm) {
     if (currentFormat === FORMAT.BSC) {
       options.push({ value: 'asm', label: 'ASM (Pentagon border)' });
-    } else if (currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS || currentFormat === FORMAT.MGH) {
+    } else if (currentFormat === FORMAT.GIGASCREEN || isGigaattrFormat() || currentFormat === FORMAT.MGH) {
       options.push({ value: 'asm', label: 'ASM (Pentagon dual-screen)' });
     } else if (currentFormat === FORMAT.RGB3) {
       options.push({ value: 'asm', label: 'ASM (Pentagon RGB flicker)' });
@@ -23909,6 +23951,7 @@ function updateExportAsmButton() {
     options.push({ value: 'zx0', label: '.scr.zx0 (ZX0 compressed)' });
     options.push({ value: 'zx7', label: '.scr.zx7 (ZX7 compressed)' });
     options.push({ value: 'lgk', label: '.scr.lgk (LgK compressed)' });
+    options.push({ value: 'asc', label: '.scr.asc (ASC compressed)' });
     options.push({ value: 'compare', label: 'Compare compressions...' });
   }
 
@@ -25059,9 +25102,9 @@ function convertScrToNxi() {
     const attrRow = Math.floor(y / 8);
     for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
       const attr = screenData[SCREEN.BITMAP_SIZE + attrRow * SCREEN.CHAR_COLS + col];
-      const inkIndex = attr & 0x07;
-      const paperIndex = (attr >> 3) & 0x07;
-      const isBright = (attr & 0x40) !== 0;
+      const inkIndex = ATTR.ink(attr);
+      const paperIndex = ATTR.paper(attr);
+      const isBright = ATTR.bright(attr);
       const inkPaletteIdx = isBright ? inkIndex + 8 : inkIndex;
       const paperPaletteIdx = isBright ? paperIndex + 8 : paperIndex;
 
@@ -27589,9 +27632,9 @@ let compareBaseName = '';
 // ---------------------------------------------------------------------------
 const COMPARE_SETTINGS_KEY = 'spectralab_compare_settings';
 
-/** @returns {{zx7:boolean, zx0:boolean, rcs:boolean, lc:boolean, upkr:boolean, rle:boolean, zxsc:boolean, lgk:boolean, chunks:boolean, upkrDepacker:string}} */
+/** @returns {{zx7:boolean, zx0:boolean, rcs:boolean, lc:boolean, upkr:boolean, rle:boolean, zxsc:boolean, lgk:boolean, asc:boolean, chunks:boolean, upkrDepacker:string}} */
 function loadCompareSettings() {
-  const defaults = { zx7: false, zx0: true, rcs: true, lc: true, upkr: false, rle: false, zxsc: false, lgk: false, chunks: false, upkrDepacker: 'compact' };
+  const defaults = { zx7: false, zx0: true, rcs: true, lc: true, upkr: false, rle: false, zxsc: false, lgk: false, asc: false, chunks: false, upkrDepacker: 'compact' };
   try {
     const raw = localStorage.getItem(COMPARE_SETTINGS_KEY);
     if (raw) {
@@ -27602,7 +27645,7 @@ function loadCompareSettings() {
   return defaults;
 }
 
-/** @param {{zx7:boolean, zx0:boolean, rcs:boolean, lc:boolean, upkr:boolean, rle:boolean, zxsc:boolean, chunks:boolean, upkrDepacker:string}} s */
+/** @param {{zx7:boolean, zx0:boolean, rcs:boolean, lc:boolean, upkr:boolean, rle:boolean, zxsc:boolean, lgk:boolean, asc:boolean, chunks:boolean, upkrDepacker:string}} s */
 function saveCompareSettings(s) {
   try { localStorage.setItem(COMPARE_SETTINGS_KEY, JSON.stringify(s)); } catch (e) { /* ignore */ }
 }
@@ -27618,6 +27661,7 @@ function readCompareSettingsFromUI() {
     rle: /** @type {HTMLInputElement} */ (document.getElementById('cmpFmtRle'))?.checked ?? false,
     zxsc: /** @type {HTMLInputElement} */ (document.getElementById('cmpFmtZxsc'))?.checked ?? false,
     lgk: /** @type {HTMLInputElement} */ (document.getElementById('cmpFmtLgk'))?.checked ?? false,
+    asc: /** @type {HTMLInputElement} */ (document.getElementById('cmpFmtAsc'))?.checked ?? false,
     chunks: /** @type {HTMLInputElement} */ (document.getElementById('cmpFmtChunks'))?.checked ?? false,
     upkrDepacker: /** @type {HTMLSelectElement} */ (document.getElementById('cmpUpkrDepacker'))?.value ?? 'compact',
   };
@@ -27634,6 +27678,7 @@ function applyCompareSettingsToUI(s) {
   if (el('cmpFmtRle'))    /** @type {HTMLInputElement} */ (el('cmpFmtRle')).checked = s.rle;
   if (el('cmpFmtZxsc'))   /** @type {HTMLInputElement} */ (el('cmpFmtZxsc')).checked = s.zxsc;
   if (el('cmpFmtLgk'))    /** @type {HTMLInputElement} */ (el('cmpFmtLgk')).checked = s.lgk;
+  if (el('cmpFmtAsc'))    /** @type {HTMLInputElement} */ (el('cmpFmtAsc')).checked = s.asc;
   if (el('cmpFmtChunks')) /** @type {HTMLInputElement} */ (el('cmpFmtChunks')).checked = s.chunks;
   if (el('cmpUpkrDepacker')) /** @type {HTMLSelectElement} */ (el('cmpUpkrDepacker')).value = s.upkrDepacker;
 }
@@ -27809,7 +27854,7 @@ function showCompareDialog() {
   if (typeof ZX7 === 'undefined' && typeof ZX0 === 'undefined') return;
   if (layersEnabled) flattenLayersToScreen();
 
-  compareBaseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+  compareBaseName = stripFileExtension(currentFileName) || 'screen';
 
   // Reset table to empty state
   resetCompareTable();
@@ -27953,6 +27998,7 @@ function runCompareCompressions() {
   const DEPACKER_CHUNKS_4x4 = 67 + 64; // depacker + 64-byte lookup table (monochrome only)
   const DEPACKER_CHUNKS_4x2 = 56 + 32; // depacker + 32-byte lookup table (monochrome only)
   const DEPACKER_LGK = 612;
+  const DEPACKER_ASC = 194;       // self-extracting depacker stub (prepended to the block)
 
   /** @type {Array<{label:string, ext:string, type:string, depacker:number, compress: (() => {data:Uint8Array})|null}>} */
   const jobs = [
@@ -28055,6 +28101,17 @@ function runCompareCompressions() {
         label: 'LgK (opt)', ext: '.scr.lgk', type: 'lgk_opt',
         depacker: DEPACKER_LGK,
         compress: () => ({ data: LgK.compress(scrBytes, { optimizeAttrs: true }) })
+      });
+    }
+  }
+  if (cmpSettings.asc && typeof ASC !== 'undefined') {
+    // ASC requires exactly a 6912-byte screen; offer only for full SCR / whole.
+    // Store the token stream; the 194-byte self-extracting stub is the depacker.
+    if (compareBaseSize === SCREEN.TOTAL_SIZE && segment === 'whole') {
+      jobs.push({
+        label: 'ASC', ext: '.scr.asc', type: 'asc',
+        depacker: DEPACKER_ASC,
+        compress: () => ({ data: ASC.compressTokens(scrBytes, 9) })
       });
     }
   }
@@ -28168,10 +28225,10 @@ function runCompareCompressions() {
   let jobIdx = 1;
   function processNextJob() {
     if (jobIdx >= jobs.length) {
-      // All done — highlight best and select it
+      // All done — highlight best by total savings (saved − depacker)
       let bestIdx = 1;
       for (let i = 2; i < compareVariants.length; i++) {
-        if (compareVariants[i].size < compareVariants[bestIdx].size) bestIdx = i;
+        if ((compareVariants[i].total || 0) > (compareVariants[bestIdx].total || 0)) bestIdx = i;
       }
       for (let i = 0; i < compareRows.length; i++) {
         if (i === bestIdx) {
@@ -28207,6 +28264,7 @@ function runCompareCompressions() {
     const saved = compareBaseSize - size;
     const depacker = job.depacker;
     const total = saved - depacker;
+    compareVariants[i].total = total;
     compareSizeCells[i].textContent = size.toString();
     compareSavedCells[i].textContent = saved > 0 ? '\u2212' + saved : '0';
     comparePctCells[i].textContent = pct + '%';
@@ -28258,6 +28316,9 @@ function compareSave() {
     } else if (variant.type === 'lgk' || variant.type === 'lgk_opt') {
       const asmText = generateLgkAsm(variant.type, dataFileName);
       downloadFile(new Blob([asmText], { type: 'text/plain' }), compareBaseName + '_lgk.asm');
+    } else if (variant.type === 'asc') {
+      const asmText = generateAscAsm(variant.type, dataFileName);
+      downloadFile(new Blob([asmText], { type: 'text/plain' }), compareBaseName + '_asc.asm');
     } else {
       const isZx0 = variant.type.startsWith('zx0') || variant.type.startsWith('rcs_zx0');
       if (isZx0) {
@@ -29856,6 +29917,51 @@ function generateLgkAsm(type, dataFile) {
   return lines.join('\n');
 }
 
+/**
+ * Generate a sjasmplus ASM file that self-extracts an ASC screen to $4000.
+ * ASC is self-extracting: the 194-byte depacker stub is emitted inline, with the
+ * token stream (the saved .scr.asc file) placed immediately after it — the stub
+ * locates its data at stub+194, so no input registers are needed.
+ * @param {string} type
+ * @param {string} dataFile - the saved token-stream filename
+ * @returns {string}
+ */
+function generateAscAsm(type, dataFile) {
+  const snaName = dataFile.replace(/\.[^.]+(\.[^.]+)?$/, '') + '.sna';
+  const lines = [];
+
+  lines.push('; ASC v2.9 self-extracting screen depacker — sjasmplus');
+  lines.push('; Generated by SpectraLab');
+  lines.push('; ASC packs a 6912-byte screen into a self-extracting block:');
+  lines.push(';   [194-byte depacker stub][LZSS+RLE token stream]');
+  lines.push('; The stub is position-independent: it self-locates, decodes the token');
+  lines.push('; stream that immediately follows it, and paints the screen to $4000 in');
+  lines.push('; 8×8-cell order. Just call it; no input registers are needed.');
+  lines.push('; Original ASC v2.9 by Andrew Strikes Code (Andrey Sendetsky), 1997.');
+  lines.push('; Assemble: sjasmplus ' + dataFile.replace(/\.[^.]+(\.[^.]+)?$/, '') + '_asc.asm');
+  lines.push('');
+  lines.push('        device  zxspectrum48');
+  lines.push('        org     $8000');
+  lines.push('');
+  lines.push('start:');
+  lines.push('        di');
+  lines.push('        ld      sp, $8000');
+  lines.push('        call    asc_block       ; self-extract the screen to $4000');
+  lines.push('        jr      $');
+  lines.push('');
+  lines.push('; --- ASC self-extracting depacker stub (194 bytes) ---');
+  lines.push('; The token stream MUST follow immediately (the stub reads it at asc_block+194).');
+  lines.push('asc_block:');
+  lines.push(formatDbLines(Array.from(ASC.STUB), 16));
+  lines.push('packed_data:');
+  lines.push('        incbin  "' + dataFile + '"');
+  lines.push('');
+  lines.push('        savesna "' + snaName + '", start');
+  lines.push('');
+
+  return lines.join('\n');
+}
+
 // ============================================================================
 // Initialization
 // ============================================================================
@@ -30320,7 +30426,7 @@ function initEditor() {
 
     if (value === 'asm') {
       if (currentFormat === FORMAT.BSC) exportBscAsm();
-      else if (currentFormat === FORMAT.GIGASCREEN || currentFormat === FORMAT.GIGAATTR || currentFormat === FORMAT.GIGAATTR_PLUS || currentFormat === FORMAT.MGH) exportGigascreenAsm();
+      else if (currentFormat === FORMAT.GIGASCREEN || isGigaattrFormat() || currentFormat === FORMAT.MGH) exportGigascreenAsm();
       else if (currentFormat === FORMAT.RGB3) exportRgb3Asm();
       else if (currentFormat === FORMAT.IFL) exportIflAsm();
       else if (currentFormat === FORMAT.SCR_ULAPLUS) exportUlaPlusAsm();
@@ -30330,57 +30436,57 @@ function initEditor() {
     } else if (value === 'scr') {
       if (currentFormat !== FORMAT.SPECSCII || !specsciiCharGrid) return;
       const scrData = exportSpecsciiToScr();
-      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      const baseName = stripFileExtension(currentFileName) || 'screen';
       downloadFile(new Blob([scrData], { type: 'application/octet-stream' }), baseName + '.scr');
     } else if (value === 'tap') {
       if (currentFormat !== FORMAT.SPECSCII || !specsciiCharGrid) return;
       const tapData = exportSpecsciiToTap();
-      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      const baseName = stripFileExtension(currentFileName) || 'screen';
       downloadFile(new Blob([tapData], { type: 'application/octet-stream' }), baseName + '.tap');
     } else if (value === 'rcs') {
       if (layersEnabled) flattenLayersToScreen();
       const scrBytes = screenData.slice(0, SCREEN.TOTAL_SIZE);
       const rcsBytes = reorderScrToRcs(new Uint8Array(scrBytes));
-      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      const baseName = stripFileExtension(currentFileName) || 'screen';
       downloadFile(new Blob([rcsBytes], { type: 'application/octet-stream' }), baseName + '.rcs');
     } else if (value === 'zx7') {
       if (layersEnabled) flattenLayersToScreen();
       const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
       const compressed = ZX7.compress(scrBytes);
-      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      const baseName = stripFileExtension(currentFileName) || 'screen';
       downloadFile(new Blob([compressed.data], { type: 'application/octet-stream' }), baseName + '.scr.zx7');
     } else if (value === 'rcs_zx7') {
       if (layersEnabled) flattenLayersToScreen();
       const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
       const rcsBytes = reorderScrToRcs(scrBytes);
       const compressed = ZX7.compress(rcsBytes);
-      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      const baseName = stripFileExtension(currentFileName) || 'screen';
       downloadFile(new Blob([compressed.data], { type: 'application/octet-stream' }), baseName + '.rcs.zx7');
     } else if (value === 'zx0') {
       if (layersEnabled) flattenLayersToScreen();
       const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
       const compressed = ZX0.compress(scrBytes);
-      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      const baseName = stripFileExtension(currentFileName) || 'screen';
       downloadFile(new Blob([compressed.data], { type: 'application/octet-stream' }), baseName + '.scr.zx0');
     } else if (value === 'rcs_zx0') {
       if (layersEnabled) flattenLayersToScreen();
       const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
       const rcsBytes = reorderScrToRcs(scrBytes);
       const compressed = ZX0.compress(rcsBytes);
-      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      const baseName = stripFileExtension(currentFileName) || 'screen';
       downloadFile(new Blob([compressed.data], { type: 'application/octet-stream' }), baseName + '.rcs.zx0');
     } else if (value === 'lc') {
       if (layersEnabled) flattenLayersToScreen();
       const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
       const compressed = LC.compressScreen(scrBytes);
-      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      const baseName = stripFileExtension(currentFileName) || 'screen';
       downloadFile(new Blob([compressed.data], { type: 'application/octet-stream' }), baseName + '.scr.lc');
     } else if (value === 'upkr1' || value === 'upkr9') {
       if (layersEnabled) flattenLayersToScreen();
       const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
       const level = value === 'upkr9' ? 9 : 1;
       const compressed = UPKR.compress(scrBytes, level, UPKR.configZ80());
-      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      const baseName = stripFileExtension(currentFileName) || 'screen';
       downloadFile(new Blob([compressed], { type: 'application/octet-stream' }), baseName + '.scr.upk');
     } else if (value === 'chunks4x4' || value === 'chunks4x2') {
       if (layersEnabled) flattenLayersToScreen();
@@ -30388,32 +30494,39 @@ function initEditor() {
       const mode = value === 'chunks4x4' ? CHUNKS.MODE_4x4 : CHUNKS.MODE_4x2;
       const compressed = CHUNKS.compress(scrBytes, mode);
       const ext = value === 'chunks4x4' ? '.scr.c4' : '.scr.c2';
-      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      const baseName = stripFileExtension(currentFileName) || 'screen';
       downloadFile(new Blob([compressed.data], { type: 'application/octet-stream' }), baseName + ext);
     } else if (value === 'rle') {
       if (layersEnabled) flattenLayersToScreen();
       const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
       const compressed = RLE.compress(scrBytes);
-      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      const baseName = stripFileExtension(currentFileName) || 'screen';
       downloadFile(new Blob([compressed.data], { type: 'application/octet-stream' }), baseName + '.scr.rle');
     } else if (value === 'zxsc') {
       if (layersEnabled) flattenLayersToScreen();
       const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
       const compressed = ZXSC.compress(scrBytes);
-      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      const baseName = stripFileExtension(currentFileName) || 'screen';
       downloadFile(new Blob([compressed.data], { type: 'application/octet-stream' }), baseName + '.scr.lzf');
     } else if (value === 'zxsc_screen') {
       if (layersEnabled) flattenLayersToScreen();
       const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
       const compressed = ZXSC.compressScreen(scrBytes);
-      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      const baseName = stripFileExtension(currentFileName) || 'screen';
       downloadFile(new Blob([compressed.data], { type: 'application/octet-stream' }), baseName + '.scr.lzf');
     } else if (value === 'lgk') {
       if (layersEnabled) flattenLayersToScreen();
       const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
-      const baseName = currentFileName ? currentFileName.replace(/\.[^.]+$/, '') : 'screen';
+      const baseName = stripFileExtension(currentFileName) || 'screen';
       const compressed = LgK.compress(scrBytes);
       downloadFile(new Blob([compressed], { type: 'application/octet-stream' }), baseName + '.scr.lgk');
+    } else if (value === 'asc') {
+      if (layersEnabled) flattenLayersToScreen();
+      const scrBytes = new Uint8Array(screenData.slice(0, SCREEN.TOTAL_SIZE));
+      const baseName = stripFileExtension(currentFileName) || 'screen';
+      // Store the token stream (no stub); load auto-detects & decompresses either form.
+      const compressed = ASC.compressTokens(scrBytes, 9);
+      downloadFile(new Blob([compressed], { type: 'application/octet-stream' }), baseName + '.scr.asc');
     } else if (value === 'compare') {
       showCompareDialog();
     }
@@ -30462,6 +30575,19 @@ function initEditor() {
     renderSpecsciiPalette();
     editorRender();
   });
+
+  // SPECSCII "save INVERSE codes" toggle — when off, inverse is baked into ink/paper
+  // for compatibility with viewers (e.g. ZXArt) that ignore the INVERSE control code.
+  const savedEmitInv = localStorage.getItem('spectraLabSpecsciiEmitInverse');
+  specsciiEmitInverse = savedEmitInv === null ? false : savedEmitInv === '1';
+  const emitInvCheckbox = /** @type {HTMLInputElement|null} */ (document.getElementById('specsciiEmitInverseCheckbox'));
+  if (emitInvCheckbox) {
+    emitInvCheckbox.checked = specsciiEmitInverse;
+    emitInvCheckbox.addEventListener('change', () => {
+      specsciiEmitInverse = emitInvCheckbox.checked;
+      localStorage.setItem('spectraLabSpecsciiEmitInverse', specsciiEmitInverse ? '1' : '0');
+    });
+  }
 
   // Reset to defaults button
   // Optimize Attributes button

@@ -17458,7 +17458,7 @@ function initImageImport() {
       else if (tileFormat === 'sl2') tileExt = '.sl2';
       else tileExt = '.scr';
 
-      const baseName = importFile ? importFile.name.replace(/\.[^.]+$/, '') : 'imported';
+      const baseName = importFile ? stripFileExtension(importFile.name) : 'imported';
 
       // Read current adjustment parameters
       const tileDithering = ditheringSelect?.value || 'floyd-steinberg';
@@ -18075,7 +18075,7 @@ function initImageImport() {
     // Generate filename from imported file
     let newFileName;
     if (importFile) {
-      const baseName = importFile.name.replace(/\.[^.]+$/, '');
+      const baseName = stripFileExtension(importFile.name);
       newFileName = baseName + fileExt;
     } else {
       newFileName = 'imported' + fileExt;

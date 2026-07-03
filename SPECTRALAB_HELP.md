@@ -494,6 +494,7 @@ For SPECSCII format pictures, a character palette appears (collapsible):
 - Click a tile to select a character for drawing
 - **Sort by weight** (Sort button) — toggles between Code order (sequential) and Weight order (sorted by pixel popcount, lightest→heaviest; default). Block graphics appear in a 5×3 symmetric grid in weight mode. Setting persists via localStorage
 - **Character preview** — shows the selected character enlarged with its code
+- **Save INVERSE codes** (checkbox) — controls how inverted cells are written to the `.specscii` stream. When **off** (default), inverted cells are baked in by swapping ink/paper — visually identical and compatible with viewers (e.g. the ZXArt online viewer) that don't support the `INVERSE` (`0x14`) control code, which would otherwise render a black screen. When **on**, `INVERSE` control codes are written into the stream (smaller for heavily inverted pictures, and preserves the inverse flag on reload). Applies to save and `.tap` export, single- and multi-layer. Setting persists via localStorage
 - Right-click on canvas to pick character + attributes from screen
 
 Available tools in SPECSCII mode: Pixel, Line, Rectangle, Circle, Flood Fill, Eraser, Text.
@@ -567,6 +568,7 @@ For **SCR** format, the Export dropdown includes built-in [ZX7](https://spectrum
 - **`.rcs.zx0 (RCS + ZX0)`** — applies RCS reordering first, then ZX0 compression
 - **`.rcs.zx7 (RCS + ZX7)`** — applies RCS reordering first, then ZX7 compression
 - **`.scr.lgk (LgK compressed)`** — compresses the screen data with LgK v1.1rs (tile-based XOR prediction with Huffman-coded transform modes, attribute RLE with palette optimization; 612-byte depacker)
+- **`.scr.asc (ASC compressed)`** — compresses the screen data with ASC v2.9 (LZSS + RLE over an 8×8-character-cell reorder of the bitmap; self-extracting block with a 194-byte depacker stub). The saved file is the token stream; the stub is added by the ASM export and accounted for in the Compare "Total" column
 - **`.scr.lc (LC compressed)`** — compresses the screen data with Laser Compact 5.2.1 (includes LCMP5 header; reordering and segment handling are built-in)
 - **`.scr.c4 (Chunks 4×4)`** — lossy monochrome compression: divides each 8×8 cell into four 4×4 quadrants, encodes each as a 2-bit index into a 4-pattern dictionary. Fixed output: 841 bytes (768B encoded + 64B lookup table + 8B dictionary + 1B mode). Very fast Z80 depacker using nibble-pair lookup
 - **`.scr.c2 (Chunks 4×2)`** — lossy monochrome compression: divides each 8×8 cell into eight 4×2 strips, encodes each as a 2-bit index. Fixed output: 1573 bytes (1536B encoded + 32B lookup table + 4B dictionary + 1B mode). Better quality than 4×4, still fast Z80 depacker
@@ -584,6 +586,7 @@ For **SCR** format, the Export dropdown includes built-in [ZX7](https://spectrum
   - ZX0 / ZX0 backwards
   - RCS + ZX0 / RCS + ZX0 backwards
   - LgK / LgK (opt)
+  - ASC (ASC v2.9, LZSS + RLE)
   - LC (Laser Compact 5.2.1)
   - upkr level 1 / upkr level 9
   - RLE
@@ -592,7 +595,7 @@ For **SCR** format, the Export dropdown includes built-in [ZX7](https://spectrum
 
   The dialog opens with an empty table (all sizes shown as "—"). Click the **Compare** button to run compressions — results appear one by one, the best variant is highlighted and pre-selected. The dialog stays open after saving, so you can export multiple formats without re-running compression.
 
-  **⚙ Format settings** (gear icon in the title bar) — toggle a settings panel to enable/disable format families (ZX7, ZX0, RCS variants, LgK, LC, upkr, RLE, ZXSC, Chunks). Disabled formats are excluded from the comparison table. The upkr depacker variant can be switched between Compact (130B code + 320B probs = 450B total) and Fast (155B code + 320B probs = 475B total, unrolled multiply loop). All settings are saved to localStorage and persist across sessions.
+  **⚙ Format settings** (gear icon in the title bar) — toggle a settings panel to enable/disable format families (ZX7, ZX0, RCS variants, LgK, ASC, LC, upkr, RLE, ZXSC, Chunks). Disabled formats are excluded from the comparison table. The upkr depacker variant can be switched between Compact (130B code + 320B probs = 450B total) and Fast (155B code + 320B probs = 475B total, unrolled multiply loop). All settings are saved to localStorage and persist across sessions.
 
   **Data** dropdown — selects which portion of screen data to compress:
   - **Full SCR** (default) — full 6912 bytes (bitmap + attributes)
@@ -636,9 +639,9 @@ For **SCR** format, the Export dropdown includes built-in [ZX7](https://spectrum
 
   **Total** column — shows real saving: saved bytes minus depacker overhead (saved − depacker). A positive value means compression is beneficial even accounting for the depacker. A negative value (highlighted in red) means the compressed data plus depacker exceeds the original size.
 
-**Create ASM** checkbox — when enabled, saving also generates a sjasmplus `.asm` file alongside the compressed data. ASM generation is only available for Full SCR + Whole mode. The ASM file is a complete working example: it decompresses the data directly to screen memory at `$4000`, includes the appropriate ZX7, ZX0, LgK, LC, or upkr decompressor (forward or backward where applicable) and RCS-to-SCR reorder routine where needed, uses `device zxspectrum48` and `savesna` to produce a `.sna` snapshot. The LgK variant uses the self-modifying depacker by Lethargeek which decompresses directly to screen (HL=compressed data). The LC variant uses the Laser Compact 5.2 depacker by Hrumer which decompresses LCMP5-headered data directly to screen. The upkr variant uses the Z80 unpacker by Peter Helcmanovsky (IX=packed data, DE'=destination via EXX).
+**Create ASM** checkbox — when enabled, saving also generates a sjasmplus `.asm` file alongside the compressed data. ASM generation is only available for Full SCR + Whole mode. The ASM file is a complete working example: it decompresses the data directly to screen memory at `$4000`, includes the appropriate ZX7, ZX0, LgK, ASC, LC, or upkr decompressor (forward or backward where applicable) and RCS-to-SCR reorder routine where needed, uses `device zxspectrum48` and `savesna` to produce a `.sna` snapshot. The LgK variant uses the self-modifying depacker by Lethargeek which decompresses directly to screen (HL=compressed data). The ASC variant emits the 194-byte self-extracting stub inline followed by the token stream — the stub self-locates and paints the screen to `$4000`, so it is simply `call`ed with no input registers. The LC variant uses the Laser Compact 5.2 depacker by Hrumer which decompresses LCMP5-headered data directly to screen. The upkr variant uses the Z80 unpacker by Peter Helcmanovsky (IX=packed data, DE'=destination via EXX).
 
-Forward-compressed files use `.zx7`/`.zx0` extensions, backward-compressed use `.zx7b`/`.zx0b`. LgK compressed files use `.lgk` extension. LC compressed files use `.lc` extension. upkr compressed files use `.upk` extension. All variants can be opened directly — decompression (and RCS reordering reversal where needed) is automatic on load.
+Forward-compressed files use `.zx7`/`.zx0` extensions, backward-compressed use `.zx7b`/`.zx0b`. LgK compressed files use `.lgk` extension. ASC compressed files use `.asc` extension. LC compressed files use `.lc` extension. upkr compressed files use `.upk` extension. All variants can be opened directly — decompression (and RCS reordering reversal where needed) is automatic on load.
 
 ### Format ASM Export
 
@@ -1647,6 +1650,7 @@ Numeric values accept hex strings (`"0x4000"`) or plain numbers (`16384`).
 | `SL.LC` | Laser Compact | `compress(data)`, `decompress(data)` |
 | `SL.UPKR` | UPKR | `compress(data)`, `decompress(data)` |
 | `SL.LgK` | LgK compressor | `compress(data)`, `decompress(data)` |
+| `SL.ASC` | ASC screen compressor | `compress(screen)`, `compressTokens(screen)`, `decompress(block)`, `decompressTokens(tokens)` (6912-byte screens only) |
 
 Example usage inside a plugin:
 ```javascript
@@ -1834,6 +1838,7 @@ Arithmetic: `+`, `-`, `*`, `/`, `%`. Comparison: `=`, `<>`, `!=`, `<`, `>`, `<=`
 | .scr.rle | variable | RLE (PackBits-style) compressed screen (auto-decompressed on load) |
 | .scr.upk | variable | upkr compressed screen with Z80 settings (auto-decompressed on load) |
 | .scr.lgk | variable | LgK v1.1rs compressed screen (auto-decompressed on load) |
+| .scr.asc | variable | ASC v2.9 compressed screen — LZSS + RLE token stream, or a self-extracting block with 194-byte stub (auto-decompressed on load; stub auto-detected) |
 | .scr | 6976 bytes | ULA+ (64-color palette) |
 | .scr | 6945–7426 bytes | ULANext (Next extended palette, up to 256 colors) |
 | .scr | 6144 bytes | Monochrome full |
@@ -2065,3 +2070,4 @@ When using **Step**, the textarea highlights the source line corresponding to th
 - **upkr** — compression by phar/Loonies ([GitHub](https://github.com/exoticorn/upkr))
 - **ZXSC** — LZF screen compressor with non-linear cell-scan ordering by [TomDDG](https://github.com/TomDDG/ZXSC---ZX-Spectrum-Screen-Compresser) (MIT license). Z80 depackers and algorithm design from the original project; compressor reimplemented in JavaScript with optimal DP parsing
 - **LgK** — LgK v1.1rs (Lethargeek Kompakt, Row-Sequence edition) tile-based screen compressor by Lethargeek. JavaScript port by Bedazzle
+- **ASC** — ASC v2.9 LZSS + RLE screen compressor by Andrew Strikes Code (Andrey Sendetsky), 1997. JavaScript port by Bedazzle, reconstructed from a byte-exact disassembly; output is byte-compatible with the original self-extracting depacker

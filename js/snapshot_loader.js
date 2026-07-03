@@ -283,7 +283,7 @@ function loadSnapshotFile(file) {
 
     // Extract screens and add as pictures
     const screens = extractScreensFromSnapshot(snapshot);
-    const baseName = file.name.replace(/\.[^.]+$/, '');
+    const baseName = stripFileExtension(file.name);
 
     // Filter out empty screens (all zeros — blank black picture)
     const nonEmpty = screens.filter(s => !isScreenEmpty(s.data));

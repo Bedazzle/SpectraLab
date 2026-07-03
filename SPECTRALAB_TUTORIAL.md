@@ -762,6 +762,8 @@ The Scorpion ZS 256 Turbo computer features two extended graphics modes beyond t
 
 Press **Ctrl+S** or click the **Save** button. The file is downloaded in its original format.
 
+For **SPECSCII**, the editor sidebar has a **Save INVERSE codes** checkbox. Leave it **off** (the default) for maximum compatibility — inverted cells are baked in by swapping ink/paper, which looks identical and avoids the black screen some viewers (e.g. ZXArt) show when they hit the `INVERSE` control code. Turn it **on** only if you need the actual `INVERSE` codes preserved in the stream.
+
 ### Convert Between Formats
 
 1. Go to the **Xform** tab
@@ -834,7 +836,7 @@ SpectraLab includes built-in [ZX7](https://spectrumcomputing.co.uk/entry/27996/Z
 
 **Direct export:**
 
-1. Select a compressed format — `.scr.zx7`, `.scr.zx0`, `.rcs.zx7`, `.rcs.zx0`, `.scr.lgk`, `.scr.lc`, `.scr.lzf`, `.scr.rle`, `.scr.upk`, `.scr.c4` (Chunks 4×4), `.scr.c2` (Chunks 4×2)
+1. Select a compressed format — `.scr.zx7`, `.scr.zx0`, `.rcs.zx7`, `.rcs.zx0`, `.scr.lgk`, `.scr.asc` (ASC v2.9), `.scr.lc`, `.scr.lzf`, `.scr.rle`, `.scr.upk`, `.scr.c4` (Chunks 4×4), `.scr.c2` (Chunks 4×2)
 2. Click **Export** — downloads the compressed file
 3. Note: Chunks formats (`.scr.c4`, `.scr.c2`) are **lossy monochrome** — they produce fixed-size output by encoding bitmap blocks as 2-bit indices into a 4-pattern dictionary. Attributes are not stored.
 
@@ -848,7 +850,7 @@ SpectraLab includes built-in [ZX7](https://spectrumcomputing.co.uk/entry/27996/Z
 
 **Opening compressed files:**
 
-Open `.scr.zx7`/`.scr.zx7b`/`.scr.zx0`/`.scr.zx0b`, `.rcs.zx7`/`.rcs.zx7b`/`.rcs.zx0`/`.rcs.zx0b`, or `.scr.lgk` files directly — SpectraLab automatically decompresses the data (forward or backward) and reverses RCS reordering if needed.
+Open `.scr.zx7`/`.scr.zx7b`/`.scr.zx0`/`.scr.zx0b`, `.rcs.zx7`/`.rcs.zx7b`/`.rcs.zx0`/`.rcs.zx0b`, `.scr.lgk`, or `.scr.asc` files directly — SpectraLab automatically decompresses the data (forward or backward) and reverses RCS reordering if needed.
 
 ### Format ASM Export
 
@@ -1299,7 +1301,7 @@ The SCA Diff Analyzer plugin opens Type 0 SCA animations and exports frame-to-fr
 
 Open any example plugin in a text editor — the `_doc` field at the top explains all fields and the API. JSON descriptor plugins need no coding — just specify addresses, formats, and lengths. JS plugins use `extract()` and `patch()` functions with full access to snapshot memory banks. Add `"session": true` to a JS plugin descriptor if it needs the Save Patched File / Save Raw workflow.
 
-JS plugins also receive an `SL` object with SpectraLab's compression utilities: `SL.ZX0`, `SL.ZX7`, `SL.RLE`, `SL.ZXSC`, `SL.LC`, `SL.UPKR`. Each provides `compress()` and `decompress()` methods. Check availability with `if (SL.ZX0)` before use.
+JS plugins also receive an `SL` object with SpectraLab's compression utilities: `SL.ZX0`, `SL.ZX7`, `SL.RLE`, `SL.ZXSC`, `SL.LC`, `SL.UPKR`, `SL.LgK`, `SL.ASC`. Each provides `compress()` and `decompress()` methods. Check availability with `if (SL.ZX0)` before use.
 
 ---
 

@@ -137,6 +137,18 @@ function initScaEditor() {
   document.getElementById('trimEndDec')?.addEventListener('click', () => adjustTrim('end', -1));
   document.getElementById('trimEndInc')?.addEventListener('click', () => adjustTrim('end', 1));
 
+  // Manual entry into the trim fields (Enter / blur). setTrim() clamps to the
+  // valid range and updateTrimControls() rewrites the field with the result.
+  trimStartValue?.addEventListener('change', () => {
+    if (trimStartValue) setTrim('start', parseInt(trimStartValue.value, 10));
+  });
+  trimEndValue?.addEventListener('change', () => {
+    if (trimEndValue) setTrim('end', parseInt(trimEndValue.value, 10));
+  });
+  // Select existing text on focus so typing replaces it.
+  trimStartValue?.addEventListener('focus', () => trimStartValue?.select());
+  trimEndValue?.addEventListener('focus', () => trimEndValue?.select());
+
   document.getElementById('editToStartBtn')?.addEventListener('click', editToStart);
   document.getElementById('editPrevBtn')?.addEventListener('click', editPrevFrame);
   document.getElementById('editPlayBtn')?.addEventListener('click', toggleEditPlayback);
@@ -171,6 +183,8 @@ function initScaEditor() {
       delayValueInput.value = String(val);
     }
   });
+  // Select existing text on focus so typing replaces it.
+  delayValueInput?.addEventListener('focus', () => delayValueInput?.select());
 
   // Preview mode radio buttons
   document.querySelectorAll('input[name="previewMode"]').forEach(radio => {
@@ -1045,37 +1059,54 @@ function editNextFrame() {
 // ============================================================================
 
 /**
- * Adjusts trim start or end value
+ * Sets trim start or end to an absolute value, clamped to the valid range
+ * (0 .. frameCount - otherTrim - 1, so at least one frame always remains).
+ * Used by both the +/− buttons and manual text entry.
+ * @param {'start'|'end'} type - Which trim to set
+ * @param {number} value - Desired absolute trim value
+ */
+function setTrim(type, value) {
+  if (!scaHeader) return;
+
+  const isStart = type === 'start';
+  const otherValue = isStart ? editTrimEnd : editTrimStart;
+  const maxTrim = scaHeader.frameCount - otherValue - 1; // Keep at least 1 frame
+
+  // Reject invalid input by falling back to the current value.
+  let newValue = value;
+  if (isNaN(newValue)) {
+    newValue = isStart ? editTrimStart : editTrimEnd;
+  }
+  // Clamp into the valid range.
+  newValue = Math.max(0, Math.min(newValue, maxTrim));
+
+  if (isStart) {
+    editTrimStart = newValue;
+  } else {
+    editTrimEnd = newValue;
+  }
+
+  // If current frame is now marked, move to valid frame
+  if (isFrameMarked(editCurrentFrame)) {
+    editCurrentFrame = isStart ? editTrimStart : scaHeader.frameCount - editTrimEnd - 1;
+  }
+
+  updateTrimControls();
+  updateDuplicateInfo();
+  updateFilmstripMarkers();
+  updateEditPreview();
+  updateFilmstripSelection();
+}
+
+/**
+ * Adjusts trim start or end value by a relative amount (+/− buttons).
  * @param {'start'|'end'} type - Which trim to adjust
  * @param {number} delta - Amount to adjust (+1 or -1)
  */
 function adjustTrim(type, delta) {
   if (!scaHeader) return;
-
-  const isStart = type === 'start';
-  const currentValue = isStart ? editTrimStart : editTrimEnd;
-  const otherValue = isStart ? editTrimEnd : editTrimStart;
-  const newValue = currentValue + delta;
-  const maxTrim = scaHeader.frameCount - otherValue - 1; // Keep at least 1 frame
-
-  if (newValue >= 0 && newValue <= maxTrim) {
-    if (isStart) {
-      editTrimStart = newValue;
-    } else {
-      editTrimEnd = newValue;
-    }
-
-    // If current frame is now marked, move to valid frame
-    if (isFrameMarked(editCurrentFrame)) {
-      editCurrentFrame = isStart ? editTrimStart : scaHeader.frameCount - editTrimEnd - 1;
-    }
-
-    updateTrimControls();
-    updateDuplicateInfo();
-    updateFilmstripMarkers();
-    updateEditPreview();
-    updateFilmstripSelection();
-  }
+  const currentValue = type === 'start' ? editTrimStart : editTrimEnd;
+  setTrim(type, currentValue + delta);
 }
 
 /**

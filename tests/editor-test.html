@@ -495,6 +495,134 @@ section('drawRect');
   }
 })();
 
+// ═══════════════════════════════════════════════════
+// specsciiGridsToStream — INVERSE encoding option
+// ═══════════════════════════════════════════════════
+section('specsciiGridsToStream — INVERSE encoding');
+
+// Set up a single-cell SPECSCII grid: char 'A' at col 3 / row 2, ink 2 / paper 5,
+// no bright/flash, inverse flag set. Mask marks only that cell as content.
+// Non-zero column ensures an AT (0x16) control code is emitted to position the cursor.
+function setupSpecsciiOneCell(inverseFlag) {
+  specsciiCharGrid = new Uint8Array(768).fill(0x20);
+  specsciiAttrGrid = new Uint8Array(768).fill(0x38); // ink 0, paper 7
+  specsciiMask = new Uint8Array(768);                // all empty
+  specsciiInverseGrid = new Uint8Array(768);
+  layersEnabled = false;
+  layers = [];
+  // Cell (col 3, row 2): idx = 2*32 + 3 = 67. 'A' = 0x41, ink 2, paper 5
+  var idx = 2 * 32 + 3;
+  specsciiCharGrid[idx] = 0x41;
+  specsciiAttrGrid[idx] = 2 | (5 << 3); // 0x2A
+  specsciiMask[idx] = 1;
+  specsciiInverseGrid[idx] = inverseFlag ? 1 : 0;
+}
+
+(function() {
+  var savedEmit = specsciiEmitInverse;
+
+  // --- emitInverse ON: stream contains an INVERSE (0x14) control code ---
+  specsciiEmitInverse = true;
+  setupSpecsciiOneCell(true);
+  var on = specsciiGridsToStream();
+  // AT 2,3 | INK 2 | PAPER 5 | BRIGHT 0 | FLASH 0 | INVERSE 1 | 'A'
+  assertArrayEqual(on,
+    new Uint8Array([0x16,2,3, 0x10,2, 0x11,5, 0x13,0, 0x12,0, 0x14,1, 0x41]),
+    'emitInverse ON: emits INVERSE 1, ink/paper unswapped');
+
+  // --- emitInverse OFF: no INVERSE code, ink/paper swapped (baked) ---
+  specsciiEmitInverse = false;
+  setupSpecsciiOneCell(true);
+  var off = specsciiGridsToStream();
+  // AT 2,3 | INK 5 | PAPER 2 | BRIGHT 0 | FLASH 0 | 'A'  (ink<->paper swapped, no 0x14)
+  assertArrayEqual(off,
+    new Uint8Array([0x16,2,3, 0x10,5, 0x11,2, 0x13,0, 0x12,0, 0x41]),
+    'emitInverse OFF: bakes inverse via ink/paper swap, no INVERSE code');
+  assertFalse(off.indexOf(SPECSCII.CC_INVERSE) !== -1,
+    'emitInverse OFF: stream contains no INVERSE (0x14) byte');
+
+  // --- A non-inverted cell is identical regardless of the option ---
+  specsciiEmitInverse = true;
+  setupSpecsciiOneCell(false);
+  var plainOn = specsciiGridsToStream();
+  specsciiEmitInverse = false;
+  setupSpecsciiOneCell(false);
+  var plainOff = specsciiGridsToStream();
+  assertArrayEqual(plainOn, plainOff,
+    'no-inverse cell: stream identical whether option on or off');
+  assertFalse(plainOn.indexOf(SPECSCII.CC_INVERSE) !== -1,
+    'no-inverse cell: no INVERSE code emitted (option on)');
+
+  specsciiEmitInverse = savedEmit;
+})();
+
+// ═══════════════════════════════════════════════════
+// specsciiLayersToStream — multi-layer INVERSE encoding
+// ═══════════════════════════════════════════════════
+section('specsciiLayersToStream — multi-layer INVERSE');
+
+// Two layers: background cell 'A' (col 1, row 0, ink 1 / paper 0, no inverse),
+// upper cell 'B' (col 0, row 0, ink 2 / paper 3, inverse = inverseFlag).
+// Upper layers are wrapped in OVER 1 / OVER 0.
+function setupSpecsciiTwoLayers(inverseFlag) {
+  function blankLayer() {
+    return {
+      bitmap: new Uint8Array(768).fill(0x20),
+      mask: new Uint8Array(768),
+      attributes: new Uint8Array(768),
+      inverse: new Uint8Array(768),
+      visible: true
+    };
+  }
+  var bg = blankLayer();
+  bg.bitmap[1] = 0x41;            // 'A' at col 1, row 0
+  bg.attributes[1] = 1 | (0 << 3); // ink 1, paper 0
+  bg.mask[1] = 1;
+
+  var up = blankLayer();
+  up.bitmap[0] = 0x42;            // 'B' at col 0, row 0
+  up.attributes[0] = 2 | (3 << 3); // ink 2, paper 3
+  up.mask[0] = 1;
+  up.inverse[0] = inverseFlag ? 1 : 0;
+
+  layersEnabled = true;
+  layers = [bg, up];
+}
+
+(function() {
+  var savedEmit = specsciiEmitInverse;
+  var savedLayersEnabled = layersEnabled;
+  var savedLayers = layers;
+
+  // Background (no AT-suppression at col 1 → AT emitted), then upper layer wrapped
+  // in OVER 1 / OVER 0; col 0 in the upper layer suppresses AT.
+  var bgBytes = [0x16,0,1, 0x10,1, 0x11,0, 0x13,0, 0x12,0, 0x41];
+
+  // --- emitInverse ON: upper layer carries an INVERSE 1 code ---
+  specsciiEmitInverse = true;
+  setupSpecsciiTwoLayers(true);
+  var on = specsciiLayersToStream();
+  assertArrayEqual(on,
+    new Uint8Array(bgBytes.concat(
+      [0x15,1, 0x10,2, 0x11,3, 0x13,0, 0x12,0, 0x14,1, 0x42, 0x15,0])),
+    'multi-layer emitInverse ON: OVER-wrapped upper layer emits INVERSE 1');
+
+  // --- emitInverse OFF: upper layer inverse baked via ink/paper swap, no 0x14 ---
+  specsciiEmitInverse = false;
+  setupSpecsciiTwoLayers(true);
+  var off = specsciiLayersToStream();
+  assertArrayEqual(off,
+    new Uint8Array(bgBytes.concat(
+      [0x15,1, 0x10,3, 0x11,2, 0x13,0, 0x12,0, 0x42, 0x15,0])),
+    'multi-layer emitInverse OFF: upper layer ink/paper swapped, no INVERSE code');
+  assertFalse(off.indexOf(SPECSCII.CC_INVERSE) !== -1,
+    'multi-layer emitInverse OFF: stream contains no INVERSE (0x14) byte');
+
+  specsciiEmitInverse = savedEmit;
+  layersEnabled = savedLayersEnabled;
+  layers = savedLayers;
+})();
+
 </script>
 </body>
 </html>

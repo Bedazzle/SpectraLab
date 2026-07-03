@@ -50,6 +50,16 @@ function formatDbLinesVisual(data, bytesPerLine) {
 }
 
 /**
+ * Strip the extension from a filename (the trailing ".xxx").
+ * Returns '' for null/empty input so callers can apply their own default via `|| 'foo'`.
+ * @param {string|null|undefined} fileName
+ * @returns {string} Filename without its extension
+ */
+function stripFileExtension(fileName) {
+  return fileName ? fileName.replace(/\.[^.]+$/, '') : '';
+}
+
+/**
  * Extract base filename from path (handles zip paths like "archive.zip/image.scr").
  * @param {string|null} fileName - Current file name or null
  * @param {string} defaultName - Default base name if no file loaded
@@ -60,7 +70,7 @@ function getAsmBaseName(fileName, defaultName) {
   const name = fileName.includes('/')
     ? fileName.substring(fileName.lastIndexOf('/') + 1)
     : fileName;
-  return name.replace(/\.[^.]+$/, '');
+  return stripFileExtension(name);
 }
 
 /**

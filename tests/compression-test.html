@@ -27,6 +27,7 @@
 <script src="../js/lc.js"></script>
 <script src="../js/upkr.js"></script>
 <script src="../js/chunks.js"></script>
+<script src="../js/asc.js"></script>
 <script src="test-helpers.js"></script>
 
 <script>
@@ -545,6 +546,48 @@ section('CHUNKS structure');
     var p = CHUNKS.getPreset(presets[pi], CHUNKS.MODE_4x4);
     assertNotNull(p, 'CHUNKS preset "' + presets[pi] + '" exists for 4x4');
   }
+})();
+
+// ═══════════════════════════════════════════════════
+// ASC — ASC v2.9 screen compressor (LZSS + RLE)
+// ═══════════════════════════════════════════════════
+section('ASC roundtrip');
+
+(function testASC() {
+  // ASC operates on a full 6912-byte screen only
+  assertEqual(ASC.SCREEN_SIZE, 6912, 'ASC.SCREEN_SIZE = 6912');
+  assertEqual(ASC.STUB_SIZE, 194, 'ASC.STUB_SIZE = 194');
+  assertEqual(ASC.STUB.length, 194, 'ASC.STUB is 194 bytes');
+
+  // Self-extracting block: [194-byte stub][token stream]
+  var block = ASC.compress(syntheticScr, 9);
+  assertNotNull(block, 'ASC.compress returns result');
+  assert(ASC.hasStub(block), 'ASC.compress output has the self-extracting stub');
+  var decompressed = ASC.decompress(block);
+  assertArrayEqual(decompressed, syntheticScr, 'ASC roundtrip: synthetic SCR (block)');
+
+  // Bare token stream (no stub) — what SpectraLab saves as .scr.asc
+  var tokens = ASC.compressTokens(syntheticScr, 9);
+  assertNotNull(tokens, 'ASC.compressTokens returns result');
+  assert(!ASC.hasStub(tokens), 'ASC token stream has no stub');
+  // decompress() auto-handles both forms; decompressTokens() is the explicit path
+  assertArrayEqual(ASC.decompress(tokens), syntheticScr,
+    'ASC roundtrip: tokens via decompress()');
+  assertArrayEqual(ASC.decompressTokens(tokens), syntheticScr,
+    'ASC roundtrip: tokens via decompressTokens()');
+
+  // Empty screen compresses very well
+  var emptyScr = new Uint8Array(6912);
+  var emptyTokens = ASC.compressTokens(emptyScr, 9);
+  assertArrayEqual(ASC.decompressTokens(emptyTokens), emptyScr,
+    'ASC roundtrip: empty screen');
+  assertGreater(emptyScr.length, emptyTokens.length + ASC.STUB_SIZE,
+    'ASC compresses empty screen below raw size (incl. stub)');
+
+  // Non-6912 input is rejected
+  var threw = false;
+  try { ASC.compress(new Uint8Array(100)); } catch (e) { threw = true; }
+  assert(threw, 'ASC.compress rejects non-6912-byte input');
 })();
 
 // ═══════════════════════════════════════════════════
