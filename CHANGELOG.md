@@ -1,5 +1,25 @@
 # SpectraLab Version History
 
+## v2.43
+- Added **Combine** (Tools, or when opening several .scr at once) — joins pictures into one larger **chr$** losslessly
+- Added a **Settings** dialog (gear next to **?**) — configurable mouse and arrow-key bindings: wheel zoom, Ctrl/Shift+Wheel scroll, middle-drag pan, Alt+LMB pick, Alt+RMB recolor
+- Added a **pixel cursor** — set arrow keys to move it (Settings) for exact placement: Shift+arrow steps 8 pixels, Space applies the current tool, and it follows the mouse; shape is corner marks, corner dots or a full box
+- Added **preview visibility in fullscreen** to Settings — it only appeared when editing, now it can be forced on or off
+- Fixed **color picker** — BRIGHT was never picked, clicks outside 256x192 on large chr$/ZXP did nothing, and gigascreen chr$/ZXP and GMX picked from the wrong place
+
+## v2.42
+- Added **hidden colors** — **Alt+click a palette swatch** to hide that color from the editing canvas, where it renders as the transparency checkerboard; Alt+click again or **Show all** restores it. View filter only: the preview panel, saved files and exported images always contain every color
+- Works in every palette — standard ZX (a swatch covers normal + BRIGHT), ULA+, ULANext, Gigascreen virtual colors, Next Layer 2 / LoRes / Radastan, RGB3, and 53c pattern colors (which hide the whole cell)
+
+## v2.41
+- Added **"Floyd Attr-Aware" dithering** (new import default) — DaDither-style two-pass conversion: each attribute cell's ink/paper pair is chosen from the original (pre-dither) image, then a single global Floyd-Steinberg pass quantizes every pixel to its cell's pair with error flowing across cell boundaries. The diffusion runs in a **gamma-1.5 working space** — a dither pattern mixes optically (averages linear intensities), so raw sRGB-space diffusion renders midtones far too light and washed out, while pure linear overshoots into darkness (the same reason print workflows compensate dot gain); gamma 1.5 lands on DaDither's tone. Error crossing an attribute-cell boundary is damped (×0.4) so it can't discharge as pixel debris hugging cell edges. Only the error component along each cell's ink→paper axis is diffused — the orthogonal "hue debt" is unrepresentable and would otherwise discharge as ink lines drawn exactly along attribute borders. Combines the natural per-cell colors of Cell Floyd with the seamless gradients of global dithering — no cell seams, no noise-locked attribute colors. Implemented for SCR, ZXP and the BSC main-screen path; other cell formats transparently fall back to Cell Floyd, non-cell formats to global Floyd-Steinberg
+- Added **"Ordered Attr-Aware" dithering** — same per-cell pair selection as Floyd Attr-Aware, but thresholded against a Bayer 8×8 matrix instead of diffusing error: the clean, regular patterning of classic hand-pixelled ZX art, with no error-diffusion worms and no cross-cell debris
+- Improved **Blend fit** pair selection — projection now works in *linear light* (a dither pattern mixes optically, i.e. averages linear intensities, not sRGB values — this alone fixes magenta being chosen for skin tones), and a grain penalty `t·(1−t)·|ink−paper|²` (the dither pattern's variance) makes close, flat pairs win over noisy high-contrast blends when both fit equally well
+- The **Colors dropdown (RGB/LAB/OkLab) now drives Blend fit's residual metric** (it was ignored by the new pipeline): the mix ratio is still found in linear light, but how far a pixel sits from the achievable blend is measured in the selected space. In practice: **RGB** gives the darker, DaDither-like colorization with strong luminance contrast; **OkLab/LAB** pick lighter pairs that favor hue fidelity over contrast (faces can wash out). The import default is now **RGB** accordingly (was OkLab)
+- Changed **import defaults** to match: Pair fit **Blend fit** (was Best fit — Blend fit evaluates how well a color pair *dithers together*, giving far more natural attribute colors), dither strength **90%** (was 100%), **serpentine scan on** (was off). Opening a file now resets the dither method to Floyd Attr-Aware (previously reset to None)
+- Fixed **global error-diffusion modes locking attribute colors onto dither noise** — with global methods (Floyd-Steinberg, Jarvis, etc.) the per-cell ink/paper pair is now chosen from the pre-dither image instead of the already-dithered speckle, eliminating random saturated cells
+- Fixed **error-diffusion runaway** — accumulated diffusion error is now clamped to the 0-255 range during all error-diffusion scans, preventing oversaturated speckle (pure cyan/magenta/green pixels) in high-contrast areas at high strength
+
 ## v2.40
 - Added **ASC** screen compressor (`.scr.asc`) — port of *ASC v2.9* (Andrew Strikes Code, 1997), LZSS + RLE. Available in Compression Compare and the Save As dropdown, with sjasmplus ASM export
 - ASC files open directly — both bare token streams and self-extracting blocks (194-byte depacker stub auto-detected)

@@ -148,7 +148,7 @@ function updateColorDistanceMode() {
   const preBlurSlider = importElements.preBlur || /** @type {HTMLInputElement} */ (document.getElementById('importPreBlur'));
   importPreBlurRadius = preBlurSlider ? parseInt(preBlurSlider.value, 10) || 0 : 0;
   const strategySelect = importElements.colorStrategy || /** @type {HTMLSelectElement} */ (document.getElementById('importColorStrategy'));
-  importColorStrategy = strategySelect ? strategySelect.value : 'exhaustive';
+  importColorStrategy = strategySelect ? strategySelect.value : 'blend';
 }
 
 // ============================================================================
@@ -164,8 +164,8 @@ const importDisabledColors = [
 /** @type {number} Pre-blur radius for cell color selection */
 let importPreBlurRadius = 0;
 
-/** @type {string} Color strategy for ink/paper pair selection: 'exhaustive'|'weighted'|'pca' */
-let importColorStrategy = 'exhaustive';
+/** @type {string} Color strategy for ink/paper pair selection: 'exhaustive'|'blend'|'pca' */
+let importColorStrategy = 'blend';
 
 /**
  * Count how many palette colors are currently enabled
@@ -376,12 +376,20 @@ function clamp(val) {
  * Remap global ordered dither methods to cell-aware equivalents.
  * Global ordered dither produces broken patterns for cell-constrained formats
  * because analyzeCell re-quantizes pixels and destroys the Bayer pattern.
+ * Also downgrades 'attr-*' modes to cell-aware equivalents for converters
+ * that don't implement attribute-aware global dithering (pass
+ * attrAwareSupported=true from converters that handle 'attr-*' themselves).
  * @param {string} dithering
+ * @param {boolean} [attrAwareSupported=false]
  * @returns {string}
  */
-function remapOrderedToCellAware(dithering) {
+function remapOrderedToCellAware(dithering, attrAwareSupported = false) {
   if (dithering === 'ordered' || dithering === 'ordered2' || dithering === 'ordered8') {
     return 'cell-' + dithering;
+  }
+  if (!attrAwareSupported) {
+    if (dithering === 'attr-floyd') return 'cell-floyd';
+    if (dithering === 'attr-ordered') return 'cell-ordered8';
   }
   return dithering;
 }
@@ -633,8 +641,8 @@ function applyBilateralFilter(pixels, width, height, amount) {
 //                 For ordered methods, >0 enables ordered+FS hybrid mode
 // ditherSerpentine: when true, error-diffusion methods scan rows bidirectionally
 // ============================================================================
-let ditherStrength = 1.0;
-let ditherSerpentine = false;
+let ditherStrength = 0.9;
+let ditherSerpentine = true;
 
 /** @type {Float32Array|null} - Last converted source pixels (RGB float, 3 values per pixel) for dither brush */
 let lastConvertedSourcePixels = null;
@@ -730,9 +738,11 @@ function errorDiffusionDither(pixels, width, height, palette, kernel, strength =
 
     for (let x = startX; x !== endX; x += stepX) {
       const idx = (y * width + x) * 3;
-      const oldR = pixels[idx];
-      const oldG = pixels[idx + 1];
-      const oldB = pixels[idx + 2];
+      // Clamp working values so accumulated error can't run away to gamut
+      // corners (unbounded error at high strength produces saturated speckle)
+      const oldR = Math.max(0, Math.min(255, pixels[idx]));
+      const oldG = Math.max(0, Math.min(255, pixels[idx + 1]));
+      const oldB = Math.max(0, Math.min(255, pixels[idx + 2]));
 
       const nearest = findNearestColor([oldR, oldG, oldB], palette);
       const newColor = palette[nearest];
@@ -759,6 +769,185 @@ function errorDiffusionDither(pixels, width, height, palette, kernel, strength =
       }
     }
   }
+}
+
+/** Working gamma for attr-aware diffusion: 1.0 = sRGB values (too light),
+ * 2.2+ = physically linear (too dark). 1.5 matches DaDither's tone. */
+const ATTR_DITHER_GAMMA = 1.5;
+
+/** Damping factor for error diffused across an attribute-cell boundary. */
+const ATTR_CROSS_CELL_DAMP = 0.4;
+
+/** Lookup table: sRGB byte -> ATTR_DITHER_GAMMA working space (0-255 scale) */
+const ATTR_GAMMA_LUT = new Float32Array(256);
+for (let i = 0; i < 256; i++) ATTR_GAMMA_LUT[i] = Math.pow(i / 255, ATTR_DITHER_GAMMA) * 255;
+
+/**
+ * Attribute-aware global error diffusion (DaDither-style).
+ * Every pixel quantizes only to its own cell's ink/paper pair, but the
+ * quantization error diffuses across cell boundaries like a normal global
+ * pass — combining the natural per-cell colors of cell-aware dithering
+ * (pairs chosen from the original image) with the seamless gradients of
+ * global dithering. Uses the module-level ditherStrength / ditherSerpentine.
+ *
+ * Works in a gamma-1.5 intermediate space: a dither pattern mixes optically
+ * (averages linear intensities), so diffusing in raw sRGB space renders
+ * midtones far too light — a 50% gray would get a 50/50 black/white pattern
+ * that *looks* ~73% bright. Pure linear (gamma 2.2+) overshoots the other
+ * way (too dark — same reason print workflows compensate dot gain rather
+ * than use raw physics). Gamma 1.5 empirically matches DaDither's tone.
+ *
+ * Error crossing an attribute-cell boundary is damped (x0.4): neighboring
+ * cells often can't express the same colors, so full-strength cross-cell
+ * error discharges as pixel debris hugging the cell edges.
+ *
+ * Only the error component ALONG the cell's ink->paper axis is diffused:
+ * the orthogonal (hue) component cannot be represented by the cell's two
+ * colors, and carrying it across cells builds up "hue debt" that discharges
+ * the moment the scan enters a cell that can express it — drawing ink lines
+ * exactly along attribute borders. Projecting the error kills those lines
+ * and preserves in-cell detail.
+ * @param {Float32Array} pixels - RGB float pixels; DESTROYED in place (converted to linear light and quantized)
+ * @param {number} width - Image width
+ * @param {number} height - Image height
+ * @param {Array<{inkRgb: number[], paperRgb: number[]}>} cellPairs - Per-cell color pairs, row-major (ceil(width/cellW) cells per row), chosen from PRE-dither pixels
+ * @param {number} cellW - Attribute cell width in pixels
+ * @param {number} cellH - Attribute cell height in pixels
+ * @param {Array<[number, number, number]>} kernel - Error diffusion kernel [[dx, dy, weight], ...]
+ * @returns {Uint8Array} Per-pixel ink flags (1 = ink, 0 = paper), width * height
+ */
+function attrAwareErrorDiffusion(pixels, width, height, cellPairs, cellW, cellH, kernel) {
+  const cellCols = Math.ceil(width / cellW);
+  const inkFlags = new Uint8Array(width * height);
+  const strength = ditherStrength;
+  const toWork = (/** @type {number} */ v) => ATTR_GAMMA_LUT[Math.max(0, Math.min(255, Math.round(v)))];
+
+  // Convert the working buffer to the gamma working space (0-255 scale)
+  const total = width * height * 3;
+  for (let i = 0; i < total; i++) pixels[i] = toWork(pixels[i]);
+
+  // Precompute working-space ink/paper colors and the ink->paper axis per cell
+  const linPairs = cellPairs.map(p => {
+    const ir = toWork(p.inkRgb[0]), ig = toWork(p.inkRgb[1]), ib = toWork(p.inkRgb[2]);
+    const pr = toWork(p.paperRgb[0]), pg = toWork(p.paperRgb[1]), pb = toWork(p.paperRgb[2]);
+    const ar = pr - ir, ag = pg - ig, ab = pb - ib;
+    return { ir, ig, ib, pr, pg, pb, ar, ag, ab, alen2: ar * ar + ag * ag + ab * ab };
+  });
+
+  for (let y = 0; y < height; y++) {
+    const reverse = ditherSerpentine && (y % 2 === 1);
+    const startX = reverse ? width - 1 : 0;
+    const endX = reverse ? -1 : width;
+    const stepX = reverse ? -1 : 1;
+    const dir = reverse ? -1 : 1;
+    const rowCell = Math.floor(y / cellH) * cellCols;
+    const cellRow = Math.floor(y / cellH);
+
+    for (let x = startX; x !== endX; x += stepX) {
+      const idx = (y * width + x) * 3;
+      // Clamp working values so accumulated error can't run away to gamut corners
+      const oldR = Math.max(0, Math.min(255, pixels[idx]));
+      const oldG = Math.max(0, Math.min(255, pixels[idx + 1]));
+      const oldB = Math.max(0, Math.min(255, pixels[idx + 2]));
+
+      const cellX = Math.floor(x / cellW);
+      const P = linPairs[rowCell + cellX];
+      // Quantize by projection onto the ink->paper axis (t >= 0.5 -> paper)
+      let useInk, newR, newG, newB;
+      if (P.alen2 >= 1) {
+        const t = ((oldR - P.ir) * P.ar + (oldG - P.ig) * P.ag + (oldB - P.ib) * P.ab) / P.alen2;
+        useInk = t < 0.5;
+      } else {
+        useInk = false;
+      }
+      if (useInk) {
+        newR = P.ir; newG = P.ig; newB = P.ib;
+        inkFlags[y * width + x] = 1;
+      } else {
+        newR = P.pr; newG = P.pg; newB = P.pb;
+      }
+
+      pixels[idx] = newR;
+      pixels[idx + 1] = newG;
+      pixels[idx + 2] = newB;
+
+      if (strength === 0) continue;
+
+      let errR = (oldR - newR) * strength;
+      let errG = (oldG - newG) * strength;
+      let errB = (oldB - newB) * strength;
+
+      // Keep only the error component along the ink->paper axis (see doc above)
+      if (P.alen2 >= 1) {
+        const k = (errR * P.ar + errG * P.ag + errB * P.ab) / P.alen2;
+        errR = k * P.ar; errG = k * P.ag; errB = k * P.ab;
+      } else {
+        // Flat (single-color) cell: keep only the luminance component
+        const k = (errR + errG + errB) / 3;
+        errR = k; errG = k; errB = k;
+      }
+
+      for (const [dx, dy, weight] of kernel) {
+        const nx = x + dx * dir;
+        const ny = y + dy;
+        if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+          const sameCell = Math.floor(nx / cellW) === cellX && Math.floor(ny / cellH) === cellRow;
+          const w = sameCell ? weight : weight * ATTR_CROSS_CELL_DAMP;
+          const nIdx = (ny * width + nx) * 3;
+          pixels[nIdx] += errR * w;
+          pixels[nIdx + 1] += errG * w;
+          pixels[nIdx + 2] += errB * w;
+        }
+      }
+    }
+  }
+
+  return inkFlags;
+}
+
+/**
+ * Attribute-aware ordered (Bayer 8x8) dithering.
+ * Same two-pass idea as attrAwareErrorDiffusion — per-cell ink/paper pairs
+ * from the original image, pixel mix ratio computed in the gamma working
+ * space — but thresholded against a Bayer matrix instead of diffusing error.
+ * Produces the clean, regular patterning of classic hand-pixelled ZX art:
+ * no error-diffusion worms, no cross-cell debris, stable flat fills.
+ * @param {Float32Array} pixels - RGB float pixels (read-only here)
+ * @param {number} width - Image width
+ * @param {number} height - Image height
+ * @param {Array<{inkRgb: number[], paperRgb: number[]}>} cellPairs - Per-cell color pairs, row-major
+ * @param {number} cellW - Attribute cell width in pixels
+ * @param {number} cellH - Attribute cell height in pixels
+ * @returns {Uint8Array} Per-pixel ink flags (1 = ink, 0 = paper), width * height
+ */
+function attrAwareOrderedDither(pixels, width, height, cellPairs, cellW, cellH) {
+  const cellCols = Math.ceil(width / cellW);
+  const inkFlags = new Uint8Array(width * height);
+  const toWork = (/** @type {number} */ v) => ATTR_GAMMA_LUT[Math.max(0, Math.min(255, Math.round(v)))];
+
+  // Precompute working-space ink/paper axis per cell
+  const linPairs = cellPairs.map(p => {
+    const ir = toWork(p.inkRgb[0]), ig = toWork(p.inkRgb[1]), ib = toWork(p.inkRgb[2]);
+    const ar = toWork(p.paperRgb[0]) - ir, ag = toWork(p.paperRgb[1]) - ig, ab = toWork(p.paperRgb[2]) - ib;
+    return { ir, ig, ib, ar, ag, ab, alen2: ar * ar + ag * ag + ab * ab };
+  });
+
+  for (let y = 0; y < height; y++) {
+    const rowCell = Math.floor(y / cellH) * cellCols;
+    const bayerRow = BAYER_8X8[y & 7];
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 3;
+      const P = linPairs[rowCell + Math.floor(x / cellW)];
+      if (P.alen2 < 1) continue; // flat cell -> all paper
+      const t = ((toWork(pixels[idx]) - P.ir) * P.ar +
+                 (toWork(pixels[idx + 1]) - P.ig) * P.ag +
+                 (toWork(pixels[idx + 2]) - P.ib) * P.ab) / P.alen2;
+      const threshold = (bayerRow[x & 7] + 0.5) / 64;
+      if (t < threshold) inkFlags[y * width + x] = 1;
+    }
+  }
+
+  return inkFlags;
 }
 
 /**
@@ -977,9 +1166,11 @@ function dizzyDither(pixels, width, height, palette) {
 
     for (let x = startX; x !== endX; x += stepX) {
       const idx = (y * width + x) * 3;
-      const oldR = pixels[idx];
-      const oldG = pixels[idx + 1];
-      const oldB = pixels[idx + 2];
+      // Clamp working values so accumulated error can't run away to gamut
+      // corners (unbounded error at high strength produces saturated speckle)
+      const oldR = Math.max(0, Math.min(255, pixels[idx]));
+      const oldG = Math.max(0, Math.min(255, pixels[idx + 1]));
+      const oldB = Math.max(0, Math.min(255, pixels[idx + 2]));
 
       const nearest = findNearestColor([oldR, oldG, oldB], palette);
       const newColor = palette[nearest];
@@ -1394,12 +1585,55 @@ function findBestPairExhaustive(colors, palette) {
   return { ink: bestInk, paper: bestPaper, bright: bestBright, inkRgb: pal[bestInk], paperRgb: pal[bestPaper] };
 }
 
+/** Grain penalty weight for blend fit: how strongly to prefer close (flat)
+ * pairs over high-contrast dithered blends. 0 = pure line fit (noisiest);
+ * ~1 posterizes into flat blocks. 0.35 empirically balances flat DaDither-like
+ * fills against gradient detail (0.2 leaves stray magenta/cyan speckle,
+ * 0.5+ starts flattening facial detail). */
+const BLEND_FIT_GRAIN_PENALTY = 0.35;
+
+/** Lookup table: sRGB byte -> linear light scaled to 0-255 */
+const SRGB_TO_LINEAR_LUT = new Float32Array(256);
+for (let i = 0; i < 256; i++) SRGB_TO_LINEAR_LUT[i] = srgbToLinear(i) * 255;
+
+/**
+ * sRGB channel value (0-255, may be fractional) -> linear light (0-255)
+ * @param {number} v
+ * @returns {number}
+ */
+function srgbByteToLinear(v) {
+  return SRGB_TO_LINEAR_LUT[Math.max(0, Math.min(255, Math.round(v)))];
+}
+
+/** Inverse lookup: linear light (0-255, 1/8 steps) -> sRGB byte. Index = round(linear * 8). */
+const LINEAR_TO_SRGB_LUT = new Uint8Array(2048);
+for (let i = 0; i < 2048; i++) {
+  const l = i / 8 / 255;
+  const s = l <= 0.0031308 ? l * 12.92 : 1.055 * Math.pow(l, 1 / 2.4) - 0.055;
+  LINEAR_TO_SRGB_LUT[i] = Math.max(0, Math.min(255, Math.round(s * 255)));
+}
+
+/**
+ * Linear light value (0-255) -> sRGB byte
+ * @param {number} v
+ * @returns {number}
+ */
+function linearToSrgbByte(v) {
+  return LINEAR_TO_SRGB_LUT[Math.max(0, Math.min(2047, Math.round(v * 8)))];
+}
+
 /**
  * Blend fit: evaluate each pair by projecting every pixel onto the ink-paper
- * line segment (simulating how dithering blends the two colors). Picks the pair
- * whose gradient line passes closest to all pixels. Produces different results
- * from "best fit" because a pair with wider spread can dither better even if
- * neither individual color is the closest to any pixel.
+ * line segment (simulating how dithering blends the two colors). The mix
+ * ratio t is always found in LINEAR light, because a dither pattern mixes
+ * optically — averaging linear intensities, not sRGB values. The residual
+ * (how far the pixel is from the achievable blend) is measured in the color
+ * space selected by the "Colors" dropdown (RGB / LAB / OkLab). Adds a grain
+ * penalty t*(1-t)*|ink-paper|^2 (the variance of the dither pattern) so that
+ * of two pairs that fit equally well, the closer, flatter pair wins —
+ * suppressing checkerboard noise and stray saturated cells. Produces
+ * different results from "best fit" because a pair with wider spread can
+ * dither better even if neither individual color is the closest to any pixel.
  * @param {number[][]} colors - Array of [R,G,B] pixel colors
  * @param {{regular: number[][], bright: number[][]}} palette
  * @returns {{ink: number, paper: number, bright: boolean, inkRgb: number[], paperRgb: number[]}}
@@ -1407,6 +1641,16 @@ function findBestPairExhaustive(colors, palette) {
 function findBestPairBlendFit(colors, palette) {
   const n = colors.length;
   let bestError = Infinity, bestInk = 0, bestPaper = 7, bestBright = false;
+  // 'rgb' uses the fast pure-linear residual; LAB/OkLab measure the residual perceptually
+  const usePerceptual = colorSpaceMode !== 'rgb';
+  const bp = [0, 0, 0];
+
+  // Pixel colors to linear light once per cell
+  const linColors = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const c = colors[i];
+    linColors[i] = [srgbByteToLinear(c[0]), srgbByteToLinear(c[1]), srgbByteToLinear(c[2])];
+  }
 
   for (let bright = 0; bright <= 1; bright++) {
     const pal = bright ? palette.bright : palette.regular;
@@ -1416,30 +1660,55 @@ function findBestPairBlendFit(colors, palette) {
       for (let paper = ink; paper < 8; paper++) {
         if (importDisabledColors[bright][paper]) continue;
         const inkC = pal[ink], paperC = pal[paper];
-        const dr = paperC[0] - inkC[0];
-        const dg = paperC[1] - inkC[1];
-        const db = paperC[2] - inkC[2];
+        const ir = srgbByteToLinear(inkC[0]), ig = srgbByteToLinear(inkC[1]), ib = srgbByteToLinear(inkC[2]);
+        const dr = srgbByteToLinear(paperC[0]) - ir;
+        const dg = srgbByteToLinear(paperC[1]) - ig;
+        const db = srgbByteToLinear(paperC[2]) - ib;
         const denom = dr * dr + dg * dg + db * db;
+        // Grain penalty scaled to the active residual metric
+        let grain;
+        if (usePerceptual) {
+          const pd = colorDistance(inkC, paperC);
+          grain = BLEND_FIT_GRAIN_PENALTY * pd * pd;
+        } else {
+          grain = BLEND_FIT_GRAIN_PENALTY * denom;
+        }
 
         let totalError = 0;
         if (denom < 1) {
           // Same or near-identical colors — error is distance to that color
-          for (let i = 0; i < n; i++) {
-            const c = colors[i];
-            const er = c[0] - inkC[0], eg = c[1] - inkC[1], eb = c[2] - inkC[2];
-            totalError += er * er + eg * eg + eb * eb;
+          if (usePerceptual) {
+            for (let i = 0; i < n; i++) {
+              const d = colorDistance(colors[i], inkC);
+              totalError += d * d;
+            }
+          } else {
+            for (let i = 0; i < n; i++) {
+              const c = linColors[i];
+              const er = c[0] - ir, eg = c[1] - ig, eb = c[2] - ib;
+              totalError += er * er + eg * eg + eb * eb;
+            }
           }
         } else {
           const invDenom = 1.0 / denom;
           for (let i = 0; i < n; i++) {
-            const c = colors[i];
-            const dx = c[0] - inkC[0], dy = c[1] - inkC[1], dz = c[2] - inkC[2];
+            const c = linColors[i];
+            const dx = c[0] - ir, dy = c[1] - ig, dz = c[2] - ib;
             let t = (dx * dr + dy * dg + dz * db) * invDenom;
             if (t < 0) t = 0; else if (t > 1) t = 1;
-            const er = c[0] - (inkC[0] + t * dr);
-            const eg = c[1] - (inkC[1] + t * dg);
-            const eb = c[2] - (inkC[2] + t * db);
-            totalError += er * er + eg * eg + eb * eb;
+            if (usePerceptual) {
+              // Blend point back to sRGB, distance in the selected space
+              bp[0] = LINEAR_TO_SRGB_LUT[Math.max(0, Math.min(2047, Math.round((ir + t * dr) * 8)))];
+              bp[1] = LINEAR_TO_SRGB_LUT[Math.max(0, Math.min(2047, Math.round((ig + t * dg) * 8)))];
+              bp[2] = LINEAR_TO_SRGB_LUT[Math.max(0, Math.min(2047, Math.round((ib + t * db) * 8)))];
+              const d = colorDistance(colors[i], bp);
+              totalError += d * d + grain * t * (1 - t);
+            } else {
+              const er = c[0] - (ir + t * dr);
+              const eg = c[1] - (ig + t * dg);
+              const eb = c[2] - (ib + t * db);
+              totalError += er * er + eg * eg + eb * eb + grain * t * (1 - t);
+            }
           }
         }
 
@@ -2279,13 +2548,14 @@ function applyImportPalette(paletteId) {
 
 /**
  * Analyze 8x8 cell and find best ink/paper combination
- * @param {Float32Array} pixels - Dithered pixels array
+ * @param {Float32Array} pixels - Dithered pixels array (used for the bitmap)
  * @param {number} cellX - Cell X position (0-31)
  * @param {number} cellY - Cell Y position (0-23)
  * @param {number} width - Image width (256)
+ * @param {Float32Array|null} [pairSourcePixels] - Pre-dither pixels to pick the ink/paper pair from (falls back to pixels)
  * @returns {{ink: number, paper: number, bright: boolean, bitmap: Uint8Array}}
  */
-function analyzeCell(pixels, cellX, cellY, width) {
+function analyzeCell(pixels, cellX, cellY, width, pairSourcePixels = null) {
   const palette = getCombinedPalette();
   const height = pixels.length / (width * 3);
 
@@ -2300,10 +2570,25 @@ function analyzeCell(pixels, cellX, cellY, width) {
     }
   }
 
-  // Use blurred pixels for color pair search if pre-blur is active
-  const searchColors = importPreBlurRadius > 0
-    ? blurBlockPixels(pixels, cellX * 8, cellY * 8, 8, 8, width, height, importPreBlurRadius)
-    : cellColors;
+  // Pick the ink/paper pair from pairSourcePixels when given (the pre-dither
+  // image — avoids locking attributes onto global error-diffusion noise);
+  // fall back to the same pixels used for the bitmap. Pre-blur applies to
+  // whichever source is used for the pair search.
+  const pairPixels = pairSourcePixels || pixels;
+  let searchColors;
+  if (importPreBlurRadius > 0) {
+    searchColors = blurBlockPixels(pairPixels, cellX * 8, cellY * 8, 8, 8, width, height, importPreBlurRadius);
+  } else if (pairSourcePixels) {
+    searchColors = [];
+    for (let dy = 0; dy < 8; dy++) {
+      for (let dx = 0; dx < 8; dx++) {
+        const idx = ((cellY * 8 + dy) * width + cellX * 8 + dx) * 3;
+        searchColors.push([pairPixels[idx], pairPixels[idx + 1], pairPixels[idx + 2]]);
+      }
+    }
+  } else {
+    searchColors = cellColors;
+  }
 
   const best = findBestPairForBlock(searchColors, palette);
 
@@ -2366,6 +2651,55 @@ function analyzeCellMono(pixels, cellX, cellY, width, inkRgb, paperRgb) {
   }
 
   return { ink: 0, paper: 7, bright: true, bitmap };
+}
+
+/**
+ * Render a 256x192 image into an SCR buffer using attribute-aware global
+ * Floyd-Steinberg: per-cell ink/paper pairs are chosen from the original
+ * (pre-dither) pixels, then a single global diffusion pass quantizes each
+ * pixel to its cell's pair with error flowing across cell boundaries.
+ * @param {Float32Array} floatPixels - RGB float pixels (modified in place)
+ * @param {Uint8Array} scr - 6912-byte SCR buffer to fill
+ * @param {{regular: number[][], bright: number[][]}} palette - Color palette
+ * @param {boolean} [ordered=false] - Bayer thresholding instead of error diffusion
+ */
+function renderAttrAwareScr(floatPixels, scr, palette, ordered = false) {
+  // Pass 1: pick every cell's pair from the untouched image
+  const cellPairs = [];
+  for (let cellY = 0; cellY < 24; cellY++) {
+    for (let cellX = 0; cellX < 32; cellX++) {
+      cellPairs.push(findCellColors(floatPixels, cellX, cellY, 256, palette));
+    }
+  }
+
+  // Pass 2: one global scan constrained to each cell's pair
+  const inkFlags = ordered
+    ? attrAwareOrderedDither(floatPixels, 256, 192, cellPairs, 8, 8)
+    : attrAwareErrorDiffusion(floatPixels, 256, 192, cellPairs, 8, 8, FS_KERNEL);
+
+  for (let cellY = 0; cellY < 24; cellY++) {
+    for (let cellX = 0; cellX < 32; cellX++) {
+      const colors = cellPairs[cellY * 32 + cellX];
+      const bitmap = new Uint8Array(8);
+      for (let dy = 0; dy < 8; dy++) {
+        for (let dx = 0; dx < 8; dx++) {
+          if (inkFlags[(cellY * 8 + dy) * 256 + cellX * 8 + dx]) {
+            bitmap[dy] |= (0x80 >> dx);
+          }
+        }
+      }
+
+      const ruled = applyPaperRule(colors, bitmap);
+
+      for (let line = 0; line < 8; line++) {
+        scr[getBitmapOffset(cellY * 8 + line) + cellX] = ruled.bitmap[line];
+      }
+
+      let attr = (ruled.colors.paper << 3) | ruled.colors.ink;
+      if (ruled.colors.bright) attr |= 0x40;
+      scr[6144 + cellY * 32 + cellX] = attr;
+    }
+  }
 }
 
 /**
@@ -2468,11 +2802,13 @@ function convertToScr(sourceCanvas, dithering, brightness, contrast, saturation 
   // Create SCR buffer
   const scr = new Uint8Array(6912);
 
-  // Check if using cell-aware dithering
-  dithering = remapOrderedToCellAware(dithering);
+  // Check if using cell-aware dithering (attr-* falls back to cell-aware for mono)
+  dithering = remapOrderedToCellAware(dithering, !monoOutput);
   const isCellAware = dithering.startsWith('cell-');
 
-  if (isCellAware) {
+  if (dithering.startsWith('attr-')) {
+    renderAttrAwareScr(floatPixels, scr, palette, dithering === 'attr-ordered');
+  } else if (isCellAware) {
     // Cell-aware dithering: process each cell independently
     // 1. Find best ink/paper for cell from original pixels
     // 2. Apply dithering within cell using only those 2 colors
@@ -2585,6 +2921,9 @@ function convertToScr(sourceCanvas, dithering, brightness, contrast, saturation 
     // For mono output, use only black and white
     const ditherPalette = monoOutput ? [palette.bright[0], palette.bright[7]] : fullPalette;
 
+    // Keep a pre-dither copy so attribute pairs are chosen from the real
+    // image colors, not from the error-diffusion speckle
+    const preDitherPixels = new Float32Array(floatPixels);
     applyGlobalDither(dithering, floatPixels, 256, 192, ditherPalette);
 
     // Process each 8x8 cell
@@ -2592,7 +2931,7 @@ function convertToScr(sourceCanvas, dithering, brightness, contrast, saturation 
       for (let cellX = 0; cellX < 32; cellX++) {
         const cell = monoOutput
           ? analyzeCellMono(floatPixels, cellX, cellY, 256, palette.bright[0], palette.bright[7])
-          : analyzeCell(floatPixels, cellX, cellY, 256);
+          : analyzeCell(floatPixels, cellX, cellY, 256, preDitherPixels);
 
         // Apply paper color rule (skip for mono)
         const ruled = monoOutput ? { colors: cell, bitmap: cell.bitmap } : applyPaperRule(cell, cell.bitmap);
@@ -2669,10 +3008,51 @@ function convertToZxp(sourceCanvas, dithering, brightness, contrast, saturation 
 
   const zxp = new Uint8Array(bitmapSize + attrSize);
 
-  dithering = remapOrderedToCellAware(dithering);
+  dithering = remapOrderedToCellAware(dithering, !monoOutput);
   const isCellAware = dithering.startsWith('cell-');
 
-  if (isCellAware) {
+  if (dithering.startsWith('attr-')) {
+    // Attribute-aware global dithering: pairs from the original image, one
+    // global pass constrained to each cell's pair (no seams, no noise-locked attrs)
+    const cellPairs = [];
+    for (let cellY = 0; cellY < attrRows; cellY++) {
+      for (let cellX = 0; cellX < cols; cellX++) {
+        cellPairs.push(findCellColors(floatPixels, cellX, cellY, w, palette));
+      }
+    }
+
+    const inkFlags = dithering === 'attr-ordered'
+      ? attrAwareOrderedDither(floatPixels, w, h, cellPairs, 8, attrCellH)
+      : attrAwareErrorDiffusion(floatPixels, w, h, cellPairs, 8, attrCellH, FS_KERNEL);
+
+    for (let cellY = 0; cellY < attrRows; cellY++) {
+      for (let cellX = 0; cellX < cols; cellX++) {
+        const colors = cellPairs[cellY * cols + cellX];
+        const bitmap = new Uint8Array(8);
+        for (let dy = 0; dy < 8; dy++) {
+          const y = cellY * 8 + dy;
+          if (y >= h) break;
+          for (let dx = 0; dx < 8; dx++) {
+            if (inkFlags[y * w + cellX * 8 + dx]) {
+              bitmap[dy] |= (0x80 >> dx);
+            }
+          }
+        }
+
+        const ruled = applyPaperRule(colors, bitmap);
+
+        for (let line = 0; line < 8; line++) {
+          const y = cellY * 8 + line;
+          if (y >= h) break;
+          zxp[y * cols + cellX] = ruled.bitmap[line];
+        }
+
+        let attr = (ruled.colors.paper << 3) | ruled.colors.ink;
+        if (ruled.colors.bright) attr |= 0x40;
+        zxp[bitmapSize + cellY * cols + cellX] = attr;
+      }
+    }
+  } else if (isCellAware) {
     const cellDitherMethod = dithering.replace('cell-', '');
 
     const monoColors = monoOutput ? {
@@ -2764,13 +3144,15 @@ function convertToZxp(sourceCanvas, dithering, brightness, contrast, saturation 
     // Global dithering
     const ditherPalette = monoOutput ? [palette.bright[0], palette.bright[7]] : fullPalette;
 
+    // Pre-dither copy so attribute pairs come from real image colors
+    const preDitherPixels = new Float32Array(floatPixels);
     applyGlobalDither(dithering, floatPixels, w, h, ditherPalette);
 
     for (let cellY = 0; cellY < attrRows; cellY++) {
       for (let cellX = 0; cellX < cols; cellX++) {
         const cell = monoOutput
           ? analyzeCellMono(floatPixels, cellX, cellY, w, palette.bright[0], palette.bright[7])
-          : analyzeCell(floatPixels, cellX, cellY, w);
+          : analyzeCell(floatPixels, cellX, cellY, w, preDitherPixels);
 
         const ruled = monoOutput ? { colors: cell, bitmap: cell.bitmap } : applyPaperRule(cell, cell.bitmap);
 
@@ -5898,6 +6280,8 @@ function convertToBmc4(sourceCanvas, dithering, brightness, contrast, saturation
  * @returns {string} Global dithering name for use in switch statements
  */
 function mapCellDithering(dithering) {
+  if (dithering === 'attr-floyd') return 'floyd-steinberg';
+  if (dithering === 'attr-ordered') return 'ordered8';
   if (!dithering.startsWith('cell-')) return dithering;
   const stripped = dithering.substring(5);
   if (stripped === 'floyd') return 'floyd-steinberg';
@@ -9233,11 +9617,13 @@ function convertMainAreaToScr(sourceCanvas, dithering, monoOutput = false) {
   const fullPalette = [...palette.regular, ...palette.bright];
   const scr = new Uint8Array(6912);
 
-  // Check if using cell-aware dithering
-  dithering = remapOrderedToCellAware(dithering);
+  // Check if using cell-aware dithering (attr-* falls back to cell-aware for mono)
+  dithering = remapOrderedToCellAware(dithering, !monoOutput);
   const isCellAware = dithering.startsWith('cell-');
 
-  if (isCellAware) {
+  if (dithering.startsWith('attr-')) {
+    renderAttrAwareScr(floatPixels, scr, palette, dithering === 'attr-ordered');
+  } else if (isCellAware) {
     const cellDitherMethod = dithering.replace('cell-', '');
 
     // Mono output uses fixed black ink on white paper (bright)
@@ -9307,13 +9693,15 @@ function convertMainAreaToScr(sourceCanvas, dithering, monoOutput = false) {
     // For mono output, use only black and white
     const ditherPalette = monoOutput ? [palette.bright[0], palette.bright[7]] : fullPalette;
 
+    // Pre-dither copy so attribute pairs come from real image colors
+    const preDitherPixels = new Float32Array(floatPixels);
     applyGlobalDither(dithering, floatPixels, 256, 192, ditherPalette);
 
     for (let cellY = 0; cellY < 24; cellY++) {
       for (let cellX = 0; cellX < 32; cellX++) {
         const cell = monoOutput
           ? analyzeCellMono(floatPixels, cellX, cellY, 256, palette.bright[0], palette.bright[7])
-          : analyzeCell(floatPixels, cellX, cellY, 256);
+          : analyzeCell(floatPixels, cellX, cellY, 256, preDitherPixels);
 
         // Apply paper color rule (skip for mono)
         const ruled = monoOutput ? { colors: cell, bitmap: cell.bitmap } : applyPaperRule(cell, cell.bitmap);
@@ -12649,16 +13037,16 @@ let importPreviewCanvasB = null;
  */
 function createDefaultSlotState() {
   return {
-    dithering: 'none',
-    ditherStrengthPct: 100,
-    serpentine: false,
+    dithering: 'attr-floyd',
+    ditherStrengthPct: 90,
+    serpentine: true,
     contrast: 0, brightness: 0, saturation: 0, gamma: 100,
     sharpness: 0, smoothing: 0,
     blackPoint: 0, whitePoint: 255,
     balanceR: 0, balanceG: 0, balanceB: 0,
     grayscale: false, monoOutput: false,
-    colorSpace: 'oklab',
-    colorStrategy: 'exhaustive',
+    colorSpace: 'rgb',
+    colorStrategy: 'blend',
     preBlur: 0,
     paperRule: 'darker',
     format: 'scr',
@@ -15592,6 +15980,7 @@ function updateAutoLabel(slotId) {
     'ordered2': 'Ord2', 'ordered4': 'Ord4', 'ordered8': 'Ord8',
     'riemersma': 'Riem', 'burkes': 'Burkes', 'stucki': 'Stucki',
     'sierra': 'Sierra', 'sierra-lite': 'SierraL', 'jarvis': 'Jarvis',
+    'attr-floyd': 'AttrFloyd', 'attr-ordered': 'AttrOrd',
     'cell-floyd': 'CellFloyd', 'cell-atkinson': 'CellAtkin',
     'cell-ordered2': 'CellOrd2', 'cell-ordered4': 'CellOrd4',
     'cell-riemersma': 'CellRiem', 'cell-burkes': 'CellBurkes',
@@ -15603,7 +15992,7 @@ function updateAutoLabel(slotId) {
   parts.push(slot.format.toUpperCase());
 
   // Color strategy (if non-default)
-  if (slot.colorStrategy !== 'exhaustive') parts.push(slot.colorStrategy);
+  if (slot.colorStrategy !== 'blend') parts.push(slot.colorStrategy);
 
   // Pre-blur
   if (slot.preBlur > 0) parts.push('blur:' + slot.preBlur);
@@ -16586,7 +16975,7 @@ function initImageImport() {
       cellGroup.style.display = noCellFormats ? 'none' : '';
     }
     const ditherSelect = document.getElementById('importDithering');
-    if (noCellFormats && ditherSelect && ditherSelect.value.startsWith('cell-')) {
+    if (noCellFormats && ditherSelect && (ditherSelect.value.startsWith('cell-') || ditherSelect.value.startsWith('attr-'))) {
       const mapped = mapCellDithering(ditherSelect.value);
       const hasOption = Array.from(ditherSelect.options).some(o => o.value === mapped);
       ditherSelect.value = hasOption ? mapped : 'floyd-steinberg';
@@ -18612,7 +19001,7 @@ function openImportDialog(file) {
   }
 
   // Reset controls using cached elements
-  if (importElements.dithering) importElements.dithering.value = 'none';
+  if (importElements.dithering) importElements.dithering.value = 'attr-floyd';
   if (importElements.contrast) importElements.contrast.value = '0';
   if (importElements.brightness) importElements.brightness.value = '0';
   if (importElements.zoom) importElements.zoom.value = '2';

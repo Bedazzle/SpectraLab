@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v2.40 -->
+<!-- SpectraLab v2.43 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -598,6 +598,40 @@
     right: 2px;
   }
 
+  /* Hidden (alt-clicked) palette swatches — diagonal cross overlay.
+     Drawn as an SVG background so the cross stays corner-to-corner at any
+     swatch size, with a dark outline under a light core so it reads on any
+     color. Canvas-based swatches (53c) paint their own cross instead. */
+  .color-hidden {
+    position: relative;
+  }
+  .color-hidden::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10' preserveAspectRatio='none'%3E%3Cpath d='M0 0L10 10M10 0L0 10' stroke='%23000' stroke-opacity='.85' stroke-width='2.6'/%3E%3Cpath d='M0 0L10 10M10 0L0 10' stroke='%23fff' stroke-opacity='.95' stroke-width='1'/%3E%3C/svg%3E");
+    background-size: 100% 100%;
+    z-index: 3;
+  }
+
+  #hiddenColorsBar {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+    padding: 3px 6px;
+    font-size: 10px;
+    border: 1px solid var(--warning-color);
+    border-radius: 3px;
+    color: var(--text-secondary);
+  }
+  #hiddenColorsBar button {
+    padding: 1px 6px;
+    font-size: 10px;
+    margin-left: auto;
+  }
+
   /* ULA+ Palette Styles */
   .ulaplus-grid {
     display: grid;
@@ -1149,6 +1183,15 @@
     display: block !important;
   }
 
+  /* Settings override. Two classes outrank the rules above, so these win
+     whether or not the floating tools are up. */
+  body.fullscreen-editor.fullscreen-preview-show #editorPreviewPanel {
+    display: block !important;
+  }
+  body.fullscreen-editor.fullscreen-preview-hide #editorPreviewPanel {
+    display: none !important;
+  }
+
   body.fullscreen-editor {
     overflow: hidden;
   }
@@ -1273,6 +1316,69 @@
     font-size: 14px;
     font-weight: bold;
     margin-bottom: 12px;
+  }
+  .settings-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 12px;
+    margin-bottom: 5px;
+  }
+  .settings-row > span {
+    white-space: nowrap;
+    color: var(--text-secondary);
+  }
+  .settings-row > select {
+    flex: 1;
+    max-width: 210px;
+    padding: 3px;
+    font-size: 11px;
+  }
+  #combineList {
+    max-height: 150px;
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    padding: 4px;
+  }
+  .combine-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    padding: 2px 0;
+  }
+  .combine-row-bad { opacity: 0.6; }
+  .combine-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .combine-move {
+    flex: none;
+    width: 16px;
+    padding: 0;
+    font-size: 8px;
+    line-height: 14px;
+    cursor: pointer;
+  }
+  .combine-move:disabled {
+    opacity: 0.3;
+    cursor: default;
+  }
+  .combine-why {
+    color: var(--text-warning, #f80);
+    font-size: 10px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .combine-empty {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    padding: 4px;
   }
   .help-tab {
     padding: 4px 12px;
@@ -1865,6 +1971,7 @@
             <div style="display: flex; align-items: center; gap: 8px;">
               <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" id="appTitle" style="text-decoration: none; color: var(--text-secondary); font-size: 11px;">SpectraLab</a>
               <button id="themeToggleBtn" style="padding: 2px 6px; font-size: 10px; cursor: pointer;" title="Toggle light/dark theme">&#9790;</button>
+              <button id="settingsBtn" style="padding: 2px 6px; font-size: 10px;" title="Settings">&#9881;</button>
               <button id="helpBtn" style="padding: 2px 6px; font-size: 10px;" title="Help">?</button>
             </div>
           </div>
@@ -1884,6 +1991,11 @@
                 <button id="gigaEditScreen2Btn" class="giga-edit-mode-btn" title="Edit Screen 2 only (standard 16-color palette)">Screen 2</button>
                 <button id="gigaEditCombinedBtn" class="giga-edit-mode-btn giga-edit-mode-active" title="Edit both screens as Gigascreen (virtual 136-color palette)">Gigascreen</button>
               </div>
+            </div>
+            <!-- Hidden colors notice (Alt+click a swatch to hide a color) -->
+            <div id="hiddenColorsBar" title="Hidden colors affect this view only — saved and exported pictures always contain every color">
+              <span><b id="hiddenColorsCount">0</b> color(s) hidden</span>
+              <button id="hiddenColorsShowAllBtn" title="Show all hidden colors again">Show all</button>
             </div>
             <!-- Standard Color Section -->
             <div id="editorColorSection">
@@ -2603,6 +2715,12 @@
             <div class="control-group-title">Generate</div>
             <div class="editor-actions">
               <button id="qrGenerateBtn" title="Generate QR code">QR Code</button>
+            </div>
+          </div>
+          <div class="control-group">
+            <div class="control-group-title">Pictures</div>
+            <div class="editor-actions">
+              <button id="combineBtn" title="Join open pictures into one larger chr$ image">Combine&hellip;</button>
             </div>
           </div>
           <div class="control-group" id="displayFiltersSection">
@@ -3439,6 +3557,180 @@
 </div>
 
 <!-- Help Dialog -->
+<!-- Open-or-Combine prompt (shown when several .scr files are opened at once) -->
+<div id="combineAskDialog" class="modal-overlay" style="display:none;">
+  <div class="modal-dialog" style="width: 340px;">
+    <div class="modal-title">Open <span id="combineAskCount">2</span> pictures</div>
+    <div style="font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
+      Open them as separate tabs, or join them into one larger chr$ image?
+    </div>
+    <div style="display: flex; gap: 8px; justify-content: flex-end;">
+      <button id="combineAskSeparateBtn" style="padding: 5px 14px; font-size: 12px;">Open separately</button>
+      <button id="combineAskCombineBtn" style="padding: 5px 14px; font-size: 12px;">Combine&hellip;</button>
+    </div>
+  </div>
+</div>
+
+<!-- Combine Pictures Dialog -->
+<div id="combineDialog" class="modal-overlay" style="display:none;">
+  <div class="modal-dialog" style="width: 400px;">
+    <div class="modal-title" style="display: flex; justify-content: space-between; align-items: center;">
+      <span>Combine Pictures</span>
+      <button id="combineCloseBtn" style="padding: 2px 8px; font-size: 12px;">&times;</button>
+    </div>
+
+    <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 6px; line-height: 1.4;">
+      Joins open pictures into one chr$, copying cells unchanged.
+    </div>
+
+    <div id="combineList"></div>
+
+    <div class="settings-row" id="combineGridRow" style="margin-top: 8px;">
+      <span>Pictures per row</span>
+      <input type="number" id="combineGridCols" min="1" value="2"
+             title="1 stacks them vertically; the number of pictures puts them all in one row"
+             style="flex: none; width: 56px; padding: 3px; font-size: 11px; margin-right: auto;">
+    </div>
+    <div class="settings-row">
+      <span>Fill empty cells</span>
+      <span style="display: flex; gap: 4px; flex: 1; max-width: 210px;">
+        <select id="combineFillInk" title="Ink color for cells no picture covers" style="flex: 1;">
+          <option value="0">Ink: Black</option><option value="1">Ink: Blue</option>
+          <option value="2">Ink: Red</option><option value="3">Ink: Magenta</option>
+          <option value="4">Ink: Green</option><option value="5">Ink: Cyan</option>
+          <option value="6">Ink: Yellow</option><option value="7" selected>Ink: White</option>
+        </select>
+        <select id="combineFillPaper" title="Paper color for cells no picture covers" style="flex: 1;">
+          <option value="0" selected>Paper: Black</option><option value="1">Paper: Blue</option>
+          <option value="2">Paper: Red</option><option value="3">Paper: Magenta</option>
+          <option value="4">Paper: Green</option><option value="5">Paper: Cyan</option>
+          <option value="6">Paper: Yellow</option><option value="7">Paper: White</option>
+        </select>
+      </span>
+    </div>
+
+    <label class="settings-row" style="cursor: pointer;">
+      <span>Close source pictures</span>
+      <input type="checkbox" id="combineCloseSources" checked
+             title="Close the pictures that went into the combined image, leaving only the result open"
+             style="margin: 0 auto 0 0;">
+    </label>
+
+    <div style="margin-top: 8px; text-align: center; background: var(--bg-primary); border: 1px solid var(--border-color); padding: 6px; min-height: 40px;">
+      <canvas id="combinePreview" style="image-rendering: pixelated; vertical-align: middle;"></canvas>
+    </div>
+    <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 4px;">
+      Output: <span id="combineOutputInfo">&mdash;</span>
+    </div>
+    <div id="combineWarning" style="display:none; font-size: 11px; color: var(--text-warning, #f80); margin-top: 6px;"></div>
+
+    <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px;">
+      <button id="combineCancelBtn" style="padding: 5px 16px; font-size: 12px;">Cancel</button>
+      <button id="combineOkBtn" style="padding: 5px 16px; font-size: 12px;">Combine</button>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Dialog -->
+<div id="settingsDialog" class="modal-overlay" style="display:none;">
+  <div class="modal-dialog" style="width: 400px;">
+    <div class="modal-title" style="display: flex; justify-content: space-between; align-items: center;">
+      <span>Settings</span>
+      <button id="settingsCloseBtn" style="padding: 2px 8px; font-size: 12px;">&times;</button>
+    </div>
+
+    <div style="font-size: 10px; color: var(--text-tertiary); margin: 4px 0 6px;">CANVAS NAVIGATION</div>
+    <label class="settings-row">
+      <span>Wheel</span>
+      <select id="settingsWheel">
+        <option value="zoom">Zoom in / out</option>
+        <option value="panV">Scroll vertically</option>
+        <option value="panH">Scroll horizontally</option>
+        <option value="none">Nothing (browser default)</option>
+      </select>
+    </label>
+    <label class="settings-row">
+      <span>Ctrl + Wheel</span>
+      <select id="settingsCtrlWheel">
+        <option value="panH">Scroll horizontally</option>
+        <option value="panV">Scroll vertically</option>
+        <option value="zoom">Zoom in / out</option>
+        <option value="none">Nothing (browser default)</option>
+      </select>
+    </label>
+    <label class="settings-row">
+      <span>Shift + Wheel</span>
+      <select id="settingsShiftWheel">
+        <option value="panV">Scroll vertically</option>
+        <option value="panH">Scroll horizontally</option>
+        <option value="zoom">Zoom in / out</option>
+        <option value="none">Nothing (browser default)</option>
+      </select>
+    </label>
+    <label class="settings-row">
+      <span>Middle button drag</span>
+      <select id="settingsMiddleDrag">
+        <option value="pan">Pan canvas</option>
+        <option value="none">Nothing</option>
+      </select>
+    </label>
+
+    <div style="font-size: 10px; color: var(--text-tertiary); margin: 10px 0 6px;">EDITING</div>
+    <label class="settings-row">
+      <span>Alt + Left click</span>
+      <select id="settingsAltLeft">
+        <option value="pickInk">Pick colors (eyedropper)</option>
+        <option value="recolor">Recolor cell with current colors</option>
+        <option value="none">Nothing</option>
+      </select>
+    </label>
+    <label class="settings-row">
+      <span>Alt + Right click</span>
+      <select id="settingsAltRight">
+        <option value="recolor">Recolor cell with current colors</option>
+        <option value="pickPaper">Pick colors (paper)</option>
+        <option value="none">Nothing</option>
+      </select>
+    </label>
+
+    <label class="settings-row">
+      <span>Arrow keys</span>
+      <select id="settingsArrowKeys">
+        <option value="scroll">Scroll the canvas</option>
+        <option value="cursor">Move a pixel cursor</option>
+      </select>
+    </label>
+
+    <label class="settings-row">
+      <span>Pixel cursor shape</span>
+      <select id="settingsCursorStyle">
+        <option value="corners">Corner marks</option>
+        <option value="dots">Corner dots (smallest)</option>
+        <option value="box">Full box</option>
+      </select>
+    </label>
+
+    <label class="settings-row">
+      <span>Preview in fullscreen</span>
+      <select id="settingsFullscreenPreview">
+        <option value="auto">Only when editing</option>
+        <option value="show">Always show</option>
+        <option value="hide">Always hide</option>
+      </select>
+    </label>
+
+    <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 8px; line-height: 1.4;">
+      Alt bindings are ignored by Rect, Circle and Gradient, which use Alt for "draw from center".
+      With the pixel cursor, Shift+arrow steps 8 pixels and Space applies the current tool.
+    </div>
+
+    <div style="display: flex; gap: 8px; justify-content: space-between; margin-top: 12px;">
+      <button id="settingsResetBtn" style="padding: 5px 12px; font-size: 12px;">Reset defaults</button>
+      <button id="settingsDoneBtn" style="padding: 5px 16px; font-size: 12px;">Done</button>
+    </div>
+  </div>
+</div>
+
 <div id="helpDialog" class="modal-overlay" style="display:none;">
   <div class="modal-dialog" style="width: 480px; max-height: 80vh; display: flex; flex-direction: column;">
     <div class="modal-title" style="display: flex; justify-content: space-between; align-items: center;">
@@ -3457,8 +3749,11 @@
         <div style="font-weight: bold; margin-bottom: 6px;">Keyboard Shortcuts</div>
         <table style="width: 100%; font-size: 11px;">
           <tr><td style="width: 90px; color: var(--text-secondary);">1-5</td><td>Set zoom level</td></tr>
-          <tr><td style="color: var(--text-secondary);">Ctrl+Wheel</td><td>Zoom in/out</td></tr>
-          <tr><td style="color: var(--text-secondary);">Arrows</td><td>Pan canvas when zoomed</td></tr>
+          <tr><td style="color: var(--text-secondary);">Wheel</td><td>Zoom in/out (set in Settings &#9881;)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Ctrl+Wheel</td><td>Scroll horizontally (set in Settings)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Shift+Wheel</td><td>Scroll vertically (set in Settings)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Middle drag</td><td>Pan canvas</td></tr>
+          <tr><td style="color: var(--text-secondary);">Arrows</td><td>Pan canvas, or move the pixel cursor (set in Settings)</td></tr>
           <tr><td style="color: var(--text-secondary);">F</td><td>Toggle flash animation</td></tr>
           <tr><td style="color: var(--text-secondary);">G</td><td>Cycle grid size (None/8/16/24px)</td></tr>
           <tr><td style="color: var(--text-secondary);">Grid color</td><td>Dropdown to change grid line color</td></tr>
@@ -3496,7 +3791,12 @@
         <table style="width: 100%; font-size: 11px;">
           <tr><td style="width: 90px; color: var(--text-secondary);">Left click</td><td>Draw with ink</td></tr>
           <tr><td style="color: var(--text-secondary);">Right click</td><td>Draw with paper (erase)</td></tr>
-          <tr><td style="color: var(--text-secondary);">Alt+click</td><td>Pick ink+paper from cell (eyedropper)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Alt+click</td><td>On canvas: pick ink+paper from cell (eyedropper)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Alt+right click</td><td>On canvas: recolor cell with current colors</td></tr>
+          <tr><td style="color: var(--text-secondary);">Arrows</td><td>Move the pixel cursor (enable in Settings &#9881;)</td></tr>
+          <tr><td style="color: var(--text-secondary);">Shift+Arrow</td><td>Move the pixel cursor 8 pixels</td></tr>
+          <tr><td style="color: var(--text-secondary);">Space</td><td>Apply the current tool at the pixel cursor</td></tr>
+          <tr><td style="color: var(--text-secondary);">Alt+click</td><td>On palette swatch: hide/show that color (view only)</td></tr>
           <tr><td style="color: var(--text-secondary);">B</td><td>Toggle bright</td></tr>
           <tr><td style="color: var(--text-secondary);">F</td><td>Toggle flash attribute</td></tr>
           <tr><td style="color: var(--text-secondary);">X</td><td>Swap ink/paper colors</td></tr>
@@ -3626,6 +3926,15 @@
           <tr><td style="color: var(--text-secondary);">Stamp</td><td>Click/drag on border with selected barcode</td></tr>
         </table>
         <p style="font-size: 11px; margin: 4px 0 0;">Width auto-detected (8/16/24px). Available for BSC/BMC4 formats.</p>
+        <div style="font-weight: bold; margin: 12px 0 6px;">Hidden Colors</div>
+        <table style="width: 100%; font-size: 11px;">
+          <tr><td style="width: 90px; color: var(--text-secondary);">Alt+click</td><td>Hide/show that palette color on the canvas</td></tr>
+          <tr><td style="color: var(--text-secondary);">Marker</td><td>Hidden swatches get a diagonal cross</td></tr>
+          <tr><td style="color: var(--text-secondary);">Show all</td><td>Bar above the palette restores every hidden color</td></tr>
+          <tr><td style="color: var(--text-secondary);">Drawn as</td><td>Transparency checkerboard</td></tr>
+          <tr><td style="color: var(--text-secondary);">Scope</td><td>View only &mdash; preview, saves and exports keep every color</td></tr>
+          <tr><td style="color: var(--text-secondary);">Palettes</td><td>All: standard (normal+BRIGHT), ULA+, ULANext, Gigascreen, Next, RGB3, 53c</td></tr>
+        </table>
         <div style="font-weight: bold; margin: 12px 0 6px;">Snap Mode</div>
         <table style="width: 100%; font-size: 11px;">
           <tr><td style="width: 50px; color: var(--text-secondary);">Grid</td><td>Snap to grid size (from View tab)</td></tr>
@@ -3686,7 +3995,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 2.40</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 2.43</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">
@@ -3816,16 +4125,16 @@
           <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Color space for perceptual color matching">
             Colors:
             <select id="importColorSpace" style="padding: 2px; font-size: 11px;">
-              <option value="rgb">RGB</option>
+              <option value="rgb" selected>RGB</option>
               <option value="lab">LAB</option>
-              <option value="oklab" selected>OkLab</option>
+              <option value="oklab">OkLab</option>
             </select>
           </label>
           <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Strategy for selecting ink/paper color pairs per block">
             Pair fit:
             <select id="importColorStrategy" style="padding: 2px; font-size: 11px;">
               <option value="exhaustive">Best fit</option>
-              <option value="blend">Blend fit</option>
+              <option value="blend" selected>Blend fit</option>
               <option value="pca">PCA gradient</option>
             </select>
           </label>
@@ -3869,6 +4178,8 @@
             <span style="width: 52px;">Dither:</span>
             <select id="importDithering" style="width: 100px; padding: 2px; font-size: 11px;">
               <optgroup id="importDitherCellGroup" label="Cell-Aware">
+                <option value="attr-floyd" selected>Floyd Attr-Aware</option>
+                <option value="attr-ordered">Ordered Attr-Aware</option>
                 <option value="cell-floyd">Cell Floyd</option>
                 <option value="cell-atkinson">Cell Atkinson</option>
                 <option value="cell-serpentine">Cell Serpentine</option>
@@ -3898,17 +4209,17 @@
                 <option value="a-dither">a-dither</option>
                 <option value="pattern">Pattern</option>
                 <option value="noise">Noise</option>
-                <option value="none" selected>None</option>
+                <option value="none">None</option>
               </optgroup>
             </select>
           </label>
           <label id="importDitherStrengthRow" style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Error diffusion strength. 0% = pure ordered/threshold; 100% = full classic error diffusion. For ordered methods, >0 enables hybrid ordered+diffusion mode.">
             <span style="width: 52px;">Strength:</span>
-            <input type="range" id="importDitherStrength" min="0" max="100" value="100" style="flex: 1; min-width: 60px;">
-            <span id="importDitherStrengthVal" style="width: 28px; text-align: right;">100</span>
+            <input type="range" id="importDitherStrength" min="0" max="100" value="90" style="flex: 1; min-width: 60px;">
+            <span id="importDitherStrengthVal" style="width: 28px; text-align: right;">90</span>
           </label>
           <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Alternate row direction during error diffusion to reduce horizontal banding.">
-            <input type="checkbox" id="importDitherSerpentine" style="margin: 0;">Serpentine scan
+            <input type="checkbox" id="importDitherSerpentine" checked style="margin: 0;">Serpentine scan
           </label>
           <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Blur within cells before color pair selection. Stabilizes attribute colors on noisy/detailed images while preserving bitmap sharpness.">
             <span style="width: 52px;">Pre-blur:</span>
@@ -4493,6 +4804,8 @@
 
 <!-- Screen Viewer scripts -->
 <script src="js/app_config.js"></script>
+<script src="js/hidden_colors.js"></script>
+<script src="js/editor_settings.js"></script>
 <script src="js/picture_format.js"></script>
 <script src="js/zx7.js"></script>
 <script src="js/zx0.js"></script>
@@ -4519,6 +4832,7 @@
 <script src="js/sca_editor.js"></script>
 <script src="js/qrcode.js"></script>
 <script src="js/screen_editor.js"></script>
+<script src="js/combine_pictures.js"></script>
 <script src="js/sprite_editor.js"></script>
 <script src="js/script_engine.js"></script>
 <script src="js/script_commands.js"></script>

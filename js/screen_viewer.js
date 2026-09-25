@@ -1370,9 +1370,12 @@ function updateFontInfo() {
 // ============================================================================
 
 /**
- * Gets RGB color values from attribute byte (optimized for ImageData)
+ * Gets RGB color values from attribute byte (optimized for ImageData).
+ * `inkHidden` / `paperHidden` flag colors the user has hidden via alt-click;
+ * they are only ever true while the main canvas is being painted. Renderers
+ * pass the result to pixelRgbHidden() to substitute the checkerboard.
  * @param {number} attr - Attribute byte
- * @returns {{inkRgb: number[], paperRgb: number[]}} RGB color arrays
+ * @returns {{inkRgb: number[], paperRgb: number[], inkHidden: boolean, paperHidden: boolean}} RGB color arrays
  */
 function getColorsRgb(attr) {
   // ULANext mode: ink mask splits attribute into ink/paper indices
@@ -1381,7 +1384,9 @@ function getColorsRgb(attr) {
     const paperIdx = (attr >>> ulaNextInkBits) + ulaNextInkCount;
     return {
       inkRgb: ulaNextPalette[inkIdx] || [0, 0, 0],
-      paperRgb: ulaNextPalette[paperIdx] || [0, 0, 0]
+      paperRgb: ulaNextPalette[paperIdx] || [0, 0, 0],
+      inkHidden: isColorHidden('ulanext', inkIdx),
+      paperHidden: isColorHidden('ulanext', paperIdx)
     };
   }
 
@@ -1389,13 +1394,55 @@ function getColorsRgb(attr) {
   if (isUlaPlusMode && ulaPlusPalette) {
     const inkIdx = getUlaPlusPaletteIndex(attr, true);
     const paperIdx = getUlaPlusPaletteIndex(attr, false);
-    return { inkRgb: getUlaPlusColor(inkIdx), paperRgb: getUlaPlusColor(paperIdx) };
+    return {
+      inkRgb: getUlaPlusColor(inkIdx),
+      paperRgb: getUlaPlusColor(paperIdx),
+      inkHidden: isColorHidden('ulaplus', inkIdx),
+      paperHidden: isColorHidden('ulaplus', paperIdx)
+    };
   }
 
-  // Standard ZX Spectrum mode
+  // Standard ZX Spectrum mode. The 8 swatches cover both the normal and the
+  // BRIGHT variant, so hiding is keyed on the 0-7 index alone.
   const { inkIndex, paperIndex, isBright } = getColorIndices(attr);
   const palette = isBright ? ZX_PALETTE_RGB.BRIGHT : ZX_PALETTE_RGB.REGULAR;
-  return { inkRgb: palette[inkIndex], paperRgb: palette[paperIndex] };
+  return {
+    inkRgb: palette[inkIndex],
+    paperRgb: palette[paperIndex],
+    inkHidden: isColorHidden('zx', inkIndex),
+    paperHidden: isColorHidden('zx', paperIndex)
+  };
+}
+
+/**
+ * Colors used when the "Attrs" view toggle is off (mono black-on-white).
+ * Shared constant so the per-cell render loops allocate nothing.
+ * @type {{inkRgb: number[], paperRgb: number[], inkHidden: boolean, paperHidden: boolean}}
+ */
+const NO_ATTRS_COLORS = { inkRgb: [0, 0, 0], paperRgb: [255, 255, 255], inkHidden: false, paperHidden: false };
+
+/**
+ * True when a 53c pattern color is hidden and this cell uses it. A 53c "color"
+ * is the whole cell's dithered blend, so the entire cell goes transparent
+ * rather than just its ink or paper half.
+ * @param {number} attr - ZX attribute byte of the cell
+ * @returns {boolean}
+ */
+function is53cCellHidden(attr) {
+  if (!colorHidingActive || HIDDEN_COLORS.attr53c.size === 0) return false;
+  return HIDDEN_COLORS.attr53c.has(normalizeAttrForPaint(attr));
+}
+
+/**
+ * Base color index (0-15, BRIGHT adds 8) for one side of an attribute byte.
+ * This is the numbering the Gigascreen virtual palette is built from.
+ * @param {number} attr - ZX attribute byte
+ * @param {boolean} isInk - True for ink, false for paper
+ * @returns {number} 0-15
+ */
+function gigaBaseColorIndex(attr, isInk) {
+  const idx = isInk ? ATTR.ink(attr) : ATTR.paper(attr);
+  return (attr & ATTR.BRIGHT_BIT) ? idx + 8 : idx;
 }
 
 /** @type {ImageData|null} Cached ImageData for renderScrFast (reused to avoid per-frame allocation) */
@@ -1460,13 +1507,9 @@ function renderScrFast(ctx, borderOffset) {
           // Get attribute for this character cell
           const attrOffset = attrAddr + col + row * 32;
           const attr = screenData[attrOffset];
-          let inkRgb, paperRgb;
-          if (showAttributes) {
-            ({ inkRgb, paperRgb } = getColorsRgb(attr));
-          } else {
-            inkRgb = [0, 0, 0];
-            paperRgb = [255, 255, 255];
-          }
+          const colors = showAttributes
+            ? getColorsRgb(attr)
+            : NO_ATTRS_COLORS;
 
           // Calculate Y position
           const x = col * 8;
@@ -1485,7 +1528,7 @@ function renderScrFast(ctx, borderOffset) {
               const gray = ((Math.floor(px / checkerSize) + Math.floor(y / checkerSize)) & 1) ? checkerDark : checkerLight;
               r = gray; g = gray; b = gray;
             } else {
-              const rgb = (byte & (0x80 >> bit)) ? inkRgb : paperRgb;
+              const rgb = pixelRgbHidden((byte & (0x80 >> bit)) !== 0, colors, px, y);
               r = rgb[0]; g = rgb[1]; b = rgb[2];
             }
             data[pixelIndex] = r;
@@ -1589,23 +1632,28 @@ function renderPictureStandard(ctx, borderOffset, pic, scrollInfo) {
   const data = imageData.data;
 
   // Mono mode: determine ink/paper colors
-  let monoInk, monoPaper;
+  /** @type {{inkRgb: number[], paperRgb: number[], inkHidden: boolean, paperHidden: boolean}|null} */
+  let monoColors = null;
   if (attrCellH === 0) {
     if (typeof editorActive !== 'undefined' && editorActive &&
         typeof editorInkColor !== 'undefined' && typeof editorPaperColor !== 'undefined') {
       const editorBrightVal = (typeof editorBright !== 'undefined') ? editorBright : false;
       const palette = editorBrightVal ? ZX_PALETTE.BRIGHT : ZX_PALETTE.REGULAR;
-      const ink = palette[editorInkColor];
-      const paper = palette[editorPaperColor];
-      const inkC = parseColorToRgb(ink);
-      const paperC = parseColorToRgb(paper);
-      monoInk = [inkC.r, inkC.g, inkC.b];
-      monoPaper = [paperC.r, paperC.g, paperC.b];
+      const inkC = parseColorToRgb(palette[editorInkColor]);
+      const paperC = parseColorToRgb(palette[editorPaperColor]);
+      monoColors = {
+        inkRgb: [inkC.r, inkC.g, inkC.b],
+        paperRgb: [paperC.r, paperC.g, paperC.b],
+        inkHidden: isColorHidden('zx', editorInkColor),
+        paperHidden: isColorHidden('zx', editorPaperColor)
+      };
     } else {
-      monoInk = [255, 255, 255];
-      monoPaper = [0, 0, 0];
+      monoColors = { inkRgb: [255, 255, 255], paperRgb: [0, 0, 0], inkHidden: false, paperHidden: false };
     }
   }
+
+  // 53c pattern colors hide per whole cell (the "color" is the cell's blend)
+  const check53cHidden = pic.sourceFormat === '53c';
 
   for (let y = renderY0; y < renderY1; y++) {
     const attrRow = attrCellH > 0 ? Math.floor(y / attrCellH) : -1;
@@ -1613,21 +1661,21 @@ function renderPictureStandard(ctx, borderOffset, pic, scrollInfo) {
     for (let col = colStart; col < colEnd; col++) {
       const byte = bitmap[y * cols + col];
 
-      let inkRgb, paperRgb;
+      let colors, cellHidden = false;
       if (attrCellH === 0) {
-        inkRgb = monoInk;
-        paperRgb = monoPaper;
+        colors = monoColors;
       } else if (showAttributes) {
         const attr = isZxpDirect ? screenData[bitmapSize + attrRow * cols + col] : attrs[attrRow * cols + col];
-        ({ inkRgb, paperRgb } = getColorsRgb(attr));
+        colors = getColorsRgb(attr);
+        if (check53cHidden) cellHidden = is53cCellHidden(attr);
       } else {
-        inkRgb = [0, 0, 0];
-        paperRgb = [255, 255, 255];
+        colors = NO_ATTRS_COLORS;
       }
 
       const x = (col - colStart) * 8;
       if (use53cBlend) {
         // Blend mode: solid averaged color per cell
+        const inkRgb = colors.inkRgb, paperRgb = colors.paperRgb;
         const br = Math.round(inkRgb[0] * blendInkRatio + paperRgb[0] * (1 - blendInkRatio));
         const bg = Math.round(inkRgb[1] * blendInkRatio + paperRgb[1] * (1 - blendInkRatio));
         const bb = Math.round(inkRgb[2] * blendInkRatio + paperRgb[2] * (1 - blendInkRatio));
@@ -1636,7 +1684,7 @@ function renderPictureStandard(ctx, borderOffset, pic, scrollInfo) {
           const srcPx = col * 8 + bit;
           const maskIdx = y * width + srcPx;
           const pixelIndex = (localY * renderW + px) * 4;
-          const rgb = isPixelTransparent(maskIdx) ? getCheckerboardColor(srcPx, y) : null;
+          const rgb = (cellHidden || isPixelTransparent(maskIdx)) ? getCheckerboardColor(srcPx, y) : null;
           data[pixelIndex] = rgb ? rgb[0] : br;
           data[pixelIndex + 1] = rgb ? rgb[1] : bg;
           data[pixelIndex + 2] = rgb ? rgb[2] : bb;
@@ -1649,9 +1697,9 @@ function renderPictureStandard(ctx, borderOffset, pic, scrollInfo) {
           const maskIdx = y * width + srcPx;
           const pixelIndex = (localY * renderW + px) * 4;
 
-          const rgb = isPixelTransparent(maskIdx)
+          const rgb = (cellHidden || isPixelTransparent(maskIdx))
             ? getCheckerboardColor(srcPx, y)
-            : ((byte & (0x80 >> bit)) ? inkRgb : paperRgb);
+            : pixelRgbHidden((byte & (0x80 >> bit)) !== 0, colors, srcPx, y);
           data[pixelIndex] = rgb[0];
           data[pixelIndex + 1] = rgb[1];
           data[pixelIndex + 2] = rgb[2];
@@ -1710,8 +1758,6 @@ function render53cScreen(ctx, borderOffset) {
   // Fast path: render to 1:1 ImageData, then scale with drawImage (GPU accelerated)
   const imageData = ctx.createImageData(SCREEN.WIDTH, SCREEN.HEIGHT);
   const data = imageData.data;
-  const defaultInkRgb = [0, 0, 0];
-  const defaultPaperRgb = [255, 255, 255];
 
   // Precompute ink ratio for blend mode
   let inkRatio = 0;
@@ -1729,13 +1775,10 @@ function render53cScreen(ctx, borderOffset) {
     for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
       const attrIndex = col + row * 32;
       const attr = screenData[attrIndex];
-      let inkRgb, paperRgb;
-      if (showAttributes) {
-        ({ inkRgb, paperRgb } = getColorsRgb(attr));
-      } else {
-        inkRgb = defaultInkRgb;
-        paperRgb = defaultPaperRgb;
-      }
+      const colors = showAttributes ? getColorsRgb(attr) : NO_ATTRS_COLORS;
+      const inkRgb = colors.inkRgb, paperRgb = colors.paperRgb;
+      // A 53c "color" is the whole cell's dithered blend, so hide the whole cell
+      const cellHidden = showAttributes && is53cCellHidden(attr);
 
       const cellX = col * 8;
       const cellY = row * 8;
@@ -1749,9 +1792,10 @@ function render53cScreen(ctx, borderOffset) {
           const rowOffset = (cellY + py) * SCREEN.WIDTH;
           for (let px = 0; px < 8; px++) {
             const pixelIndex = (rowOffset + cellX + px) * 4;
-            data[pixelIndex] = br;
-            data[pixelIndex + 1] = bg;
-            data[pixelIndex + 2] = bb;
+            const chk = cellHidden ? getCheckerboardColor(cellX + px, cellY + py) : null;
+            data[pixelIndex] = chk ? chk[0] : br;
+            data[pixelIndex + 1] = chk ? chk[1] : bg;
+            data[pixelIndex + 2] = chk ? chk[2] : bb;
             data[pixelIndex + 3] = 255;
           }
         }
@@ -1763,7 +1807,9 @@ function render53cScreen(ctx, borderOffset) {
           const rowOffset = y * SCREEN.WIDTH;
           for (let px = 0; px < 8; px++) {
             const isInk = (patternByte & (1 << (7 - px))) !== 0;
-            const rgb = isInk ? inkRgb : paperRgb;
+            const rgb = cellHidden
+              ? getCheckerboardColor(cellX + px, y)
+              : pixelRgbHidden(isInk, colors, cellX + px, y);
             const pixelIndex = (rowOffset + cellX + px) * 4;
             data[pixelIndex] = rgb[0];
             data[pixelIndex + 1] = rgb[1];
@@ -1821,13 +1867,7 @@ function renderIflScreen(ctx, borderOffset) {
           const attrRow = Math.floor(y / 2);
           const attrOffset = IFL.BITMAP_SIZE + attrRow * 32 + col;
           const attr = screenData[attrOffset];
-          let inkRgb, paperRgb;
-          if (showAttributes) {
-            ({ inkRgb, paperRgb } = getColorsRgb(attr));
-          } else {
-            inkRgb = [0, 0, 0];
-            paperRgb = [255, 255, 255];
-          }
+          const colors = showAttributes ? getColorsRgb(attr) : NO_ATTRS_COLORS;
 
           // Draw 8 pixels to ImageData
           const x = col * 8;
@@ -1836,7 +1876,7 @@ function renderIflScreen(ctx, borderOffset) {
             const maskIdx = y * SCREEN.WIDTH + px;
             const rgb = isPixelTransparent(maskIdx)
               ? getCheckerboardColor(px, y)
-              : (isBitSet(byte, bit) ? inkRgb : paperRgb);
+              : pixelRgbHidden(isBitSet(byte, bit), colors, px, y);
             const pixelIndex = maskIdx * 4;
             data[pixelIndex] = rgb[0];
             data[pixelIndex + 1] = rgb[1];
@@ -1892,13 +1932,7 @@ function renderMltScreen(ctx, borderOffset) {
     for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
       const byte = screenData[bitmapBase + col];
       const attr = screenData[attrBase + col];
-      let inkRgb, paperRgb;
-      if (showAttributes) {
-        ({ inkRgb, paperRgb } = getColorsRgb(attr));
-      } else {
-        inkRgb = [0, 0, 0];
-        paperRgb = [255, 255, 255];
-      }
+      const colors = showAttributes ? getColorsRgb(attr) : NO_ATTRS_COLORS;
 
       const x = col * 8;
       for (let bit = 0; bit < 8; bit++) {
@@ -1906,7 +1940,7 @@ function renderMltScreen(ctx, borderOffset) {
         const maskIdx = y * SCREEN.WIDTH + px;
         const rgb = isPixelTransparent(maskIdx)
           ? getCheckerboardColor(px, y)
-          : (isBitSet(byte, bit) ? inkRgb : paperRgb);
+          : pixelRgbHidden(isBitSet(byte, bit), colors, px, y);
         const pixelIndex = maskIdx * 4;
         data[pixelIndex] = rgb[0];
         data[pixelIndex + 1] = rgb[1];
@@ -1994,7 +2028,7 @@ function renderRgb3Screen(ctx, borderOffset) {
           const colorIdx = (isBitSet(redByte, bit) ? 2 : 0) |
                            (isBitSet(greenByte, bit) ? 4 : 0) |
                            (isBitSet(blueByte, bit) ? 1 : 0);
-          const c = rgb3Lut[colorIdx];
+          const c = isColorHidden('rgb3', colorIdx) ? getCheckerboardColor(px, y) : rgb3Lut[colorIdx];
           data[pixelIndex] = c[0];
           data[pixelIndex + 1] = c[1];
           data[pixelIndex + 2] = c[2];
@@ -2190,7 +2224,7 @@ function renderPictureRgb3(ctx, borderOffset, pic) {
             const colorIdx = ((redByte & mask) ? 2 : 0) |
                              ((greenByte & mask) ? 4 : 0) |
                              ((blueByte & mask) ? 1 : 0);
-            const c = rgb3Lut[colorIdx];
+            const c = isColorHidden('rgb3', colorIdx) ? getCheckerboardColor(px, y) : rgb3Lut[colorIdx];
             data[pixelIndex] = c[0];
             data[pixelIndex + 1] = c[1];
             data[pixelIndex + 2] = c[2];
@@ -2303,14 +2337,13 @@ function renderGigascreenFrame(ctx, borderOffset, frameIndex) {
     for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
       const bitmapByte = screenData[frameOffset + bitmapOffset + col];
       const attr = screenData[frameOffset + SCREEN.BITMAP_SIZE + attrRowOffset + col];
-      const { inkRgb, paperRgb } = getColorsRgb(attr);
+      const colors = getColorsRgb(attr);
 
       const x = col * 8;
       for (let bit = 0; bit < 8; bit++) {
         const px = x + bit;
         const pixelIndex = (y * SCREEN.WIDTH + px) * 4;
-        const isInk = isBitSet(bitmapByte, bit);
-        const rgb = isInk ? inkRgb : paperRgb;
+        const rgb = pixelRgbHidden(isBitSet(bitmapByte, bit), colors, px, y);
 
         data[pixelIndex] = rgb[0];
         data[pixelIndex + 1] = rgb[1];
@@ -2340,6 +2373,11 @@ function renderGigascreenAverage(ctx, borderOffset) {
   const data = imageData.data;
   const darkMul = gigascreenMode === GIGASCREEN_MODE.BLEND_DARK ? CRT_DARK_FACTOR : 1;
 
+  // Hiding in blend mode keys on the Gigascreen virtual palette entry (the
+  // blended frame1/frame2 pair), which is what the palette UI shows.
+  const gigaHiding = colorHidingActive && HIDDEN_COLORS.giga.size > 0 &&
+                     typeof gigascreenVirtualIndex === 'function';
+
   for (let y = 0; y < SCREEN.HEIGHT; y++) {
     const third = Math.floor(y / 64);
     const charRow = Math.floor((y % 64) / 8);
@@ -2361,15 +2399,34 @@ function renderGigascreenAverage(ctx, borderOffset) {
       const colors2 = getColorsRgb(attr2);
       if (savedPal) ulaPlusPalette = savedPal;
 
+      // Base color indices (0-15, bright = +8) for virtual palette lookup
+      let ink1 = 0, paper1 = 0, ink2 = 0, paper2 = 0;
+      if (gigaHiding) {
+        ink1 = gigaBaseColorIndex(attr1, true);  paper1 = gigaBaseColorIndex(attr1, false);
+        ink2 = gigaBaseColorIndex(attr2, true);  paper2 = gigaBaseColorIndex(attr2, false);
+      }
+
       const x = col * 8;
       for (let bit = 0; bit < 8; bit++) {
         const px = x + bit;
         const pixelIndex = (y * SCREEN.WIDTH + px) * 4;
 
         const isInk1 = isBitSet(bitmap1, bit);
-        const rgb1 = isInk1 ? colors1.inkRgb : colors1.paperRgb;
-
         const isInk2 = isBitSet(bitmap2, bit);
+
+        if (gigaHiding) {
+          const vi = gigascreenVirtualIndex(isInk1 ? ink1 : paper1, isInk2 ? ink2 : paper2);
+          if (vi >= 0 && HIDDEN_COLORS.giga.has(vi)) {
+            const chk = getCheckerboardColor(px, y);
+            data[pixelIndex] = chk[0];
+            data[pixelIndex + 1] = chk[1];
+            data[pixelIndex + 2] = chk[2];
+            data[pixelIndex + 3] = 255;
+            continue;
+          }
+        }
+
+        const rgb1 = isInk1 ? colors1.inkRgb : colors1.paperRgb;
         const rgb2 = isInk2 ? colors2.inkRgb : colors2.paperRgb;
 
         data[pixelIndex] = Math.round((rgb1[0] + rgb2[0]) / 2 * darkMul);
@@ -2465,6 +2522,10 @@ function renderStlAverage(ctx, borderOffset) {
       const rightG = Math.round((colors1.inkRgb[1] + colors2.inkRgb[1]) / 2 * darkMul);
       const rightB = Math.round((colors1.inkRgb[2] + colors2.inkRgb[2]) / 2 * darkMul);
 
+      // Each fat-pixel half is one Gigascreen virtual color (a blended pair)
+      const leftHidden = isGigaPairHidden(gigaBaseColorIndex(attr1, false), gigaBaseColorIndex(attr2, false));
+      const rightHidden = isGigaPairHidden(gigaBaseColorIndex(attr1, true), gigaBaseColorIndex(attr2, true));
+
       const baseX = col * 8;
       const baseY = row * STL.CELL_HEIGHT;
 
@@ -2474,17 +2535,19 @@ function renderStlAverage(ctx, borderOffset) {
         // Left 4 pixels (paper)
         for (let px = 0; px < 4; px++) {
           const pixelIndex = (y * SCREEN.WIDTH + baseX + px) * 4;
-          data[pixelIndex] = leftR;
-          data[pixelIndex + 1] = leftG;
-          data[pixelIndex + 2] = leftB;
+          const chk = leftHidden ? getCheckerboardColor(baseX + px, y) : null;
+          data[pixelIndex] = chk ? chk[0] : leftR;
+          data[pixelIndex + 1] = chk ? chk[1] : leftG;
+          data[pixelIndex + 2] = chk ? chk[2] : leftB;
           data[pixelIndex + 3] = 255;
         }
         // Right 4 pixels (ink)
         for (let px = 4; px < 8; px++) {
           const pixelIndex = (y * SCREEN.WIDTH + baseX + px) * 4;
-          data[pixelIndex] = rightR;
-          data[pixelIndex + 1] = rightG;
-          data[pixelIndex + 2] = rightB;
+          const chk = rightHidden ? getCheckerboardColor(baseX + px, y) : null;
+          data[pixelIndex] = chk ? chk[0] : rightR;
+          data[pixelIndex + 1] = chk ? chk[1] : rightG;
+          data[pixelIndex + 2] = chk ? chk[2] : rightB;
           data[pixelIndex + 3] = 255;
         }
       }
@@ -2515,7 +2578,7 @@ function renderStlFrame(ctx, borderOffset, frameIndex) {
     for (let col = 0; col < STL.COLS; col++) {
       const attrIdx = row * STL.COLS + col;
       const attr = frame[attrIdx];
-      const { inkRgb, paperRgb } = getColorsRgb(attr);
+      const colors = getColorsRgb(attr);
 
       const baseX = col * 8;
       const baseY = row * STL.CELL_HEIGHT;
@@ -2525,17 +2588,19 @@ function renderStlFrame(ctx, borderOffset, frameIndex) {
         // Left 4 pixels (paper)
         for (let px = 0; px < 4; px++) {
           const pixelIndex = (y * SCREEN.WIDTH + baseX + px) * 4;
-          data[pixelIndex] = paperRgb[0];
-          data[pixelIndex + 1] = paperRgb[1];
-          data[pixelIndex + 2] = paperRgb[2];
+          const rgb = pixelRgbHidden(false, colors, baseX + px, y);
+          data[pixelIndex] = rgb[0];
+          data[pixelIndex + 1] = rgb[1];
+          data[pixelIndex + 2] = rgb[2];
           data[pixelIndex + 3] = 255;
         }
         // Right 4 pixels (ink)
         for (let px = 4; px < 8; px++) {
           const pixelIndex = (y * SCREEN.WIDTH + baseX + px) * 4;
-          data[pixelIndex] = inkRgb[0];
-          data[pixelIndex + 1] = inkRgb[1];
-          data[pixelIndex + 2] = inkRgb[2];
+          const rgb = pixelRgbHidden(true, colors, baseX + px, y);
+          data[pixelIndex] = rgb[0];
+          data[pixelIndex + 1] = rgb[1];
+          data[pixelIndex + 2] = rgb[2];
           data[pixelIndex + 3] = 255;
         }
       }
@@ -2589,13 +2654,13 @@ function renderPictureGigascreen(ctx, borderOffset, pic) {
       for (let col = 0; col < cols; col++) {
         const byte = bitmap[y * cols + col];
         const attr = attrs[attrRow * cols + col];
-        const { inkRgb, paperRgb } = getColorsRgb(attr);
+        const colors = getColorsRgb(attr);
 
         const x = col * 8;
         for (let bit = 0; bit < 8; bit++) {
           const px = x + bit;
           const pixelIndex = (y * width + px) * 4;
-          const rgb = (byte & (0x80 >> bit)) ? inkRgb : paperRgb;
+          const rgb = pixelRgbHidden((byte & (0x80 >> bit)) !== 0, colors, px, y);
           data[pixelIndex] = rgb[0];
           data[pixelIndex + 1] = rgb[1];
           data[pixelIndex + 2] = rgb[2];
@@ -2613,25 +2678,54 @@ function renderPictureGigascreen(ctx, borderOffset, pic) {
     const bm2 = pic.planes[1].bitmap;
     const at2 = pic.planes[1].attrs;
 
+    // Hiding in blend mode keys on the Gigascreen virtual palette entry (the
+    // blended frame1/frame2 pair), which is what the palette UI shows.
+    const gigaHiding = colorHidingActive && HIDDEN_COLORS.giga.size > 0 &&
+                       typeof gigascreenVirtualIndex === 'function';
+
     for (let y = 0; y < height; y++) {
       const attrRow = attrCellH > 0 ? Math.floor(y / attrCellH) : (y >> 3);
       for (let col = 0; col < cols; col++) {
         const byte1 = bm1[y * cols + col];
         const byte2 = bm2[y * cols + col];
-        const colors1 = getColorsRgb(at1[attrRow * cols + col]);
+        const a1 = at1[attrRow * cols + col];
+        const a2 = at2[attrRow * cols + col];
+        const colors1 = getColorsRgb(a1);
         // Dual-palette GAP: swap to palette 2 for frame 2 colors
         const savedPal = ulaPlusPalette2 ? ulaPlusPalette : null;
         if (ulaPlusPalette2) ulaPlusPalette = ulaPlusPalette2;
-        const colors2 = getColorsRgb(at2[attrRow * cols + col]);
+        const colors2 = getColorsRgb(a2);
         if (savedPal) ulaPlusPalette = savedPal;
+
+        // Base color indices (0-15, bright = +8) for virtual palette lookup
+        let ink1 = 0, paper1 = 0, ink2 = 0, paper2 = 0;
+        if (gigaHiding) {
+          ink1 = gigaBaseColorIndex(a1, true);   paper1 = gigaBaseColorIndex(a1, false);
+          ink2 = gigaBaseColorIndex(a2, true);   paper2 = gigaBaseColorIndex(a2, false);
+        }
 
         const x = col * 8;
         for (let bit = 0; bit < 8; bit++) {
           const px = x + bit;
           const pixelIndex = (y * width + px) * 4;
           const mask = 0x80 >> bit;
-          const rgb1 = (byte1 & mask) ? colors1.inkRgb : colors1.paperRgb;
-          const rgb2 = (byte2 & mask) ? colors2.inkRgb : colors2.paperRgb;
+          const bit1 = (byte1 & mask) !== 0;
+          const bit2 = (byte2 & mask) !== 0;
+
+          if (gigaHiding) {
+            const vi = gigascreenVirtualIndex(bit1 ? ink1 : paper1, bit2 ? ink2 : paper2);
+            if (vi >= 0 && HIDDEN_COLORS.giga.has(vi)) {
+              const chk = getCheckerboardColor(px, y);
+              data[pixelIndex] = chk[0];
+              data[pixelIndex + 1] = chk[1];
+              data[pixelIndex + 2] = chk[2];
+              data[pixelIndex + 3] = 255;
+              continue;
+            }
+          }
+
+          const rgb1 = bit1 ? colors1.inkRgb : colors1.paperRgb;
+          const rgb2 = bit2 ? colors2.inkRgb : colors2.paperRgb;
 
           data[pixelIndex] = Math.round((rgb1[0] + rgb2[0]) / 2 * darkMul);
           data[pixelIndex + 1] = Math.round((rgb1[1] + rgb2[1]) / 2 * darkMul);
@@ -2761,6 +2855,8 @@ function renderMonoScreen(ctx, borderOffset, thirds) {
 
   const inkRgb = parseColorToRgb(ink);
   const paperRgb = parseColorToRgb(paper);
+  const inkHidden = editorActive && isColorHidden('zx', editorInkColor);
+  const paperHidden = editorActive && isColorHidden('zx', editorPaperColor);
 
   const width = SCREEN.WIDTH;
   const height = thirds * 64;
@@ -2800,10 +2896,17 @@ function renderMonoScreen(ctx, borderOffset, thirds) {
             data[pixelIndex + 2] = checker[2];
           } else {
             const isSet = isBitSet(byte, bit);
-            const rgb = isSet ? inkRgb : paperRgb;
-            data[pixelIndex] = rgb.r;
-            data[pixelIndex + 1] = rgb.g;
-            data[pixelIndex + 2] = rgb.b;
+            if (isSet ? inkHidden : paperHidden) {
+              const chk = getCheckerboardColor(px, screenY);
+              data[pixelIndex] = chk[0];
+              data[pixelIndex + 1] = chk[1];
+              data[pixelIndex + 2] = chk[2];
+            } else {
+              const rgb = isSet ? inkRgb : paperRgb;
+              data[pixelIndex] = rgb.r;
+              data[pixelIndex + 1] = rgb.g;
+              data[pixelIndex + 2] = rgb.b;
+            }
           }
           data[pixelIndex + 3] = 255;
         }
@@ -3249,7 +3352,7 @@ function renderBmc4Screen(ctx) {
 
 /**
  * Creates the border-rendering helpers shared by BMC4 and BSC renderers.
- * Both formats use identical per-byte segment painting (24 px per color),
+ * Both formats use identical per-byte segment painting (8 px per color),
  * optional clipping to the border region (outside the 256×192 main bitmap)
  * and a checkerboard pattern for transparent cells when a layer mask is active.
  * @param {CanvasRenderingContext2D} ctx
@@ -3404,13 +3507,7 @@ function renderBmc4MainScreen(ctx, offsetX, offsetY) {
     for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
       const byte = screenData[bitmapBase + col];
       const attr = screenData[attrBase + col];
-      let inkRgb, paperRgb;
-      if (showAttributes) {
-        ({ inkRgb, paperRgb } = getColorsRgb(attr));
-      } else {
-        inkRgb = [0, 0, 0];
-        paperRgb = [255, 255, 255];
-      }
+      const colors = showAttributes ? getColorsRgb(attr) : NO_ATTRS_COLORS;
 
       const x = col * 8;
       for (let bit = 0; bit < 8; bit++) {
@@ -3418,7 +3515,7 @@ function renderBmc4MainScreen(ctx, offsetX, offsetY) {
         const maskIdx = y * SCREEN.WIDTH + px;
         const rgb = isPixelTransparent(maskIdx)
           ? getCheckerboardColor(px, y)
-          : (isBitSet(byte, bit) ? inkRgb : paperRgb);
+          : pixelRgbHidden(isBitSet(byte, bit), colors, px, y);
         const pixelIndex = maskIdx * 4;
         data[pixelIndex] = rgb[0];
         data[pixelIndex + 1] = rgb[1];
@@ -3455,9 +3552,9 @@ function getBscColors(byte) {
 /**
  * Renders BSC format screen with per-line border colors
  * BSC = standard SCR (6912 bytes) + border data (4224 bytes)
- * Border data: 176 lines × 24 bytes per line
- * Each byte: bits 2-0 = first color (8px), bits 5-3 = second color (8px)
- * So each byte covers 16 pixels, 24 bytes = 384 pixels per line
+ * Border data: 64 lines × 24 bytes (top) + 192 lines × 8 bytes (sides) + 48 lines × 24 bytes (bottom)
+ * Each byte: bits 2-0 = left color (8px), bits 5-3 = right color (8px), bits 7-6 unused
+ * So each byte covers 16 pixels, 24 bytes = 384 pixels per full-width line
  *
  * @param {CanvasRenderingContext2D} ctx - Canvas context
  */
@@ -3536,13 +3633,7 @@ function renderBscMainScreen(ctx, offsetX, offsetY) {
 
           const attrOffset = attrAddr + col + row * 32;
           const attr = screenData[attrOffset];
-          let inkRgb, paperRgb;
-          if (showAttributes) {
-            ({ inkRgb, paperRgb } = getColorsRgb(attr));
-          } else {
-            inkRgb = [0, 0, 0];
-            paperRgb = [255, 255, 255];
-          }
+          const colors = showAttributes ? getColorsRgb(attr) : NO_ATTRS_COLORS;
 
           const x = col * 8;
           const y = yOffset + row * 8 + line;
@@ -3551,7 +3642,7 @@ function renderBscMainScreen(ctx, offsetX, offsetY) {
             const maskIdx = y * SCREEN.WIDTH + px;
             const rgb = isPixelTransparent(maskIdx)
               ? getCheckerboardColor(px, y)
-              : (isBitSet(byte, bit) ? inkRgb : paperRgb);
+              : pixelRgbHidden(isBitSet(byte, bit), colors, px, y);
             const pixelIndex = maskIdx * 4;
             data[pixelIndex] = rgb[0];
             data[pixelIndex + 1] = rgb[1];
@@ -3678,12 +3769,12 @@ function renderBspGigaBorder(ctx) {
       for (let col = 0; col < cols; col++) {
         const byte = bitmap[y * cols + col];
         const attr = attrs[attrRow * cols + col];
-        const { inkRgb, paperRgb } = getColorsRgb(attr);
+        const colors = getColorsRgb(attr);
         const x = col * 8;
         for (let bit = 0; bit < 8; bit++) {
           const px = x + bit;
           const pixelIndex = (y * width + px) * 4;
-          const rgb = (byte & (0x80 >> bit)) ? inkRgb : paperRgb;
+          const rgb = pixelRgbHidden((byte & (0x80 >> bit)) !== 0, colors, px, y);
           idata[pixelIndex] = rgb[0];
           idata[pixelIndex + 1] = rgb[1];
           idata[pixelIndex + 2] = rgb[2];
@@ -4052,13 +4143,8 @@ function renderScaFrame(ctx, borderOffset, frameIndex) {
       for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
         const attrOffset = frameOffset + col + row * 32;
         const attr = screenData[attrOffset];
-        let inkRgb, paperRgb;
-        if (showAttributes) {
-          ({ inkRgb, paperRgb } = getColorsRgb(attr));
-        } else {
-          inkRgb = [0, 0, 0];
-          paperRgb = [255, 255, 255];
-        }
+        const colors = showAttributes ? getColorsRgb(attr) : NO_ATTRS_COLORS;
+        const inkRgb = colors.inkRgb, paperRgb = colors.paperRgb;
 
         // Draw 8x8 cell using fill pattern
         const cellX = col * 8;
@@ -4118,13 +4204,8 @@ function renderScaFrame(ctx, borderOffset, frameIndex) {
 
             const attrOffset = frameOffset + attrAddr + col + row * 32;
             const attr = screenData[attrOffset];
-            let inkRgb, paperRgb;
-            if (showAttributes) {
-              ({ inkRgb, paperRgb } = getColorsRgb(attr));
-            } else {
-              inkRgb = [0, 0, 0];
-              paperRgb = [255, 255, 255];
-            }
+            const colors = showAttributes ? getColorsRgb(attr) : NO_ATTRS_COLORS;
+            const inkRgb = colors.inkRgb, paperRgb = colors.paperRgb;
 
             const x = col * 8;
             const y = yOffset + row * 8 + line;
@@ -4243,13 +4324,8 @@ function renderScaType2Frame(data, frameOffset, header, frameIndex) {
       const row = startRow + r;
       for (let col = 0; col < SCREEN.CHAR_COLS; col++) {
         const attr = screenData[attrOffset + col + r * 32];
-        let inkRgb, paperRgb;
-        if (showAttributes) {
-          ({ inkRgb, paperRgb } = getColorsRgb(attr));
-        } else {
-          inkRgb = [0, 0, 0];
-          paperRgb = [255, 255, 255];
-        }
+        const colors = showAttributes ? getColorsRgb(attr) : NO_ATTRS_COLORS;
+        const inkRgb = colors.inkRgb, paperRgb = colors.paperRgb;
 
         const cellX = col * 8;
         const cellY = row * 8;
@@ -5464,6 +5540,24 @@ async function handleZipFile(file) {
  * Renders the full ZX Spectrum screen
  */
 function renderScreen() {
+  // Hidden colors apply to the main editing canvas only. Gating here (rather
+  // than globally) keeps the preview panel, attr preview, sprite thumbnails and
+  // SCA filmstrip showing the true image, and keeps PNG/GIF export complete —
+  // renderToExportCanvas() sets colorHidingSuppressed while it borrows this path.
+  const prevHiding = colorHidingActive;
+  colorHidingActive = !colorHidingSuppressed;
+  try {
+    renderScreenInner();
+  } finally {
+    colorHidingActive = prevHiding;
+  }
+}
+
+/**
+ * Paints the main canvas. Call renderScreen() instead — it installs the
+ * hidden-color gate around this.
+ */
+function renderScreenInner() {
   const ctx = screenCanvasCtx || (screenCanvas && screenCanvas.getContext('2d'));
   if (!ctx) return;
 
@@ -8579,6 +8673,9 @@ function renderNxiScreen(ctx, borderOffset) {
   const pixels32 = new Uint32Array(imageData.data.buffer);
   const pixelOffset = getNxiPixelOffset();
 
+  // Hidden palette entries render as the transparency checkerboard
+  const hidden = buildHiddenIndexFlags('nxi', nxiPalette32.length);
+
   if (nxiLayer2Mode === '640x256') {
     // 4bpp column-major: 2 pixels per byte, address = (x/2)*256 + y
     const pal32 = nxiPalette32;
@@ -8587,8 +8684,9 @@ function renderNxiScreen(ctx, borderOffset) {
       for (let y = 0; y < 256; y++) {
         const byteVal = screenData[pixelOffset + col + y] || 0;
         const row = y * 640 + x;
-        pixels32[row] = pal32[(byteVal >> 4) & 0x0F];
-        pixels32[row + 1] = pal32[byteVal & 0x0F];
+        const hi = (byteVal >> 4) & 0x0F, lo = byteVal & 0x0F;
+        pixels32[row] = (hidden && hidden[hi]) ? checkerColor32(x, y) : pal32[hi];
+        pixels32[row + 1] = (hidden && hidden[lo]) ? checkerColor32(x + 1, y) : pal32[lo];
       }
     }
   } else if (nxiLayer2Mode === '320x256') {
@@ -8597,7 +8695,8 @@ function renderNxiScreen(ctx, borderOffset) {
     for (let x = 0; x < 320; x++) {
       const col = x * 256;
       for (let y = 0; y < 256; y++) {
-        pixels32[y * 320 + x] = pal32[screenData[pixelOffset + col + y] || 0];
+        const idx = screenData[pixelOffset + col + y] || 0;
+        pixels32[y * 320 + x] = (hidden && hidden[idx]) ? checkerColor32(x, y) : pal32[idx];
       }
     }
   } else {
@@ -8607,7 +8706,8 @@ function renderNxiScreen(ctx, borderOffset) {
       const rowBase = pixelOffset + y * 256;
       const dstBase = y * 256;
       for (let x = 0; x < 256; x++) {
-        pixels32[dstBase + x] = pal32[screenData[rowBase + x] || 0];
+        const idx = screenData[rowBase + x] || 0;
+        pixels32[dstBase + x] = (hidden && hidden[idx]) ? checkerColor32(x, y) : pal32[idx];
       }
     }
   }
@@ -8633,10 +8733,12 @@ function renderLoresScreen(ctx, borderOffset) {
   const imageData = ctx.createImageData(W, H);
   const pixels = imageData.data;
 
+  const hidden = buildHiddenIndexFlags('nxi', nxiResolvedPalette.length);
+
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const colorIdx = screenData[y * W + x] || 0;
-      const rgb = nxiResolvedPalette[colorIdx];
+      const rgb = (hidden && hidden[colorIdx]) ? getCheckerboardColor(x, y) : nxiResolvedPalette[colorIdx];
       const dst = (y * W + x) * 4;
       pixels[dst] = rgb[0];
       pixels[dst + 1] = rgb[1];
@@ -8665,13 +8767,16 @@ function renderLoresRadScreen(ctx, borderOffset) {
   const W = LORES_RAD.WIDTH, H = LORES_RAD.HEIGHT;
   const imageData = ctx.createImageData(W, H);
   const pixels = imageData.data;
+  const hidden = buildHiddenIndexFlags('nxi', nxiResolvedPalette.length);
 
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const byteOffset = y * LORES_RAD.BYTES_PER_ROW + (x >> 1);
       const byteVal = screenData[byteOffset] || 0;
       const colorIdx = (x & 1) === 0 ? (byteVal >> 4) & 0x0F : byteVal & 0x0F;
-      const rgb = nxiResolvedPalette[colorIdx] || [0, 0, 0];
+      const rgb = (hidden && hidden[colorIdx])
+        ? getCheckerboardColor(x, y)
+        : (nxiResolvedPalette[colorIdx] || [0, 0, 0]);
       const dst = (y * W + x) * 4;
       pixels[dst] = rgb[0];
       pixels[dst + 1] = rgb[1];

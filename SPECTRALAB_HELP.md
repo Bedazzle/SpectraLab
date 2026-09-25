@@ -4,7 +4,7 @@
 
 **SpectraLab** is a web-based ZX Spectrum graphics editor and viewer. It supports multiple ZX Spectrum graphics formats for viewing, editing, converting, and importing external images with advanced dithering algorithms.
 
-- **Version:** 1.59.3
+- **Version:** 2.43
 - **License:** MIT
 - **Browser:** Any modern browser (Chrome, Firefox, Edge, Safari)
 - **No installation required** — runs entirely in the browser
@@ -338,6 +338,30 @@ Shown when editing 53c/atr attribute-only format. Displays a grid of unique dith
 Shown for RGB3 (.3) tricolor format. 8-color palette with left/right click selection (no separate ink/paper). Palette colors depend on the display mode: Blend shows full-brightness RGB, Blend dark shows realistic perceived colors (1/3 brightness per channel × CRT dark factor), Flicker alternates frames.
 
 ![Palette controls](screenshots/palette_controls.png)
+
+### Hiding Colors
+
+**Alt+click** a palette swatch to hide that color from the editing canvas. Hidden pixels are drawn as the transparency checkerboard, so you can see what lies underneath and keep working on the rest of the picture. Hidden swatches are marked with a diagonal cross, and a bar above the palette counts how many colors are hidden.
+
+- **Alt+click** the swatch again — bring the color back
+- **Show all** (in the bar above the palette) — bring back every hidden color
+
+Hiding is a **view filter only**. The picture data is never changed: the preview panel keeps showing the true image, and saved files, ASM exports and exported PNG/GIF images always contain every color.
+
+Note that Alt+click on the *canvas* is still the eyedropper — only Alt+click on a *palette swatch* hides a color.
+
+What one swatch hides, per palette:
+
+| Palette | Hides |
+| --- | --- |
+| Standard | One ZX color 0-7, in both its normal and BRIGHT form |
+| ULA+ / ULANext | One palette entry |
+| Gigascreen | One virtual color (a blended frame 1 / frame 2 pair) |
+| Next (NXI / SL2 / LoRes / Radastan) | One palette index |
+| RGB3 | One of the 8 tricolor combinations |
+| 53c/127c | The whole attribute cell — a 53c color is the cell's dither blend |
+
+Hidden colors are not remembered between sessions: reloading the page shows every color again. Not currently supported for SPECSCII, BSP gigascreen-with-border, and dual-palette GAP virtual colors.
 
 ---
 
@@ -1158,17 +1182,91 @@ Press **F11** to toggle fullscreen mode from any tab — viewer or editor.
 
 The floating palette includes all drawing tools, selection/clipboard tools, color palette, and Bright toggle. It is only shown when fullscreen is entered from the Edit tab.
 
+The preview panel follows the same rule by default, so it is hidden in viewer fullscreen. **Settings → Preview in fullscreen** can force it always on or always off — see section 24.
+
 ---
 
-## 24. Keyboard Shortcuts Reference
+## 24. Settings — Mouse & Keyboard
+
+Open with the **gear** button next to **?** at the bottom of the left sidebar. Every choice is saved immediately and persists across sessions; **Reset defaults** restores them all.
+
+### Canvas navigation
+
+| Setting | Default | Options |
+|---------|---------|---------|
+| Wheel | Zoom in / out | Zoom, scroll vertically, scroll horizontally, nothing |
+| Ctrl+Wheel | Scroll horizontally | Zoom, scroll vertically, scroll horizontally, nothing |
+| Shift+Wheel | Scroll vertically | Zoom, scroll vertically, scroll horizontally, nothing |
+| Middle button drag | Pan canvas | Pan canvas, nothing |
+
+Wheel bindings apply over the canvas only — the left sidebar and dialogs keep normal browser scrolling.
+
+### Editing
+
+| Setting | Default | Options |
+|---------|---------|---------|
+| Alt + Left click | Pick colors (eyedropper) | Pick colors, recolor cell, nothing |
+| Alt + Right click | Recolor cell with current colors | Recolor cell, pick paper, nothing |
+
+Alt bindings are ignored by Rectangle, Circle and Gradient, which use Alt for "draw from center". On the BSC/BMC4 border, "recolor" paints the cell with the current ink, since a border cell holds a single color.
+
+### Arrow keys and the pixel cursor
+
+**Arrow keys** — *Scroll the canvas* (default) or *Move a pixel cursor*.
+
+With the pixel cursor:
+
+- **Arrows** move one pixel, **Shift+arrow** moves 8 pixels (one character cell)
+- **Space** applies the current tool at the cursor; **Shift+Space** acts as a right click
+- The cursor follows the mouse, so arrows always carry on from the last place you drew
+- Key presses ignore the **Snap** setting — the cursor is already the exact pixel you aimed at
+- The canvas scrolls automatically to keep the cursor visible
+- SCA animations keep the arrows for frame stepping
+
+**Pixel cursor shape** — *Corner marks* (default), *Corner dots* (smallest, fixed size at any zoom) or *Full box*. Corner shapes leave the middle of each edge open so they cover less of what you are drawing.
+
+### Fullscreen
+
+**Preview in fullscreen** — *Only when editing* (default), *Always show* or *Always hide*. See section 23.
+
+---
+
+## 25. Combine Pictures
+
+Joins several open pictures into one larger **chr$** image. Character cells are copied byte for byte, so nothing is re-dithered, re-quantized or re-paletted — the result is identical to its sources.
+
+Open it two ways:
+
+- Select **two or more `.scr` files** in a single Open, or drop them together — SpectraLab asks whether to *Open separately* or *Combine…*
+- **Tools tab → Pictures → Combine…** for pictures that are already open
+
+### Dialog
+
+- **Source list** — a checkbox per open picture. **▲▼** reorder; list order is the layout order, filling left to right then top to bottom
+- **Pictures per row** — `1` stacks them vertically, the number of pictures puts them all in one row. Left alone it picks a roughly square grid
+- **Fill empty cells** — ink and paper for cells no picture covers. Uncovered cells appear as a checkerboard in the preview and are counted in the output line
+- **Close source pictures** — on by default, leaving only the combined result open
+- **Output** — the resulting chr$ size in pixels and bytes
+
+### Limits
+
+Only plain `.scr` can be combined. Any other open picture is listed with the reason it is refused — `not a plain .scr (bsc)`, `has a ULA+ palette`, `4-line attributes` — and must be converted first.
+
+This is not arbitrary: chr$ stores one attribute byte per 8×8 cell and has no palette section, so formats with finer attributes (`.ifl` 8×2, `.bmc4` 8×4, `.mlt` 8×1) and ULA+ pictures cannot be joined without losing information. chr$ also caps at 255×255 cells (2040×2040 pixels), since its header stores each dimension in a single byte.
+
+---
+
+## 26. Keyboard Shortcuts Reference
 
 ### Viewer
 
 | Key | Action |
 |-----|--------|
 | 1-5 | Set zoom level |
-| Ctrl+Wheel | Zoom in/out |
-| Arrows | Pan canvas when zoomed |
+| Wheel | Zoom in/out (configurable — see section 24) |
+| Ctrl+Wheel | Scroll horizontally (configurable) |
+| Shift+Wheel | Scroll vertically (configurable) |
+| Arrows | Pan canvas when zoomed (configurable) |
 | F | Toggle flash animation |
 | G | Cycle grid size (None/8/16/24px) |
 | ~ | Toggle preview panel |
@@ -1203,7 +1301,11 @@ The floating palette includes all drawing tools, selection/clipboard tools, colo
 |-----|--------|
 | Left click | Draw with ink |
 | Right click | Draw with paper (erase) |
-| Alt+click | Eyedropper (pick ink+paper from cell) |
+| Alt+click | Eyedropper (pick ink+paper from cell) — configurable, see section 24 |
+| Alt+right click | Recolor cell with current colors — configurable |
+| Arrows | Move the pixel cursor, when enabled in Settings |
+| Shift+arrow | Move the pixel cursor 8 pixels |
+| Space | Apply the current tool at the pixel cursor |
 | B | Toggle bright |
 | F | Toggle flash attribute |
 | X | Swap ink/paper colors |
@@ -1248,13 +1350,14 @@ The floating palette includes all drawing tools, selection/clipboard tools, colo
 | Action | Effect |
 |--------|--------|
 | Drag | Pan canvas (when zoomed, in viewer mode) |
+| Middle button drag | Pan canvas (configurable — see section 24) |
 | Drop file | Load image |
 
 > **Note:** Keyboard shortcuts work with any keyboard layout (Russian, German, etc.) — they are based on physical key position.
 
 ---
 
-## 25. Font Editor
+## 27. Font Editor
 
 The Font Editor is a standalone page (`font_editor.html`) for creating and editing ZX Spectrum bitmap fonts. Supports fixed-width 8×8 fonts and FZX proportional fonts. Open it via the **Font** link in the bottom bar of the View tab, or navigate directly to `font_editor.html`.
 
@@ -1419,7 +1522,7 @@ When loading a 2048-byte font file, a modal dialog shows side-by-side previews o
 
 ---
 
-## 26. ZGS Editor
+## 28. ZGS Editor
 
 The ZGS Editor is a standalone page (`zgs_editor.html`) for editing ZGS (ZX Graphics Script) vector scenes used in ZX Spectrum adventure games. ZGS uses a bytecode format with a 128x96 logical coordinate grid rendered to a 256x192 pixel display. Open it via the **ZGS Editor** link in the Tools tab, or navigate directly to `zgs_editor.html`.
 
@@ -1531,7 +1634,7 @@ Drag a `.zgs`, `.zgt`, or `.zgp` file onto the page to open it.
 
 ---
 
-## 27. Plugins — Custom Format Support
+## 29. Plugins — Custom Format Support
 
 SpectraLab supports user-defined plugins that extract and patch pictures from arbitrary binary files (e.g., game snapshots). Plugins are managed in the **Tools** tab → **Plugins** section.
 
@@ -1682,7 +1785,7 @@ Example plugins are provided in the `plugins/` directory:
 
 ---
 
-## 28. Script Editor — Scripting Engine
+## 30. Script Editor — Scripting Engine
 
 The **Script Editor** is a resizable, draggable floating panel that provides an embedded BASIC-style scripting language for automating drawing operations, batch processing, and generative art. Open it from the **Tools** tab → **Script Editor** link. Drag the titlebar to move, drag the bottom-right corner to resize. Panel position and size persist across sessions.
 
@@ -1815,7 +1918,7 @@ Arithmetic: `+`, `-`, `*`, `/`, `%`. Comparison: `=`, `<>`, `!=`, `<`, `>`, `<=`
 
 ---
 
-## 29. Supported Formats Reference
+## 31. Supported Formats Reference
 
 ### Editable Formats
 

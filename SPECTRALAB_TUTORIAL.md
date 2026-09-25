@@ -756,7 +756,63 @@ The Scorpion ZS 256 Turbo computer features two extended graphics modes beyond t
 
 ---
 
-## 17. Saving and Exporting
+## 17. Combining Screens into One Picture
+
+Several `.scr` screens can be joined into one larger **chr$** image — a 512×192 panorama from two screens, a 512×384 sheet from four, and so on. Character cells are copied byte for byte, so nothing is re-dithered or re-colored: the result looks exactly like the originals placed side by side.
+
+### Combining two screens
+
+1. Click the file input and select **two `.scr` files** at once (Ctrl+click or Shift+click in the file dialog). Dragging both onto the window works too
+2. SpectraLab asks what to do with them — click **Combine…**
+3. The Combine dialog opens with both files listed and ticked
+4. Set **Pictures per row**:
+   - `2` — side by side, giving **512×192**
+   - `1` — stacked, giving **256×384**
+5. Check the preview, then click **Combine**
+
+The result opens as a new `combined.ch$` tab and the two source screens are closed, leaving only the joined picture. Press **Ctrl+S** to save it.
+
+### Choosing which screen goes where
+
+The order of the list is the layout order — slots fill left to right, then top to bottom. Use the **▲▼** buttons on a row to move a screen.
+
+With four screens at 2 per row, the list order maps to the grid like this:
+
+```
+list: A B C D        A  B
+                     C  D
+```
+
+Move `C` up twice and you get:
+
+```
+list: C A B D        C  A
+                     B  D
+```
+
+### Combining pictures that are already open
+
+If the screens are already open as tabs — because you loaded them one at a time, or just finished editing one — use **Tools tab → Pictures → Combine…** instead. It is the same dialog, listing everything currently open.
+
+Untick a picture to leave it out. Untick **Close source pictures** if you want to keep the originals open alongside the result.
+
+### Filling the leftovers
+
+If the number of screens does not fill the grid — five pictures at 2 per row leaves one empty slot — the spare cells are painted with the **Fill empty cells** colors. They show as a checkerboard in the preview and are counted on the output line, so you can see what will be filled before committing.
+
+### When a screen cannot be combined
+
+Only plain `.scr` can be joined. Other open pictures still appear in the list, greyed out with the reason:
+
+- `not a plain .scr (bsc)` — a different format
+- `has a ULA+ palette` — chr$ has nowhere to store a palette
+- `4-line attributes` — chr$ stores one attribute per 8×8 cell only
+
+Convert those first (**Xform** tab → *Convert to…* → SCR), then combine.
+
+---
+
+## 18. Saving and Exporting
 
 ### Save in Native Format
 
@@ -882,7 +938,7 @@ For game developers who need sprite/screen data as Z80 assembly:
 
 ---
 
-## 18. Working with SCA Animations
+## 19. Working with SCA Animations
 
 ### Open an SCA File
 
@@ -933,7 +989,7 @@ The SCA editor opens as a fullscreen overlay. Here you can:
 
 ---
 
-## 19. Using Reference Images
+## 20. Using Reference Images
 
 ### Load a Reference Image
 
@@ -962,7 +1018,7 @@ Click **Clear** to remove the reference image.
 
 ---
 
-## 20. Editing Fonts
+## 21. Editing Fonts
 
 The Font Editor lets you create and modify ZX Spectrum bitmap fonts — both fixed-width 8×8 fonts and FZX proportional fonts. Supports up to 1024 glyphs in a single unified buffer.
 
@@ -1044,7 +1100,7 @@ The Font Editor lets you create and modify ZX Spectrum bitmap fonts — both fix
 
 ---
 
-## 21. ZGS Scene Editor
+## 22. ZGS Scene Editor
 
 The ZGS Editor lets you create and preview ZGS (ZX Graphics Script) vector scenes — a bytecode format used in ZX Spectrum adventure games for compact, resolution-independent graphics.
 
@@ -1195,7 +1251,7 @@ Assembler errors appear in the status bar with line numbers (e.g., "Line 15: Unk
 
 ---
 
-## 22. Working with Plugins
+## 23. Working with Plugins
 
 Plugins let you extract and edit graphics from game snapshots or custom binary files, then save the edits back.
 
@@ -1305,7 +1361,7 @@ JS plugins also receive an `SL` object with SpectraLab's compression utilities: 
 
 ---
 
-## 23. Using Scripts
+## 24. Using Scripts
 
 The **Script Editor** floating panel lets you automate drawing with a BASIC-style language. This walkthrough covers the basics.
 
@@ -1419,7 +1475,7 @@ NEXT
 
 ---
 
-## 24. Tips and Hidden Features
+## 25. Tips and Hidden Features
 
 ### Workspace Save/Load
 Save all your open pictures at once with **Save Workspace** in the Xform tab. Load them back later — preserving layers, sprites, settings, and reference images. Workspace buttons are always available in the Xform tab, even without a loaded picture.

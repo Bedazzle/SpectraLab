@@ -448,6 +448,17 @@ function generateGigascreenVirtualPalette() {
     }
   }
 
+  // Reverse lookup (frame1, frame2) -> virtual index, used by the renderers to
+  // decide whether a blended pixel belongs to a hidden virtual color.
+  gigascreenVirtualIndexMap = new Map();
+  for (let i = 0; i < gigascreenVirtualPalette.length; i++) {
+    const vc = gigascreenVirtualPalette[i];
+    gigascreenVirtualIndexMap.set(vc.frame1Color * 64 + vc.frame2Color, i);
+  }
+  // Dual ULA+ indexes base colors per CLUT (0-31), which the renderers' plain
+  // attribute-derived 0-15 indices can't address — disable the lookup there.
+  gigascreenVirtualIndexUsable = !isDualUlaPlus;
+
   // Clamp selection indices when palette size changes (e.g. 528 → 2080 or back)
   if (gigascreenVirtualInk >= gigascreenVirtualPalette.length) {
     gigascreenVirtualInk = 0;
@@ -455,6 +466,28 @@ function generateGigascreenVirtualPalette() {
   if (gigascreenVirtualPaper >= gigascreenVirtualPalette.length) {
     gigascreenVirtualPaper = gigascreenVirtualPalette.length - 1;
   }
+}
+
+/** @type {Map<number, number>|null} - (frame1*64 + frame2) -> virtual palette index */
+let gigascreenVirtualIndexMap = null;
+
+/** @type {boolean} - False for dual ULA+ palettes, where the mapping doesn't apply */
+let gigascreenVirtualIndexUsable = true;
+
+/**
+ * Maps a blended frame1/frame2 base color pair to its Gigascreen virtual
+ * palette index. The standard palette only stores pairs with c2 >= c1, so a
+ * reversed pair resolves to the same entry.
+ * @param {number} c1 - Frame 1 base color index (0-15, BRIGHT adds 8)
+ * @param {number} c2 - Frame 2 base color index
+ * @returns {number} Virtual palette index, or -1 if unmapped
+ */
+function gigascreenVirtualIndex(c1, c2) {
+  if (!gigascreenVirtualIndexMap || !gigascreenVirtualIndexUsable) return -1;
+  const direct = gigascreenVirtualIndexMap.get(c1 * 64 + c2);
+  if (direct !== undefined) return direct;
+  const swapped = gigascreenVirtualIndexMap.get(c2 * 64 + c1);
+  return swapped !== undefined ? swapped : -1;
 }
 
 // ============================================================================
@@ -729,6 +762,7 @@ function build53cPalette() {
 
     canvas.addEventListener('click', (e) => {
       e.preventDefault();
+      if (handleSwatchAltClick(e, 'attr53c', normalizeAttrForPaint(vc.attr))) return;
       attr53cSelectedIndex = index;
       update53cPaletteSelection();
     });
@@ -741,6 +775,7 @@ function build53cPalette() {
   });
 
   update53cPaletteSelection();
+  updateHiddenColorUI();
 }
 
 /**
@@ -1194,6 +1229,8 @@ function buildNxiPalette() {
     if (i === nxiCopySource) cell.classList.add('copy-source');
     cell.addEventListener('mousedown', (e) => {
       e.preventDefault();
+      // Alt+click = hide/show this color on the canvas
+      if (handleSwatchAltClick(e, 'nxi', i)) return;
       // Ctrl+click = edit color
       if (e.ctrlKey && !e.shiftKey) {
         openNxiColorPicker(i);
@@ -1222,6 +1259,7 @@ function buildNxiPalette() {
     grid.appendChild(cell);
   }
   updateNxiPaletteHighlight();
+  updateHiddenColorUI();
 }
 
 /**
@@ -2229,6 +2267,9 @@ function renderToExportCanvas(gigaFrameIndex, flashPhaseOverride) {
   const savedGigascreenFlickerFrameId = gigascreenFlickerFrameId;
   const savedLastCanvasWidth = lastCanvasWidth;
   const savedLastCanvasHeight = lastCanvasHeight;
+  const savedColorHidingSuppressed = colorHidingSuppressed;
+  // Exported images always contain every color, even ones hidden in the editor
+  colorHidingSuppressed = true;
 
   // Create temp canvas
   const tempCanvas = document.createElement('canvas');
@@ -2275,6 +2316,7 @@ function renderToExportCanvas(gigaFrameIndex, flashPhaseOverride) {
   gigascreenFlickerFrameId = savedGigascreenFlickerFrameId;
   lastCanvasWidth = savedLastCanvasWidth;
   lastCanvasHeight = savedLastCanvasHeight;
+  colorHidingSuppressed = savedColorHidingSuppressed;
 
   return tempCanvas;
 }
@@ -10501,6 +10543,8 @@ function canvasToScreenCoords(canvas, event) {
 function handleEditorMouseDown(event) {
   if (!editorActive) return;
   if (document.getElementById('spriteGrabOverlay')) return;
+  // Middle button is reserved for canvas panning (editor_settings.js)
+  if (event.button === 1) return;
   event.preventDefault();
 
   // Ensure canvas has focus for keyboard shortcuts
@@ -10537,6 +10581,10 @@ function handleEditorMouseDown(event) {
  * @param {{x:number, y:number}} coords
  */
 function _handleEditorMouseDownCoords(event, coords) {
+  // Keep the keyboard cursor with the pointer, so arrow keys carry on from the
+  // last place the mouse touched instead of from a stale position
+  editorKeyCursor = { x: coords.x, y: coords.y };
+
   // Intercept for brush capture (two-click rectangle selection)
   if (capturingBrush) {
     if (!captureStartPoint) {
@@ -10569,14 +10617,24 @@ function _handleEditorMouseDownCoords(event, coords) {
     return;
   }
 
-  // Alt+click: color picker (eyedropper) - picks both ink and paper from cell
-  // Skip for tools that use Alt as modifier (rect, circle, gradient use Alt for "from center")
+  // Alt+click: action configured in Settings (default left = eyedropper,
+  // right = recolor cell). Skip for tools that use Alt as a modifier
+  // (rect, circle, gradient use Alt for "from center").
   const toolUsesAlt = currentTool === EDITOR.TOOL_RECT ||
                       currentTool === EDITOR.TOOL_CIRCLE ||
                       currentTool === EDITOR.TOOL_GRADIENT;
   if (event.altKey && !toolUsesAlt) {
-    const pickInk = event.button !== 2;
-    if (pickColorFromCanvas(coords.x, coords.y, pickInk)) {
+    const altAction = typeof resolveAltClickAction === 'function'
+      ? resolveAltClickAction(event.button)
+      : (event.button === 2 ? 'pickPaper' : 'pickInk');
+    if (altAction === 'none') return;
+    if (altAction === 'recolor') {
+      saveUndoState();
+      recolorCell(coords.x, coords.y);
+      editorRender();
+      return;
+    }
+    if (pickColorFromCanvas(coords.x, coords.y, altAction !== 'pickPaper')) {
       editorRender();
     }
     return;
@@ -10925,6 +10983,7 @@ function handleEditorMouseMove(event) {
  * @param {{x:number, y:number}|null} coords
  */
 function _handleEditorMouseMoveCoords(event, coords) {
+  if (coords) editorKeyCursor = { x: coords.x, y: coords.y };
   if (coords) {
     updateEditorInfo(coords.x, coords.y);
     pasteCursorPos = { x: coords.x, y: coords.y };
@@ -13234,11 +13293,30 @@ function enterFullscreenEditor() {
     if (palette) { palette.classList.remove('active'); palette.style.display = 'none'; }
   }
 
+  applyFullscreenPreviewSetting();
+
   // Re-render with fill zoom
   if (editorActive) {
     editorRender();
   } else {
     renderScreen();
+  }
+}
+
+/**
+ * Applies the "Preview in fullscreen" setting by toggling body classes the
+ * fullscreen CSS keys off. 'auto' leaves the default behaviour in place, where
+ * the preview rides along with the floating tools panel.
+ */
+function applyFullscreenPreviewSetting() {
+  const mode = (typeof getMouseSetting === 'function')
+    ? getMouseSetting('fullscreenPreview') : 'auto';
+  document.body.classList.toggle('fullscreen-preview-show',
+    fullscreenMode && mode === 'show');
+  document.body.classList.toggle('fullscreen-preview-hide',
+    fullscreenMode && mode === 'hide');
+  if (fullscreenMode && mode !== 'hide' && typeof renderPreview === 'function') {
+    renderPreview();
   }
 }
 
@@ -13260,6 +13338,8 @@ function exitFullscreenEditor() {
   fullscreenMode = false;
   document.body.classList.remove('fullscreen-editor');
   document.body.classList.remove('fullscreen-with-tools');
+  document.body.classList.remove('fullscreen-preview-show');
+  document.body.classList.remove('fullscreen-preview-hide');
 
   // Restore saved zoom
   if (fullscreenSavedZoom !== null) {
@@ -13309,6 +13389,7 @@ function updateFloatingPalette() {
       colorsContainer.appendChild(colorBtn);
 
       colorBtn.addEventListener('click', (e) => {
+        if (handleSwatchAltClick(e, 'zx', i)) return;
         editorInkColor = i;
         updateColorPreview();
         updateFloatingPalette();
@@ -13356,6 +13437,8 @@ function updateFloatingPalette() {
   // Update bright checkbox
   const brightCheckbox = /** @type {HTMLInputElement} */ (document.getElementById('floatingBright'));
   if (brightCheckbox) brightCheckbox.checked = editorBright;
+
+  updateHiddenColorUI();
 }
 
 /**
@@ -13461,6 +13544,12 @@ function editorRender(skipPreview = false) {
     // Draw brush preview at cursor position
     if (brushPreviewMode && brushPreviewPos && !isPasting && !isSelecting) {
       drawBrushPreview();
+    }
+
+    // Draw the keyboard cursor when arrow keys are set to move it
+    if (editorKeyCursor && typeof getMouseSetting === 'function' &&
+        getMouseSetting('arrowKeys') === 'cursor') {
+      drawEditorKeyCursor();
     }
 
     // Draw border brush/barcode preview
@@ -15545,6 +15634,104 @@ function setGradientReverse(reverse) {
   if (cb) cb.checked = reverse;
 }
 
+// ============================================================================
+// Hidden Colors — palette swatch UI
+// ============================================================================
+
+/**
+ * Paints a diagonal cross over a canvas-based palette swatch. Canvas elements
+ * are replaced elements and can't carry the CSS pseudo-element cross the <div>
+ * swatches use, so the cross is drawn into the bitmap instead.
+ * @param {HTMLCanvasElement} canvas
+ */
+function drawSwatchCross(canvas) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const w = canvas.width, h = canvas.height;
+  ctx.save();
+  ctx.lineCap = 'round';
+  // Dark outline first, then a light core, so the cross reads on any color
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+  ctx.lineWidth = 3;
+  for (let pass = 0; pass < 2; pass++) {
+    ctx.beginPath();
+    ctx.moveTo(1.5, 1.5); ctx.lineTo(w - 1.5, h - 1.5);
+    ctx.moveTo(w - 1.5, 1.5); ctx.lineTo(1.5, h - 1.5);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+    ctx.lineWidth = 1;
+  }
+  ctx.restore();
+}
+
+/**
+ * Re-applies the hidden marker to every palette swatch and refreshes the
+ * "N colors hidden" bar. Called after any change to the hidden set, and after
+ * each palette rebuild.
+ */
+function updateHiddenColorUI() {
+  /**
+   * @param {NodeListOf<Element>} nodes
+   * @param {string} ns
+   * @param {string} key - dataset key holding the palette index
+   */
+  const mark = (nodes, ns, key) => {
+    nodes.forEach((el) => {
+      const raw = /** @type {HTMLElement} */ (el).dataset[key];
+      if (raw === undefined) return;
+      const idx = parseInt(raw, 10);
+      el.classList.toggle('color-hidden', idx >= 0 && isColorHiddenRaw(/** @type {any} */ (ns), idx));
+    });
+  };
+
+  mark(document.querySelectorAll('#editorPalette .editor-palette-cell'), 'zx', 'color');
+  mark(document.querySelectorAll('#floatingColors .floating-palette-color'), 'zx', 'color');
+  mark(document.querySelectorAll('#rgb3PaletteGrid .editor-palette-cell'), 'rgb3', 'color');
+  mark(document.querySelectorAll('#gigascreenPaletteGrid .gigascreen-palette-cell'), 'giga', 'index');
+  mark(document.querySelectorAll('#gigascreenPaperStripGrid .gigascreen-palette-cell'), 'giga', 'index');
+  mark(document.querySelectorAll('#nxiPaletteGrid .nxi-palette-cell'), 'nxi', 'index');
+  mark(document.querySelectorAll('#ulaPlusGridMode .ulaplus-grid-cell'), 'ulaplus', 'index');
+  mark(document.querySelectorAll('#ulaPlusClassicPalette .ulaplus-classic-cell'), 'ulaplus', 'index');
+
+  // 53c swatches are canvases — redraw them so the cross is part of the bitmap
+  const grid53c = document.getElementById('attr53cPaletteGrid');
+  if (grid53c && attr53cVirtualPalette.length > 0) {
+    const patternArray = getCurrent53cPatternArray();
+    grid53c.querySelectorAll('.attr53c-palette-cell').forEach((el) => {
+      const canvas = /** @type {HTMLCanvasElement} */ (el);
+      const idx = parseInt(canvas.dataset.index || '-1', 10);
+      const vc = attr53cVirtualPalette[idx];
+      if (!vc) return;
+      render53cSwatch(canvas, patternArray, vc.inkRgb, vc.paperRgb);
+      if (isColorHiddenRaw('attr53c', normalizeAttrForPaint(vc.attr))) drawSwatchCross(canvas);
+    });
+  }
+
+  // The bar's base rule is display:none, so it must be given an explicit
+  // display value rather than having the inline style cleared.
+  const bar = document.getElementById('hiddenColorsBar');
+  const countEl = document.getElementById('hiddenColorsCount');
+  if (bar) bar.style.display = hiddenColorCount > 0 ? 'flex' : 'none';
+  if (countEl) countEl.textContent = String(hiddenColorCount);
+}
+
+/**
+ * Handles alt-click on a palette swatch: toggles that color's visibility on the
+ * main canvas. Returns true when the event was consumed, so the caller skips
+ * its normal ink/paper selection.
+ * @param {MouseEvent} e
+ * @param {string} ns - Hidden-color namespace
+ * @param {number} index - Palette index (or attribute byte for 'attr53c')
+ * @returns {boolean}
+ */
+function handleSwatchAltClick(e, ns, index) {
+  if (!e.altKey || index < 0) return false;
+  e.preventDefault();
+  e.stopPropagation();
+  toggleHiddenColor(/** @type {any} */ (ns), index);
+  return true;
+}
+
 function updateColorPreview() {
   // NXI/SL2: update dedicated palette highlight instead of standard palette
   if ((currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 || currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD) && nxiResolvedPalette) {
@@ -15898,9 +16085,10 @@ function buildRgb3Palette() {
     cell.style.background = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
     cell.style.position = 'relative';
 
-    // Left click = set primary (L) drawing color
+    // Left click = set primary (L) drawing color, Alt+click = hide/show
     cell.addEventListener('click', (e) => {
       e.preventDefault();
+      if (handleSwatchAltClick(e, 'rgb3', i)) return;
       editorInkColor = i;
       localStorage.setItem('spectraLabInkColor', String(i));
       updateRgb3PaletteSelection();
@@ -15918,6 +16106,7 @@ function buildRgb3Palette() {
   }
 
   updateRgb3PaletteSelection();
+  updateHiddenColorUI();
 }
 
 /**
@@ -16186,6 +16375,7 @@ function buildGigascreenPalette() {
     cell.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       e.preventDefault();
+      if (handleSwatchAltClick(e, 'giga', index)) return;
       gigascreenVirtualInk = index;
       updateGigascreenColorPickerUI();
     });
@@ -16203,6 +16393,7 @@ function buildGigascreenPalette() {
   });
 
   updateGigascreenPaletteSelection();
+  updateHiddenColorUI();
 }
 
 /**
@@ -16277,6 +16468,7 @@ function buildGigascreenPaperStrip() {
       cell.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
         e.preventDefault();
+        if (handleSwatchAltClick(e, 'giga', vpIndex)) return;
         gigascreenVirtualPaper = vpIndex;
         updateGigascreenColorPickerUI();
       });
@@ -16306,9 +16498,10 @@ function buildPalette() {
     cell.dataset.color = String(i);
     cell.title = COLOR_NAMES[i];
 
-    // Left click = set ink
+    // Left click = set ink, Alt+click = hide/show this color on the canvas
     cell.addEventListener('click', (e) => {
       e.preventDefault();
+      if (handleSwatchAltClick(e, 'zx', i)) return;
       editorInkColor = i;
       localStorage.setItem('spectraLabInkColor', String(i));
       updateColorPreview();
@@ -16347,6 +16540,7 @@ function buildPalette() {
   container.appendChild(transCell);
 
   updateColorPreview();
+  updateHiddenColorUI();
 }
 
 // ============================================================================
@@ -16646,7 +16840,7 @@ function pickUlaPlusColorFromCanvas(x, y) {
  */
 function pickScrColorFromCanvas(x, y) {
   if (!screenData) return false;
-  if (x < 0 || x >= SCREEN.WIDTH || y < 0 || y >= SCREEN.HEIGHT) return false;
+  if (x < 0 || x >= getFormatWidth() || y < 0 || y >= getFormatHeight()) return false;
 
   // Get attribute for this cell
   const attrAddr = getAttributeAddress(x, y);
@@ -16662,20 +16856,36 @@ function pickScrColorFromCanvas(x, y) {
   editorBright = ATTR.bright(attr);
   editorFlash = ATTR.flash(attr);
 
-  // Update checkboxes
-  const brightCheckbox = document.getElementById('brightCheckbox');
-  if (brightCheckbox) {
-    /** @type {HTMLInputElement} */ (brightCheckbox).checked = editorBright;
-  }
-  const flashCheckbox = document.getElementById('editorFlashCheckbox');
-  if (flashCheckbox) {
-    /** @type {HTMLInputElement} */ (flashCheckbox).checked = editorFlash;
-  }
-
-  // Update palette UI
-  updateColorPreview();
+  // Update checkboxes, palette and floating palette
+  updateColorSelectors();
 
   return true;
+}
+
+/**
+ * Returns the gigascreen frame size and the attribute address for a pixel.
+ * Handles both the fixed 256x192 gigascreen family (.img/mg1/mg4/mg8/HLR/STL/GA)
+ * and ZXP/chr$ pictures in gigascreen color mode, whose frame size and attribute
+ * row width follow the picture's own dimensions instead of 6144/32.
+ * @param {number} x - X coordinate in pixels
+ * @param {number} y - Y coordinate in pixels
+ * @returns {{frameSize: number, attrAddr: number}} frame size and in-frame attribute offset
+ */
+function getGigaFrameAttrInfo(x, y) {
+  if ((currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) && currentPicture) {
+    const cols = currentPicture.width >> 3;
+    const bitmapSize = cols * currentPicture.height;
+    const attrCellH = currentPicture.attrCellHeight || 8;
+    const attrSize = cols * Math.ceil(currentPicture.height / attrCellH);
+    return {
+      frameSize: bitmapSize + attrSize,
+      attrAddr: bitmapSize + Math.floor(y / attrCellH) * cols + Math.floor(x / 8)
+    };
+  }
+  return {
+    frameSize: getGigaFrameSize(),
+    attrAddr: 6144 + getGigaAttrRow(y) * 32 + Math.floor(x / 8)
+  };
 }
 
 /**
@@ -16687,25 +16897,18 @@ function pickScrColorFromCanvas(x, y) {
  */
 function pickSplitFrameColorFromCanvas(x, y) {
   if (!screenData) return false;
-  if (x < 0 || x >= SCREEN.WIDTH || y < 0 || y >= SCREEN.HEIGHT) return false;
+  if (x < 0 || x >= getFormatWidth() || y < 0 || y >= getFormatHeight()) return false;
 
-  const frameOffset = gigascreenEditMode === 'screen2' ? getGigaFrameSize() : 0;
-  const charRow = getGigaAttrRow(y);
-  const charCol = Math.floor(x / 8);
-  const attrOffset = charRow * 32 + charCol;
-  const attr = screenData[frameOffset + 6144 + attrOffset];
+  const info = getGigaFrameAttrInfo(x, y);
+  const frameOffset = gigascreenEditMode === 'screen2' ? info.frameSize : 0;
+  const attr = screenData[frameOffset + info.attrAddr];
 
   editorInkColor = ATTR.ink(attr);
   editorPaperColor = ATTR.paper(attr);
   editorBright = ATTR.bright(attr);
   editorFlash = ATTR.flash(attr);
 
-  const brightCheckbox = document.getElementById('brightCheckbox');
-  if (brightCheckbox) /** @type {HTMLInputElement} */ (brightCheckbox).checked = editorBright;
-  const flashCheckbox = document.getElementById('editorFlashCheckbox');
-  if (flashCheckbox) /** @type {HTMLInputElement} */ (flashCheckbox).checked = editorFlash;
-
-  updateColorPreview();
+  updateColorSelectors();
   return true;
 }
 
@@ -16718,15 +16921,13 @@ function pickSplitFrameColorFromCanvas(x, y) {
  * @returns {boolean} true if color was picked
  */
 function pickGigascreenColorFromCanvas(x, y, pickInk) {
-  if (!screenData || screenData.length < getGigaFrameSize() * 2) return false;
-  if (x < 0 || x >= SCREEN.WIDTH || y < 0 || y >= SCREEN.HEIGHT) return false;
+  const info = getGigaFrameAttrInfo(x, y);
+  if (!screenData || screenData.length < info.frameSize * 2) return false;
+  if (x < 0 || x >= getFormatWidth() || y < 0 || y >= getFormatHeight()) return false;
 
   // Get attributes from both frames
-  const charRow = getGigaAttrRow(y);
-  const charCol = Math.floor(x / 8);
-  const attrOffset = charRow * 32 + charCol;
-  const attr1 = screenData[6144 + attrOffset];
-  const attr2 = screenData[getGigaFrameSize() + 6144 + attrOffset];
+  const attr1 = screenData[info.attrAddr];
+  const attr2 = screenData[info.frameSize + info.attrAddr];
 
   // Decode attributes to get ink/paper base color indices.
   // Standard: 0-15 (bright bit adds 8).
@@ -16780,7 +16981,7 @@ function pickGigascreenColorFromCanvas(x, y, pickInk) {
     const bitmapAddr = getBitmapAddress(x, y);
     const bit = getBitPosition(x);
     const pixel1Set = (screenData[bitmapAddr] & (1 << bit)) !== 0;
-    const pixel2Set = (screenData[getGigaFrameSize() + bitmapAddr] & (1 << bit)) !== 0;
+    const pixel2Set = (screenData[info.frameSize + bitmapAddr] & (1 << bit)) !== 0;
 
     // Map to color index: 0=ink+ink, 1=ink+paper, 2=paper+ink, 3=paper+paper
     let colorIdx = 0;
@@ -16918,8 +17119,9 @@ function pickGmxColorFromCanvas(x, y) {
   if (attrAddr >= screenData.length) return false;
   const attr = screenData[attrAddr];
 
-  editorInkColor = ATTR.ink(attr) + (ATTR.bright(attr) ? 8 : 0);
-  editorPaperColor = ATTR.paper(attr) + (ATTR.bright(attr) ? 8 : 0);
+  // Ink/paper stay 0-7; brightness rides on editorBright (the ZX palette has 8 swatches)
+  editorInkColor = ATTR.ink(attr);
+  editorPaperColor = ATTR.paper(attr);
   editorFlash = ATTR.flash(attr);
   editorBright = ATTR.bright(attr);
 
@@ -17589,6 +17791,7 @@ function buildUlaPlusGrid() {
     // Ctrl+click = edit color, Shift+click = copy/swap source selection
     cell.addEventListener('click', (e) => {
       e.preventDefault();
+      if (handleSwatchAltClick(e, 'ulaplus', i)) return;
       if (ulaPlusCopySource >= 0) {
         ulaPlusHandleCopySwapClick(i, e.shiftKey);
         return;
@@ -17646,6 +17849,7 @@ function buildUlaPlusGrid() {
     container.appendChild(cell);
   }
 
+  updateHiddenColorUI();
 }
 
 /**
@@ -17707,6 +17911,7 @@ function buildUlaPlusClassic() {
     // Ctrl+click = edit color, Shift+click = copy/swap source selection
     cell.addEventListener('click', (e) => {
       e.preventDefault();
+      if (handleSwatchAltClick(e, 'ulaplus', paletteIdx)) return;
       if (ulaPlusCopySource >= 0) {
         ulaPlusHandleCopySwapClick(paletteIdx, e.shiftKey);
         return;
@@ -17764,6 +17969,7 @@ function buildUlaPlusClassic() {
     // Left click = edit color (Ctrl+click), Shift+click = copy/swap source selection
     cell.addEventListener('click', (e) => {
       e.preventDefault();
+      if (handleSwatchAltClick(e, 'ulaplus', paletteIdx)) return;
       if (ulaPlusCopySource >= 0) {
         ulaPlusHandleCopySwapClick(paletteIdx, e.shiftKey);
         return;
@@ -17803,6 +18009,8 @@ function buildUlaPlusClassic() {
 
     container.appendChild(cell);
   }
+
+  updateHiddenColorUI();
 }
 
 /**
@@ -20203,18 +20411,28 @@ function fillBorderRect(x0, y0, x1, y1, color) {
  * @param {{type:'border', frameX:number, frameY:number, region:string, byteOffset:number, halfIndex:number}} bscCoords
  */
 function handleBorderMouseDown(event, bscCoords) {
-  // Color picker on border: pick border cell color to ink or paper
-  if (currentTool === EDITOR.TOOL_COLOR_PICKER || (event.altKey && currentTool !== EDITOR.TOOL_RECT)) {
-    const color = getBorderCellColor(bscCoords.frameX, bscCoords.frameY);
-    if (color >= 0) {
-      if (event.button !== 2) {
-        editorInkColor = color;
-      } else {
-        editorPaperColor = color;
-      }
-      updateColorSelectors();
+  // Alt on the border follows the same Settings mapping as the main screen.
+  // A border cell holds a single color, so "recolor" means painting it with the
+  // current ink rather than applying an ink/paper pair.
+  if (event.altKey && currentTool !== EDITOR.TOOL_RECT) {
+    const altAction = typeof resolveAltClickAction === 'function'
+      ? resolveAltClickAction(event.button)
+      : (event.button === 2 ? 'pickPaper' : 'pickInk');
+    if (altAction === 'none') return;
+    if (altAction === 'recolor') {
+      saveUndoState();
+      paintBorderWithBrush(bscCoords.frameX, bscCoords.frameY, editorInkColor);
       editorRender();
+      updateBscEditorInfo(bscCoords);
+      return;
     }
+    pickBorderCellColor(bscCoords, altAction !== 'pickPaper');
+    return;
+  }
+
+  // Color picker tool on border: pick border cell color to ink or paper
+  if (currentTool === EDITOR.TOOL_COLOR_PICKER) {
+    pickBorderCellColor(bscCoords, event.button !== 2);
     return;
   }
 
@@ -20265,6 +20483,23 @@ function handleBorderMouseDown(event, bscCoords) {
   paintBorderWithBrush(bscCoords.frameX, bscCoords.frameY, color);
   editorRender();
   updateBscEditorInfo(bscCoords);
+}
+
+/**
+ * Picks a border cell's color into ink or paper.
+ * @param {{frameX:number, frameY:number}} bscCoords
+ * @param {boolean} isInk - true to set ink, false to set paper
+ */
+function pickBorderCellColor(bscCoords, isInk) {
+  const color = getBorderCellColor(bscCoords.frameX, bscCoords.frameY);
+  if (color < 0) return;
+  if (isInk) {
+    editorInkColor = color;
+  } else {
+    editorPaperColor = color;
+  }
+  updateColorSelectors();
+  editorRender();
 }
 
 /**
@@ -31361,4 +31596,193 @@ if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', initEditor);
 } else {
   setTimeout(initEditor, 100);
+}
+
+// ============================================================================
+// Keyboard cursor (arrow keys = precise positioning)
+// ============================================================================
+// When Settings has arrow keys set to "Move cursor", the arrows drive a pixel
+// cursor on the picture instead of scrolling the canvas. Space or Enter then
+// acts on it exactly as a left click would, by replaying the same mouse-down /
+// mouse-up path a real click takes — so every tool behaves identically.
+
+/** @type {{x:number, y:number}|null} Cursor position in picture pixels. */
+let editorKeyCursor = null;
+
+/**
+ * Places the cursor at the centre of the picture the first time it is used.
+ */
+function ensureEditorKeyCursor() {
+  if (editorKeyCursor) return;
+  editorKeyCursor = {
+    x: Math.floor(getFormatWidth() / 2),
+    y: Math.floor(getFormatHeight() / 2)
+  };
+}
+
+/**
+ * Moves the keyboard cursor, clamped to the picture.
+ * @param {number} dx
+ * @param {number} dy
+ */
+function moveEditorKeyCursor(dx, dy) {
+  ensureEditorKeyCursor();
+  if (!editorKeyCursor) return;
+  const w = getFormatWidth();
+  const h = getFormatHeight();
+  editorKeyCursor.x = Math.max(0, Math.min(w - 1, editorKeyCursor.x + dx));
+  editorKeyCursor.y = Math.max(0, Math.min(h - 1, editorKeyCursor.y + dy));
+  scrollEditorKeyCursorIntoView();
+  editorRender();
+  updateEditorKeyCursorInfo();
+}
+
+/**
+ * Scrolls the canvas container so the cursor stays visible.
+ */
+function scrollEditorKeyCursorIntoView() {
+  const container = document.getElementById('canvasContainer');
+  if (!container || !editorKeyCursor) return;
+  const off = getMainScreenOffset();
+  const zx = zoom * getPixelScaleX();
+  const zy = zoom * getPixelScaleY();
+  const px = off + editorKeyCursor.x * zx;
+  const py = off + editorKeyCursor.y * zy;
+  const margin = 16;
+
+  if (px - margin < container.scrollLeft) {
+    container.scrollLeft = Math.max(0, px - margin);
+  } else if (px + zx + margin > container.scrollLeft + container.clientWidth) {
+    container.scrollLeft = px + zx + margin - container.clientWidth;
+  }
+  if (py - margin < container.scrollTop) {
+    container.scrollTop = Math.max(0, py - margin);
+  } else if (py + zy + margin > container.scrollTop + container.clientHeight) {
+    container.scrollTop = py + zy + margin - container.clientHeight;
+  }
+}
+
+/**
+ * Draws the cursor. Every shape is stroked twice — a thick black pass under a
+ * thin white one — so they read on any colour underneath.
+ */
+function drawEditorKeyCursor() {
+  if (!editorKeyCursor || !screenCanvas) return;
+  const ctx = screenCanvas.getContext('2d');
+  if (!ctx) return;
+
+  const off = getMainScreenOffset();
+  const zx = zoom * getPixelScaleX();
+  const zy = zoom * getPixelScaleY();
+  const x = off + editorKeyCursor.x * zx;
+  const y = off + editorKeyCursor.y * zy;
+  const w = Math.max(2, zx);
+  const h = Math.max(2, zy);
+
+  const style = (typeof getMouseSetting === 'function')
+    ? getMouseSetting('cursorStyle') : 'corners';
+
+  ctx.save();
+  if (style === 'box') {
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = '#000';
+    ctx.strokeRect(x - 1.5, y - 1.5, w + 3, h + 3);
+    ctx.strokeStyle = '#fff';
+    ctx.strokeRect(x - 0.5, y - 0.5, w + 1, h + 1);
+  } else {
+    // 'dots' keeps the arms at a fixed couple of pixels whatever the zoom, so
+    // it stays a hint in the corners; 'corners' grows with the pixel box.
+    const isDots = style === 'dots';
+    const arm = isDots ? 2 : Math.max(3, Math.min(w / 2.5, h / 2.5));
+    traceKeyCursorCorners(ctx, x - 0.5, y - 0.5, w + 1, h + 1, arm);
+    ctx.lineWidth = isDots ? 2 : 3;
+    ctx.strokeStyle = '#000';
+    ctx.stroke();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = '#fff';
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/**
+ * Builds the four corner brackets as one path, leaving the middle of each edge
+ * open so the pixels being drawn stay visible.
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {number} x0 - left edge
+ * @param {number} y0 - top edge
+ * @param {number} w - width
+ * @param {number} h - height
+ * @param {number} arm - length of each bracket arm, in device pixels
+ */
+function traceKeyCursorCorners(ctx, x0, y0, w, h, arm) {
+  const x1 = x0 + w;
+  const y1 = y0 + h;
+  // Never let opposite arms meet and close the shape back into a box
+  const a = Math.min(arm, w / 2.5, h / 2.5);
+
+  ctx.beginPath();
+  // Top-left
+  ctx.moveTo(x0, y0 + a); ctx.lineTo(x0, y0); ctx.lineTo(x0 + a, y0);
+  // Top-right
+  ctx.moveTo(x1 - a, y0); ctx.lineTo(x1, y0); ctx.lineTo(x1, y0 + a);
+  // Bottom-left
+  ctx.moveTo(x0, y1 - a); ctx.lineTo(x0, y1); ctx.lineTo(x0 + a, y1);
+  // Bottom-right
+  ctx.moveTo(x1 - a, y1); ctx.lineTo(x1, y1); ctx.lineTo(x1, y1 - a);
+}
+
+/**
+ * Mirrors the cursor position into the editor info line, the same readout the
+ * mouse drives.
+ */
+function updateEditorKeyCursorInfo() {
+  if (editorKeyCursor) updateEditorInfo(editorKeyCursor.x, editorKeyCursor.y);
+}
+
+/**
+ * Acts on the cursor position as a left click would.
+ * @param {boolean} rightButton - true to act as a right click
+ */
+function pressEditorKeyCursor(rightButton) {
+  ensureEditorKeyCursor();
+  if (!editorKeyCursor || !editorActive) return;
+  const coords = { x: editorKeyCursor.x, y: editorKeyCursor.y };
+  const opts = { button: rightButton ? 2 : 0, buttons: rightButton ? 2 : 1, bubbles: false };
+
+  // The cursor already IS the exact pixel the user aimed at, so snapping it
+  // again would land the dot somewhere else. Cell-based editors (.53c,
+  // SPECSCII) keep their own snapping, which isn't driven by snapMode.
+  const savedSnap = snapMode;
+  snapMode = 'off';
+  try {
+    _handleEditorMouseDownCoords(new MouseEvent('mousedown', opts), coords);
+    _handleEditorMouseUpCoords(new MouseEvent('mouseup', { button: opts.button, buttons: 0 }), coords);
+  } finally {
+    snapMode = savedSnap;
+  }
+  editorRender();
+}
+
+/**
+ * Handles an arrow/action key when arrow keys are set to "Move cursor".
+ * Returns true when the key was consumed.
+ * @param {KeyboardEvent} event
+ * @returns {boolean}
+ */
+function handleEditorKeyCursorKey(event) {
+  if (!editorActive) return false;
+  const step = event.shiftKey ? 8 : 1;
+  switch (event.key) {
+    case 'ArrowLeft':  moveEditorKeyCursor(-step, 0); return true;
+    case 'ArrowRight': moveEditorKeyCursor(step, 0);  return true;
+    case 'ArrowUp':    moveEditorKeyCursor(0, -step); return true;
+    case 'ArrowDown':  moveEditorKeyCursor(0, step);  return true;
+    case ' ':
+    case 'Enter':
+      pressEditorKeyCursor(event.shiftKey);
+      return true;
+    default:
+      return false;
+  }
 }

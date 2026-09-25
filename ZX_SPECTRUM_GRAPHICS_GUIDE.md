@@ -459,9 +459,11 @@ Checker:            Stripes:            DD77:
 
 ### BSC (Border Screen) -- 11136 bytes
 
-Full-frame screen including border areas. The total visible area is **384 x 304 pixels**.
+Full-frame screen including border areas. The total visible area is **384 x 304 pixels**. Like the rest of this border-format family, the file has no identifier and no metadata -- it can only be recognised by its extension and/or its exact length.
 
-**Hardware constraints**: On real hardware, there is no way to place a single dot on the border. The border color is changed by writing to port 0xFE, and the Z80 CPU timing determines what is possible. Each color change produces a horizontal stripe at least **24 pixels long** (the minimum time between consecutive OUT instructions), positioned at **2-pixel granularity** (1 T-state = 2 pixels at the 7 MHz pixel clock). The only exception is when a color stripe touches the edge of the border or the main screen paper area, where it can be shorter. The BSC format models this constraint with its per-line color pair encoding.
+**Storage granularity**: The border image is aligned to the standard ZX Spectrum character grid and is stored as a sequence of 8 x 1 border "pixels". A full image is 48 x 304 border "pixels", i.e. an effective resolution of 384 x 304.
+
+**Hardware constraints**: On real hardware, there is no way to place a single dot on the border. The border color is changed by writing to port 0xFE, and the Z80 CPU timing determines what is possible -- each color change produces a horizontal stripe at least **24 pixels long** (12 T-states per OUT, 1 T-state = 2 pixels at the 7 MHz pixel clock). In format terms, a typical ZX Spectrum viewer can only display stripes of **three or more** border "pixels" of the same color in a row. This requirement is relaxed near the edges of the visible area and around the vertical edges of the main screen, so the format does **not** prohibit stripes of one or two border "pixels" -- it is the responsibility of viewer software to deal with combinations that cannot be displayed.
 
 **Border size varies**: Different ZX Spectrum models and clones generate different numbers of border lines. Additionally, CRT television sets and monitors each overscan by different amounts, hiding part of the border. This is why emulators typically offer multiple border size options (e.g., none/tiny/small/medium/full, named differently across emulators). The BSC format uses 64 top / 48 bottom / 64 side pixels as one common representation.
 
@@ -503,12 +505,12 @@ Each byte encodes two color blocks of 8 pixels each:
       +------+----------+-----------+
 ```
 
-- **Bits 0-2**: First color (0-7), covers 8 pixels
-- **Bits 3-5**: Second color (0-7), covers next 8 pixels
+- **Bits 0-2**: Color of the **left** border "pixel" (0-7), covers 8 pixels
+- **Bits 3-5**: Color of the **right** border "pixel" (0-7), covers the next 8 pixels
 - **Bits 6-7**: Unused
 
-**Top/bottom border lines**: 24 bytes = 48 color pairs = 384 pixels
-**Side border lines**: 8 bytes (4 left + 4 right) = 16 color pairs = 128 pixels
+**Top/bottom border lines**: 24 bytes = 24 pairs = 48 color blocks = 384 pixels
+**Side border lines**: 8 bytes (4 left + 4 right) = 8 pairs = 16 color blocks = 128 pixels (64 left + 64 right)
 
 ---
 
@@ -591,7 +593,10 @@ Offset  Size   Content
 
 #### Attribute Banks
 
-The format stores two independent 768-byte attribute banks. How these banks map to pixel lines is not defined by the format itself -- it depends on the rendering code running on the Z80. Different implementations may assign the banks to different line ranges, or not use banking at all if faster drawing is possible another way.
+The image has 8 x 4 effective attribute size, i.e. 48 attribute rows of 4 pixel lines each. These 48 rows are stored as two 768-byte banks:
+
+- **Bank 1** (offset 6144) -- attributes for the **even** rows of the multicolor image, i.e. the **upper half** (pixel lines 0-3) of each character cell
+- **Bank 2** (offset 6912) -- attributes for the **odd** rows, i.e. the **lower half** (pixel lines 4-7) of each character cell
 
 Both banks use standard 32 x 24 layout (768 bytes each). The border data uses the same encoding as BSC format.
 

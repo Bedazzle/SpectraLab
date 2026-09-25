@@ -157,6 +157,13 @@ function initScreenViewerUI() {
       }
     }
 
+    // Several plain .scr files at once: ask whether to open them separately or
+    // join them into one chr$. The prompt opens the files itself, so bail out.
+    if (images.length === 0 && typeof maybeAskAboutCombine === 'function' &&
+        maybeAskAboutCombine(others, handleOpenFile)) {
+      return;
+    }
+
     // Non-image files: route each through the single-file handler.
     for (const f of others) {
       handleOpenFile(f);
@@ -567,17 +574,41 @@ function initScreenViewerUI() {
     }
   });
 
-  // Mouse wheel zoom handler — intercepts Ctrl+wheel everywhere except the
-  // left sidebar, so browser zoom only triggers over the controls panel
+  // Mouse wheel handler. Over the canvas the wheel/Ctrl+wheel/Shift+wheel
+  // bindings come from Settings (see editor_settings.js) so they can match
+  // whichever editor the user is used to. Outside the canvas the historical
+  // behaviour is kept: Ctrl+wheel zooms, except over the left sidebar where the
+  // browser's own zoom is left alone.
   const canvasContainer = document.getElementById('canvasContainer');
   const leftSidebar = document.querySelector('.left-sidebar');
   let wheelZoomAccum = 0;
   const WHEEL_ZOOM_THRESHOLD = 50;
   document.addEventListener('wheel', function(event) {
-    if (!event.ctrlKey) return;
-    // Allow browser default zoom on the left sidebar
-    if (leftSidebar && leftSidebar.contains(/** @type {Node} */ (event.target))) return;
+    const overCanvas = canvasContainer &&
+      canvasContainer.contains(/** @type {Node} */ (event.target));
+
+    let action;
+    if (overCanvas && typeof resolveWheelAction === 'function') {
+      action = resolveWheelAction(event);
+    } else {
+      if (!event.ctrlKey) return;
+      // Allow browser default zoom on the left sidebar
+      if (leftSidebar && leftSidebar.contains(/** @type {Node} */ (event.target))) return;
+      action = 'zoom';
+    }
+    if (!action || action === 'none') return;
+
     event.preventDefault();
+
+    // Panning is a direct scroll — no accumulator, the container re-renders
+    // from its own scroll listener below.
+    if (action === 'panH' || action === 'panV') {
+      if (!canvasContainer) return;
+      const delta = event.deltaY || event.deltaX;
+      if (action === 'panH') canvasContainer.scrollLeft += delta;
+      else canvasContainer.scrollTop += delta;
+      return;
+    }
 
     // Accumulate deltaY — trackpads send many small events per gesture
     wheelZoomAccum += event.deltaY;
@@ -700,6 +731,11 @@ function initScreenViewerUI() {
     goToScaFrame(parseInt(/** @type {HTMLInputElement} */ (this).value, 10));
   });
 
+  // Hidden colors: "Show all" restores every alt-click-hidden palette entry
+  document.getElementById('hiddenColorsShowAllBtn')?.addEventListener('click', function() {
+    if (typeof clearHiddenColors === 'function') clearHiddenColors();
+  });
+
   // Theme toggle handler
   themeToggleBtn?.addEventListener('click', function() {
     toggleTheme(themeToggleBtn);
@@ -780,6 +816,14 @@ function initScreenViewerUI() {
   document.addEventListener('keydown', function(event) {
     // Ignore if typing in an input field
     if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
+      return;
+    }
+
+    // Arrow keys may drive the editor's pixel cursor instead of scrolling
+    if (typeof getMouseSetting === 'function' && getMouseSetting('arrowKeys') === 'cursor' &&
+        typeof handleEditorKeyCursorKey === 'function' &&
+        currentFormat !== FORMAT.SCA && handleEditorKeyCursorKey(event)) {
+      event.preventDefault();
       return;
     }
 
