@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v2.43 -->
+<!-- SpectraLab v2.46 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -186,6 +186,7 @@
   .info-row {
     display: flex;
     justify-content: space-between;
+    gap: 8px;
     margin-bottom: 6px;
     font-size: 12px;
   }
@@ -196,11 +197,18 @@
 
   .info-label {
     color: var(--text-tertiary);
+    flex: 0 1 auto;
+    min-width: 0;
   }
 
   .info-value {
     color: var(--text-primary);
     text-align: right;
+    /* Without these a long value cannot shrink, and the sidebar grows a
+       horizontal scrollbar instead of wrapping */
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   /* SCA Edit Mode */
@@ -1368,6 +1376,16 @@
     opacity: 0.3;
     cursor: default;
   }
+  .combine-role {
+    flex: none;
+    font-size: 10px;
+    color: var(--text-secondary);
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    padding: 0 4px;
+    white-space: nowrap;
+  }
   .combine-why {
     color: var(--text-warning, #f80);
     font-size: 10px;
@@ -1946,6 +1964,27 @@
                   <span class="info-label">Hidden cells:</span>
                   <span class="info-value" id="infoHiddenCells">-</span>
                 </div>
+                <div id="infoMltTimingRow" class="info-row" style="display: none;" title="Pixel rows whose attributes cannot be rewritten inside one 320 T-state Pentagon 128K scanline">
+                  <span class="info-label">Multicolour:</span>
+                  <span class="info-value" id="infoMltTiming">-</span>
+                </div>
+                <div id="infoMltRowRow" class="info-row" style="display: none;" title="The pixel row under the pointer: what its attribute rewrite costs against the time it has">
+                  <span class="info-label" id="infoMltRowLabel">Row:</span>
+                  <span class="info-value" id="infoMltRow">-</span>
+                </div>
+                <div id="infoMltChangesRow" class="info-row" style="display: none;" title="Cells that differ from what the attribute line already holds, and how many distinct colours they need">
+                  <span class="info-label">Changes:</span>
+                  <span class="info-value" id="infoMltChanges">-</span>
+                </div>
+                <div id="infoMltColoursRow" class="info-row" style="display: none;" title="How many times a colour has to be loaded into a register for this row, and how many of those loads only one cell uses. Two neighbouring cells are loaded together, so this can be larger than the number of colours you can see">
+                  <span class="info-label">Colour loads:</span>
+                  <span class="info-value" id="infoMltColours">-</span>
+                </div>
+                <div id="infoMltFixRow" class="info-row" style="display: none;" title="What would bring this row inside its time">
+                  <span class="info-label">To fit:</span>
+                  <span class="info-value" id="infoMltFix">-</span>
+                </div>
+                <canvas id="infoMltStrip" width="160" height="26" style="display: none; width: 100%; height: 26px; image-rendering: pixelated; margin: 2px 0 4px;" title="Two bands: what the attribute line already holds on top, what this row needs underneath. Ink left, paper right. Dimmed where the two agree and no write is needed, outlined orange where the colour is unshared. Shown here only when the bottom border is hidden or off screen"></canvas>
                 <div id="infoAnimSection" style="display: none;">
                   <div class="info-row">
                     <span class="info-label">Frames:</span>
@@ -2720,7 +2759,7 @@
           <div class="control-group">
             <div class="control-group-title">Pictures</div>
             <div class="editor-actions">
-              <button id="combineBtn" title="Join open pictures into one larger chr$ image">Combine&hellip;</button>
+              <button id="combineBtn" title="Join open pictures: a chr$ mosaic, or the frames of a Gigascreen or RGB3 screen">Combine&hellip;</button>
             </div>
           </div>
           <div class="control-group" id="displayFiltersSection">
@@ -3537,17 +3576,24 @@
 
 <!-- MLT Disambiguation Dialog -->
 <div id="mltDisambiguationOverlay" class="modal-overlay" style="display:none;">
-  <div class="modal-dialog" style="max-width:720px;">
+  <div class="modal-dialog" style="max-width:980px;">
     <h3 style="margin-top:0;">Multicolor Mode</h3>
-    <p style="margin:8px 0;">This 12288-byte file can be interpreted as either mode. Click the correct preview:</p>
+    <p style="margin:8px 0;">This 12288-byte file can be read three ways. Click the one that looks right:<br><span id="mltDisambiguationName" style="font-size:11px; color:var(--text-tertiary);"></span></p>
     <div style="display:flex; gap:16px; justify-content:center; margin:16px 0;">
       <div style="cursor:pointer; text-align:center;" id="mltChoiceInterleaved">
         <canvas id="mltPreviewInterleaved" width="256" height="192" style="border:1px solid var(--border-color); max-width:256px; image-rendering:pixelated;"></canvas>
         <div style="margin-top:4px; font-size:12px;">Standard MLT (interleaved)</div>
+        <div id="mltHintInterleaved" style="visibility:hidden; font-size:11px; color:var(--text-warning,#f80);">likely</div>
       </div>
       <div style="cursor:pointer; text-align:center;" id="mltChoiceLinear">
         <canvas id="mltPreviewLinear" width="256" height="192" style="border:1px solid var(--border-color); max-width:256px; image-rendering:pixelated;"></canvas>
         <div style="margin-top:4px; font-size:12px;">Multicolor (linear)</div>
+        <div id="mltHintLinear" style="visibility:hidden; font-size:11px; color:var(--text-warning,#f80);">likely</div>
+      </div>
+      <div style="cursor:pointer; text-align:center;" id="mltChoiceScreenAttrs">
+        <canvas id="mltPreviewScreenAttrs" width="256" height="192" style="border:1px solid var(--border-color); max-width:256px; image-rendering:pixelated;"></canvas>
+        <div style="margin-top:4px; font-size:12px;">Screen-order attributes</div>
+        <div id="mltHintScreenAttrs" style="visibility:hidden; font-size:11px; color:var(--text-warning,#f80);">likely</div>
       </div>
     </div>
     <div style="text-align:center;">
@@ -3562,7 +3608,8 @@
   <div class="modal-dialog" style="width: 340px;">
     <div class="modal-title">Open <span id="combineAskCount">2</span> pictures</div>
     <div style="font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
-      Open them as separate tabs, or join them into one larger chr$ image?
+      Open them as separate tabs, or join them into one picture &mdash; a chr$
+      mosaic, or the frames of a Gigascreen or RGB3 screen?
     </div>
     <div style="display: flex; gap: 8px; justify-content: flex-end;">
       <button id="combineAskSeparateBtn" style="padding: 5px 14px; font-size: 12px;">Open separately</button>
@@ -3579,7 +3626,17 @@
       <button id="combineCloseBtn" style="padding: 2px 8px; font-size: 12px;">&times;</button>
     </div>
 
-    <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 6px; line-height: 1.4;">
+    <div class="settings-row" style="margin-bottom: 4px;">
+      <span>Output</span>
+      <select id="combineModeSelect" title="What the selected pictures are joined into"
+              style="flex: 1; max-width: 210px;">
+        <option value="mosaic" selected>Mosaic (.ch$)</option>
+        <option value="gigascreen">Gigascreen (.img) &mdash; 2 screens</option>
+        <option value="rgb3">RGB3 (.3) &mdash; 3 screens</option>
+      </select>
+    </div>
+
+    <div id="combineHint" style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 6px; line-height: 1.4;">
       Joins open pictures into one chr$, copying cells unchanged.
     </div>
 
@@ -3591,7 +3648,7 @@
              title="1 stacks them vertically; the number of pictures puts them all in one row"
              style="flex: none; width: 56px; padding: 3px; font-size: 11px; margin-right: auto;">
     </div>
-    <div class="settings-row">
+    <div class="settings-row" id="combineFillRow">
       <span>Fill empty cells</span>
       <span style="display: flex; gap: 4px; flex: 1; max-width: 210px;">
         <select id="combineFillInk" title="Ink color for cells no picture covers" style="flex: 1;">
@@ -3719,9 +3776,21 @@
       </select>
     </label>
 
+    <div style="font-size: 10px; color: var(--text-tertiary); margin: 10px 0 6px;">ANALYSIS</div>
+    <label class="settings-row" title="8x1 multicolour (MLT) only: can each pixel row's attributes be rewritten within one scanline? Budget is Pentagon 128K's 320 T-states.">
+      <span>Multicolour timing</span>
+      <select id="settingsMltTiming">
+        <option value="off">Off</option>
+        <option value="on">Mark over-budget rows on border</option>
+      </select>
+    </label>
+
     <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 8px; line-height: 1.4;">
       Alt bindings are ignored by Rect, Circle and Gradient, which use Alt for "draw from center".
       With the pixel cursor, Shift+arrow steps 8 pixels and Space applies the current tool.
+      The multicolour timing check applies to 8x1 (MLT) pictures only: pixel rows whose
+      attributes cannot be rewritten within one scanline get an orange mark on the border.
+      The budget is a Pentagon 128K line, 320 T-states with no contention.
     </div>
 
     <div style="display: flex; gap: 8px; justify-content: space-between; margin-top: 12px;">
@@ -3995,7 +4064,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 2.43</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 2.46</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">
@@ -4021,7 +4090,12 @@
               <b>TomDDG</b> — ZXSC screen compressor<br>
               <b>Eugene Larchenko</b> — LC improvements<br>
               <b>Lethargeek</b> — LgK screen compressor<br>
-              <b>Andrew Strikes Code</b> (Andrey Sendetsky) — ASC screen compressor
+              <b>Andrew Strikes Code</b> (Andrey Sendetsky) — ASC screen compressor<br>
+              <b>Robert Kist</b> — libdither threshold matrices, error diffusion and variable kernels<br>
+              <b>Victor Ostromoukhov</b> — variable-coefficient error diffusion<br>
+              <b>Bingfeng Zhou &amp; Xifeng Fang</b> — threshold-modulated error diffusion<br>
+              <b>Jari Komppa</b> — measured ZX gigascreen colours (img2spectrum)<br>
+              <b>Ru Grantez</b> — dizher eye-model colour metric
             </div>
           </div>
           <div style="font-size: 12px; font-style: italic; color: var(--text-secondary);">
@@ -4136,6 +4210,15 @@
               <option value="exhaustive">Best fit</option>
               <option value="blend" selected>Blend fit</option>
               <option value="pca">PCA gradient</option>
+              <option value="eye">Eye model</option>
+            </select>
+          </label>
+          <label id="importGigaBlendRow" style="font-size: 11px; display: none; align-items: center; gap: 4px;" title="How the two alternating attribute frames combine into the colour the eye sees">
+            Blends:
+            <select id="importGigaBlend" style="padding: 2px; font-size: 11px;">
+              <option value="measured" selected>Measured CRT</option>
+              <option value="linear">Linear average</option>
+              <option value="srgb">sRGB average</option>
             </select>
           </label>
           <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Convert to grayscale before processing">
@@ -4212,6 +4295,16 @@
                 <option value="none">None</option>
               </optgroup>
             </select>
+          </label>
+          <label id="importDitherMatrixRow" style="font-size: 11px; display: none; align-items: center; gap: 4px;" title="Threshold matrix for ordered dithering. Auto uses the matrix the chosen method implies.">
+            <span style="width: 52px;">Matrix:</span>
+            <select id="importDitherMatrix" style="width: 100px; padding: 2px; font-size: 11px;"></select>
+            <canvas id="importDitherMatrixSwatch" width="72" height="22" style="width: 72px; height: 22px; border: 1px solid var(--border-secondary); image-rendering: pixelated;" title="How this matrix renders a dark-to-light ramp"></canvas>
+          </label>
+          <label id="importDitherKernelRow" style="font-size: 11px; display: none; align-items: center; gap: 4px;" title="Error diffusion kernel. Auto uses the kernel the chosen method implies.">
+            <span style="width: 52px;">Kernel:</span>
+            <select id="importDitherKernel" style="width: 100px; padding: 2px; font-size: 11px;"></select>
+            <canvas id="importDitherKernelSwatch" width="72" height="22" style="width: 72px; height: 22px; border: 1px solid var(--border-secondary);" title="Where this kernel sends the error: the marked cell is the current pixel"></canvas>
           </label>
           <label id="importDitherStrengthRow" style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="Error diffusion strength. 0% = pure ordered/threshold; 100% = full classic error diffusion. For ordered methods, >0 enables hybrid ordered+diffusion mode.">
             <span style="width: 52px;">Strength:</span>
@@ -4455,6 +4548,23 @@
     </div>
     <!-- Dither tab content -->
     <div id="importPanelDither" style="grid-area: 1/1; visibility: hidden;">
+      <div id="importEyeMetricSection" style="display: none; padding: 8px; margin-bottom: 8px; border: 1px solid var(--border-secondary); border-radius: 4px;">
+        <div style="font-size: 10px; color: var(--text-tertiary); margin-bottom: 6px; font-weight: 500;">EYE MODEL METRIC</div>
+        <div style="display: flex; gap: 16px;">
+          <div style="flex: 1;" title="How much colour error counts against brightness error. 0 judges a pair on lightness alone.">
+            <div style="font-size: 10px; margin-bottom: 2px;">Chroma: <span id="importEyeChromaValue">100</span>%</div>
+            <input type="range" id="importEyeChroma" min="0" max="200" value="100" style="width: 100%;">
+          </div>
+          <div style="flex: 1;" title="Blur scale in pixels: how far away the picture is assumed to be seen from. Larger values let the eye mix dots more, so dithered blends win more often.">
+            <div style="font-size: 10px; margin-bottom: 2px;">Eye blur: <span id="importEyeBlurValue">1.4</span> px</div>
+            <input type="range" id="importEyeBlur" min="6" max="30" value="14" style="width: 100%;">
+          </div>
+          <div style="flex: 1;" title="Penalty for dot contrast the blur would miss. At 0 the metric calls blue dots on yellow invisible; raise it if flat areas come out speckled with clashing colours.">
+            <div style="font-size: 10px; margin-bottom: 2px;">Dot noise: <span id="importEyeNoiseValue">0.05</span></div>
+            <input type="range" id="importEyeNoise" min="0" max="20" value="5" style="width: 100%;">
+          </div>
+        </div>
+      </div>
       <div id="importDitherRegionsSection" style="font-size: 11px; padding: 8px 0;">
         <label style="display: flex; align-items: center; gap: 4px; margin-bottom: 12px;" title="Region 1: draw this region on the canvas, assign dithering method and strength">
           <input type="radio" name="ditherRegion" value="1" checked>
@@ -4818,11 +4928,17 @@
 <script src="js/asc.js"></script>
 <script src="js/screen_viewer.js"></script>
 <script src="js/display_filters.js"></script>
+<script src="js/mlt_timing.js"></script>
+<script src="js/dither_tables.js"></script>
+<script src="js/dither_variable.js"></script>
+<script src="js/giga_blend_measured.js"></script>
+<script src="js/eye_model.js"></script>
 <script src="js/image_import.js"></script>
 <script src="js/asm_export_utils.js"></script>
 <script src="js/bsc_asm_export.js"></script>
 <script src="js/flicker_asm_export.js"></script>
 <script src="js/ifl_asm_export.js"></script>
+<script src="js/mlt_asm_export.js"></script>
 <script src="js/ulaplus_asm_export.js"></script>
 <script src="js/next_l2_asm_export.js"></script>
 <script src="js/lores_asm_export.js"></script>

@@ -1,5 +1,28 @@
 # SpectraLab Version History
 
+## v2.46
+- **Combine Pictures** builds multi-frame formats from separate screens: two .scr become a Gigascreen (.img), three become an RGB3 (.3)
+- Export: **ASM (Pentagon 8x1 multicolour)** for .mlt — a complete sjasmplus viewer that races the beam. Rows that cannot be written in time are marked in the source and reported on save
+- **Fixed:** 12288-byte multicolour files whose attributes are stored in ZX screen order opened as garbage. A third preview, **Screen-order attributes**, reads them as the file stores them. The layout question is now asked wherever such a file turns up, including inside a `.zip`, with the likeliest reading marked **likely**
+- **Fixed:** the multicolour timing check had the Pentagon scanline and frame transposed — it is 224 T over 320 lines, not 320 T over 224. Every row budget was 96 T too generous, so pictures were reported as fitting when they cannot
+- **Fixed:** the 8x1 multicolour player started 63 T early, so a row’s first writes could land before the row above had been read and corrupt it
+- **Fixed:** a row too long for its scanline no longer runs into the next one and breaks rows the check had passed; it is cut, and the export reports what was cut
+- Multicolour timing: each row is now planned run by run — pushed, stored, or written in place, whichever is cheaper — and push runs are split and reordered when that is what the beam needs. Many rows that read `wrong order` are now playable; one still refused says what ordering it would cost
+- Docs: the graphics guide covers all three multicolour file layouts and how to tell them apart
+
+## v2.45
+- Viewer: **Multicolour timing check** for 8x1 (MLT) pictures (Settings → Analysis, off by default) — an orange border line against every pixel row whose attributes could not be rewritten in time on a Pentagon 128K, with the verdict in **File Info**
+- Point at a row for the breakdown: how full it is, how many cells change, how many colours only one cell uses, and what to change to make it fit. Cells needing a write are marked on the row, and the row's colours shown as swatches along the bottom border
+
+## v2.44
+- Import: **Matrix** picker — 39 ordered dither matrices (Bayer, dispersed, clustered, line screens, magic squares) with a ramp swatch
+- Import: **Kernel** picker — 19 error diffusion kernels (Shiau-Fan, Stevenson-Arce, Steve Pigeon, Xot and more) with a footprint swatch
+- Import: **Variable** error diffusion kernels — Ostromoukhov and Zhou-Fang adapt their weights to each pixel's tone, breaking up the streaks a fixed kernel leaves in gradients (on a test sky the longest run of ink fell from 256 pixels to 27), at no extra cost
+- Import: **Blends** for gigascreen — CRT-measured frame blending, or linear average; the old sRGB average is still selectable
+- Import: **Eye model** pair fit — picks each cell's colours by the error that survives the eye's blur, with Chroma / Eye blur / Dot noise controls in the **Dither** tab
+- Fixed: importing to IFL with a cell-based dither threw (`findNearestPaletteColor` never existed)
+- Dither tables from libdither (Robert Kist), measured blends from img2spectrum (Jari Komppa), both by way of dizher (Ru Grantez), used with permission
+
 ## v2.43
 - Added **Combine** (Tools, or when opening several .scr at once) — joins pictures into one larger **chr$** losslessly
 - Added a **Settings** dialog (gear next to **?**) — configurable mouse and arrow-key bindings: wheel zoom, Ctrl/Shift+Wheel scroll, middle-drag pan, Alt+LMB pick, Alt+RMB recolor

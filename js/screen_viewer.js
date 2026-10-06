@@ -1180,6 +1180,30 @@ let infoColorsUsed;
 let infoHiddenRow;
 /** @type {HTMLElement} */
 let infoHiddenCells;
+/** @type {HTMLElement} */
+let infoMltTimingRow;
+/** @type {HTMLElement} */
+let infoMltTiming;
+/** @type {HTMLElement} */
+let infoMltRowRow;
+/** @type {HTMLElement} */
+let infoMltRowLabel;
+/** @type {HTMLElement} */
+let infoMltRow;
+/** @type {HTMLElement} */
+let infoMltChangesRow;
+/** @type {HTMLElement} */
+let infoMltChanges;
+/** @type {HTMLElement} */
+let infoMltColoursRow;
+/** @type {HTMLElement} */
+let infoMltColours;
+/** @type {HTMLElement} */
+let infoMltFixRow;
+/** @type {HTMLElement} */
+let infoMltFix;
+/** @type {HTMLCanvasElement} */
+let infoMltStrip;
 
 /** @type {HTMLInputElement} */
 let flashCheckbox;
@@ -1263,6 +1287,18 @@ function cacheElements() {
   infoColorsUsed = /** @type {HTMLElement} */ (document.getElementById('infoColorsUsed'));
   infoHiddenRow = /** @type {HTMLElement} */ (document.getElementById('infoHiddenRow'));
   infoHiddenCells = /** @type {HTMLElement} */ (document.getElementById('infoHiddenCells'));
+  infoMltTimingRow = /** @type {HTMLElement} */ (document.getElementById('infoMltTimingRow'));
+  infoMltTiming = /** @type {HTMLElement} */ (document.getElementById('infoMltTiming'));
+  infoMltRowRow = /** @type {HTMLElement} */ (document.getElementById('infoMltRowRow'));
+  infoMltRowLabel = /** @type {HTMLElement} */ (document.getElementById('infoMltRowLabel'));
+  infoMltRow = /** @type {HTMLElement} */ (document.getElementById('infoMltRow'));
+  infoMltChangesRow = /** @type {HTMLElement} */ (document.getElementById('infoMltChangesRow'));
+  infoMltChanges = /** @type {HTMLElement} */ (document.getElementById('infoMltChanges'));
+  infoMltColoursRow = /** @type {HTMLElement} */ (document.getElementById('infoMltColoursRow'));
+  infoMltColours = /** @type {HTMLElement} */ (document.getElementById('infoMltColours'));
+  infoMltFixRow = /** @type {HTMLElement} */ (document.getElementById('infoMltFixRow'));
+  infoMltFix = /** @type {HTMLElement} */ (document.getElementById('infoMltFix'));
+  infoMltStrip = /** @type {HTMLCanvasElement} */ (document.getElementById('infoMltStrip'));
 }
 
 // ============================================================================
@@ -5293,6 +5329,14 @@ async function loadFileFromZip(fileName) {
         if (typeof updateUlaPlusPalette === 'function') updateUlaPlusPalette();
       }
 
+      // Same question as for a file opened on its own. Awaited, so an archive
+      // holding several of them asks once per file instead of all at once.
+      if (format === FORMAT.MLT && mltData.length === MLT.TOTAL_SIZE && !isUlaPlusMode &&
+          typeof showMltDisambiguationDialog === 'function') {
+        await showMltDisambiguationDialog(mltData, fullName);
+        return;
+      }
+
       // Create internal picture format for all supported formats
       let newInternalPicture = null;
       if (typeof importPicture === 'function') {
@@ -5824,6 +5868,11 @@ function renderScreenInner() {
   // Draw border grid if border is visible and border grid is enabled
   if (borderSize > 0 && (borderGridSize > 0 || borderSubgridSize > 0)) {
     drawStandardBorderGrid(ctx, borderPixels);
+  }
+
+  // Mark pixel rows an 8x1 multicolour player could not keep up with on Pentagon
+  if (typeof drawMltTimingOverlay === 'function') {
+    drawMltTimingOverlay(ctx, borderPixels);
   }
 
   // Draw reference image overlay if loaded and visible
@@ -6489,6 +6538,43 @@ function updateInfoCounters() {
     } else {
       infoHiddenRow.style.display = 'none';
     }
+  }
+  if (infoMltTimingRow && infoMltTiming) {
+    // Only shown while the check is on, and only for the pictures it applies to
+    const verdict = (typeof isMltTimingCheckEnabled === 'function' && isMltTimingCheckEnabled() &&
+      typeof getMltTimingSummary === 'function') ? getMltTimingSummary() : '';
+    infoMltTimingRow.style.display = verdict ? '' : 'none';
+    if (verdict) {
+      infoMltTiming.textContent = verdict;
+      // The panel is narrow, so the full sentence lives in the tooltip
+      infoMltTimingRow.title = (typeof getMltTimingTooltip === 'function')
+        ? getMltTimingTooltip() : '';
+    }
+  }
+  if (infoMltRowRow && infoMltRow) {
+    // Per-row detail, following the pointer over the picture
+    const detail = (typeof getMltRowReadout === 'function') ? getMltRowReadout() : null;
+    infoMltRowRow.style.display = detail ? '' : 'none';
+    infoMltChangesRow.style.display = detail ? '' : 'none';
+    infoMltColoursRow.style.display = detail ? '' : 'none';
+    // 'To fit' only has something to say about a row that does not
+    infoMltFixRow.style.display = (detail && detail.fix) ? '' : 'none';
+    if (detail) {
+      if (infoMltRowLabel) infoMltRowLabel.textContent = detail.label;
+      infoMltRow.textContent = detail.row;
+      infoMltRowRow.title = detail.rowTitle;
+      infoMltChanges.textContent = detail.changes;
+      infoMltChangesRow.title = detail.changesTitle;
+      infoMltColours.textContent = detail.colours;
+      infoMltColoursRow.title = detail.coloursTitle;
+      if (detail.fix) {
+        infoMltFix.textContent = detail.fix;
+        infoMltFixRow.title = detail.fixTitle;
+      }
+    }
+    const strip = detail && typeof drawMltRowStrip === 'function' &&
+      drawMltRowStrip(infoMltStrip);
+    if (infoMltStrip) infoMltStrip.style.display = strip ? '' : 'none';
   }
 }
 
@@ -9265,8 +9351,10 @@ function finishLoadSl2Extended(data, fileName, mode) {
  * @param {HTMLCanvasElement} canvas - Target 256×192 canvas
  * @param {Uint8Array} data - 12288-byte MLT data
  * @param {boolean} linear - true = linear bitmap, false = ZX-interleaved
+ * @param {boolean} [attrsInterleaved] - true when the attribute block is in ZX
+ *   screen order too, the way a player that LDIRs it out of the file expects
  */
-function renderMltPreview(canvas, data, linear) {
+function renderMltPreview(canvas, data, linear, attrsInterleaved) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   const img = ctx.createImageData(256, 192);
@@ -9281,9 +9369,18 @@ function renderMltPreview(canvas, data, linear) {
       const pixelLine = y % 8;
       bitmapBase = third * 2048 + charRow * 32 + pixelLine * 256;
     }
+    let attrBase;
+    if (attrsInterleaved) {
+      const third = Math.floor(y / 64);
+      const charRow = Math.floor((y % 64) / 8);
+      const pixelLine = y % 8;
+      attrBase = 6144 + third * 2048 + charRow * 32 + pixelLine * 256;
+    } else {
+      attrBase = 6144 + y * 32;
+    }
     for (let col = 0; col < 32; col++) {
       const byte = data[bitmapBase + col];
-      const attr = data[6144 + y * 32 + col];
+      const attr = data[attrBase + col];
       const ink = attr & 0x07;
       const paper = (attr >> 3) & 0x07;
       const bright = (attr & 0x40) ? 1 : 0;
@@ -9301,19 +9398,75 @@ function renderMltPreview(canvas, data, linear) {
 }
 
 /**
+ * Guesses which reading of a 12288-byte multicolour file is the real one.
+ *
+ * A picture is coherent down the screen: neighbouring pixel rows share most of
+ * their attributes, which is the very thing that lets a player keep up with the
+ * beam. Read the blocks in the wrong order and that coherence falls apart. So
+ * the reading whose rows differ least from their neighbours is the likely one.
+ *
+ * It is a hint, not a verdict -- on some pictures the margin is slim, which is
+ * why the dialog still asks.
+ *
+ * @param {Uint8Array} data - 12288 bytes
+ * @returns {{scores: number[], best: number}} one score per reading, lower is
+ *   better, in the order the dialog shows them
+ */
+function mltLayoutLikelihood(data) {
+  const zx = (y, c) => {
+    const third = (y / 64) | 0, charRow = ((y % 64) / 8) | 0, line = y % 8;
+    return third * 2048 + charRow * 32 + line * 256 + c;
+  };
+  const lin = (y, c) => y * 32 + c;
+  /** mean cells differing from the row above */
+  const rough = (at) => {
+    let total = 0;
+    for (let y = 1; y < 192; y++) {
+      for (let c = 0; c < 32; c++) if (data[at(y, c)] !== data[at(y - 1, c)]) total++;
+    }
+    return total / 191;
+  };
+  const bmpInt = rough((y, c) => zx(y, c));
+  const bmpLin = rough((y, c) => lin(y, c));
+  const attLin = rough((y, c) => 6144 + lin(y, c));
+  const attZx = rough((y, c) => 6144 + zx(y, c));
+
+  // Same order as the previews: standard, linear bitmap, screen-order attrs
+  const scores = [bmpInt + attLin, bmpLin + attLin, bmpInt + attZx];
+  let best = 0;
+  for (let i = 1; i < scores.length; i++) if (scores[i] < scores[best]) best = i;
+  return { scores, best };
+}
+
+/**
  * Shows the MLT disambiguation dialog for 12288-byte files that could be
  * either standard MLT (ZX-interleaved bitmap) or multicolor (linear bitmap).
  * Renders preview images for both interpretations.
+ * Resolves once the user has chosen or cancelled, so several files from one
+ * archive can be asked about in turn instead of all at once.
+ *
  * @param {Uint8Array} data - Raw 12288-byte data
  * @param {string} fileName - Original file name
+ * @returns {Promise<void>}
  */
 function showMltDisambiguationDialog(data, fileName) {
   const overlay = document.getElementById('mltDisambiguationOverlay');
   if (!overlay) {
     // Dialog not present — default to standard interleaved MLT
     finishLoadMlt(data, fileName, false);
-    return;
+    return Promise.resolve();
   }
+
+  // Mark the reading that looks most like a real picture
+  const hint = (typeof mltLayoutLikelihood === 'function')
+    ? mltLayoutLikelihood(data) : { best: -1 };
+  ['mltHintInterleaved', 'mltHintLinear', 'mltHintScreenAttrs'].forEach((id, i) => {
+    const el = document.getElementById(id);
+    if (el) el.style.visibility = (i === hint.best) ? 'visible' : 'hidden';
+  });
+
+  const nameEl = document.getElementById('mltDisambiguationName');
+  if (nameEl) nameEl.textContent = fileName;
 
   const canvasInterleaved = /** @type {HTMLCanvasElement|null} */ (document.getElementById('mltPreviewInterleaved'));
   if (canvasInterleaved) renderMltPreview(canvasInterleaved, data, false);
@@ -9321,17 +9474,24 @@ function showMltDisambiguationDialog(data, fileName) {
   const canvasLinear = /** @type {HTMLCanvasElement|null} */ (document.getElementById('mltPreviewLinear'));
   if (canvasLinear) renderMltPreview(canvasLinear, data, true);
 
+  const canvasScreenAttrs = /** @type {HTMLCanvasElement|null} */ (document.getElementById('mltPreviewScreenAttrs'));
+  if (canvasScreenAttrs) renderMltPreview(canvasScreenAttrs, data, false, true);
+
   overlay.style.display = '';
 
+  return new Promise((resolve) => {
   const choiceInterleaved = document.getElementById('mltChoiceInterleaved');
   const choiceLinear = document.getElementById('mltChoiceLinear');
+  const choiceScreenAttrs = document.getElementById('mltChoiceScreenAttrs');
   const cancelBtn = document.getElementById('mltDisambiguationCancel');
 
   function closeDialog() {
     overlay.style.display = 'none';
     if (choiceInterleaved) choiceInterleaved.onclick = null;
     if (choiceLinear) choiceLinear.onclick = null;
+    if (choiceScreenAttrs) choiceScreenAttrs.onclick = null;
     if (cancelBtn) cancelBtn.onclick = null;
+    resolve();
   }
 
   if (choiceInterleaved) {
@@ -9346,11 +9506,18 @@ function showMltDisambiguationDialog(data, fileName) {
       finishLoadMlt(data, fileName, true);
     };
   }
+  if (choiceScreenAttrs) {
+    choiceScreenAttrs.onclick = function() {
+      closeDialog();
+      finishLoadMlt(data, fileName, false, true);
+    };
+  }
   if (cancelBtn) {
     cancelBtn.onclick = function() {
       closeDialog();
     };
   }
+  });
 }
 
 /**
@@ -9358,16 +9525,24 @@ function showMltDisambiguationDialog(data, fileName) {
  * @param {Uint8Array} data - 12288-byte MLT data
  * @param {string} fileName - Original file name
  * @param {boolean} linear - true = linear bitmap (multicolor), false = ZX-interleaved (standard MLT)
+ * @param {boolean} [attrsInterleaved] - true when the attribute block is in ZX
+ *   screen order; it is normalised here so nothing downstream has to care
  */
-function finishLoadMlt(data, fileName, linear) {
+function finishLoadMlt(data, fileName, linear, attrsInterleaved) {
   stopFlashTimer();
   resetScaState();
+
+  if (attrsInterleaved && typeof mltNormaliseInterleavedAttrs === 'function') {
+    data = mltNormaliseInterleavedAttrs(data);
+  }
   initUlaPlusMode(data, FORMAT.MLT);
 
   let newInternalPicture = null;
   if (typeof importPicture === 'function') {
     const importOpts = linear ? { linear: true } : undefined;
     newInternalPicture = importPicture(FORMAT.MLT, data, fileName, importOpts);
+    // Remember how the file was written, so saving puts it back that way
+    if (attrsInterleaved && newInternalPicture) newInternalPicture.sourceFormat = 'mlt_ia';
   }
 
   if (typeof addPicture === 'function') {
@@ -9895,15 +10070,13 @@ function loadScreenFile(file) {
         initUlaPlusMode(data, format);
       }
 
-      // MLT disambiguation: if 12288-byte file detected as MLT by size but not by
-      // a known extension (.mlt or .mc), show a dialog to let the user choose
-      // between standard interleaved MLT and linear multicolor.
+      // A 12288-byte multicolour file can be read three ways and the extension
+      // settles nothing: Enot.scr is multicolour with its attributes in screen
+      // order, and a .mlt can be written either way. So always ask, with the
+      // likely reading marked.
       if (format === FORMAT.MLT && data.length === MLT.TOTAL_SIZE && !isUlaPlusMode) {
-        const fileExt = fileName.toLowerCase().split('.').pop();
-        if (fileExt !== 'mlt' && fileExt !== 'mc') {
-          showMltDisambiguationDialog(data, fileName);
-          return;
-        }
+        showMltDisambiguationDialog(data, fileName);
+        return;
       }
 
       // Create internal picture format for all supported formats

@@ -13904,6 +13904,12 @@ function saveScrFile(filename) {
       specsciiSyncToStream();
     }
     saveData = screenData ? new Uint8Array(screenData) : new Uint8Array(0);
+  } else if (currentFormat === FORMAT.MLT && currentPicture &&
+             currentPicture.sourceFormat === 'mlt_ia') {
+    // This file keeps its attributes in ZX screen order; put them back that way
+    syncCurrentPicture();
+    saveData = (typeof exportPicture === 'function')
+      ? exportPicture(currentPicture) : new Uint8Array(screenData);
   } else if (currentFormat === FORMAT.SCR_ULAPLUS && currentPicture) {
     // ULA+ format: ensure palette is current before export
     if (ulaPlusPalette) currentPicture.palette = ulaPlusPalette.slice();
@@ -24143,7 +24149,11 @@ function updateExportAsmButton() {
   const embedDataChk = document.getElementById('editorEmbedDataChk');
   if (!exportSelect || !exportBtn) return;
 
-  const supportsAsm = currentFormat === FORMAT.BSC || currentFormat === FORMAT.GIGASCREEN || isGigaattrFormat() || currentFormat === FORMAT.MGH || currentFormat === FORMAT.RGB3 || currentFormat === FORMAT.IFL || currentFormat === FORMAT.SCR_ULAPLUS || currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 || currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD;
+  // MLT only when the timing model actually covers it: plain 8x1 at 256x192,
+  // not the ULA+ variant, since the player it describes has no palette to set
+  const supportsMltAsm = currentFormat === FORMAT.MLT &&
+    typeof isMltTimingTarget === 'function' && isMltTimingTarget();
+  const supportsAsm = currentFormat === FORMAT.BSC || currentFormat === FORMAT.GIGASCREEN || isGigaattrFormat() || currentFormat === FORMAT.MGH || currentFormat === FORMAT.RGB3 || currentFormat === FORMAT.IFL || currentFormat === FORMAT.SCR_ULAPLUS || currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 || currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD || supportsMltAsm;
   const isSpecscii = currentFormat === FORMAT.SPECSCII;
 
   // Build export options based on current format
@@ -24157,6 +24167,8 @@ function updateExportAsmButton() {
       options.push({ value: 'asm', label: 'ASM (Pentagon RGB flicker)' });
     } else if (currentFormat === FORMAT.IFL) {
       options.push({ value: 'asm', label: 'ASM (Pentagon 8x2 multicolor)' });
+    } else if (supportsMltAsm) {
+      options.push({ value: 'asm', label: 'ASM (Pentagon 8x1 multicolour)' });
     } else if (currentFormat === FORMAT.SCR_ULAPLUS) {
       options.push({ value: 'asm', label: 'ASM (ULA+ palette)' });
     } else if (currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) {
@@ -30664,6 +30676,7 @@ function initEditor() {
       else if (currentFormat === FORMAT.GIGASCREEN || isGigaattrFormat() || currentFormat === FORMAT.MGH) exportGigascreenAsm();
       else if (currentFormat === FORMAT.RGB3) exportRgb3Asm();
       else if (currentFormat === FORMAT.IFL) exportIflAsm();
+      else if (currentFormat === FORMAT.MLT) exportMltAsm();
       else if (currentFormat === FORMAT.SCR_ULAPLUS) exportUlaPlusAsm();
       else if (currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2) exportNextL2Asm();
       else if (currentFormat === FORMAT.LORES) exportLoresAsm();

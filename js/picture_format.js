@@ -513,6 +513,35 @@ function importMlt(fileBytes, fileName, options) {
 }
 
 /**
+ * Rewrites a 12288-byte multicolour file whose attribute block is in ZX screen
+ * order into the ordinary layout, where attribute row y sits at 6144 + y * 32.
+ *
+ * The bitmap is untouched -- it is already interleaved in both readings. Doing
+ * this once on load means nothing downstream has to know the file was different.
+ *
+ * @param {Uint8Array} fileBytes - 12288 bytes
+ * @returns {Uint8Array} a new 12288-byte buffer
+ */
+function mltNormaliseInterleavedAttrs(fileBytes) {
+  const out = new Uint8Array(12288);
+  out.set(fileBytes.subarray(0, 6144), 0);
+  out.set(deinterleaveBitmap(fileBytes, 6144, 256, 192), 6144);
+  return out;
+}
+
+/**
+ * Exports a Picture whose file keeps its attributes in ZX screen order.
+ * @param {Picture} picture
+ * @returns {Uint8Array}
+ */
+function exportMltInterleavedAttrs(picture) {
+  const result = new Uint8Array(12288);
+  result.set(interleaveBitmap(picture.planes[0].bitmap, picture.width, picture.height), 0);
+  result.set(interleaveBitmap(picture.planes[0].attrs, picture.width, picture.height), 6144);
+  return result;
+}
+
+/**
  * Exports a Picture to a 12288-byte MLT file.
  * @param {Picture} picture
  * @returns {Uint8Array}
@@ -2082,7 +2111,8 @@ function syncPictureFromScreenData(scrData, picture) {
     for (let i = 0; i < 3072; i++) {
       attrs[i] = scrData[6144 + i];
     }
-  } else if (fmt === 'mlt') {
+  } else if (fmt === 'mlt' || fmt === 'mlt_ia') {
+    // screenData is normalised on load, so both read the same way here
     const attrs = picture.planes[0].attrs;
     for (let i = 0; i < 6144; i++) {
       attrs[i] = scrData[6144 + i];
@@ -2214,6 +2244,8 @@ const PICTURE_FORMAT_HANDLERS = {
   'scr_ulanext':  { import: (b, fn) => importScr(b, fn),        export: null },
   'ifl':          { import: (b, fn) => importIfl(b, fn),        export: exportIfl },
   'mlt':          { import: (b, fn, opts) => importMlt(b, fn, opts), export: exportMlt },
+  // Same picture, but the file keeps its attributes in ZX screen order
+  'mlt_ia':       { import: (b, fn, opts) => importMlt(b, fn, opts), export: exportMltInterleavedAttrs },
   'mlt_linear':   { import: (b, fn, opts) => importMlt(b, fn, opts), export: exportMltLinear },
   'mlt_ula':      { import: (b, fn, opts) => importMlt(b, fn, opts), export: exportMltUla },
   'mono_full':    { import: (b, fn) => importMono(b, fn, 192),  export: exportMono },

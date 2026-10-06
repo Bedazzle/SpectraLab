@@ -536,13 +536,78 @@ Maximum color resolution with one attribute per 8 x 1 pixel area.
 
 ```
 Offset  Size   Content
-0       6144   Bitmap data (standard interleaved)
+0       6144   Bitmap data
 6144    6144   Attributes (192 rows x 32 columns)
 ```
 
-- File extensions: `.mlt`, `.mc`
+- File extensions: `.mlt`, `.mc` -- but see the layouts below; a 12288-byte
+  multicolor file also turns up under `.scr`
 - 192 attribute rows, one per pixel line
 - Each attribute byte uses the same format as standard (ink/paper/bright/flash)
+
+#### Three layouts, and nothing in the file to tell them apart
+
+The two halves can each be arranged in one of two ways, and real files use three
+of the four combinations. Nothing in a 12288-byte file identifies which, and the
+extension does not settle it either: `.mlt` files exist in more than one layout,
+and multicolor pictures are distributed under `.scr` as well.
+
+| Layout | Bitmap at 0 | Attributes at 6144 | Why it exists |
+|--------|-------------|--------------------|---------------|
+| Standard MLT | ZX-interleaved | linear, row 0 first | The bitmap goes straight to the screen; the attributes are fed to the player a row at a time, so a flat array is what it wants |
+| Multicolor (`.mc`) | linear | linear | Written by tools that keep both halves in plain row order and interleave on load |
+| Screen-order attributes | ZX-interleaved | ZX-interleaved | The player `LDIR`s the attribute block straight out of the file into a buffer it then reads in screen order, so storing it that way saves the conversion |
+
+"ZX-interleaved" means the ordinary Spectrum screen addressing -- third, then
+pixel line within the character row, then character row -- applied to a
+6144-byte block. For the attribute half it is the same permutation of rows; the
+32 bytes within a row stay together in every layout.
+
+Read a file under the wrong layout and the picture is still recognisable --
+roughly the right colors in roughly the right places -- but broken into
+horizontal dashes, because each pixel row is taking its colors from a row some
+distance away.
+
+#### Telling them apart
+
+There is no signature, so a loader either asks or guesses. A guess that works
+well enough to be worth offering as a default: **a real picture is coherent down
+the screen.** Neighbouring pixel rows share most of their attributes -- that is
+the very property an 8 x 1 player depends on, since it only has time to rewrite
+a few cells per scanline. Read the block in the wrong order and that coherence
+collapses.
+
+So: for each candidate layout, count the attribute cells that differ between
+each pixel row and the one above it, and average over the picture. The lowest
+average is the likely layout. Measured on two files whose layout is known:
+
+| File | attrs read linear | attrs read screen-order |
+|------|-------------------|-------------------------|
+| a standard `.mlt` | **10.4** | 15.7 |
+| a screen-order `.scr` | 17.1 | **14.9** |
+
+It points the right way in both cases, but the margin is not always wide, so it
+is a hint rather than a verdict -- worth pre-selecting, not worth deciding on
+silently.
+
+#### Displaying 8 x 1 Multicolor in Real Time
+
+The file format is the easy part. The screen has 24 attribute rows and an 8 x 1 picture wants 192, so the attribute line the beam is about to read has to be rewritten on every scanline, in step with the beam. Whether a given picture can be shown therefore depends on the picture itself.
+
+On a **Pentagon 128K** the budget is 224 T-states per scanline (71680 T a frame over 320 lines), all of them usable -- Pentagon has no memory contention, where a 48K/128K Spectrum loses much of the screen period to ULA wait states. Within that:
+
+- `push rr` writes two attribute bytes for 11 T with SP pointed into the attribute line: 5.5 T a byte, the fastest store on the chip. Rewriting all 32 cells is 16 pushes = 176 T
+- The values cannot be fetched from memory fast enough. `pop` would fight the stack writes, `ldi` costs 16 T for one byte, and `ld bc,(nn)` is 20 T for two -- twice the price of the 10 T immediate, and it needs its address baked in just the same. So the colors arrive as immediate operands and the player is unrolled code: about 2 bytes of code per attribute byte, ~12 KB for a screen. The player *is* the picture
+- That makes each distinct color pair in a row cost one `ld rr,nn` = 10 T. With BC, DE, HL, their shadow copies and IX/IY there are eight pairs to hold values in, so a row needing more than eight starts reloading. Measured: a full 32-cell rewrite costs 206 T in a single color pair, 216 T in two and 362 T in sixteen -- so rewriting every cell of a row **is** possible, but only in one or two colors. Past that an 8 x 1 picture lives on rows differing little from the one above
+- Pushes descend through memory, so they run right to left while the beam runs left to right. The ULA latches the attributes for an aligned cell pair *2k, 2k+1* at 8*k* T-states into the screen period, so one unbroken run is trapped between two events: it cannot start before the beam has finished with the **rightmost** pair of the previous line (*t* = -104) and must end before this line needs the **leftmost** (*t* = 0). That window is only 104 T, and sixteen pushes take 176 T
+- **The cure is to cut the run.** Re-point SP and write the low pairs first, and each part gets its own window for one extra `ld sp,nn` = 10 T. Sixteen pushes in two runs is 206 T and fits; the same two runs emitted high-pairs-first does not. The order of the parts is the whole trick
+- Cells that did not change from the row above need no write at all, so direct `ld (hl),r` stores -- 11 T for one cell, hopeless for a full row at 352 T -- win outright on rows that differ from the previous one in only a few places
+- **No single strategy wins a row.** `push` writes two cells for 11 T and moves its own pointer, which nothing else on a Z80 matches -- but it descends while the ULA reads ascending, and it rewrites whole aligned pairs. Measured on real 8×1 art, roughly half the runs of changed cells are a single cell, where a byte store wins, and three quarters straddle a pair boundary. So the cheapest row mixes them: push the aligned runs, store the singletons, and write a color used only once straight from the instruction with `ld (hl),n` rather than spending a register on it.
+- **One row in eight gets lead time.** The ULA reads attribute line *r* only while the beam is inside character row *r*, so that line is idle for the whole of character row *r-1* -- eight scanlines, 1792 T. The first pixel row of a character row can therefore be prepared a character row in advance, and is not bound to a single scanline. The other seven are: each is read one line after the last write to the same line. The useful part of that lead time is smaller than it looks, though: only the first scanline of the character row above is genuinely free (its own attributes were written a character row earlier), and the seven after it are already spending their registers on their own writes, so a lead-in that spills past that one free line has to reload its colors every time it resumes
+
+The practical consequence for artists: in 8 x 1, **vertical** color runs are cheap and **horizontal** color variety is expensive, which is the opposite of the intuition 8 x 8 attributes train. Arbitrary 8 x 1 photographs generally cannot be displayed in real time on a Pentagon; 8 x 1 effects in demos are either generated with limited color variety per line, or drop to 8 x 2 (IFL) where the same 32 writes have two scanlines to happen in. The one row in eight that gets a whole character row of lead time is the exception, and a picture can spend its sharpest color changes there for free.
+
+SpectraLab can run this calculation over a loaded MLT picture and mark the rows that do not fit -- see Settings in the application help.
 
 ---
 
@@ -560,7 +625,7 @@ Offset  Size   Content
 ```
 
 - File extension: `.mlt` (detected by size 12352)
-- Unlike standard MLT (which stores attributes in linear row-major order), MLT+ULA+ stores both bitmap and attributes using ZX-interleaved addressing (the same thirds-based interleaving used for the bitmap area in standard SCR)
+- MLT+ULA+ always stores both bitmap and attributes using ZX-interleaved addressing (the same thirds-based interleaving used for the bitmap area in standard SCR). Plain MLT is not fixed this way -- it is found with its attributes either linear or ZX-interleaved, which is why the 12288-byte case has to be disambiguated; at 12352 bytes the size itself identifies the format and the layout with it
 - The attribute byte selects colors from the ULA+ palette instead of the fixed ZX Spectrum palette:
 
 ```
@@ -694,6 +759,21 @@ Offset  Size   Content
 - On real hardware, the two frames alternate at 50 Hz, relying on persistence of vision to blend the colors
 
 With two frames, the theoretical maximum is 15 x 15 = 225 color combinations per cell (in practice, fewer distinct colors are perceivable).
+
+**What the blend actually looks like**: the obvious model — average the two frames' sRGB values — is
+wrong twice over. An optical mix averages *emitted light*, so the average belongs in linear light, and
+a real machine's phosphors and the 50 Hz alternation do not give the linear answer either. Jari Komppa
+measured all 192 blends from a real Spectrum on a CRT for
+[img2spectrum](https://github.com/jarikomppa/img2spec), and they are worth knowing before trusting the
+theoretical palette:
+
+- measured black is `(16, 13, 17)`, not `(0, 0, 0)`
+- measured bright white is `(216, 210, 206)`, not `(255, 255, 255)`
+- red + yellow reads as `(188, 85, 10)`, where the sRGB average would say `(205, 103, 0)`
+
+A converter that picks color pairs against the arithmetic mean is therefore aiming at the wrong
+target, most visibly in the midtones, which come out too light.
+
 
 **Flickering**: Both Gigascreen and RGB3 (tricolor) formats produce strong visible flicker on real hardware. In the CRT era, the slow phosphor decay of television sets partially blended the alternating frames, making the effect more tolerable to the human eye. Later, various hardware modifications appeared with different degrees of success at reducing the flicker. Regardless, on a classic ZX Spectrum 48/128 these formats are a real pain to watch.
 
@@ -2046,7 +2126,7 @@ Bitmaps use **1 bit per pixel**, packed 8 pixels per byte, **MSB-first** (bit 7 
 
 ```
 Bitmap:  32 bytes (2 cells wide x 2 cells tall x 8 lines)
-Attrs:   16 bytes (2 x 2 cells x 4 attr rows per cell, 8x2 multicolour)
+Attrs:   16 bytes (2 x 2 cells x 4 attr rows per cell, 8x2 multicolor)
 Total:   48 bytes
 ```
 
@@ -2056,7 +2136,7 @@ File extension: `.btile`
 
 ```
 Bitmap:  48 bytes (3 cells wide x 2 cells tall x 8 lines)
-Attrs:   24 bytes (3 x 2 cells x 4 attr rows per cell, 8x2 multicolour)
+Attrs:   24 bytes (3 x 2 cells x 4 attr rows per cell, 8x2 multicolor)
 Total:   72 bytes
 ```
 
@@ -2203,7 +2283,7 @@ Quick-reference table for identifying formats by file size when no file extensio
 | 9216         | IFL          | 8 x 2 multicolor                  |
 | 11136        | BSC          | Border screen (384 x 304)         |
 | 11904        | BMC4         | 8 x 4 multicolor + border         |
-| 12288        | MLT / SLR    | 8 x 1 multicolor / Next LoRes 128×96 (ambiguous) |
+| 12288        | MLT / SLR    | 8 x 1 multicolor / Next LoRes 128×96 (ambiguous) — and MLT itself has three possible internal layouts, see the MLT section |
 | 12352        | MLT+ULA+     | 8 x 1 multicolor + 64-byte palette |
 | 13824        | Gigascreen   | Dual-frame 50 Hz                   |
 | 16128        | GMX160       | Scorpion 160×200 attribute-only ("GMX\x0F" header) |

@@ -19,7 +19,8 @@
  * Arrow keys: 'scroll' | 'cursor'
  * Cursor style: 'corners' | 'dots' | 'box'
  * Fullscreen preview: 'auto' | 'show' | 'hide'
- * @type {{wheel:string, ctrlWheel:string, shiftWheel:string, middleDrag:string, altLeft:string, altRight:string, arrowKeys:string, cursorStyle:string, fullscreenPreview:string}}
+ * Multicolour timing check (8x1/MLT, Pentagon 320T line): 'off' | 'on'
+ * @type {{wheel:string, ctrlWheel:string, shiftWheel:string, middleDrag:string, altLeft:string, altRight:string, arrowKeys:string, cursorStyle:string, fullscreenPreview:string, mltTiming:string}}
  */
 const MOUSE_SETTINGS_DEFAULTS = {
   wheel: 'zoom',
@@ -30,12 +31,13 @@ const MOUSE_SETTINGS_DEFAULTS = {
   altRight: 'recolor',
   arrowKeys: 'scroll',
   cursorStyle: 'corners',
-  fullscreenPreview: 'auto'
+  fullscreenPreview: 'auto',
+  mltTiming: 'off'
 };
 
 const MOUSE_SETTINGS_KEY = 'spectraLabMouseSettings';
 
-/** @type {{wheel:string, ctrlWheel:string, shiftWheel:string, middleDrag:string, altLeft:string, altRight:string, arrowKeys:string, cursorStyle:string, fullscreenPreview:string}} */
+/** @type {{wheel:string, ctrlWheel:string, shiftWheel:string, middleDrag:string, altLeft:string, altRight:string, arrowKeys:string, cursorStyle:string, fullscreenPreview:string, mltTiming:string}} */
 let mouseSettings = Object.assign({}, MOUSE_SETTINGS_DEFAULTS);
 
 /**
@@ -173,7 +175,8 @@ const SETTINGS_SELECT_MAP = {
   settingsAltRight: 'altRight',
   settingsArrowKeys: 'arrowKeys',
   settingsCursorStyle: 'cursorStyle',
-  settingsFullscreenPreview: 'fullscreenPreview'
+  settingsFullscreenPreview: 'fullscreenPreview',
+  settingsMltTiming: 'mltTiming'
 };
 
 /**
@@ -230,6 +233,9 @@ function initSettingsDialog() {
       if (typeof editorActive !== 'undefined' && editorActive &&
           typeof editorRender === 'function') {
         editorRender();
+      } else if (typeof renderScreen === 'function') {
+        // The Pentagon check is a viewer overlay too, so repaint either way
+        renderScreen();
       }
     });
   });

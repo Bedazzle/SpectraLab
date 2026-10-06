@@ -167,6 +167,98 @@ let importPreBlurRadius = 0;
 /** @type {string} Color strategy for ink/paper pair selection: 'exhaustive'|'blend'|'pca' */
 let importColorStrategy = 'blend';
 
+/** @type {string} Threshold matrix id from ORDERED_MATRICES, or 'auto' for the method's own */
+let importOrderedMatrix = 'auto';
+
+/** @type {string} Error diffusion kernel id from ED_KERNELS, or 'auto' for the method's own */
+let importEdKernel = 'auto';
+
+/** @type {string} How two gigascreen frames blend: 'measured'|'linear'|'srgb' */
+let importGigaBlendMode = 'measured';
+
+/** Dither methods that threshold against a matrix, so the Matrix picker applies. */
+const ORDERED_DITHER_METHODS = [
+  'attr-ordered', 'cell-ordered', 'cell-ordered2', 'cell-ordered8', 'cell-pattern',
+  'ordered', 'ordered2', 'ordered8', 'pattern'
+];
+
+/** Dither methods that diffuse error through a kernel, so the Kernel picker applies. */
+const DIFFUSION_DITHER_METHODS = [
+  'attr-floyd', 'cell-floyd', 'cell-atkinson', 'cell-serpentine', 'cell-sierra2',
+  'floyd-steinberg', 'jarvis', 'stucki', 'burkes', 'sierra', 'sierra-lite', 'sierra2',
+  'serpentine', 'atkinson'
+];
+
+/**
+ * Methods that can use a variable (level-adaptive) kernel at all: the error has to be diffused
+ * through the three fixed offsets those kernels are defined on.
+ */
+const VARIABLE_KERNEL_METHODS = [
+  'attr-floyd',
+  'floyd-steinberg', 'jarvis', 'stucki', 'burkes', 'sierra', 'sierra-lite', 'sierra2',
+  'serpentine', 'atkinson'
+];
+
+/**
+ * Methods where Zhou-Fang's threshold modulation means something. It modulates the threshold of
+ * a two-colour decision, which only the attribute-aware pass makes; everywhere else the pixel
+ * goes to its nearest palette colour and there is no threshold to modulate.
+ */
+const THRESHOLD_MODULATION_METHODS = ['attr-floyd'];
+
+/**
+ * The variable kernel picked in the Kernel dropdown, if any.
+ * @returns {string} 'ostromoukhov', 'zhoufang', or '' for a fixed kernel
+ */
+function resolveEdVariable() {
+  if (typeof VARIABLE_ED_KERNELS === 'undefined') return '';
+  return VARIABLE_ED_KERNELS[importEdKernel] ? importEdKernel : '';
+}
+
+/**
+ * Threshold matrix to use: the one picked in the Matrix dropdown, else the one the
+ * dither method brings with it. Matrices need not be square (see ORDERED_MATRICES).
+ * @param {number[][]} fallbackRows - the method's own matrix
+ * @param {number} fallbackDivisor - its divisor
+ * @returns {{rows: number[][], mw: number, mh: number, divisor: number}}
+ */
+function resolveOrderedMatrix(fallbackRows, fallbackDivisor) {
+  let rows = fallbackRows, divisor = fallbackDivisor;
+  if (importOrderedMatrix !== 'auto' && typeof ORDERED_MATRICES !== 'undefined') {
+    const m = ORDERED_MATRICES[importOrderedMatrix];
+    if (m) { rows = m.rows; divisor = m.divisor; }
+  }
+  return { rows, mw: rows[0].length, mh: rows.length, divisor };
+}
+
+/**
+ * Threshold offset function for the global ordered methods, which work in 0-255 units and
+ * expect a signed offset around zero. Keeps the unbiased v/divisor form the existing methods
+ * use, so 'auto' reproduces their output exactly.
+ * @param {number[][]} fallbackRows - the method's own matrix
+ * @param {number} fallbackDivisor - its divisor
+ * @returns {function(number, number): number}
+ */
+function orderedThresholdFn(fallbackRows, fallbackDivisor) {
+  const m = resolveOrderedMatrix(fallbackRows, fallbackDivisor);
+  return (x, y) => (m.rows[y % m.mh][x % m.mw] / m.divisor - 0.5) * 64;
+}
+
+/**
+ * Error diffusion kernel to use: the one picked in the Kernel dropdown, else the one the
+ * dither method brings with it.
+ * @param {Array<[number, number, number]>} fallbackKernel - the method's own kernel
+ * @returns {Array<[number, number, number]>}
+ */
+function resolveEdKernel(fallbackKernel) {
+  if (resolveEdVariable()) return fallbackKernel;   // handled separately, per pixel
+  if (importEdKernel !== 'auto' && typeof ED_KERNELS !== 'undefined') {
+    const k = ED_KERNELS[importEdKernel];
+    if (k) return k.kernel;
+  }
+  return fallbackKernel;
+}
+
 /**
  * Count how many palette colors are currently enabled
  * @returns {number}
@@ -729,6 +821,19 @@ const BAYER_8X8 = [
  * @param {boolean} [serpentine=false] - alternate row direction
  */
 function errorDiffusionDither(pixels, width, height, palette, kernel, strength = 1, serpentine = false) {
+  const variable = resolveEdVariable();
+  kernel = resolveEdKernel(kernel);
+  // Ostromoukhov indexes his weights by the pixel's own tone, not by the value the running error
+  // has turned it into, so the levels are taken before anything is diffused. With a colour
+  // palette the pixel has no single tone; its luminance is the natural stand-in.
+  let srcLevel = null;
+  if (variable) {
+    srcLevel = new Float32Array(width * height);
+    for (let i = 0; i < width * height; i++) {
+      const k = i * 3;
+      srcLevel[i] = (0.299 * pixels[k] + 0.587 * pixels[k + 1] + 0.114 * pixels[k + 2]) / 255;
+    }
+  }
   for (let y = 0; y < height; y++) {
     const reverse = serpentine && (y % 2 === 1);
     const startX = reverse ? width - 1 : 0;
@@ -756,6 +861,21 @@ function errorDiffusionDither(pixels, width, height, palette, kernel, strength =
       const errB = (oldB - newColor[2]) * strength;
 
       if (strength === 0) continue;
+
+      if (variable) {
+        const w = variableEdWeights(srcLevel[y * width + x], variable);
+        for (let i = 0; i < 3; i++) {
+          const nx = x + VARIABLE_ED_OFFSETS[i][0] * dir;
+          const ny = y + VARIABLE_ED_OFFSETS[i][1];
+          if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+            const nIdx = (ny * width + nx) * 3;
+            pixels[nIdx] += errR * w[i];
+            pixels[nIdx + 1] += errG * w[i];
+            pixels[nIdx + 2] += errB * w[i];
+          }
+        }
+        continue;
+      }
 
       for (const [dx, dy, weight] of kernel) {
         const nx = x + dx * dir;
@@ -817,6 +937,8 @@ for (let i = 0; i < 256; i++) ATTR_GAMMA_LUT[i] = Math.pow(i / 255, ATTR_DITHER_
  * @returns {Uint8Array} Per-pixel ink flags (1 = ink, 0 = paper), width * height
  */
 function attrAwareErrorDiffusion(pixels, width, height, cellPairs, cellW, cellH, kernel) {
+  const variable = resolveEdVariable();
+  kernel = resolveEdKernel(kernel);
   const cellCols = Math.ceil(width / cellW);
   const inkFlags = new Uint8Array(width * height);
   const strength = ditherStrength;
@@ -833,6 +955,32 @@ function attrAwareErrorDiffusion(pixels, width, height, cellPairs, cellW, cellH,
     const ar = pr - ir, ag = pg - ig, ab = pb - ib;
     return { ir, ig, ib, pr, pg, pb, ar, ag, ab, alen2: ar * ar + ag * ag + ab * ab };
   });
+
+  // A variable kernel picks its weights by the pixel's OWN level, not by what the running error
+  // has made of it, so those are taken now, before the scan starts. The level is the pixel's
+  // position on its cell's ink->paper segment, which is exactly the tone a two-colour decision
+  // is made on. Ostromoukhov's table is symmetric about mid grey, so it does not matter which
+  // end of the segment counts as zero.
+  const rng = variable ? makeDitherRng(0x5EEDC0DE) : null;
+  const modulate = variable === 'zhoufang';
+  let srcLevel = null;
+  if (variable) {
+    srcLevel = new Float32Array(width * height);
+    for (let y = 0; y < height; y++) {
+      const rowCell = Math.floor(y / cellH) * cellCols;
+      for (let x = 0; x < width; x++) {
+        const P = linPairs[rowCell + Math.floor(x / cellW)];
+        let t = 0.5;
+        if (P.alen2 >= 1) {
+          const idx = (y * width + x) * 3;
+          t = ((pixels[idx] - P.ir) * P.ar + (pixels[idx + 1] - P.ig) * P.ag +
+               (pixels[idx + 2] - P.ib) * P.ab) / P.alen2;
+          if (t < 0) t = 0; else if (t > 1) t = 1;
+        }
+        srcLevel[y * width + x] = t;
+      }
+    }
+  }
 
   for (let y = 0; y < height; y++) {
     const reverse = ditherSerpentine && (y % 2 === 1);
@@ -852,11 +1000,14 @@ function attrAwareErrorDiffusion(pixels, width, height, cellPairs, cellW, cellH,
 
       const cellX = Math.floor(x / cellW);
       const P = linPairs[rowCell + cellX];
-      // Quantize by projection onto the ink->paper axis (t >= 0.5 -> paper)
+      // Quantize by projection onto the ink->paper axis (t >= 0.5 -> paper). Zhou-Fang jitters
+      // that midpoint per pixel, by more in the midtones and by nothing at the ends, which
+      // breaks up the regular patterns a fixed threshold leaves. The error feedback below then
+      // corrects whatever tone the jitter cost.
       let useInk, newR, newG, newB;
       if (P.alen2 >= 1) {
         const t = ((oldR - P.ir) * P.ar + (oldG - P.ig) * P.ag + (oldB - P.ib) * P.ab) / P.alen2;
-        useInk = t < 0.5;
+        useInk = t < (modulate ? zhouFangThreshold(srcLevel[y * width + x], rng) : 0.5);
       } else {
         useInk = false;
       }
@@ -885,6 +1036,23 @@ function attrAwareErrorDiffusion(pixels, width, height, cellPairs, cellW, cellH,
         // Flat (single-color) cell: keep only the luminance component
         const k = (errR + errG + errB) / 3;
         errR = k; errG = k; errB = k;
+      }
+
+      if (variable) {
+        const vw = variableEdWeights(srcLevel[y * width + x], variable);
+        for (let i = 0; i < 3; i++) {
+          const nx = x + VARIABLE_ED_OFFSETS[i][0] * dir;
+          const ny = y + VARIABLE_ED_OFFSETS[i][1];
+          if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+            const sameCell = Math.floor(nx / cellW) === cellX && Math.floor(ny / cellH) === cellRow;
+            const w = vw[i] * (sameCell ? 1 : ATTR_CROSS_CELL_DAMP);
+            const nIdx = (ny * width + nx) * 3;
+            pixels[nIdx] += errR * w;
+            pixels[nIdx + 1] += errG * w;
+            pixels[nIdx + 2] += errB * w;
+          }
+        }
+        continue;
       }
 
       for (const [dx, dy, weight] of kernel) {
@@ -932,9 +1100,10 @@ function attrAwareOrderedDither(pixels, width, height, cellPairs, cellW, cellH) 
     return { ir, ig, ib, ar, ag, ab, alen2: ar * ar + ag * ag + ab * ab };
   });
 
+  const M = resolveOrderedMatrix(BAYER_8X8, 64);
   for (let y = 0; y < height; y++) {
     const rowCell = Math.floor(y / cellH) * cellCols;
-    const bayerRow = BAYER_8X8[y & 7];
+    const mRow = M.rows[y % M.mh];
     for (let x = 0; x < width; x++) {
       const idx = (y * width + x) * 3;
       const P = linPairs[rowCell + Math.floor(x / cellW)];
@@ -942,7 +1111,7 @@ function attrAwareOrderedDither(pixels, width, height, cellPairs, cellW, cellH) 
       const t = ((toWork(pixels[idx]) - P.ir) * P.ar +
                  (toWork(pixels[idx + 1]) - P.ig) * P.ag +
                  (toWork(pixels[idx + 2]) - P.ib) * P.ab) / P.alen2;
-      const threshold = (bayerRow[x & 7] + 0.5) / 64;
+      const threshold = (mRow[x % M.mw] + 0.5) / M.divisor;
       if (t < threshold) inkFlags[y * width + x] = 1;
     }
   }
@@ -1021,7 +1190,7 @@ function sierraLiteDither(pixels, width, height, palette) {
  * @param {boolean} serpentine
  */
 function orderedHybridDither(pixels, width, height, palette, thresholdFn, strength, serpentine) {
-  const kernel = FS_KERNEL;
+  const kernel = resolveEdKernel(FS_KERNEL);
   for (let y = 0; y < height; y++) {
     const reverse = serpentine && (y % 2 === 1);
     const startX = reverse ? width - 1 : 0;
@@ -1074,7 +1243,7 @@ function orderedHybridDither(pixels, width, height, palette, thresholdFn, streng
  */
 function ordered2Dither(pixels, width, height, palette) {
   orderedHybridDither(pixels, width, height, palette,
-    (x, y) => (BAYER_2X2[y % 2][x % 2] / 4 - 0.5) * 64,
+    orderedThresholdFn(BAYER_2X2, 4),
     ditherStrength, ditherSerpentine);
 }
 
@@ -1083,7 +1252,7 @@ function ordered2Dither(pixels, width, height, palette) {
  */
 function orderedDither(pixels, width, height, palette) {
   orderedHybridDither(pixels, width, height, palette,
-    (x, y) => (BAYER_4X4[y % 4][x % 4] / 16 - 0.5) * 64,
+    orderedThresholdFn(BAYER_4X4, 16),
     ditherStrength, ditherSerpentine);
 }
 
@@ -1092,7 +1261,7 @@ function orderedDither(pixels, width, height, palette) {
  */
 function ordered8Dither(pixels, width, height, palette) {
   orderedHybridDither(pixels, width, height, palette,
-    (x, y) => (BAYER_8X8[y % 8][x % 8] / 64 - 0.5) * 64,
+    orderedThresholdFn(BAYER_8X8, 64),
     ditherStrength, ditherSerpentine);
 }
 
@@ -1357,7 +1526,7 @@ const CLUSTER_8X8 = [
 
 function patternDither(pixels, width, height, palette) {
   orderedHybridDither(pixels, width, height, palette,
-    (x, y) => (CLUSTER_8X8[y % 8][x % 8] - 32) * 4,
+    orderedThresholdFn(CLUSTER_8X8, 64),
     ditherStrength, ditherSerpentine);
 }
 
@@ -1839,12 +2008,15 @@ function findBestPairPCA(colors, palette) {
  * Dispatch to the active color strategy for ink/paper pair selection.
  * @param {number[][]} colors - Array of [R,G,B] pixel colors in the block
  * @param {{regular: number[][], bright: number[][]}} palette
+ * @param {number} [baseX=0] - Block's left edge in the picture (eye model only: threshold phase)
+ * @param {number} [baseY=0] - Block's top edge in the picture
  * @returns {{ink: number, paper: number, bright: boolean, inkRgb: number[], paperRgb: number[]}}
  */
-function findBestPairForBlock(colors, palette) {
+function findBestPairForBlock(colors, palette, baseX = 0, baseY = 0) {
   switch (importColorStrategy) {
     case 'blend': return findBestPairBlendFit(colors, palette);
     case 'pca': return findBestPairPCA(colors, palette);
+    case 'eye': return findBestPairEyeModel(colors, palette, baseX, baseY);
     default: return findBestPairExhaustive(colors, palette);
   }
 }
@@ -1875,7 +2047,7 @@ function findCellColors(pixels, cellX, cellY, width, palette) {
     }
   }
 
-  return findBestPairForBlock(cellColors, palette);
+  return findBestPairForBlock(cellColors, palette, cellX * 8, cellY * 8);
 }
 
 /**
@@ -2032,27 +2204,37 @@ function ditherCellAtkinson(pixels, cellX, cellY, width, inkRgb, paperRgb) {
  * @returns {Uint8Array} 8-byte bitmap for the cell
  */
 function ditherCellOrdered(pixels, cellX, cellY, width, inkRgb, paperRgb) {
-  return ditherCellOrderedGeneric(pixels, cellX, cellY, width, inkRgb, paperRgb, BAYER_4X4, 4, 16);
+  return ditherCellOrderedGeneric(pixels, cellX, cellY, width, inkRgb, paperRgb, resolveOrderedMatrix(BAYER_4X4, 16));
 }
 
 /**
  * Apply ordered 2x2 dithering within a single 8x8 cell using only 2 colors
  */
 function ditherCellOrdered2(pixels, cellX, cellY, width, inkRgb, paperRgb) {
-  return ditherCellOrderedGeneric(pixels, cellX, cellY, width, inkRgb, paperRgb, BAYER_2X2, 2, 4);
+  return ditherCellOrderedGeneric(pixels, cellX, cellY, width, inkRgb, paperRgb, resolveOrderedMatrix(BAYER_2X2, 4));
 }
 
 /**
  * Apply ordered 8x8 dithering within a single 8x8 cell using only 2 colors
  */
 function ditherCellOrdered8(pixels, cellX, cellY, width, inkRgb, paperRgb) {
-  return ditherCellOrderedGeneric(pixels, cellX, cellY, width, inkRgb, paperRgb, BAYER_8X8, 8, 64);
+  return ditherCellOrderedGeneric(pixels, cellX, cellY, width, inkRgb, paperRgb, resolveOrderedMatrix(BAYER_8X8, 64));
 }
 
 /**
- * Generic ordered dithering within a single 8x8 cell using any Bayer matrix
+ * Generic ordered dithering within a single 8x8 cell using any threshold matrix.
+ * The matrix need not be square or 8-aligned: it tiles the picture, not the cell, so a 5x5 or
+ * 14x14 screen keeps its pattern running across cell boundaries.
+ * @param {Float32Array} pixels - Source pixels (full image)
+ * @param {number} cellX - Cell X position
+ * @param {number} cellY - Cell Y position
+ * @param {number} width - Image width
+ * @param {number[]} inkRgb - Ink color RGB
+ * @param {number[]} paperRgb - Paper color RGB
+ * @param {{rows: number[][], mw: number, mh: number, divisor: number}} m - threshold matrix
+ * @returns {Uint8Array} 8-byte bitmap for the cell
  */
-function ditherCellOrderedGeneric(pixels, cellX, cellY, width, inkRgb, paperRgb, matrix, size, divisor) {
+function ditherCellOrderedGeneric(pixels, cellX, cellY, width, inkRgb, paperRgb, m) {
   const bitmap = new Uint8Array(8);
 
   // Precompute ink-paper axis for linear projection
@@ -2080,8 +2262,8 @@ function ditherCellOrderedGeneric(pixels, cellX, cellY, width, inkRgb, paperRgb,
         inkAmount = 0.5;
       }
 
-      // Bayer threshold scaled by dither strength
-      const rawT = (matrix[globalY % size][globalX % size] + 0.5) / divisor;
+      // Matrix threshold scaled by dither strength
+      const rawT = (m.rows[globalY % m.mh][globalX % m.mw] + 0.5) / m.divisor;
       const t = 0.5 + (rawT - 0.5) * ditherStrength;
       if (inkAmount > t) {
         bitmap[dy] |= (0x80 >> dx);
@@ -2379,6 +2561,7 @@ function ditherCellPattern(pixels, cellX, cellY, width, inkRgb, paperRgb) {
   // Use co-prime multipliers to ensure good distribution
   const phaseX = (cellX * 3) % 8;
   const phaseY = (cellY * 5) % 8;
+  const pm = resolveOrderedMatrix(CLUSTER_8X8, 64);
 
   for (let dy = 0; dy < 8; dy++) {
     for (let dx = 0; dx < 8; dx++) {
@@ -2396,9 +2579,9 @@ function ditherCellPattern(pixels, cellX, cellY, width, inkRgb, paperRgb) {
       t = Math.max(0, Math.min(1, t));
 
       // Use clustered dot pattern with phase shift to avoid grid effect
-      const patternY = (dy + phaseY) % 8;
-      const patternX = (dx + phaseX) % 8;
-      const rawThreshold = (CLUSTER_8X8[patternY][patternX] + 0.5) / 64;
+      const patternY = (dy + phaseY) % pm.mh;
+      const patternX = (dx + phaseX) % pm.mw;
+      const rawThreshold = (pm.rows[patternY][patternX] + 0.5) / pm.divisor;
       const threshold = 0.5 + (rawThreshold - 0.5) * ditherStrength;
       const useInk = inkLum < paperLum ? (t < threshold) : (t >= (1 - threshold));
 
@@ -2590,7 +2773,7 @@ function analyzeCell(pixels, cellX, cellY, width, pairSourcePixels = null) {
     searchColors = cellColors;
   }
 
-  const best = findBestPairForBlock(searchColors, palette);
+  const best = findBestPairForBlock(searchColors, palette, cellX * 8, cellY * 8);
 
   // Generate bitmap using ORIGINAL pixels for sharp detail
   const bestPal = best.bright ? palette.bright : palette.regular;
@@ -4097,7 +4280,7 @@ function findBlockColors2(pixels, blockX, blockY, width, palette) {
     }
   }
 
-  return findBestPairForBlock(blockColors, palette);
+  return findBestPairForBlock(blockColors, palette, blockX * 8, blockY * 2);
 }
 
 /**
@@ -4128,7 +4311,7 @@ function analyzeBlock2(pixels, blockX, blockY, width) {
     ? blurBlockPixels(pixels, blockX * 8, blockY * 2, 8, 2, width, height, importPreBlurRadius)
     : blockColors;
 
-  const best = findBestPairForBlock(searchColors, palette);
+  const best = findBestPairForBlock(searchColors, palette, blockX * 8, blockY * 2);
 
   // Generate bitmap using ORIGINAL pixels for sharp detail
   const bestPal = best.bright ? palette.bright : palette.regular;
@@ -4210,7 +4393,7 @@ function ditherBlock2FloydSteinberg(pixels, blockX, blockY, width, inkRgb, paper
       const oldG = blockPixels[idx + 1];
       const oldB = blockPixels[idx + 2];
 
-      const nearest = findNearestPaletteColor([oldR, oldG, oldB], twoColorPalette);
+      const nearest = findNearestColor([oldR, oldG, oldB], twoColorPalette);
       const newR = twoColorPalette[nearest][0];
       const newG = twoColorPalette[nearest][1];
       const newB = twoColorPalette[nearest][2];
@@ -4255,7 +4438,8 @@ function ditherBlock2FloydSteinberg(pixels, blockX, blockY, width, inkRgb, paper
 }
 
 /**
- * Generic ordered dithering within an 8×H block using any Bayer matrix
+ * Generic ordered dithering within an 8×H block using any threshold matrix.
+ * The matrix tiles the picture, not the block, so its pattern runs on across block edges.
  * @param {Float32Array} pixels - Source pixels (full image)
  * @param {number} blockX - Block X (column)
  * @param {number} blockStartY - First pixel row of the block
@@ -4263,12 +4447,10 @@ function ditherBlock2FloydSteinberg(pixels, blockX, blockY, width, inkRgb, paper
  * @param {number} width - Image width
  * @param {number[]} inkRgb - Ink color RGB
  * @param {number[]} paperRgb - Paper color RGB
- * @param {number[][]} matrix - Bayer matrix
- * @param {number} size - Matrix dimension
- * @param {number} divisor - Matrix normalizer (size*size)
+ * @param {{rows: number[][], mw: number, mh: number, divisor: number}} m - threshold matrix
  * @returns {Uint8Array|number} bitmap (Uint8Array for H>1, number for H=1)
  */
-function ditherBlockOrderedGeneric(pixels, blockX, blockStartY, blockH, width, inkRgb, paperRgb, matrix, size, divisor) {
+function ditherBlockOrderedGeneric(pixels, blockX, blockStartY, blockH, width, inkRgb, paperRgb, m) {
   const singleRow = (blockH === 1);
   const bitmap = singleRow ? 0 : new Uint8Array(blockH);
   let bitmapVal = 0;
@@ -4299,8 +4481,8 @@ function ditherBlockOrderedGeneric(pixels, blockX, blockStartY, blockH, width, i
         inkAmount = 0.5;
       }
 
-      // Bayer threshold scaled by dither strength
-      const rawT = (matrix[globalY % size][globalX % size] + 0.5) / divisor;
+      // Matrix threshold scaled by dither strength
+      const rawT = (m.rows[globalY % m.mh][globalX % m.mw] + 0.5) / m.divisor;
       const t = 0.5 + (rawT - 0.5) * ditherStrength;
       if (inkAmount > t) {
         rowBits |= (0x80 >> dx);
@@ -4399,6 +4581,7 @@ function ditherBlockThreshold(pixels, blockX, blockStartY, blockH, width, inkRgb
 
   const phaseX = (blockX * 3) % 8;
   const phaseY = (Math.floor(blockStartY / blockH) * 5) % 8;
+  const pm = resolveOrderedMatrix(CLUSTER_8X8, 64);
 
   for (let dy = 0; dy < blockH; dy++) {
     let rowBits = 0;
@@ -4415,9 +4598,9 @@ function ditherBlockThreshold(pixels, blockX, blockStartY, blockH, width, inkRgb
       if (type === 'blue-noise') {
         rawThreshold = BLUE_NOISE_16[globalY % 16][globalX % 16] / 255;
       } else { // pattern
-        const patternY = (dy + phaseY) % 8;
-        const patternX = (dx + phaseX) % 8;
-        rawThreshold = (CLUSTER_8X8[patternY][patternX] + 0.5) / 64;
+        const patternY = (dy + phaseY) % pm.mh;
+        const patternX = (dx + phaseX) % pm.mw;
+        rawThreshold = (pm.rows[patternY][patternX] + 0.5) / pm.divisor;
       }
       const threshold = 0.5 + (rawThreshold - 0.5) * ditherStrength;
       const useInk = inkLum < paperLum ? (t < threshold) : (t >= (1 - threshold));
@@ -4500,15 +4683,15 @@ const BLOCK_SIERRA2_KERNEL = [[1, 0, 4/16], [2, 0, 3/16], [-2, 1, 1/16], [-1, 1,
  * Apply ordered dithering within an 8×2 block (4x4 Bayer)
  */
 function ditherBlock2Ordered(pixels, blockX, blockY, width, inkRgb, paperRgb) {
-  return ditherBlockOrderedGeneric(pixels, blockX, blockY * 2, 2, width, inkRgb, paperRgb, BAYER_4X4, 4, 16);
+  return ditherBlockOrderedGeneric(pixels, blockX, blockY * 2, 2, width, inkRgb, paperRgb, resolveOrderedMatrix(BAYER_4X4, 16));
 }
 
 function ditherBlock2Ordered2(pixels, blockX, blockY, width, inkRgb, paperRgb) {
-  return ditherBlockOrderedGeneric(pixels, blockX, blockY * 2, 2, width, inkRgb, paperRgb, BAYER_2X2, 2, 4);
+  return ditherBlockOrderedGeneric(pixels, blockX, blockY * 2, 2, width, inkRgb, paperRgb, resolveOrderedMatrix(BAYER_2X2, 4));
 }
 
 function ditherBlock2Ordered8(pixels, blockX, blockY, width, inkRgb, paperRgb) {
-  return ditherBlockOrderedGeneric(pixels, blockX, blockY * 2, 2, width, inkRgb, paperRgb, BAYER_8X8, 8, 64);
+  return ditherBlockOrderedGeneric(pixels, blockX, blockY * 2, 2, width, inkRgb, paperRgb, resolveOrderedMatrix(BAYER_8X8, 64));
 }
 
 function ditherBlock2Atkinson(pixels, blockX, blockY, width, inkRgb, paperRgb) {
@@ -4762,7 +4945,7 @@ function findBlockColors1(pixels, blockX, y, width, palette) {
     }
   }
 
-  return findBestPairForBlock(blockColors, palette);
+  return findBestPairForBlock(blockColors, palette, blockX * 8, y);
 }
 
 /**
@@ -4785,7 +4968,7 @@ function analyzeBlock1(pixels, blockX, y, width) {
     ? blurBlockPixels(pixels, blockX * 8, y, 8, 1, width, height, importPreBlurRadius)
     : blockColors;
 
-  const best = findBestPairForBlock(searchColors, palette);
+  const best = findBestPairForBlock(searchColors, palette, blockX * 8, y);
 
   // Generate bitmap using ORIGINAL pixels for sharp detail
   const bestPal = best.bright ? palette.bright : palette.regular;
@@ -4864,15 +5047,15 @@ function ditherBlock1None(pixels, blockX, y, width, inkRgb, paperRgb) {
  * Ordered dithering for 8×1 block (4x4 Bayer)
  */
 function ditherBlock1Ordered(pixels, blockX, y, width, inkRgb, paperRgb) {
-  return ditherBlockOrderedGeneric(pixels, blockX, y, 1, width, inkRgb, paperRgb, BAYER_4X4, 4, 16);
+  return ditherBlockOrderedGeneric(pixels, blockX, y, 1, width, inkRgb, paperRgb, resolveOrderedMatrix(BAYER_4X4, 16));
 }
 
 function ditherBlock1Ordered2(pixels, blockX, y, width, inkRgb, paperRgb) {
-  return ditherBlockOrderedGeneric(pixels, blockX, y, 1, width, inkRgb, paperRgb, BAYER_2X2, 2, 4);
+  return ditherBlockOrderedGeneric(pixels, blockX, y, 1, width, inkRgb, paperRgb, resolveOrderedMatrix(BAYER_2X2, 4));
 }
 
 function ditherBlock1Ordered8(pixels, blockX, y, width, inkRgb, paperRgb) {
-  return ditherBlockOrderedGeneric(pixels, blockX, y, 1, width, inkRgb, paperRgb, BAYER_8X8, 8, 64);
+  return ditherBlockOrderedGeneric(pixels, blockX, y, 1, width, inkRgb, paperRgb, resolveOrderedMatrix(BAYER_8X8, 64));
 }
 
 /**
@@ -5078,6 +5261,7 @@ function ditherBlock1Pattern(pixels, blockX, y, width, inkRgb, paperRgb) {
   const range = Math.abs(inkLum - paperLum);
   const phaseX = (blockX * 3) % 8;
   const phaseY = (y * 5) % 8;
+  const pm = resolveOrderedMatrix(CLUSTER_8X8, 64);
   const s = ditherStrength;
 
   for (let dx = 0; dx < 8; dx++) {
@@ -5086,9 +5270,9 @@ function ditherBlock1Pattern(pixels, blockX, y, width, inkRgb, paperRgb) {
     const pixelLum = 0.299 * pixels[idx] + 0.587 * pixels[idx + 1] + 0.114 * pixels[idx + 2];
     let t = range > 0 ? (pixelLum - Math.min(inkLum, paperLum)) / range : 0.5;
     t = Math.max(0, Math.min(1, t));
-    const patternY = (0 + phaseY) % 8; // single row within block
-    const patternX = (dx + phaseX) % 8;
-    const rawThreshold = (CLUSTER_8X8[patternY][patternX] + 0.5) / 64;
+    const patternY = phaseY % pm.mh; // single row within block
+    const patternX = (dx + phaseX) % pm.mw;
+    const rawThreshold = (pm.rows[patternY][patternX] + 0.5) / pm.divisor;
     const threshold = 0.5 + (rawThreshold - 0.5) * s;
     const useInk = inkLum < paperLum ? (t < threshold) : (t >= (1 - threshold));
     if (useInk) bitmap |= (0x80 >> dx);
@@ -5840,7 +6024,7 @@ function findBlockColors4(pixels, blockX, blockY, width, palette) {
     }
   }
 
-  return findBestPairForBlock(blockColors, palette);
+  return findBestPairForBlock(blockColors, palette, blockX * 8, blockY * 4);
 }
 
 /**
@@ -5866,7 +6050,7 @@ function analyzeBlock4(pixels, blockX, blockY, width) {
     ? blurBlockPixels(pixels, blockX * 8, blockY * 4, 8, 4, width, height, importPreBlurRadius)
     : blockColors;
 
-  const best = findBestPairForBlock(searchColors, palette);
+  const best = findBestPairForBlock(searchColors, palette, blockX * 8, blockY * 4);
 
   // Generate bitmap using ORIGINAL pixels for sharp detail
   const bestPal = best.bright ? palette.bright : palette.regular;
@@ -5935,15 +6119,15 @@ function ditherBlock4Atkinson(pixels, blockX, blockY, width, inkRgb, paperRgb) {
 }
 
 function ditherBlock4Ordered(pixels, blockX, blockY, width, inkRgb, paperRgb) {
-  return ditherBlockOrderedGeneric(pixels, blockX, blockY * 4, 4, width, inkRgb, paperRgb, BAYER_4X4, 4, 16);
+  return ditherBlockOrderedGeneric(pixels, blockX, blockY * 4, 4, width, inkRgb, paperRgb, resolveOrderedMatrix(BAYER_4X4, 16));
 }
 
 function ditherBlock4Ordered2(pixels, blockX, blockY, width, inkRgb, paperRgb) {
-  return ditherBlockOrderedGeneric(pixels, blockX, blockY * 4, 4, width, inkRgb, paperRgb, BAYER_2X2, 2, 4);
+  return ditherBlockOrderedGeneric(pixels, blockX, blockY * 4, 4, width, inkRgb, paperRgb, resolveOrderedMatrix(BAYER_2X2, 4));
 }
 
 function ditherBlock4Ordered8(pixels, blockX, blockY, width, inkRgb, paperRgb) {
-  return ditherBlockOrderedGeneric(pixels, blockX, blockY * 4, 4, width, inkRgb, paperRgb, BAYER_8X8, 8, 64);
+  return ditherBlockOrderedGeneric(pixels, blockX, blockY * 4, 4, width, inkRgb, paperRgb, resolveOrderedMatrix(BAYER_8X8, 64));
 }
 
 function ditherBlock4Sierra2(pixels, blockX, blockY, width, inkRgb, paperRgb) {
@@ -6570,11 +6754,7 @@ function precomputeGigaQuads(allColors) {
   for (let c1 = 0; c1 < 16; c1++) {
     for (let c2 = c1; c2 < 16; c2++) {
       const bi = c1 * 16 + c2 - ((c1 * (c1 + 1)) >> 1);
-      blendedPalette[bi] = [
-        Math.round((allColors[c1][0] + allColors[c2][0]) / 2),
-        Math.round((allColors[c1][1] + allColors[c2][1]) / 2),
-        Math.round((allColors[c1][2] + allColors[c2][2]) / 2)
-      ];
+      blendedPalette[bi] = gigaBlendColor(allColors[c1], allColors[c2], c1, c2, importGigaBlendMode);
     }
   }
 
@@ -7005,11 +7185,7 @@ function precomputeGigaattrPairs(allColors) {
   for (let c1 = 0; c1 < 16; c1++) {
     for (let c2 = c1; c2 < 16; c2++) {
       const bi = gigaBlendIndex(c1, c2);
-      blendedPalette[bi] = [
-        Math.round((allColors[c1][0] + allColors[c2][0]) / 2),
-        Math.round((allColors[c1][1] + allColors[c2][1]) / 2),
-        Math.round((allColors[c1][2] + allColors[c2][2]) / 2)
-      ];
+      blendedPalette[bi] = gigaBlendColor(allColors[c1], allColors[c2], c1, c2, importGigaBlendMode);
     }
   }
 
@@ -7281,16 +7457,8 @@ function precomputeGapPairs(inkColors, paperColors, inkColors2 = null, paperColo
   for (let a = 0; a < 32; a++) {
     for (let b = 0; b < 32; b++) {
       const idx = a * 32 + b;
-      blendedInks[idx] = [
-        Math.round((inkColors[a][0] + inks2[b][0]) / 2),
-        Math.round((inkColors[a][1] + inks2[b][1]) / 2),
-        Math.round((inkColors[a][2] + inks2[b][2]) / 2)
-      ];
-      blendedPapers[idx] = [
-        Math.round((paperColors[a][0] + papers2[b][0]) / 2),
-        Math.round((paperColors[a][1] + papers2[b][1]) / 2),
-        Math.round((paperColors[a][2] + papers2[b][2]) / 2)
-      ];
+      blendedInks[idx] = gigaBlendColor(inkColors[a], inks2[b], -1, -1, importGigaBlendMode);
+      blendedPapers[idx] = gigaBlendColor(paperColors[a], papers2[b], -1, -1, importGigaBlendMode);
     }
   }
 
@@ -13047,6 +13215,12 @@ function createDefaultSlotState() {
     grayscale: false, monoOutput: false,
     colorSpace: 'rgb',
     colorStrategy: 'blend',
+    ditherMatrix: 'auto',
+    ditherKernel: 'auto',
+    gigaBlend: 'measured',
+    eyeChroma: 100,
+    eyeBlur: 14,
+    eyeNoise: 5,
     preBlur: 0,
     paperRule: 'darker',
     format: 'scr',
@@ -13094,6 +13268,12 @@ function saveSlotState(slot) {
   slot.monoOutput = importElements.monoOutput?.checked || false;
   slot.colorSpace = importElements.colorSpace?.value || 'oklab';
   slot.colorStrategy = importElements.colorStrategy?.value || 'exhaustive';
+  slot.ditherMatrix = importElements.ditherMatrix?.value || 'auto';
+  slot.ditherKernel = importElements.ditherKernel?.value || 'auto';
+  slot.gigaBlend = importElements.gigaBlend?.value || 'measured';
+  slot.eyeChroma = parseInt(importElements.eyeChroma?.value || '100', 10);
+  slot.eyeBlur = parseInt(importElements.eyeBlur?.value || '14', 10);
+  slot.eyeNoise = parseInt(importElements.eyeNoise?.value || '5', 10);
   slot.format = importElements.format?.value || 'scr';
   slot.palette = importElements.palette?.value || 'default';
   slot.paperRule = importElements.paperRule?.value || 'darker';
@@ -13157,6 +13337,12 @@ function restoreSlotState(slot) {
   if (importElements.format) importElements.format.value = slot.format;
   if (importElements.palette) importElements.palette.value = slot.palette;
   if (importElements.paperRule) importElements.paperRule.value = slot.paperRule;
+  if (importElements.ditherMatrix) importElements.ditherMatrix.value = slot.ditherMatrix;
+  if (importElements.ditherKernel) importElements.ditherKernel.value = slot.ditherKernel;
+  if (importElements.gigaBlend) importElements.gigaBlend.value = slot.gigaBlend;
+  if (importElements.eyeChroma) importElements.eyeChroma.value = String(slot.eyeChroma);
+  if (importElements.eyeBlur) importElements.eyeBlur.value = String(slot.eyeBlur);
+  if (importElements.eyeNoise) importElements.eyeNoise.value = String(slot.eyeNoise);
   if (importElements.pattern53c) importElements.pattern53c.value = slot.pattern53c;
   if (importElements.pattern53cHex) importElements.pattern53cHex.value = slot.pattern53cHex;
   if (importElements.pattern53cDiffusion) importElements.pattern53cDiffusion.checked = slot.pattern53cDiffusion;
@@ -13171,6 +13357,15 @@ function restoreSlotState(slot) {
   importPreBlurRadius = slot.preBlur;
   colorSpaceMode = slot.colorSpace;
   importColorStrategy = slot.colorStrategy;
+  importOrderedMatrix = slot.ditherMatrix || 'auto';
+  importEdKernel = slot.ditherKernel || 'auto';
+  importGigaBlendMode = slot.gigaBlend || 'measured';
+  if (typeof eyeChromaWeight !== 'undefined') {
+    eyeChromaWeight = (slot.eyeChroma === undefined ? 100 : slot.eyeChroma) / 100;
+    eyeBlurScale = (slot.eyeBlur === undefined ? 14 : slot.eyeBlur) / 10;
+    eyeChromaNoise = (slot.eyeNoise === undefined ? 5 : slot.eyeNoise) / 100;
+    eyeLumaNoise = eyeChromaNoise;
+  }
   importPaperRule = slot.paperRule;
   // Dither strength slider
   const ditherStrengthSlider = /** @type {HTMLInputElement|null} */ (document.getElementById('importDitherStrength'));
@@ -15993,6 +16188,9 @@ function updateAutoLabel(slotId) {
 
   // Color strategy (if non-default)
   if (slot.colorStrategy !== 'blend') parts.push(slot.colorStrategy);
+  if (slot.ditherMatrix && slot.ditherMatrix !== 'auto') parts.push(slot.ditherMatrix);
+  if (slot.ditherKernel && slot.ditherKernel !== 'auto') parts.push(slot.ditherKernel);
+  if (slot.gigaBlend && slot.gigaBlend !== 'measured') parts.push(slot.gigaBlend + ' blend');
 
   // Pre-blur
   if (slot.preBlur > 0) parts.push('blur:' + slot.preBlur);
@@ -16076,6 +16274,12 @@ function initImageImport() {
   importElements.balanceB = /** @type {HTMLInputElement} */ (document.getElementById('importBalanceB'));
   importElements.colorSpace = /** @type {HTMLSelectElement} */ (document.getElementById('importColorSpace'));
   importElements.colorStrategy = /** @type {HTMLSelectElement} */ (document.getElementById('importColorStrategy'));
+  importElements.ditherMatrix = /** @type {HTMLSelectElement} */ (document.getElementById('importDitherMatrix'));
+  importElements.ditherKernel = /** @type {HTMLSelectElement} */ (document.getElementById('importDitherKernel'));
+  importElements.gigaBlend = /** @type {HTMLSelectElement} */ (document.getElementById('importGigaBlend'));
+  importElements.eyeChroma = /** @type {HTMLInputElement} */ (document.getElementById('importEyeChroma'));
+  importElements.eyeBlur = /** @type {HTMLInputElement} */ (document.getElementById('importEyeBlur'));
+  importElements.eyeNoise = /** @type {HTMLInputElement} */ (document.getElementById('importEyeNoise'));
   importElements.showGrid = /** @type {HTMLInputElement} */ (document.getElementById('importShowGrid'));
   importElements.offsetX = /** @type {HTMLInputElement} */ (document.getElementById('importOffsetX'));
   importElements.offsetY = /** @type {HTMLInputElement} */ (document.getElementById('importOffsetY'));
@@ -16898,7 +17102,249 @@ function initImageImport() {
     updateAll();
   });
 
-  ditheringSelect?.addEventListener('change', updatePreview);
+  // ---- Threshold matrix and error diffusion kernel pickers ----
+  // The method dropdown stays a list of presets; these two give the whole libdither tables
+  // (dither_tables.js). 'Auto' means the matrix or kernel the chosen preset brings with it, so
+  // a picture converted before these existed comes out the same.
+  const matrixRow = document.getElementById('importDitherMatrixRow');
+  const kernelRow = document.getElementById('importDitherKernelRow');
+  const matrixSelect = importElements.ditherMatrix;
+  const kernelSelect = importElements.ditherKernel;
+  const matrixSwatch = /** @type {HTMLCanvasElement|null} */ (document.getElementById('importDitherMatrixSwatch'));
+  const kernelSwatch = /** @type {HTMLCanvasElement|null} */ (document.getElementById('importDitherKernelSwatch'));
+
+  /** The matrix a preset uses when the picker says Auto. */
+  const presetMatrix = (/** @type {string} */ method) => {
+    if (method === 'ordered2' || method === 'cell-ordered2') return { rows: BAYER_2X2, divisor: 4 };
+    if (method === 'ordered' || method === 'cell-ordered') return { rows: BAYER_4X4, divisor: 16 };
+    if (method === 'pattern' || method === 'cell-pattern') return { rows: CLUSTER_8X8, divisor: 64 };
+    return { rows: BAYER_8X8, divisor: 64 };
+  };
+
+  /** The ED_KERNELS id a preset uses when the picker says Auto. */
+  const PRESET_KERNEL = {
+    'attr-floyd': 'floyd-steinberg', 'cell-floyd': 'floyd-steinberg',
+    'floyd-steinberg': 'floyd-steinberg', 'serpentine': 'floyd-steinberg',
+    'cell-serpentine': 'floyd-steinberg',
+    'atkinson': 'atkinson', 'cell-atkinson': 'atkinson',
+    'jarvis': 'jarvis-judice-ninke', 'stucki': 'stucki', 'burkes': 'burkes',
+    'sierra': 'sierra-3', 'sierra-lite': 'sierra-lite',
+    'sierra2': 'sierra-2', 'cell-sierra2': 'sierra-2'
+  };
+
+  /**
+   * Fill a picker with Auto plus every entry of a table, in optgroups where the entries
+   * carry a group name.
+   * @param {HTMLSelectElement|null|undefined} select - picker to fill
+   * @param {Object<string, {label: string, group?: string}>} table - ORDERED_MATRICES or ED_KERNELS
+   */
+  const fillPicker = (select, table) => {
+    if (!select || !table) return;
+    select.textContent = '';
+    const auto = document.createElement('option');
+    auto.value = 'auto';
+    auto.textContent = 'Auto';
+    select.appendChild(auto);
+    let group = null, groupName = null;
+    for (const id of Object.keys(table)) {
+      const entry = table[id];
+      const option = document.createElement('option');
+      option.value = id;
+      option.textContent = entry.label;
+      if (entry.group) {
+        if (entry.group !== groupName) {
+          groupName = entry.group;
+          group = document.createElement('optgroup');
+          group.label = groupName;
+          select.appendChild(group);
+        }
+        group?.appendChild(option);
+      } else {
+        select.appendChild(option);
+      }
+    }
+  };
+
+  if (typeof ORDERED_MATRICES !== 'undefined') fillPicker(matrixSelect, ORDERED_MATRICES);
+  if (typeof ED_KERNELS !== 'undefined') {
+    // Variable kernels first: they are the ones worth reaching for, and grouping them keeps
+    // them from looking like two more entries in a list of nineteen
+    const withVariable = {};
+    if (typeof VARIABLE_ED_KERNELS !== 'undefined') {
+      for (const id of Object.keys(VARIABLE_ED_KERNELS)) {
+        withVariable[id] = { label: VARIABLE_ED_KERNELS[id].label, group: 'Variable (adapts to tone)' };
+      }
+    }
+    for (const id of Object.keys(ED_KERNELS)) {
+      withVariable[id] = { label: ED_KERNELS[id].label, group: 'Fixed' };
+    }
+    fillPicker(kernelSelect, withVariable);
+  }
+
+  /** Paint the chosen matrix as a dark-to-light ramp, so 39 names become 39 recognisable looks. */
+  const drawMatrixSwatch = () => {
+    const ctx = matrixSwatch?.getContext('2d');
+    if (!ctx || !matrixSwatch || typeof renderMatrixSwatch !== 'function') return;
+    const w = matrixSwatch.width, h = matrixSwatch.height;
+    let m = null;
+    if (importOrderedMatrix !== 'auto' && typeof ORDERED_MATRICES !== 'undefined') {
+      m = ORDERED_MATRICES[importOrderedMatrix];
+    }
+    if (!m) m = presetMatrix(ditheringSelect?.value || '');
+    const rows = m.rows;
+    const bytes = renderMatrixSwatch(
+      { label: '', group: '', rows, divisor: m.divisor }, w, h);
+    const img = ctx.createImageData(w, h);
+    for (let i = 0; i < w * h; i++) {
+      img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = bytes[i];
+      img.data[i * 4 + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+  };
+
+  /** Draw the kernel's footprint: the current pixel outlined, its neighbours shaded by weight. */
+  const drawKernelSwatch = () => {
+    const ctx = kernelSwatch?.getContext('2d');
+    if (!ctx || !kernelSwatch || typeof kernelBounds !== 'function') return;
+    const w = kernelSwatch.width, h = kernelSwatch.height;
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, w, h);
+    // A variable kernel has no single footprint -- it changes with every pixel's tone -- so the
+    // swatch shows the three offsets it always uses, shaded for a mid-grey pixel
+    if (typeof VARIABLE_ED_KERNELS !== 'undefined' && VARIABLE_ED_KERNELS[importEdKernel]) {
+      const vw = variableEdWeights(0.5, importEdKernel);
+      const k2 = { label: '', kernel: VARIABLE_ED_OFFSETS.map((o, i) => [o[0], o[1], vw[i]]) };
+      const b2 = kernelBounds(k2);
+      const cols2 = b2.maxX - b2.minX + 1, rows2 = b2.maxY + 1;
+      const cell2 = Math.max(1, Math.floor(Math.min((w - 2) / cols2, (h - 2) / rows2)));
+      const ox2 = Math.floor((w - cols2 * cell2) / 2) - b2.minX * cell2;
+      const oy2 = Math.floor((h - rows2 * cell2) / 2);
+      for (const [dx, dy, weight] of k2.kernel) {
+        const level = Math.round(60 + 195 * (weight / b2.maxW));
+        ctx.fillStyle = 'rgb(' + level + ',' + level + ',' + level + ')';
+        ctx.fillRect(ox2 + dx * cell2, oy2 + dy * cell2, Math.max(1, cell2 - 1), Math.max(1, cell2 - 1));
+      }
+      ctx.strokeStyle = '#e06c2b';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(ox2 + 0.5, oy2 + 0.5, Math.max(1, cell2 - 1), Math.max(1, cell2 - 1));
+      return;
+    }
+    let k = null;
+    if (importEdKernel !== 'auto' && typeof ED_KERNELS !== 'undefined') k = ED_KERNELS[importEdKernel];
+    if (!k && typeof ED_KERNELS !== 'undefined') {
+      k = ED_KERNELS[PRESET_KERNEL[ditheringSelect?.value || ''] || 'floyd-steinberg'];
+    }
+    if (!k) return;
+    const b = kernelBounds(k);
+    const cols = b.maxX - b.minX + 1, rows = b.maxY + 1;
+    const cell = Math.max(1, Math.floor(Math.min((w - 2) / cols, (h - 2) / rows)));
+    const ox = Math.floor((w - cols * cell) / 2) - b.minX * cell;
+    const oy = Math.floor((h - rows * cell) / 2);
+    for (const [dx, dy, weight] of k.kernel) {
+      const level = Math.round(60 + 195 * (weight / b.maxW));
+      ctx.fillStyle = 'rgb(' + level + ',' + level + ',' + level + ')';
+      ctx.fillRect(ox + dx * cell, oy + dy * cell, Math.max(1, cell - 1), Math.max(1, cell - 1));
+    }
+    // the pixel whose error is being spread
+    ctx.strokeStyle = '#e06c2b';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(ox + 0.5, oy + 0.5, Math.max(1, cell - 1), Math.max(1, cell - 1));
+  };
+
+  /**
+   * Grey out the variable kernels for methods that cannot carry them, and drop back to Auto if
+   * one is selected when the method changes under it.
+   * @param {string} method - the selected dither method
+   */
+  const syncVariableAvailability = (method) => {
+    if (!kernelSelect || typeof VARIABLE_ED_KERNELS === 'undefined') return;
+    const canVary = VARIABLE_KERNEL_METHODS.indexOf(method) >= 0;
+    const canModulate = THRESHOLD_MODULATION_METHODS.indexOf(method) >= 0;
+    for (const option of Array.from(kernelSelect.options)) {
+      const v = VARIABLE_ED_KERNELS[option.value];
+      if (!v) continue;
+      const ok = canVary && (!v.randomised || canModulate);
+      option.disabled = !ok;
+      option.textContent = v.label + (ok ? '' : ' (n/a here)');
+      if (!ok && kernelSelect.value === option.value) kernelSelect.value = 'auto';
+    }
+  };
+
+  /** Keep the globals, the row visibility and both swatches in step with the pickers. */
+  const syncDitherPickers = () => {
+    const method0 = ditheringSelect?.value || '';
+    syncVariableAvailability(method0);
+    importOrderedMatrix = matrixSelect?.value || 'auto';
+    importEdKernel = kernelSelect?.value || 'auto';
+    const method = ditheringSelect?.value || '';
+    const ditherRowShown = document.getElementById('importDitheringRow')?.style.display !== 'none';
+    const isOrdered = ORDERED_DITHER_METHODS.indexOf(method) >= 0;
+    const isDiffusion = DIFFUSION_DITHER_METHODS.indexOf(method) >= 0;
+    // An ordered method diffuses its residual too once strength is up, so its kernel matters
+    const usesKernel = isDiffusion || (isOrdered && ditherStrength > 0);
+    if (matrixRow) matrixRow.style.display = (ditherRowShown && isOrdered) ? 'flex' : 'none';
+    if (kernelRow) kernelRow.style.display = (ditherRowShown && usesKernel) ? 'flex' : 'none';
+    drawMatrixSwatch();
+    drawKernelSwatch();
+  };
+  syncDitherPickers();
+
+  ditheringSelect?.addEventListener('change', () => {
+    syncDitherPickers();
+    updatePreview();
+  });
+  matrixSelect?.addEventListener('change', () => {
+    syncDitherPickers();
+    updatePreview();
+  });
+  kernelSelect?.addEventListener('change', () => {
+    syncDitherPickers();
+    updatePreview();
+  });
+
+  importElements.gigaBlend?.addEventListener('change', function() {
+    importGigaBlendMode = this.value;
+    updatePreview();
+  });
+
+  // ---- Eye model metric (eye_model.js) ----
+  // Only shown for the Eye model pair fit, which is the only thing that reads these.
+  const eyeMetricSection = document.getElementById('importEyeMetricSection');
+  const syncEyeMetric = () => {
+    const chroma = importElements.eyeChroma ? parseInt(importElements.eyeChroma.value, 10) : 100;
+    const blur = importElements.eyeBlur ? parseInt(importElements.eyeBlur.value, 10) : 14;
+    const noise = importElements.eyeNoise ? parseInt(importElements.eyeNoise.value, 10) : 5;
+    if (typeof eyeChromaWeight !== 'undefined') {
+      eyeChromaWeight = chroma / 100;
+      eyeBlurScale = blur / 10;
+      // Both channels: without a dot-placement pass afterwards, luma dithering is not free
+      eyeChromaNoise = noise / 100;
+      eyeLumaNoise = noise / 100;
+    }
+    const cv = document.getElementById('importEyeChromaValue');
+    const bv = document.getElementById('importEyeBlurValue');
+    const nv = document.getElementById('importEyeNoiseValue');
+    if (cv) cv.textContent = String(chroma);
+    if (bv) bv.textContent = (blur / 10).toFixed(1);
+    if (nv) nv.textContent = (noise / 100).toFixed(2);
+    if (eyeMetricSection) {
+      eyeMetricSection.style.display =
+        (importElements.colorStrategy?.value === 'eye') ? 'block' : 'none';
+    }
+  };
+  syncEyeMetric();
+  for (const el of [importElements.eyeChroma, importElements.eyeBlur, importElements.eyeNoise]) {
+    el?.addEventListener('input', () => {
+      importInteractionActive = true;
+      syncEyeMetric();
+      updatePreview();
+    });
+    el?.addEventListener('change', () => {
+      importInteractionActive = false;
+      syncEyeMetric();
+      updatePreview();
+    });
+  }
 
   // Error-diffusion strength slider and serpentine checkbox (global dither controls)
   const ditherStrengthSlider = /** @type {HTMLInputElement|null} */ (document.getElementById('importDitherStrength'));
@@ -16909,6 +17355,7 @@ function initImageImport() {
     ditherStrength = pct / 100;
     ditherSerpentine = !!(ditherSerpentineCheckbox && ditherSerpentineCheckbox.checked);
     if (ditherStrengthVal) ditherStrengthVal.textContent = String(pct);
+    syncDitherPickers();
   };
   // Sync globals with UI defaults on dialog init
   syncDitherControls();
@@ -16969,6 +17416,13 @@ function initImageImport() {
     if (ditheringRow) {
       ditheringRow.style.display = (format === '53c' || format === 'hlr' || format === 'stl' || format === 'specscii' || isGaPatFormat) ? 'none' : 'flex';
     }
+    // Gigascreen-family formats blend two attribute frames, so how they blend is a choice
+    const gigaBlendFormats = ['gigascreen', 'mg8', 'mg4', 'mg2', 'mg1', 'gigaattr',
+      'gigaattr_pat', 'gap', 'gap_dual', 'gap_pat', 'gap_dual_pat'];
+    const blendsFrames = gigaBlendFormats.indexOf(format) >= 0 ||
+      (format === 'ch$' && importElements.chrMode?.value === 'gigascreen');
+    const gigaBlendRow = document.getElementById('importGigaBlendRow');
+    if (gigaBlendRow) gigaBlendRow.style.display = blendsFrames ? 'flex' : 'none';
     const cellGroup = document.getElementById('importDitherCellGroup');
     const noCellFormats = format === 'rgb3' || format === 'mono' || format === 'mono_2_3' || format === 'mono_1_3' || format === 'chunks4x4' || format === 'chunks4x2' || format === 'hlr' || format === 'stl' || format === 'specscii' || format === 'nxi' || format === 'nxi320' || format === 'nxi640' || format === 'sl2' || format === 'sl2_320' || format === 'sl2_640' || format === 'lores' || format === 'lores_rad' || format === 'gmx160' || isGaPatFormat;
     if (cellGroup) {
@@ -17220,7 +17674,10 @@ function initImageImport() {
   importElements.colorSpace?.addEventListener('change', updatePreview);
 
   // Color strategy dropdown
-  importElements.colorStrategy?.addEventListener('change', updatePreview);
+  importElements.colorStrategy?.addEventListener('change', () => {
+    syncEyeMetric();
+    updatePreview();
+  });
 
   // Pre-blur slider
   importElements.preBlur?.addEventListener('input', function() {

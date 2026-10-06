@@ -681,10 +681,11 @@ Available format exports:
 | Gigaattr+ULA+ | ASM (48K ULA+ flicker) | ZX Spectrum 48K + ULA+ | .sna — ULA+ palette programming + attr flicker (shared: program once; dual: reprogram each frame) |
 | RGB3 | ASM (Pentagon RGB flicker) | Pentagon 128K | .sna — RGB channel flicker |
 | IFL | ASM (Pentagon 8x2 multicolor) | Pentagon 128K | .sna — 8×2 multicolor display |
+| MLT | ASM (Pentagon 8x1 multicolour) | Pentagon 128K | .sna — beam-racing 8×1 attribute player |
 | ULA+ | ASM (ULA+ palette) | ZX Spectrum 48K + ULA+ | .sna — 64-entry palette programming |
 | NXI / SL2 | ASM (Next Layer 2 .nex) | ZX Spectrum Next | .nex — Layer 2 with palette, all modes (256×192, 320×256, 640×256) |
 
-- **Embed** checkbox controls whether pixel data is included as DB lines (embedded) or as INCBIN references to the original file. Palette data is always embedded (small size). For RGB3, data is always embedded.
+- **Embed** checkbox controls whether pixel data is included as DB lines (embedded) or as INCBIN references to the original file. Palette data is always embedded (small size). For RGB3, data is always embedded. For MLT it covers the bitmap and row 0's attributes; the rest of the picture is the code itself and is always embedded.
 - All exports target the **sjasmplus** assembler. Pentagon exports produce .sna snapshots; Next Layer 2 exports produce .nex files via SAVENEX.
 
 ### Optimize Attributes
@@ -914,7 +915,13 @@ Crop the source image:
   - **Best fit** — exhaustive search over all palette pairs, selecting the pair that minimizes total per-pixel nearest-color distance. The original default algorithm
   - **Blend fit** — evaluates each pair by projecting every pixel onto the ink–paper line segment and measuring perpendicular distance. Better models how dithering blends between two colors, often producing smoother results
   - **PCA gradient** — uses Principal Component Analysis to find the dominant color axis in each cell, then tests the top palette matches near the axis extremes using the line-projection metric. Good for cells with a clear color gradient
+  - **Eye model** — scores each candidate pair by the error that survives the eye's blur, not the error at the pixel. Seen from a normal distance a fine mix of two colours reads as their average, so a dithered blend the cell can actually paint may beat a flat colour that is nominally closer — the trade an artist makes by hand. The candidate is halftoned first, so pairs are judged on the dots they will really get, and the error is compared in an opponent colour space (luminance, red-green, blue-yellow) weighted by how sensitive the eye is to an error at that lightness, which is why a brown patch in a shadow costs what it looks like rather than its few percent of luminance. Its controls are in the **Dither** tab (see below). Costs about four times what Blend fit does — around 130 ms for a screen
   - Works with all ZX block sizes (8×8, 8×2, 8×1, 8×4) and ULA+. Hidden for non-ink/paper formats (NXI, SL2, LoRes). Disabled when Mono output is active
+- **Blends** dropdown (gigascreen-family formats) — how the two alternating attribute frames are combined into the colour the eye sees:
+  - **Measured CRT** (default) — the 136 blends as captured from a real ZX Spectrum on a CRT by Jari Komppa (img2spectrum, 2015). Measured black is (16, 13, 17) and measured bright white (216, 210, 206), and mixed colours land well away from the arithmetic mean: red + yellow reads as (188, 85, 10) rather than (205, 103, 0). Pair selection therefore matches what the machine actually shows
+  - **Linear average** — average the emitted light (gamma 2.2) and re-encode. What two alternating frames add up to in theory; use it for palettes with no measurement behind them
+  - **sRGB average** — the plain arithmetic mean of the two sRGB values, as SpectraLab did before v2.44. Too light in the midtones, but kept for comparison and for reproducing older conversions
+  - ULA+ based gigascreen modes (GAP and its variants) use arbitrary CLUT colours, which no measurement covers, so **Measured CRT** falls back to the linear average there
 - **Grayscale** — convert to grayscale before processing
 - **Mono output** — output black and white only (ink 0, paper 7, bright). Works with all formats: SCR, IFL, MLT, BSC, BMC4, GMX, Gigascreen, Gigaattr, GAP, HLR, STL, RGB3, ULA+, GMX 160×200, 53c, SPECSCII, NXI, SL2, LoRes, Radastan, ZXP
 
@@ -940,10 +947,27 @@ Crop the source image:
   Default dithering is **None** (nearest color, no dithering applied).
 
   - **Strength** slider (0–100%) — scales how much quantization error is propagated during error diffusion. 0 = pure quantization (no diffusion), 100 = classic full-strength diffusion. For ordered / pattern / blue-noise / a-dither methods, Strength > 0 engages a hybrid ordered+diffusion mode (the ordered threshold is used as a bias, and the residual error is then diffused with a Floyd-Steinberg kernel).
+  - **Matrix** dropdown (ordered methods only) — the threshold matrix to tile the picture with, 39 in all, with a swatch beside it showing how each one renders a dark-to-light ramp. **Auto** keeps the matrix the chosen method implies (Ordered 2×2 → Bayer 2×2, Pattern → clustered dot, and so on), so a picture converted before this dropdown existed comes out unchanged. Groups:
+    - **Bayer** — 2×2, 3×3, 4×4, 8×8, 16×16, 32×32. Regular crosshatch; the larger ones hold more tones and show less pattern
+    - **Dispersed dots** — including **Void dispersed dots**, a 14×14 void-and-cluster array (Ulichney 1993) whose dots are spread as evenly as a blue-noise tile. The best all-round choice for smooth areas
+    - **Clustered dots** — 11 variants plus central/balanced centre point, diagonal and Ulichney's. Dots grow into blobs like a print screen; coarse but very stable in flat fills
+    - **Line screens** — four non-rectangular matrices that read as fine diagonal or woven lines
+    - **Magic squares** — magic circles 5×5–7×7, 45° variants and plain magic squares 4×4–8×8. Ornamental, good for stylised work
+    - Matrices tile the whole picture rather than each cell, so a 5×5 or 14×14 pattern runs on across cell boundaries instead of restarting at every attribute block
+  - The picker's first group, **Variable (adapts to tone)**, holds two kernels whose weights change with the pixel's own tone instead of staying fixed. A fixed kernel spreads every pixel's error the same way, which is why Floyd-Steinberg leaves worms and tails in near-white and near-black areas: the few dots there line up into structures the eye picks out. Both spread to three neighbours only, so they are cheaper than Stucki or Jarvis, not dearer — measured at the same speed as Floyd-Steinberg
+    - **Ostromoukhov** — weights from a 256-entry table tuned so the dot pattern stays unstructured to the ends of the range (SIGGRAPH 2001). On a smooth sky the longest unbroken run of ink fell from a whole 256-pixel row to 109
+    - **Zhou-Fang** — Ostromoukhov plus a threshold jittered per pixel, by more in the midtones and by nothing at the ends (SIGGRAPH 2003). On the same sky the longest run fell to 27 and the tone error improved by 10%. The jitter is driven by a fixed seed, so the same picture and settings always give the same result
+    - Available for **Floyd Attr-Aware** and the global error-diffusion methods. Zhou-Fang additionally needs a two-colour threshold to modulate, which only the attribute-aware pass has, so it is greyed out elsewhere; cell-local methods keep fixed kernels
+  - **Kernel** dropdown (error-diffusion methods only) — the kernel the error is spread with, 19 in all, with a swatch showing its footprint (the outlined cell is the pixel being quantized). **Auto** keeps the method's own kernel. Beyond the ones already on the method list: Shiau-Fan 1/2/3, Diagonal, Diffusion 1D and 2D, Fake Floyd-Steinberg, Steve Pigeon, Robert Kist, Stevenson-Arce and Xot. Atkinson's and Steve Pigeon's weights deliberately sum to less than 1, dropping part of the error for a crisper, higher-contrast look. The dropdown also appears for ordered methods once Strength > 0, since the hybrid mode diffuses the residual through the same kernel
   - **Serpentine scan** checkbox — alternates row direction during error diffusion (left-to-right on even rows, right-to-left on odd rows) to reduce horizontal banding artifacts. Applies to all global error-diffusion methods.
   - **Pre-blur** slider (0–50) — blurs cell/block pixels before color pair selection to stabilize attribute colors on noisy or detailed images. Uses 3-pass separable box blur (Gaussian approximation) with edge clamping. Higher values produce more uniform attribute colors. The bitmap is always generated from original (unblurred) pixels, so pixel detail remains sharp. Works with all ZX block sizes: 8×8 (SCR), 8×2 (IFL), 8×1 (MLT), 8×4 (BMC4).
   - **Dizzy** dither (Liam Appelbe, 2023) — error diffusion with a dynamic denominator: per pixel, the algorithm sums weights of in-bounds *unprocessed* neighbors (orthogonal = 1.0, diagonal = 0.1) and distributes `error × weight / denom` proportionally. No error is lost at image edges; produces blue-noise-like patterns.
   - **a-dither** (arithmetic dither, FFmpeg formula `((x + y·236) · 119) & 0xff`) — hash-based per-pixel threshold. Spatially stable, blue-noise-like, no lookup table.
+
+- **Eye model metric** (**Dither** tab, shown only when Pair fit is **Eye model**):
+  - **Chroma** (0–200%) — how much colour error counts against brightness error. The three opponent channels are pre-scaled so the ZX palette spans each of them equally, so 100% really does weigh them alike. 0 judges pairs on lightness alone
+  - **Eye blur** (0.6–3.0 px) — how far away the picture is assumed to be seen from. Larger values let the eye mix dots more, so dithered blends win over flat colours more often
+  - **Dot noise** (0–0.20) — penalty for dot contrast the blur would miss. At 0 the metric calls blue dots on yellow invisible once blurred and will happily paint a salmon target with them; raising it keeps flat areas from being speckled with clashing colours. The default 0.05 measured best on test pictures
 
 - **Dither Regions** (**Dither** tab) — draw lasso regions on the source or preview canvas to assign a different dithering algorithm and strength to each area. Up to 3 color-coded regions (red, green, blue), each with its own dithering method dropdown and **strength slider** (0–100%). Last used methods and strengths are saved to localStorage (defaults: Floyd-Steinberg, Ordered 2×2, Riemersma; all at 100%). Controls:
   - **Region radios** (1/2/3) — select which region to draw. Each has a color swatch, method dropdown, and strength slider.
@@ -1186,7 +1210,7 @@ The preview panel follows the same rule by default, so it is hidden in viewer fu
 
 ---
 
-## 24. Settings — Mouse & Keyboard
+## 24. Settings
 
 Open with the **gear** button next to **?** at the bottom of the left sidebar. Every choice is saved immediately and persists across sessions; **Reset defaults** restores them all.
 
@@ -1229,28 +1253,139 @@ With the pixel cursor:
 
 **Preview in fullscreen** — *Only when editing* (default), *Always show* or *Always hide*. See section 23.
 
+### Analysis
+
+**Multicolour timing** — *Off* (default) or *Mark over-budget rows on border*. Applies to 8×1 multicolor (MLT) pictures only.
+
+8×1 multicolor asks for 32 fresh attribute bytes on every one of the 192 pixel rows, but the hardware has only 24 attribute rows. A player therefore has to rewrite the attribute line the beam is about to read, every single scanline, in step with the beam — and whether that is possible depends on the picture. With the check on, SpectraLab costs every pixel row and draws an **orange line on the border** against each row that cannot be put in place in time, exactly where a player's own `out (#fe)` diagnostic would show it. **File Info** gains a *Multicolour* line with the verdict — `fits`, or how many rows are over budget. The panel is narrow, so every value there is kept to a few characters and the sentence behind it is the row's tooltip: hover the **Multicolour** line for the worst row and its cost.
+
+What is being counted:
+
+- **Pentagon 128K**, because it has no memory contention: all **224 T-states** of a scanline are usable, where a 48K/128K Spectrum loses a large part of the screen period to ULA wait states
+- The ULA latches the attributes for an aligned cell pair *2k, 2k+1* at 8*k* T-states into the screen period, so a write to a cell has a window exactly one line long: after the ULA read it for the previous line, before the read for this one. The model places the write run as early as that window allows and then checks every write against its own deadline, so a row is rejected when it cannot keep up with the beam, not merely when it is too long
+- Two ways of writing, whichever is cheaper for the row in hand:
+  - **push** — SP points into the attribute line and `push rr` writes two cells for 11 T, 5.5 T a byte, which nothing else on a Z80 beats. Pushes descend, so they run right to left against the beam, which is what makes the leftmost cells the binding constraint. Pairs where neither cell changed are skipped by moving SP (`ld sp,nn`, 10 T)
+  - **direct stores** — `ld (hl),r` + `inc l` costs 11 T for *one* cell, so a whole row is hopeless (32 × 11 = 352 T, well past the 224 T line), but it writes only the cells that actually changed. On a row that differs from the one above it in three places it wins by a mile
+  - **a strategy per run** — the row is cut into runs of consecutive changed cells and each run goes whichever way is cheaper, since `push` beats storing from a run of two aligned cells but loses on a single one. A colour only one cell uses never reaches a register at all: `ld (hl),n` writes it straight from the instruction for 10 T, against 7 T to load a register and 7 T to store it
+- The colours have to be in registers before the run starts, and they cannot be fetched from memory fast enough: `pop` would fight the stack writes, `ldi` is 16 T for one byte, and `ld bc,(nn)` is 20 T for two against 10 T for the immediate — and it needs its address baked into the instruction just the same. So a player of this kind is unrolled code carrying the colours as immediate operands: the player *is* the picture, roughly 12 KB of `ld rr,nn` / `push rr` for a screen. Straight-line code like that has nothing to count and nowhere to jump, so there is no per-line loop overhead in the model either. This is also why **colour variety, not colour count, is what costs**: every new colour pair in a row is another 10 T load
+- Registers modelled: **BC, DE, HL, their shadows, IX and IY** for push (IX/IY push at 15 T and load at 14 T instead of 11/10, and reaching the shadow set costs 4 T an `exx`), and **A, B, C, D, E** with HL as the pointer for direct stores. Which value sits where is decided by optimal replacement — evict whatever is needed furthest in the future — so the load count is the true minimum
+- What the attribute line already holds matters, since unchanged cells need no write at all. For pixel row *y* that is whatever row *y-1* left there, except at the top of a character row (*y* divisible by 8), where the line has moved on to a new attribute row and still holds row *y+7* from the previous frame. The check therefore assumes a static picture in steady state
+- **Lead time**, which is what makes 8×1 possible at all. The ULA reads attribute line *r* only while the beam is inside character row *r*, so that line sits idle for the whole of character row *r-1* — eight scanlines, 1792 T. The **first pixel row of a character row is therefore not bound to a single scanline**: its 32 bytes can go in at any point during the character row above, in whatever time the seven rows there do not use. The other seven rows get no such help, because each is read one line after the last write to the same line. So the real condition is a per-character-row one:
+
+  > leadIn(first row of the next character row) + cost of this character row's seven interior rows ≤ **1792 T**
+
+  with the character row's own first line contributing a whole free 224 T, having had its attributes written a character row earlier. That first chunk is the cheap one: a lead-in that fits inside it runs undisturbed. Spilling past it costs much more than the 10 T to re-point SP, because the interior write sharing the next line has been using the same eight register pairs — so the lead-in's own colours have to be loaded again, and it is charged its whole preload every time it picks up. In practice a lead-in that does not fit in one free scanline usually cannot reach the rest of the character row's spare time at all, because the leftover chunks are each smaller than that reload
+
+A fully rewritten **interior** row is possible, but only in one or two colours: 32 cells cost 206 T in a single colour pair and 216 T in two, against a 224 T line — and only because the push run is cut in two and the left-hand cells written first, since `push` descends while the ULA reads upwards. Three colour pairs no longer fit. Past that an 8×1 picture lives on rows that differ **little** from the row above: up to about 8 changed cells always fits, and the wall is between 16 and 24, depending far more on how many different colours those cells need than on where they sit. The **first row of each character row** can afford much more, as long as the character row above leaves the room. Row 0 is always free — its attribute line can be filled during the top border, which on Pentagon is tens of thousands of spare T-states.
+
+Deliberately left out of the model, all of which would move a borderline row in the picture's favour: `push af` with a constant F byte, and feeding the colours from a table through `pop` — which is only worth it if the whole picture commits to it, since SP can either be the write pointer or the read pointer but not both. The shadow byte registers are left out for a different reason: measured, they save nothing at all, because at the five or six colours a row actually uses the main registers already hold them without a single reload. So a row marked over budget may still be worth a look by hand, while a row that is **not** marked really does fit. Timex Hi-Colour (MLT+ULA+) is not checked at all — there the 8×1 colour is in hardware, so there is no per-line work to measure.
+
+### Reading a flagged row
+
+The border marks say *which* rows are over budget. To see *where* and *why*, point at a row in the picture. **File Info** then reports that row, and the row itself gets per-cell markers:
+
+```
+Row 69:     117%, over 54T
+Changes:    32 cells
+Colours:    16, 16 used once
+To fit:     match 6 cells above
+```
+
+and the row's 32 cells appear as swatches **in the bottom border**, one under the column it belongs to, so a cell and its colour line up by eye. The strip has two bands: **what the attribute line already holds on top, what this row needs underneath**. Within each swatch the **ink is on the left and the paper on the right**, so an ink sits directly above an ink and a paper above a paper, and a colour change reads as a break in a vertical pair. The cells that need a write are precisely the ones whose two bands disagree — which are also the undimmed ones, so the strip says the same thing whether you follow the brightness or the colours.
+
+For the first row of a character row the top band is not the row above but row *y+7*, since that is what the attribute line still holds from the previous frame. Such a row also has far more time than one scanline, which is why a busy one can still sit comfortably under 100% — its tooltip says so.
+
+Where the bottom border is hidden or scrolled off screen, a small copy of the same strip appears in File Info instead — never both at once.
+
+- **White markers** are cells that need a write this scanline, because they differ from what the attribute line already holds. Cells with no marker are already correct and cost nothing
+- **Orange markers** are the expensive ones: cells whose colour **nothing else in the row uses**. In the strip they are the ones outlined in orange
+- Cells with no marker at all are dimmed in both bands of the strip — their two bands match, so there is nothing for the beam to do
+
+Reading it:
+
+- **Row** — how much of its time this row uses, and when it is over, by how many T-states. *tight* means it fits with only a few percent to spare. A row with nothing to do says `nothing to do`; row 0 says `free`. A row can also read `wrong order`, and that one is worth knowing: the total **would** have fitted — it may say 88% — but the writes cannot be put in an order the beam accepts. `push` runs right to left while the ULA reads left to right, so the cells whose colour is needed first get written last. The cure is the same as for a row that is over: fewer changed cells
+- **Changes** — how many cells differ from what the attribute line already holds. Only these have to be written, which is why a row that barely differs from the one above it is nearly free
+- **Colours** — how many different colours those cells need, and how many of them **only one cell uses**. A colour is paid for once, no matter how many cells share it, so a colour used once is the expensive kind. Those are the cells marked orange
+- **To fit** — what would bring the row inside its time. It appears only for a row that is over
+
+A row costs time for two separable reasons, so there are **two ways out**, and they ask for completely different edits:
+
+- **match *n* cells above** — let some cells keep the colour the row above already has. Nothing has to be written there at all, so this removes a store, and a load with it when that cell was the only user of its colour
+- **reuse *n* colours** — recolour some cells to colours the row already uses. A colour is paid for once however many cells share it, so this removes a load
+
+Which is gentler depends entirely on the row, and the difference can be large. On the row above — 32 cells in 16 colour pairs — reuse has to fold 13 colours together and repaints 26 cells, while matching the row above needs only 6. **To fit** always shows whichever repaints fewer cells; hovering it gives both, so you can take the one that suits the picture.
+
+**The rule behind the colour half: repeating a colour is free, introducing one is not.** A colour costs its price the first time a cell in the row asks for it and nothing at all after that, so swapping one new colour for a different new colour saves nothing — it is the sharing that pays, not how many colours are on screen.
+
+Neither number is a guess. SpectraLab makes the edit and re-costs the row, over and over, until it fits, and reports how many steps that took. It has to: the cost does not fall in even steps, because the index registers, the shadow set and the gaps SP has to skip all have prices of their own — and where a cell sits matters too, since giving back a pair at the end of the run simply removes it while giving one back in the middle leaves a gap to skip over.
+
+Every number behind these words is still there — T-states, instructions, registers, which method the row is costed under — as the tooltip of each line. Hover any of them.
+
+Two details that look odd until you know the mechanism:
+
+- **Push rewrites more cells than changed.** `push` stores a whole aligned cell pair at once, so when one half of a pair changes, the other half is rewritten with its own value for free. That is why the markers can cover a cell you did not touch, and why both halves of an unshared pair are orange — the pair is the unit you would merge
+- **A lead-in row reports a budget of its own.** The first row of a character row is not measured against 224 T but against the spare time of the character row above it, so it reads something like `40 - 322 / 1465T lead-in, 1143T spare`
+
+Row markers follow the pointer and are drawn only while it is over the picture, so nothing permanently covers the art. The hovered row is also marked in the border in **white**, to tell it apart from the orange over-budget marks.
+
+With the border hidden (**Border 0**), the marks move just inside the picture's left and right edges rather than disappearing.
+
+---
+
+### 8x1 Multicolour ASM Export
+
+Available for plain `.mlt` pictures at 256×192 (not the ULA+ variant). It emits a complete viewer: paging, bitmap copy, IM2 setup, one `HALT` to catch the interrupt, and then a free-running loop of exactly one Pentagon frame. The attribute-writing code inside it is the same instruction sequences the **multicolour timing check** costs when it decides whether the picture can be shown at all, so what the check measured is what comes out of the file.
+
+**The one number to check.** `MLT_INT_TO_SCREEN` is the gap from the interrupt to the moment the ULA latches the attribute byte for cell 0 of pixel row 0, set to 17920 T (80 lines × 224 T: 16 of blanking, then a 64-line top border). Everything else is derived from it, so if the picture sits a line or two off on your machine, adjust that equate and nothing else.
+
+**How the body is built.** 192 slots of exactly 224 T, one per pixel row, in row order; slot y writes row y's attributes while the beam is still on row y−1. Each row uses whichever is cheaper — pushing whole cell pairs onto the attribute line, or storing just the cells that changed — and sits inside the window its ULA deadlines allow. One row in eight starts a new character row; nothing reads its attribute line while the beam is above, so its writes are split into chunks dropped into the gaps the other seven leave. Between frames the loop puts row 0's attributes back, since at that point the line still holds row 7.
+
+Colours travel as immediate operands — they cannot be fetched fast enough any other way — which is why the file is large (around 200 KB for a busy picture) and why repeating a colour within a row is free while each new one costs a register load.
+
+Every row carries a comment giving its method, preload and block cost, placement and how many cells changed, so the source can be read against what **File Info** says about the same row.
+
+**Rows that do not fit.** They are exported anyway, marked `OVER BUDGET` where they appear and listed in the file header, and a dialog says so on save. Their cells show the colours of the row above. A row that is also longer than a whole scanline makes the body run late; the following gaps give the time back where there is room, and anything still outstanding at the end comes off the border delay, so the loop stays exactly one frame and the picture does not walk up the screen.
+
+Note that very few pictures pass unscathed. A Pentagon scanline is 224 T-states, and rewriting all 32 attribute cells costs at least 196 T — which still cannot be done, because `push` walks right to left while the ULA reads left to right, so the cells with the earliest deadline would be written last. An 8×1 picture is playable to the extent that each row differs little from the one above it.
+
 ---
 
 ## 25. Combine Pictures
 
-Joins several open pictures into one larger **chr$** image. Character cells are copied byte for byte, so nothing is re-dithered, re-quantized or re-paletted — the result is identical to its sources.
+Joins several open `.scr` pictures into one. Screens are copied byte for byte, so nothing is re-dithered, re-quantized or re-paletted — the result is identical to its sources.
 
 Open it two ways:
 
 - Select **two or more `.scr` files** in a single Open, or drop them together — SpectraLab asks whether to *Open separately* or *Combine…*
 - **Tools tab → Pictures → Combine…** for pictures that are already open
 
+### Output
+
+The **Output** dropdown decides what the selected screens are joined into:
+
+| Output | Takes | Produces |
+|--------|-------|----------|
+| **Mosaic (.ch$)** | any number | one larger chr$ image, laid out in a grid |
+| **Gigascreen (.img)** | exactly 2 | the two frames the display alternates between |
+| **RGB3 (.3)** | exactly 3 | the red, green and blue bitplanes |
+
+Gigascreen and RGB3 are the way to build a multi-frame picture out of screens drawn separately — one `.scr` per frame or per colour channel. Each picked screen is labelled in the list with the plane it becomes (*Frame 1 / Frame 2*, or *Red / Green / Blue*), and **▲▼** change which is which. The preview shows the blended result, exactly as the viewer will.
+
+Both take **two or three screens and no other number**; pick the wrong count and the dialog says how many to add or clear, and **Combine** stays disabled. An output is greyed out in the dropdown when fewer usable screens are open than it needs — with two pictures open, RGB3 cannot be chosen at all. More open than an output needs is fine: tick the ones you want and leave the rest.
+
+Gigascreen copies each screen whole — bitmap *and* attributes. RGB3 has no attributes at all, so only each screen's bitmap travels and its ink/paper colours are discarded: a set pixel lights that channel, a clear one does not.
+
 ### Dialog
 
-- **Source list** — a checkbox per open picture. **▲▼** reorder; list order is the layout order, filling left to right then top to bottom
-- **Pictures per row** — `1` stacks them vertically, the number of pictures puts them all in one row. Left alone it picks a roughly square grid
-- **Fill empty cells** — ink and paper for cells no picture covers. Uncovered cells appear as a checkerboard in the preview and are counted in the output line
+- **Source list** — a checkbox per open picture. **▲▼** reorder; order decides layout (mosaic) or which plane each screen becomes (Gigascreen, RGB3)
+- **Pictures per row** *(mosaic only)* — `1` stacks them vertically, the number of pictures puts them all in one row. Left alone it picks a roughly square grid
+- **Fill empty cells** *(mosaic only)* — ink and paper for cells no picture covers. Uncovered cells appear as a checkerboard in the preview and are counted in the output line
 - **Close source pictures** — on by default, leaving only the combined result open
-- **Output** — the resulting chr$ size in pixels and bytes
+- **Output** — the resulting format, size in pixels and size in bytes
 
 ### Limits
 
-Only plain `.scr` can be combined. Any other open picture is listed with the reason it is refused — `not a plain .scr (bsc)`, `has a ULA+ palette`, `4-line attributes` — and must be converted first.
+Only plain `.scr` can be combined. Any other open picture is listed with the reason it is refused — `not a plain .scr (bsc)`, `has a ULA+ palette`, `4-line attributes` — and must be converted first. Gigascreen and RGB3 additionally need the full 256×192, since neither format can record any other size.
 
 This is not arbitrary: chr$ stores one attribute byte per 8×8 cell and has no palette section, so formats with finer attributes (`.ifl` 8×2, `.bmc4` 8×4, `.mlt` 8×1) and ULA+ pictures cannot be joined without losing information. chr$ also caps at 255×255 cells (2040×2040 pixels), since its header stores each dimension in a single byte.
 
@@ -1951,7 +2086,7 @@ Arithmetic: `+`, `-`, `*`, `/`, `%`. Comparison: `=`, `<>`, `!=`, `<`, `>`, `<=`
 | .bsc | 11136 bytes | Border screen |
 | .bsp | variable | Border screen with header (70-byte header, screen/gigascreen ± border) |
 | .ifl | 9216 bytes | 8×2 multicolor |
-| .mlt / .mc | 12288 bytes | 8×1 multicolor |
+| .mlt / .mc | 12288 bytes | 8×1 multicolor — opens a dialog offering three readings (interleaved bitmap, linear bitmap, or attributes in ZX screen order); click the one that looks right |
 | .bmc4 | 11904 bytes | 8×4 multicolor + border |
 | .3 | 18432 bytes | Tricolor RGB |
 | .img | 13824 bytes | Gigascreen (2×SCR) |
@@ -2166,6 +2301,9 @@ When using **Step**, the textarea highlights the source line corresponding to th
 
 ## Credits and Third-Party Libraries
 
+- **dizher** — the eye-model colour metric in `js/eye_model.js` is ported from [dizher](https://github.com/ruguevara/dizher) by Ru Grantez (MIT), used with the author's permission: the opponent colour space and its blur, the CIELAB lightness gain on the error, and the unblurred dot-noise term. The two entries below also reached SpectraLab through it. Its own sources are S-CIELAB (Zhang & Wandell, 1996) and the opponent space of Poirson & Wandell
+- **libdither** — ordered dither threshold matrices, error-diffusion kernels and the variable-coefficient tables by [Robert Kist](https://github.com/robertkist/libdither) (BSD-style license; the notice travels with the tables in `js/dither_tables.js`). The variable kernels implement Ostromoukhov, *A simple and efficient error-diffusion algorithm*, SIGGRAPH 2001, and Zhou & Fang, *Improving mid-tone quality of variable-coefficient error diffusion using threshold modulation*, SIGGRAPH 2003
+- **img2spectrum** — the measured ZX Spectrum gigascreen blend colours by [Jari Komppa](https://github.com/jarikomppa/img2spec), captured from a real machine on a CRT
 - **ZX7** — compression by [Einar Saukas](https://spectrumcomputing.co.uk/entry/27996/ZX-Spectrum/ZX7)
 - **ZX0** — compression by [Einar Saukas](https://github.com/einar-saukas/ZX0)
 - **RCS** — screen reordering by [Einar Saukas](https://github.com/einar-saukas/RCS)

@@ -361,11 +361,17 @@ In the **Transform** section, choose a dithering method. Default is **None** (ne
 Below the dither dropdown:
 - **Strength** (0–100%) scales error diffusion intensity; on ordered / pattern / blue-noise / a-dither methods, Strength > 0 engages a hybrid ordered+diffusion mode
 - **Serpentine scan** alternates row direction during error diffusion to reduce horizontal banding
+- **Matrix** appears for ordered methods: 39 threshold matrices with a swatch showing how each renders a ramp. **Auto** keeps the method's own. **Void dispersed dots** is the best starting point for smooth areas; the clustered-dot and magic-square groups give a coarser, more print-like or ornamental look
+- **Kernel** appears for error-diffusion methods: 19 kernels with a swatch of the footprint. **Auto** keeps the method's own. Stevenson-Arce and Xot spread the error widest and dither most smoothly; Atkinson and Steve Pigeon throw part of it away for a crisper, contrastier picture
+- For smooth gradients, try the **Variable (adapts to tone)** kernels at the top of the Kernel list. **Zhou-Fang** in particular broke up the long streaks of ink that Floyd-Steinberg leaves across a sky — the longest unbroken run dropped from a full 256-pixel row to 27 — and it costs no extra time
 - **Pre-blur** (0–50) blurs cell pixels before choosing the ink/paper color pair. Useful for noisy or highly detailed images where attribute clash is severe. The bitmap detail stays sharp — only the color decision is affected
+
+For the gigascreen family, the **Source** section also shows a **Blends** dropdown. Leave it on **Measured CRT**: those are the frame blends captured from a real Spectrum, so the colour pairs are chosen against what the machine really shows rather than against an average that comes out too light. Switch to **sRGB average** only to reproduce a conversion made before v2.44.
 
 In the **Source** section:
 - **Colors** dropdown selects the color space for matching: RGB, LAB, or OkLab (default). OkLab generally produces the best results, especially for blues and purples
 - **Pair fit** dropdown selects the strategy for choosing the ink/paper color pair per cell: Best fit (exhaustive nearest-color), Blend fit (line-projection metric that models dithering blend quality), or PCA gradient (PCA-guided candidates with line-projection). Try Blend fit or PCA gradient for smoother color transitions
+- **Eye model** judges a pair by what the eye sees after its own blur rather than pixel by pixel, so it will choose a dither of two colours the cell can paint over a flat colour that is merely closer. On test pictures it beat Blend fit on both fidelity measures for three sources out of four, and on the perceptual one for all four. It costs about four times as much time, which the preview absorbs. Its three sliders live in the **Dither** tab; the defaults are a good starting point, and **Dot noise** is the one to raise if flat areas come out speckled
 
 In the **Output** section:
 - The **palette strip** below the Palette dropdown lets you click individual colors to disable them. Disabled colors won't be used during conversion. This is useful for restricting the output to a specific subset of ZX colors (e.g., disable bright colors to force all-regular output)
@@ -619,6 +625,21 @@ This allows significantly more color detail at the cost of a larger file.
 Drawing works the same as standard SCR — select ink/paper colors, use drawing tools. The difference is visible in the attribute grid (use **G** to cycle grid sizes) and in the number of available colors per area.
 
 ![Multicolor editing](screenshots/tutorial_multicolor.png)
+
+### Will it run on a Pentagon?
+
+8×1 is where multicolor stops being free: the hardware has 24 attribute rows and the picture wants 192, so a player has to rewrite the attribute line the beam is about to read, every scanline. Switch **Settings → Multicolour timing** to *Mark over-budget rows on border* and SpectraLab works out, row by row, whether the cheapest possible instruction sequence fits inside a 224 T-state Pentagon scanline, and keeps ahead of the beam. Rows that do not fit get an **orange line on the border**, and **File Info** shows the tally.
+
+Reading the result while you draw:
+
+- A fully repainted row fits while it uses at most **8 different ink/paper pairs** across its 32 cells. Reusing a pair costs nothing extra, so flattening two near-identical cells into one colour pair often clears a marked row
+- Rows that barely differ from the row above are nearly free, because unchanged cells need no write at all. Vertical runs of colour are cheap; a row that changes everything is not
+- **Every 8th row is nearly free of the rule.** The first pixel row of a character row (y = 0, 8, 16, ...) is prepared a whole character row in advance, so it can carry a complete colour change that would never fit in a single scanline. If a band of colour has to start somewhere, starting it on a character boundary costs the least
+- The marks update as you edit, so you can watch a row go green while you simplify it
+
+**Point at a row to see why it costs what it does.** File Info then tells you, in plain terms, how much of its time the row uses and by how much it is over (`101%, over 2T`), how many of its 32 cells change, how many of its colours only one cell uses, and what would fix it. There are two ways out and it offers the gentler: `match 6 cells above` (let some cells keep the colour the row above already has) or `reuse 1 colour` (recolour a cell to one the row already uses); hover the line for both. The row itself gets a marker on every cell that needs a write, in **orange** where that cell's colour is used by nothing else in the row. Those orange cells are the ones to recolour: a colour is paid for once however many cells share it, so matching one orange cell to a colour the row already has is pure profit, while swapping it for another new colour changes nothing. The **bottom border** shows the row twice, under the columns it belongs to: on top what the attribute line already holds, underneath what this row needs, with ink on the left of each swatch and paper on the right. The cells the beam has to change are the ones whose two bands disagree — so you can see at a glance both which part of the picture is costing you and what it is changing from.
+
+See help section 24 for exactly what is counted, and what the model deliberately leaves out.
 
 ---
 
