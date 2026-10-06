@@ -227,9 +227,13 @@ function mltNextUse(seq) {
  *
  * @param {Array<{cost: number, cells: number[]}>} ops - in emission order; ops
  *   with no cells (register loads, `exx`, `ld sp,nn`) only consume time
+ * @param {number} [lookback] - T-states since these cells were last read: one
+ *   scanline for an interior row, and a whole character row for a lead-in, whose
+ *   attribute line the beam has not touched since the frame before
  * @returns {{ok: boolean, blockCost: number, start: number, latest: number}}
  */
-function mltScheduleBlock(ops) {
+function mltScheduleBlock(ops, lookback) {
+  const back = (typeof lookback === 'number') ? lookback : MLT_TIMING.LINE_TSTATES;
   const prefix = new Array(ops.length);
   let total = 0;
   let start = -Infinity;
@@ -245,7 +249,7 @@ function mltScheduleBlock(ops) {
       const r = mltAttrReadT(cells[c]);
       if (r > latestRead) latestRead = r;
     }
-    const earliest = latestRead - MLT_TIMING.LINE_TSTATES + 1;
+    const earliest = latestRead - back + 1;
     if (earliest - prefix[i] > start) start = earliest - prefix[i];
   }
   if (start === -Infinity) start = 0;
@@ -713,7 +717,10 @@ function mltRowPlan(attrs, y, inLine) {
   // which still holds this character row's LAST pixel line from the frame before
   const prevRow = (y % 8 === 0) ? y + 7 : y - 1;
   const prevBase = prevRow * MLT_TIMING.CELLS;
-  const lineCap = inLine ? MLT_TIMING.LINE_TSTATES : Infinity;
+  // A lead-in writes an attribute line the beam has not read since the previous
+  // frame, so its window reaches back over the whole character row above.
+  const lookback = inLine ? MLT_TIMING.LINE_TSTATES
+                          : MLT_TIMING.CHAR_ROW_LINES * MLT_TIMING.LINE_TSTATES;
 
   /** @type {number[]} */
   const changedCells = [];
@@ -756,11 +763,11 @@ function mltRowPlan(attrs, y, inLine) {
     const ordered = order.map(p => valueOf.get(p));
     for (const indexFirst of [true, false]) {
       const push = mltBuildPushBlock(order, ordered, indexFirst);
-      const sched = mltScheduleBlock(push.ops);
+      const sched = mltScheduleBlock(push.ops, lookback);
       const cost = push.preload + sched.blockCost;
       if (sched.ok && cost < orderedCost) orderedCost = cost;
-      const ok = (!inLine || sched.ok) && cost <= lineCap;
-      // A sequence that fits always beats one that does not, however short
+      const ok = sched.ok;
+      // A sequence the beam accepts always beats one it does not, however short
       if ((ok && !pushOk) || (ok === pushOk && cost < pushCost)) {
         pushCost = cost;
         pushOk = ok;
@@ -772,10 +779,10 @@ function mltRowPlan(attrs, y, inLine) {
   // --- Method D: store only the cells that changed ---
   const directValues = changedCells.map((c) => attrs[base + c]);
   const direct = mltBuildDirectBlock(changedCells, directValues, newCharRow);
-  const directSched = mltScheduleBlock(direct.ops);
+  const directSched = mltScheduleBlock(direct.ops, lookback);
   const directCost = direct.preload + directSched.blockCost;
   if (directSched.ok && directCost < orderedCost) orderedCost = directCost;
-  const directOk = (!inLine || directSched.ok) && directCost <= lineCap;
+  const directOk = directSched.ok;
 
   // --- Method M: a strategy per run of consecutive cells ---
   let mixedBest = null;
@@ -784,10 +791,10 @@ function mltRowPlan(attrs, y, inLine) {
   for (const noPush of [false, true]) {
     for (const indexFirst of [false, true]) {
       const m = mltBuildMixedBlock(attrs, y, changedCells, newCharRow, indexFirst, noPush);
-      const sched = mltScheduleBlock(m.ops);
+      const sched = mltScheduleBlock(m.ops, lookback);
       const cost = m.preload + sched.blockCost;
       if (sched.ok && cost < orderedCost) orderedCost = cost;
-      const ok = (!inLine || sched.ok) && cost <= lineCap;
+      const ok = sched.ok;
       if ((ok && !mixedOk) || (ok === mixedOk && cost < mixedCost)) {
         mixedCost = cost;
         mixedOk = ok;
@@ -815,7 +822,7 @@ function mltRowPlan(attrs, y, inLine) {
     asPlan(MLT_METHOD.DIRECT, direct, directSched, directOk),
     asPlan(MLT_METHOD.MIXED, mixedBest.build, mixedBest.sched, mixedOk)
   ];
-  // One that fits always beats one that does not, however short
+  // One the beam accepts always beats one it does not, however short
   const fitting = candidates.filter(c => c.ok);
   const pool = fitting.length ? fitting : candidates;
   return pool.reduce((best, c) => (c.cost < best.cost ? c : best));
@@ -827,7 +834,8 @@ function mltRowPlan(attrs, y, inLine) {
  *
  * @param {Uint8Array} attrs - the whole 192x32 attribute plane, row-major
  * @param {number} y - pixel row 0..191
- * @param {boolean} inLine - true to enforce the 320 T line and the ULA deadlines
+ * @param {boolean} inLine - false for a lead-in, whose window reaches back over
+ *   the character row above instead of over a single scanline
  * @returns {{ok: boolean, cost: number, method: number, preload: number, changed: number, distinct: number}}
  */
 function mltAnalyzeRow(attrs, y, inLine) {
@@ -889,6 +897,7 @@ function mltFitsInSlack(need, slacks, resumeCost) {
 function mltAnalyzePicture(attrs) {
   const rows = 192;
   const lines = MLT_TIMING.CHAR_ROW_LINES;
+  const LINE = MLT_TIMING.LINE_TSTATES;
   const over = new Uint8Array(rows);
   const cost = new Int16Array(rows);
   const method = new Uint8Array(rows);
@@ -897,37 +906,70 @@ function mltAnalyzePicture(attrs) {
   const raw = new Float64Array(rows);
   // What the cheapest beam-legal arrangement costs, for rows refused on order
   const ordered = new Int32Array(rows);
+  // Where each block ended up, relative to the start of its own scanline
+  const placedAt = new Int32Array(rows);
+  // What each scanline has left once the blocks running through it are charged
+  const spare = new Int32Array(rows);
 
-  // Pass 1 -- the seven interior rows of every character row, each inside its
-  // own scanline and its own ULA deadlines
-  for (let y = 0; y < rows; y++) {
-    if (y % lines === 0) continue;
-    const r = mltRowPlan(attrs, y, true);
-    ordered[y] = isFinite(r.orderedCost) ? r.orderedCost : 0;
-    raw[y] = r.cost;
-    cost[y] = Math.min(32767, r.cost);
-    method[y] = r.method;
-    kind[y] = MLT_ROW_KIND.INTERIOR;
-    budget[y] = MLT_TIMING.LINE_TSTATES;
-    over[y] = r.ok ? 0 : 1;
+  // Pass 1 -- the seven interior rows of a character row are one continuous run
+  // of code, not seven separate slots. Each block is placed as early as its own
+  // ULA window and the block before it allow, so a row may run past its own
+  // scanline wherever a neighbour runs short.
+  for (let top = 0; top < rows; top += lines) {
+    let clock = -Infinity;             // absolute T at which the last block ended
+    const busy = new Int32Array(lines);
+    for (let i = 1; i < lines; i++) {
+      const y = top + i;
+      const p = mltRowPlan(attrs, y, true);
+      ordered[y] = isFinite(p.orderedCost) ? p.orderedCost : 0;
+      raw[y] = p.cost;
+      cost[y] = Math.min(32767, p.cost);
+      method[y] = p.method;
+      kind[y] = MLT_ROW_KIND.INTERIOR;
+      if (p.method === MLT_METHOD.NONE) { budget[y] = LINE; continue; }
+
+      // `p.start` and `p.latest` bound where the WRITES begin; the preload runs
+      // in front of them, so the row as a whole begins `preload` earlier.
+      const origin = y * LINE;
+      const begin = Math.max(clock, origin + p.start - p.preload);
+      // The room this row actually had: from the moment it could begin to the
+      // moment it must be finished. It is more than a scanline when neighbours
+      // left time over, and less when they took it.
+      const room = origin + p.latest + p.blockCost - begin;
+      // When no arrangement is schedulable at all, `latest` is behind `start`
+      // and the room figure means nothing. Fall back to the scanline so the
+      // readout and the "to fit" advice still have a target to work towards.
+      budget[y] = p.ok ? room : LINE;
+      over[y] = (p.ok && room >= p.cost) ? 0 : 1;
+      const writesAt = begin + p.preload;
+      placedAt[y] = writesAt - origin;
+      clock = writesAt + p.blockCost;
+
+      // Charge the row to every scanline it runs through, so the lead-in is
+      // offered what is really left rather than 224 T minus each row's own cost
+      for (let li = 0; li < lines; li++) {
+        const lineFrom = (top + li) * LINE;
+        const overlap = Math.min(clock, lineFrom + LINE) - Math.max(begin, lineFrom);
+        if (overlap > 0) busy[li] += overlap;
+      }
+    }
+    for (let i = 0; i < lines; i++) spare[top + i] = Math.max(0, LINE - busy[i]);
   }
 
   // Pass 2 -- the first row of each character row, written during the character
-  // row above. Row 0 is free: the top border prepares it.
+  // row above and split across whatever its scanlines have left. Row 0 is free:
+  // the top border prepares it.
   for (let y = 0; y < rows; y += lines) {
-    if (y === 0) continue;
+    if (y === 0) { budget[y] = LINE; continue; }
     const lead = mltRowPlan(attrs, y, false);
     ordered[y] = isFinite(lead.orderedCost) ? lead.orderedCost : 0;
     raw[y] = lead.cost;
     cost[y] = Math.min(32767, lead.cost);
     method[y] = lead.method;
-    // Line 8r-8 of the character row above writes nothing of its own, so it is
-    // free in full; the other seven offer whatever their own writes leave
-    const slacks = [MLT_TIMING.LINE_TSTATES];
-    for (let i = 1; i < lines; i++) {
-      slacks.push(Math.max(0, MLT_TIMING.LINE_TSTATES - raw[y - lines + i]));
-    }
     kind[y] = MLT_ROW_KIND.LEAD_IN;
+    /** @type {number[]} */
+    const slacks = [];
+    for (let i = 0; i < lines; i++) slacks.push(spare[y - lines + i]);
     // Resuming in a line an interior write also uses means reloading the values
     // that write took the registers for
     budget[y] = mltUsableSlack(slacks, MLT_TIMING.RESUME + lead.preload);
@@ -940,7 +982,8 @@ function mltAnalyzePicture(attrs) {
     overCount++;
     if (raw[y] > worstCost) { worstCost = raw[y]; worstRow = y; }
   }
-  return { over, cost, method, kind, budget, ordered, overCount, worstRow, worstCost };
+  return { over, cost, method, kind, budget, ordered, placedAt, spare,
+           overCount, worstRow, worstCost };
 }
 
 // ============================================================================
@@ -1109,10 +1152,64 @@ function mltSuggestReuse(attrs, y, result) {
     for (let c = 0; c < n; c++) {
       if (scratch[base + c] === least) { scratch[base + c] = most; cells++; }
     }
-    const r = mltAnalyzeRow(scratch, y, inLine);
-    if (r.ok && r.cost <= budget) return { colours: k, cells };
+    if (mltTrialFits(scratch, y, inLine, budget)) return { colours: k, cells };
   }
   return null;
+}
+
+/**
+ * Whether a trial edit actually makes the row fit.
+ *
+ * An interior row is measured against the room that edit would leave it, because
+ * shortening a row moves where it sits. A lead-in keeps the budget the analysis
+ * worked out from the character row above.
+ *
+ * @param {Uint8Array} scratch - the trial plane
+ * @param {number} y - pixel row
+ * @param {boolean} inLine - false for a lead-in
+ * @param {number} budget - the lead-in's budget from the analysis
+ * @returns {boolean}
+ */
+function mltTrialFits(scratch, y, inLine, budget) {
+  if (!inLine) {
+    const lead = mltAnalyzeRow(scratch, y, false);
+    return lead.ok && lead.cost <= budget;
+  }
+  const t = mltCharRowRoom(scratch, y);
+  return t.ok && t.cost <= t.room;
+}
+
+/**
+ * What a row would really be given, for a trial edit of the attribute plane.
+ *
+ * The seven interior rows of a character row share one run of code, so a row's
+ * room depends on its neighbours and on its own length. The advice therefore
+ * cannot test a trial against the room the row started with; it has to replay
+ * the placement, which is seven row plans.
+ *
+ * @param {Uint8Array} attrs - the plane to measure, which may be a trial copy
+ * @param {number} y - pixel row
+ * @returns {{ok: boolean, cost: number, room: number}}
+ */
+function mltCharRowRoom(attrs, y) {
+  const lines = MLT_TIMING.CHAR_ROW_LINES;
+  const LINE = MLT_TIMING.LINE_TSTATES;
+  const top = y - (y % lines);
+  let clock = -Infinity;
+  for (let i = 1; i < lines; i++) {
+    const row = top + i;
+    const p = mltRowPlan(attrs, row, true);
+    if (p.method === MLT_METHOD.NONE) {
+      if (row === y) return { ok: true, cost: 0, room: LINE };
+      continue;
+    }
+    const origin = row * LINE;
+    const begin = Math.max(clock, origin + p.start - p.preload);
+    const room = origin + p.latest + p.blockCost - begin;
+    if (row === y) return { ok: p.ok, cost: p.cost, room: p.ok ? room : LINE };
+    clock = begin + p.preload + p.blockCost;
+  }
+  return { ok: true, cost: 0, room: LINE };
 }
 
 /**
@@ -1162,8 +1259,7 @@ function mltSuggestMatch(attrs, y, result) {
       if (scratch[base + bestAt + i] !== attrs[prevBase + bestAt + i]) cells++;
       scratch[base + bestAt + i] = attrs[prevBase + bestAt + i];
     }
-    const r = mltAnalyzeRow(scratch, y, inLine);
-    if (r.ok && r.cost <= budget) return { cells };
+    if (mltTrialFits(scratch, y, inLine, budget)) return { cells };
   }
   return null;
 }
@@ -1536,12 +1632,22 @@ function getMltRowReadout() {
     } else {
       row = pct + '%, ' + (pct >= 95 ? 'tight' : 'fits');
     }
+    const lent = budget - MLT_TIMING.LINE_TSTATES;
     rowTitle = 'This row uses ' + pct + '% of the time it has: ' + cost + 'T of work by ' +
       method + ', against ' + budget + 'T available' +
       (kind === MLT_ROW_KIND.LEAD_IN
         ? ', because it is the first row of a character row and can be prepared during the ' +
           'character row above instead of in one scanline.'
-        : ' in its own scanline.') +
+        // The seven interior rows of a character row are one run of code, so an
+        // interior row is not held to its own scanline: it gets what the rows
+        // around it left, which may be more than a scanline or less.
+        : (lent > 0
+            ? ' -- a scanline is ' + MLT_TIMING.LINE_TSTATES + 'T, and the rows ' +
+              'around it leave ' + lent + 'T of theirs over.'
+            : (lent < 0
+                ? ' -- less than the ' + MLT_TIMING.LINE_TSTATES + 'T of a scanline, ' +
+                  'because the rows around it run ' + (-lent) + 'T into its time.'
+                : ' in its own scanline.'))) +
       (result.over[y]
         ? (excess > 0
           ? ' It is ' + excess + 'T over.'

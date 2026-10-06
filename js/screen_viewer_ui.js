@@ -918,6 +918,23 @@ function initScreenViewerUI() {
     }
 
     switch (event.code) {
+      case 'KeyM':
+        // Multicolour timing overlay on and off. It marks the rows a Pentagon
+        // cannot write in time, which is worth glancing at and then getting out
+        // of the way again, so it deserves a key rather than a trip to Settings.
+        if (event.ctrlKey || event.altKey || event.metaKey) break;
+        mouseSettings.mltTiming = (getMouseSetting('mltTiming') === 'on') ? 'off' : 'on';
+        saveMouseSettings();
+        // Keep the Settings dialog honest if it happens to be open
+        if (typeof syncSettingsDialog === 'function') syncSettingsDialog();
+        if (typeof editorActive !== 'undefined' && editorActive &&
+            typeof editorRender === 'function') {
+          editorRender();
+        } else if (typeof renderScreen === 'function') {
+          renderScreen();
+        }
+        break;
+
       case 'KeyG':
         // Cycle grid size: 0 -> 8 -> 16 -> 24 -> 0
         const gridSizes = [0, 8, 16, 24];

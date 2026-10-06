@@ -285,6 +285,11 @@ function mltAsmChoosePhase(plans, analysis) {
       if (analysis.over[y]) continue;
       const p = plans[y];
       if (p.method === MLT_METHOD.NONE) continue;
+      // The checker pools time across a character row, so a row it passes may be
+      // longer than a scanline. The emitter still works in slots, so such a row
+      // cannot be placed inside one and must not veto the phase for the rest;
+      // mltAsmPlaceRows() reports it as an overrun.
+      if (p.cost > LINE) continue;
       const lo = Math.max(p.preload, p.start - phase);
       const hi = Math.min(LINE - p.blockCost, p.latest - phase);
       if (lo > hi) { ok = false; break; }
@@ -300,99 +305,100 @@ function mltAsmChoosePhase(plans, analysis) {
 }
 
 /**
- * Where each interior row's block sits inside its slot.
+ * Where each interior row's block sits on its character row's clock.
+ *
+ * The seven interior rows are one continuous run of code, so a block is placed
+ * as early as its own ULA window and the block before it allow, and may run past
+ * its own scanline wherever the next row starts late enough. Positions are
+ * character-row-local: 0 is the first T-state of pixel row 8r.
+ *
+ * `lo` and `hi` are how far the block may still be nudged without breaking the
+ * beam or colliding with its neighbours, which is what mltAsmRepairGaps() needs
+ * to make every gap a delay a Z80 can express.
  *
  * @param {Array<any>} plans
  * @param {{over: Uint8Array}} analysis
  * @param {number} phase
- * @returns {{h: Int32Array, lo: Int32Array, hi: Int32Array, overrun: Int32Array}}
+ * @returns {{h: Int32Array, lo: Int32Array, hi: Int32Array, room: Int32Array, overrun: Int32Array}}
  */
 function mltAsmPlaceRows(plans, analysis, phase) {
   const LINE = MLT_TIMING.LINE_TSTATES;
-  const h = new Int32Array(MLT_ASM.ROWS);
-  const lo = new Int32Array(MLT_ASM.ROWS);
-  const hi = new Int32Array(MLT_ASM.ROWS);
-  const overrun = new Int32Array(MLT_ASM.ROWS);
+  const ROWS = MLT_ASM.ROWS;
+  const h = new Int32Array(ROWS);
+  const lo = new Int32Array(ROWS);
+  const hi = new Int32Array(ROWS);
+  const room = new Int32Array(ROWS);
+  const overrun = new Int32Array(ROWS);
 
-  for (let y = 1; y < MLT_ASM.ROWS; y++) {
-    if (y % 8 === 0) continue;
-    const p = plans[y];
-    if (p.method === MLT_METHOD.NONE) continue;
-    let a = Math.max(p.preload, p.start - phase);
-    let b = Math.min(LINE - p.blockCost, p.latest - phase);
-    if (a > b) {
-      // A row the checker rejected. Two different things can be wrong with it,
-      // and only one of them is fatal to the rest of the picture.
-      if (p.cost <= LINE) {
-        // It fits the line, it just cannot beat the beam. Keep the slot exactly
-        // one scanline long so every row after it stays in phase; only these
-        // cells come out wrong.
-        a = p.preload;
-        b = LINE - p.blockCost;
-        const want = p.start - phase;
-        a = b = Math.min(Math.max(want, a), b);
-      } else {
-        // Genuinely longer than a scanline. Nothing can absorb that, so the
-        // slot overruns and the overrun is reported.
-        a = b = p.preload;
-        overrun[y] = p.cost - LINE;
+  for (let r = 0; r * 8 < ROWS; r++) {
+    let prevEnd = 0;                 // slot 0 writes nothing of its own
+    /** @type {number[]} */
+    const placed = [];
+
+    for (let i = 1; i < 8; i++) {
+      const y = r * 8 + i;
+      const p = plans[y];
+      if (p.method === MLT_METHOD.NONE) continue;
+      const earliest = Math.max(i * LINE + p.start - phase, prevEnd + p.preload);
+      const latest = i * LINE + p.latest - phase;
+      let at = earliest;
+      if (at > latest) {
+        // Nothing meets the beam here. Keep it as early as the block before
+        // allows, so the rest of the character row stays in step, and say so.
+        overrun[y] = at - latest;
       }
+      h[y] = at;
+      lo[y] = earliest;
+      prevEnd = at + p.blockCost;
+      placed.push(y);
     }
-    lo[y] = a;
-    hi[y] = b;
-    // Earliest legal start leaves the most room behind the block, which is where
-    // the lead-in chunks go
-    h[y] = a;
+
+    // How far each block may move later, and how much space it has in front of
+    // the next one. Backwards, because both depend on where the next block went.
+    let limit = 8 * LINE;            // the character row has to come to 8 lines
+    for (let k = placed.length - 1; k >= 0; k--) {
+      const y = placed[k];
+      const p = plans[y];
+      // Never less than the block needs. Only the last block of a character row
+      // can come up short here, and when it does the row simply runs over: the
+      // gap machinery carries that as drift and the next character row's first
+      // gap gives it back. Cutting it instead would throw writes away for the
+      // sake of a boundary that is ours, not the beam's.
+      room[y] = Math.max(limit - h[y], p.blockCost);
+      // As late as the beam allows, and no later than leaves the next block room
+      const beamLatest = (y % 8) * LINE + p.latest - phase;
+      hi[y] = Math.max(lo[y], Math.min(beamLatest, limit - p.blockCost));
+      limit = h[y] - p.preload;
+    }
   }
-  return { h, lo, hi, overrun };
+  return { h, lo, hi, room, overrun };
 }
 
 /**
  * The free runs inside one character row.
  *
- * Slots are contiguous in code, so the tail of one slot and the head of the next
- * are one unbroken run -- which is why a character row has eight gaps, not
- * sixteen, and why that matches the eight chunks the checker budgets a lead-in
- * against.
+ * One gap before every block and one after the last, measured on the character
+ * row's own clock. A block that runs past its scanline simply leaves a smaller
+ * gap behind it; there is no slot boundary left for it to cross.
  *
  * @param {number} r - character row 0..23
  * @param {Array<any>} plans
- * @param {Int32Array} h
- * @returns {number[]} the eight gap lengths
+ * @param {Int32Array} h - character-row-local start of each row's writes
+ * @returns {number[]} eight entries, so the caller can index without checking
  */
 function mltAsmGaps(r, plans, h) {
   const LINE = MLT_TIMING.LINE_TSTATES;
-  const head = (/** @type {number} */ i) => {
-    const y = r * 8 + i;
-    const p = plans[y];
-    if (i === 0 || p.method === MLT_METHOD.NONE) return 0;
-    return h[y] - p.preload;
-  };
-  const tail = (/** @type {number} */ i) => {
-    const y = r * 8 + i;
-    const p = plans[y];
-    if (i === 0 || p.method === MLT_METHOD.NONE) return 0;
-    // A row longer than a scanline leaves no tail; it eats into the next slot,
-    // which generateMltAsm() reports rather than pretends away
-    return Math.max(0, LINE - h[y] - p.blockCost);
-  };
-  const whole = (/** @type {number} */ i) => {
-    const p = plans[r * 8 + i];
-    return i === 0 || p.method === MLT_METHOD.NONE;
-  };
-
+  /** @type {number[]} */
   const gaps = [];
-  // Slot 0 writes nothing of its own, and neither does any row whose attributes
-  // did not change, so those slots are free end to end
-  let run = 0;
-  for (let i = 0; i < 8; i++) {
-    if (whole(i)) { run += LINE; continue; }
-    run += head(i);
-    gaps.push(run);
-    run = tail(i);
+  let prevEnd = 0;
+  for (let i = 1; i < 8; i++) {
+    const y = r * 8 + i;
+    const p = plans[y];
+    if (p.method === MLT_METHOD.NONE) continue;   // its time belongs to a gap
+    gaps.push(h[y] - p.preload - prevEnd);
+    prevEnd = h[y] + p.blockCost;
   }
-  gaps.push(run);
-  // Always report eight, so the caller can index them without checking
+  gaps.push(8 * LINE - prevEnd);
   while (gaps.length < 8) gaps.push(0);
   return gaps.slice(0, 8);
 }
@@ -878,7 +884,7 @@ function generateMltAsm(attrs, baseName, bitmap, embedData, borderColour, fileBa
       push('');
       push('    ; row ' + y + '  ' + mltAsmMethodName(p.method) +
            '  preload ' + p.preload + 'T + block ' + p.blockCost + 'T = ' + p.cost +
-           'T of ' + LINE + 'T   at +' + place.h[y] +
+           'T   at +' + place.h[y] + 'T of the character row' +
            '  (' + p.changed + ' cell' + (p.changed === 1 ? '' : 's') + ' changed vs row ' + p.prevRow + ')');
       if (analysis.over[y]) {
         if (place.overrun[y] > 0) {
@@ -893,9 +899,10 @@ function generateMltAsm(attrs, baseName, bitmap, embedData, borderColour, fileBa
       }
       push(baseName + '_mlt_row' + y + ':');
 
-      // Everything the slot can hold. A row that fits uses all of it; one that
-      // does not is cut here rather than running into the next slot.
-      const room = LINE - place.h[y];
+      // Everything there is before the next block has to start. A row that fits
+      // uses what it needs; one that does not is cut rather than pushing the
+      // rest of the character row out of step.
+      const room = place.room[y];
       /** @type {MltOp[]} */
       const kept = [];
       let used = 0, droppedCells = 0;
@@ -906,8 +913,8 @@ function generateMltAsm(attrs, baseName, bitmap, embedData, borderColour, fileBa
       if (droppedCells) {
         dropped.push({ row: y, cells: droppedCells });
         push('    ; !! ' + droppedCells + ' cell write(s) dropped here: they would have run');
-        push('    ; !! past the end of this scanline, where the beam has already gone, and');
-        push('    ; !! pushed every row after them out of step.');
+        push('    ; !! into the next block, where the beam has already gone, and pushed');
+        push('    ; !! every row after them out of step.');
       }
       for (const op of p.preloadOps.concat(kept)) {
         const t = mltAsmOpText(op, y >> 3);

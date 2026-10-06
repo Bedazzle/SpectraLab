@@ -7,7 +7,9 @@
 - **Fixed:** the multicolour timing check had the Pentagon scanline and frame transposed — it is 224 T over 320 lines, not 320 T over 224. Every row budget was 96 T too generous, so pictures were reported as fitting when they cannot
 - **Fixed:** the 8x1 multicolour player started 63 T early, so a row’s first writes could land before the row above had been read and corrupt it
 - **Fixed:** a row too long for its scanline no longer runs into the next one and breaks rows the check had passed; it is cut, and the export reports what was cut
-- Multicolour timing: each row is now planned run by run — pushed, stored, or written in place, whichever is cheaper — and push runs are split and reordered when that is what the beam needs. Many rows that read `wrong order` are now playable; one still refused says what ordering it would cost
+- Multicolour timing: the seven interior rows of a character row are now treated as one run of code rather than seven separate scanlines, so a row may run past its own line wherever a neighbour runs short. On the sample pictures this takes the rows that cannot be written from 20 to 9 and from 57 to 22. The player places its blocks the same way, and the row readout says how much time the rows around it lent or took
+- Multicolour timing: each row is planned run by run — pushed, stored, or written in place, whichever is cheaper — and push runs are split and reordered when that is what the beam needs
+- **M** toggles the multicolour timing marks, in the viewer and in the editor, instead of a trip to Settings
 - Docs: the graphics guide covers all three multicolour file layouts and how to tell them apart
 
 ## v2.45

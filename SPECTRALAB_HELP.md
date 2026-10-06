@@ -1255,7 +1255,7 @@ With the pixel cursor:
 
 ### Analysis
 
-**Multicolour timing** — *Off* (default) or *Mark over-budget rows on border*. Applies to 8×1 multicolor (MLT) pictures only.
+**Multicolour timing** — *Off* (default) or *Mark over-budget rows on border*. Applies to 8×1 multicolor (MLT) pictures only. **M** toggles it from the keyboard, in the viewer and in the editor.
 
 8×1 multicolor asks for 32 fresh attribute bytes on every one of the 192 pixel rows, but the hardware has only 24 attribute rows. A player therefore has to rewrite the attribute line the beam is about to read, every single scanline, in step with the beam — and whether that is possible depends on the picture. With the check on, SpectraLab costs every pixel row and draws an **orange line on the border** against each row that cannot be put in place in time, exactly where a player's own `out (#fe)` diagnostic would show it. **File Info** gains a *Multicolour* line with the verdict — `fits`, or how many rows are over budget. The panel is narrow, so every value there is kept to a few characters and the sentence behind it is the row's tooltip: hover the **Multicolour** line for the worst row and its cost.
 
@@ -1404,6 +1404,7 @@ This is not arbitrary: chr$ stores one attribute byte per 8×8 cell and has no p
 | Arrows | Pan canvas when zoomed (configurable) |
 | F | Toggle flash animation |
 | G | Cycle grid size (None/8/16/24px) |
+| M | Toggle the multicolour timing overlay (8x1 pictures) |
 | ~ | Toggle preview panel |
 | Space | Play/Pause (SCA animation) |
 | Left/Right | Prev/Next frame (SCA) |
@@ -1456,6 +1457,7 @@ This is not arbitrary: chr$ stores one attribute byte per 8×8 cell and has no p
 | Ctrl+V | Paste |
 | R / H / V | Rotate/Flip clipboard (while pasting) |
 | N | Invert selection (swap ink ↔ paper) |
+| M | Toggle the multicolour timing overlay (8x1 pictures) |
 | Shift+W | Re-dither selection with current dither brush settings |
 | Ctrl+Z | Undo (up to 32 levels) |
 | Ctrl+Y | Redo |

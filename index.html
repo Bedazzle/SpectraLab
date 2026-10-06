@@ -1964,7 +1964,7 @@
                   <span class="info-label">Hidden cells:</span>
                   <span class="info-value" id="infoHiddenCells">-</span>
                 </div>
-                <div id="infoMltTimingRow" class="info-row" style="display: none;" title="Pixel rows whose attributes cannot be rewritten inside one 320 T-state Pentagon 128K scanline">
+                <div id="infoMltTimingRow" class="info-row" style="display: none;" title="Pixel rows whose attributes cannot be rewritten in time on a Pentagon 128K, counting the time the rows around them leave over">
                   <span class="info-label">Multicolour:</span>
                   <span class="info-value" id="infoMltTiming">-</span>
                 </div>
@@ -3777,7 +3777,7 @@
     </label>
 
     <div style="font-size: 10px; color: var(--text-tertiary); margin: 10px 0 6px;">ANALYSIS</div>
-    <label class="settings-row" title="8x1 multicolour (MLT) only: can each pixel row's attributes be rewritten within one scanline? Budget is Pentagon 128K's 320 T-states.">
+    <label class="settings-row" title="8x1 multicolour (MLT) only: can each pixel row's attributes be rewritten in time on a Pentagon 128K? A scanline is 224 T-states, and the rows of a character row share their time. Press M to toggle.">
       <span>Multicolour timing</span>
       <select id="settingsMltTiming">
         <option value="off">Off</option>
@@ -3789,8 +3789,10 @@
       Alt bindings are ignored by Rect, Circle and Gradient, which use Alt for "draw from center".
       With the pixel cursor, Shift+arrow steps 8 pixels and Space applies the current tool.
       The multicolour timing check applies to 8x1 (MLT) pictures only: pixel rows whose
-      attributes cannot be rewritten within one scanline get an orange mark on the border.
-      The budget is a Pentagon 128K line, 320 T-states with no contention.
+      attributes cannot be rewritten in time get an orange mark on the border. A Pentagon
+      128K scanline is 224 T-states with no contention, and the seven interior rows of a
+      character row share their time, so a row may run past its own line where a neighbour
+      runs short. <b>M</b> toggles the marks without opening this dialog.
     </div>
 
     <div style="display: flex; gap: 8px; justify-content: space-between; margin-top: 12px;">
@@ -3825,6 +3827,7 @@
           <tr><td style="color: var(--text-secondary);">Arrows</td><td>Pan canvas, or move the pixel cursor (set in Settings)</td></tr>
           <tr><td style="color: var(--text-secondary);">F</td><td>Toggle flash animation</td></tr>
           <tr><td style="color: var(--text-secondary);">G</td><td>Cycle grid size (None/8/16/24px)</td></tr>
+          <tr><td style="color: var(--text-secondary);">M</td><td>Toggle the multicolour timing overlay (8x1 pictures)</td></tr>
           <tr><td style="color: var(--text-secondary);">Grid color</td><td>Dropdown to change grid line color</td></tr>
           <tr><td style="color: var(--text-secondary);">~</td><td>Toggle preview panel</td></tr>
           <tr><td style="color: var(--text-secondary);">Space</td><td>Play/Pause (SCA animation)</td></tr>
@@ -3869,6 +3872,7 @@
           <tr><td style="color: var(--text-secondary);">B</td><td>Toggle bright</td></tr>
           <tr><td style="color: var(--text-secondary);">F</td><td>Toggle flash attribute</td></tr>
           <tr><td style="color: var(--text-secondary);">X</td><td>Swap ink/paper colors</td></tr>
+          <tr><td style="color: var(--text-secondary);">M</td><td>Toggle the multicolour timing overlay (8x1 pictures)</td></tr>
           <tr><td style="color: var(--text-secondary);">[ / ]</td><td>Decrease/Increase brush</td></tr>
           <tr><td style="color: var(--text-secondary);">` (backtick)</td><td>Toggle brush preview mode</td></tr>
         </table>
