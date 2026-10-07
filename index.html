@@ -162,7 +162,11 @@
     display: flex;
     flex-direction: row;
     align-items: center;
-    gap: 12px;
+    /* Wrap rather than overflow: the panel has a fixed width and a row that
+       outgrows it silently clips its last toggle instead of showing it. */
+    flex-wrap: wrap;
+    column-gap: 12px;
+    row-gap: 4px;
   }
 
   .controls-panel .checkbox-row label {
@@ -1012,6 +1016,30 @@
     display: block;
   }
 
+  /* The magnifier borrows the preview panel's chrome; only the canvas differs,
+     and it is sized in script from the zoom. */
+  /* The preview owns the bottom right corner; the magnifier starts opposite it
+     so turning it on is visible. A dragged position overrides this. */
+  #editorMagnifierPanel {
+    top: 10px;
+    bottom: auto;
+  }
+
+  .editor-magnifier-canvas {
+    display: block;
+    image-rendering: pixelated;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-primary);
+  }
+
+  .editor-magnifier-readout {
+    margin-top: 4px;
+    font-size: 10px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
   .editor-preview-header {
     display: flex;
     justify-content: space-between;
@@ -1798,6 +1826,10 @@
                 <label title="Toggle preview (~)">
                   <input type="checkbox" id="showPreviewCheckbox" checked>
                   Preview
+                </label>
+                <label title="Magnified view around the cursor, for placing single pixels (Z)">
+                  <input type="checkbox" id="showMagnifierCheckbox">
+                  Magnifier
                 </label>
               </div>
             </div>
@@ -2886,6 +2918,19 @@
   </div>
 </div>
 
+<div id="editorMagnifierPanel" class="editor-preview-panel">
+  <div class="editor-preview-header">
+    <span title="Drag to move">&#9776; Magnifier</span>
+    <div class="editor-preview-zoom">
+      <button id="magnifierZoomOut" title="Fewer, larger pixels">-</button>
+      <span id="magnifierZoomLevel">x8</span>
+      <button id="magnifierZoomIn" title="More, smaller pixels">+</button>
+    </div>
+  </div>
+  <canvas id="editorMagnifierCanvas" class="editor-magnifier-canvas" width="160" height="160"></canvas>
+  <div id="editorMagnifierReadout" class="editor-magnifier-readout">&nbsp;</div>
+</div>
+
 <!-- Floating Palette (fullscreen mode) -->
 <div id="floatingPalette" class="floating-palette">
   <div class="floating-palette-header">
@@ -3875,6 +3920,7 @@
           <tr><td style="color: var(--text-secondary);">M</td><td>Toggle the multicolour timing overlay (8x1 pictures)</td></tr>
           <tr><td style="color: var(--text-secondary);">[ / ]</td><td>Decrease/Increase brush</td></tr>
           <tr><td style="color: var(--text-secondary);">` (backtick)</td><td>Toggle brush preview mode</td></tr>
+          <tr><td style="color: var(--text-secondary);">Magnifier</td><td>Floating zoomed view around the cursor (<b>Z</b>), for placing single pixels. Marks the pixel under the cursor and the 8x8 attribute cells</td></tr>
         </table>
         <div style="font-weight: bold; margin: 12px 0 6px;">Editing</div>
         <table style="width: 100%; font-size: 11px;">
@@ -4952,6 +4998,7 @@
 <script src="js/sca_editor.js"></script>
 <script src="js/qrcode.js"></script>
 <script src="js/screen_editor.js"></script>
+<script src="js/editor_magnifier.js"></script>
 <script src="js/combine_pictures.js"></script>
 <script src="js/sprite_editor.js"></script>
 <script src="js/script_engine.js"></script>

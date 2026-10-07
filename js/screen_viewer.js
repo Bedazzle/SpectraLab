@@ -5857,6 +5857,10 @@ function renderScreenInner() {
   // Apply post-process display filters (composite, curvature) before grids
   if (typeof applyPostProcessFilters === 'function') applyPostProcessFilters();
 
+  // The magnifier wants the picture without the things drawn over it -- the
+  // timing marks in particular lie across the very rows it is opened for
+  if (typeof captureMagnifierSource === 'function') captureMagnifierSource();
+
   // Draw paper grid overlay if enabled
   if (gridSize > 0 || subgridSize > 0) {
     drawCharGrid(ctx, borderPixels);

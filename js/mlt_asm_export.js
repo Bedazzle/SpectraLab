@@ -211,7 +211,9 @@ function mltAsmOpText(op, charRow) {
   switch (op.kind) {
     case 'sp':
       // push writes downwards, so SP sits just past the pair about to be written
-      return { text: 'ld sp,' + at(op.pair * 2 + 2), note: 'write down from cell ' + (op.pair * 2 + 1) };
+      // `lo` is a cell, not a pair index: a run may be pushed at either
+      // alignment, so this address can be odd
+      return { text: 'ld sp,' + at(op.lo + 2), note: 'write down from cell ' + (op.lo + 1) };
     case 'exx':
       return { text: 'exx', note: 'swap register sets' };
     case 'ld16':
@@ -220,7 +222,7 @@ function mltAsmOpText(op, charRow) {
         note: mltAsmHex2(op.value & 0xff) + ' then ' + mltAsmHex2(op.value >> 8)
       };
     case 'push':
-      return { text: 'push ' + op.reg, note: 'cells ' + (op.pair * 2) + ',' + (op.pair * 2 + 1) };
+      return { text: 'push ' + op.reg, note: 'cells ' + op.lo + ',' + (op.lo + 1) };
     case 'ldh':
       return { text: 'ld h,high (' + at(0) + ')', note: 'attribute line ' + charRow };
     case 'ldl':
@@ -271,10 +273,9 @@ function mltAsmUsesPointer(method) {
  * that do.
  *
  * @param {Array<any>} plans - per-row plans, index = pixel row
- * @param {{over: Uint8Array}} analysis
  * @returns {{phase: number, slack: number}|null}
  */
-function mltAsmChoosePhase(plans, analysis) {
+function mltAsmChoosePhase(plans) {
   const LINE = MLT_TIMING.LINE_TSTATES;
   let best = null;
   for (let phase = -2 * LINE; phase <= LINE; phase++) {
@@ -282,9 +283,14 @@ function mltAsmChoosePhase(plans, analysis) {
     let slack = Infinity;
     for (let y = 1; y < MLT_ASM.ROWS && ok; y++) {
       if (y % 8 === 0) continue;              // lead-in: written with no deadline
-      if (analysis.over[y]) continue;
       const p = plans[y];
       if (p.method === MLT_METHOD.NONE) continue;
+      // A row the beam cannot accept in any order has no legal placement at any
+      // phase, so letting it vote would only spoil the rows that do have one.
+      // Judged from the plan alone, NOT from the analysis: the analysis needs a
+      // placement, a placement needs a phase, and a phase cannot need the
+      // analysis as well or the three can never be made to agree.
+      if (!p.ok) continue;
       // The checker pools time across a character row, so a row it passes may be
       // longer than a scanline. The emitter still works in slots, so such a row
       // cannot be placed inside one and must not veto the phase for the rest;
@@ -313,65 +319,15 @@ function mltAsmChoosePhase(plans, analysis) {
  * character-row-local: 0 is the first T-state of pixel row 8r.
  *
  * `lo` and `hi` are how far the block may still be nudged without breaking the
- * beam or colliding with its neighbours, which is what mltAsmRepairGaps() needs
- * to make every gap a delay a Z80 can express.
+ * beam or colliding with its neighbours.
  *
  * @param {Array<any>} plans
  * @param {{over: Uint8Array}} analysis
  * @param {number} phase
- * @returns {{h: Int32Array, lo: Int32Array, hi: Int32Array, room: Int32Array, overrun: Int32Array}}
+ * @returns {{h: Int32Array, lo: Int32Array, hi: Int32Array, room: Int32Array, overrun: Int32Array, ragged: number[]}}
  */
 function mltAsmPlaceRows(plans, analysis, phase) {
-  const LINE = MLT_TIMING.LINE_TSTATES;
-  const ROWS = MLT_ASM.ROWS;
-  const h = new Int32Array(ROWS);
-  const lo = new Int32Array(ROWS);
-  const hi = new Int32Array(ROWS);
-  const room = new Int32Array(ROWS);
-  const overrun = new Int32Array(ROWS);
-
-  for (let r = 0; r * 8 < ROWS; r++) {
-    let prevEnd = 0;                 // slot 0 writes nothing of its own
-    /** @type {number[]} */
-    const placed = [];
-
-    for (let i = 1; i < 8; i++) {
-      const y = r * 8 + i;
-      const p = plans[y];
-      if (p.method === MLT_METHOD.NONE) continue;
-      const earliest = Math.max(i * LINE + p.start - phase, prevEnd + p.preload);
-      const latest = i * LINE + p.latest - phase;
-      let at = earliest;
-      if (at > latest) {
-        // Nothing meets the beam here. Keep it as early as the block before
-        // allows, so the rest of the character row stays in step, and say so.
-        overrun[y] = at - latest;
-      }
-      h[y] = at;
-      lo[y] = earliest;
-      prevEnd = at + p.blockCost;
-      placed.push(y);
-    }
-
-    // How far each block may move later, and how much space it has in front of
-    // the next one. Backwards, because both depend on where the next block went.
-    let limit = 8 * LINE;            // the character row has to come to 8 lines
-    for (let k = placed.length - 1; k >= 0; k--) {
-      const y = placed[k];
-      const p = plans[y];
-      // Never less than the block needs. Only the last block of a character row
-      // can come up short here, and when it does the row simply runs over: the
-      // gap machinery carries that as drift and the next character row's first
-      // gap gives it back. Cutting it instead would throw writes away for the
-      // sake of a boundary that is ours, not the beam's.
-      room[y] = Math.max(limit - h[y], p.blockCost);
-      // As late as the beam allows, and no later than leaves the next block room
-      const beamLatest = (y % 8) * LINE + p.latest - phase;
-      hi[y] = Math.max(lo[y], Math.min(beamLatest, limit - p.blockCost));
-      limit = h[y] - p.preload;
-    }
-  }
-  return { h, lo, hi, room, overrun };
+  return mltPlaceRows(plans, phase);
 }
 
 /**
@@ -438,55 +394,6 @@ function mltAsmGapOk(room, reserve) {
   return room >= reserve && mltAsmPadOk(room - reserve);
 }
 
-/**
- * Nudges block placements until every gap is a delay a Z80 can express.
- *
- * Moving one block later by d grows the gap before it by d and shrinks the one
- * after it by the same, so the slack can be walked along the character row until
- * no gap is left at 1, 2, 3 or 5 T-states.
- *
- * @param {number} r
- * @param {Array<any>} plans
- * @param {{h: Int32Array, lo: Int32Array, hi: Int32Array}} place
- * @param {number[]} reserve
- * @returns {boolean} true when every gap ended up expressible
- */
-function mltAsmRepairGaps(r, plans, place, reserve) {
-  const movable = [];
-  for (let i = 1; i < 8; i++) {
-    const y = r * 8 + i;
-    if (plans[y].method !== MLT_METHOD.NONE) movable.push({ i, y });
-  }
-
-  for (let pass = 0; pass < 16; pass++) {
-    const gaps = mltAsmGaps(r, plans, place.h);
-    let bad = -1;
-    for (let g = 0; g < gaps.length; g++) {
-      if (!mltAsmGapOk(gaps[g], reserve[g] || 0)) { bad = g; break; }
-    }
-    if (bad < 0) return true;
-
-    // Smallest amount that makes this gap work, searched rather than derived:
-    // the reserve shifts which sizes are reachable
-    let need = 1;
-    while (need < 16 && !mltAsmGapOk(gaps[bad] + need, reserve[bad] || 0)) need++;
-    // Gap g sits before the (g+1)-th block, so that block is the one to move
-    // later; failing that, pull the block before it earlier.
-    const after = movable[bad];
-    const before = movable[bad - 1];
-    let moved = false;
-    if (after && place.h[after.y] + need <= place.hi[after.y]) {
-      place.h[after.y] += need;
-      moved = true;
-    } else if (before && place.h[before.y] - need >= place.lo[before.y]) {
-      place.h[before.y] -= need;
-      moved = true;
-    }
-    if (!moved) return false;
-  }
-  const finalGaps = mltAsmGaps(r, plans, place.h);
-  return finalGaps.every((room, g) => mltAsmGapOk(room, reserve[g] || 0));
-}
 
 /**
  * Cuts a lead-in row into chunks that fit the gaps it is given.
@@ -505,11 +412,8 @@ function mltAsmRepairGaps(r, plans, place, reserve) {
  */
 function mltAsmSplitLeadIn(attrs, y, plan, gaps) {
   const base = y * MLT_TIMING.CELLS;
-  const units = plan.cells.slice();          // pairs (push) or cells (direct)
+  const units = plan.cells.slice();          // low cells (push) or cells (direct)
   const total = units.length;
-  const chunks = [];
-  let at = 0;
-
   /** Builds a block for units[from..to), or null when it does not fit `room`. */
   const build = (/** @type {number} */ from, /** @type {number} */ to, /** @type {number} */ room) => {
     const slice = units.slice(from, to);
@@ -518,7 +422,9 @@ function mltAsmSplitLeadIn(attrs, y, plan, gaps) {
     const total = (/** @type {any} */ b) =>
       b.preload + b.ops.reduce((t, o) => t + o.cost, 0);
     if (plan.method === MLT_METHOD.PUSH) {
-      const values = slice.map(p => (attrs[base + p * 2 + 1] << 8) | attrs[base + p * 2]);
+      // `slice` holds low CELLS now, not pair indices, so the alignment the
+      // row chose carries through to the lead-in chunks unchanged
+      const values = slice.map(lo => (attrs[base + lo + 1] << 8) | attrs[base + lo]);
       for (const indexFirst of [true, false]) {
         const b = mltBuildPushBlock(slice, values, indexFirst);
         const cost = total(b);
@@ -540,7 +446,15 @@ function mltAsmSplitLeadIn(attrs, y, plan, gaps) {
     return best && best.cost <= room ? best : null;
   };
 
-  for (let g = 0; g < gaps.length && at < total; g++) {
+  /**
+   * Fills from `startGap` onwards, leaving earlier gaps alone.
+   * @param {number} startGap
+   * @returns {{chunks: Array<any>, placed: number}}
+   */
+  const fillFrom = (startGap) => {
+  const chunks = [];
+  let at = 0;
+  for (let g = startGap; g < gaps.length && at < total; g++) {
     const room = gaps[g];
     // Largest prefix of what is left that still fits this gap. Costs are not
     // linear in the unit count -- a repeated colour is free, a new one is not --
@@ -563,8 +477,20 @@ function mltAsmSplitLeadIn(attrs, y, plan, gaps) {
     });
     at += take;
   }
+  return { chunks, placed: at };
+  };
 
-  return { chunks, placed: at, total };
+  // Starting in the first gap that happens to hold something is not always best:
+  // a chunk there costs a whole preload and may carry only a unit or two, while
+  // the same preload spent in a roomier gap later carries far more. Try each
+  // starting point and keep whichever writes the most of the row.
+  let best = { chunks: [], placed: -1 };
+  for (let f = 0; f < gaps.length; f++) {
+    const got = fillFrom(f);
+    if (got.placed > best.placed) best = got;
+    if (best.placed >= total) break;
+  }
+  return { chunks: best.chunks, placed: Math.max(0, best.placed), total };
 }
 
 /**
@@ -592,7 +518,7 @@ function generateMltAsm(attrs, baseName, bitmap, embedData, borderColour, fileBa
     plans[y] = mltRowPlan(attrs, y, y % 8 !== 0);
   }
 
-  const chosen = mltAsmChoosePhase(plans, analysis);
+  const chosen = mltAsmChoosePhase(plans);
   if (!chosen) return null;
   const phase = chosen.phase;
   const place = mltAsmPlaceRows(plans, analysis, phase);
@@ -603,7 +529,7 @@ function generateMltAsm(attrs, baseName, bitmap, embedData, borderColour, fileBa
   /** Lead-in rows whose chunks did not all fit the gaps above them. */
   const unplaced = [];
   /** Character rows whose gaps could not all be turned into exact delays. */
-  const ragged = [];
+  const ragged = place.ragged;
 
   const out = [];
   const push = (/** @type {string} */ line) => out.push(line);
@@ -781,7 +707,6 @@ function generateMltAsm(attrs, baseName, bitmap, embedData, borderColour, fileBa
     const leadPlan = leadRow < MLT_ASM.ROWS ? plans[leadRow] : null;
 
     const reserve = mltAsmReserve(r, plans);
-    if (!mltAsmRepairGaps(r, plans, place, reserve)) ragged.push(r);
     const gaps = mltAsmGaps(r, plans, place.h);
 
     const split = (leadPlan && leadPlan.method !== MLT_METHOD.NONE)
@@ -1088,10 +1013,23 @@ function exportMltAsm() {
       notes.push('Character row' + (result.ragged.length === 1 ? '' : 's') + ' ' +
         mltAsmRowList(result.ragged) + ' could not be padded to an exact line length.');
     }
-    if (notes.length) {
-      alert('Exported with warnings.\n\n' + notes.join('\n\n') +
-        '\n\nTurn on Settings → Analysis → multicolour timing to see the rows on the ' +
-        'border, and File Info will say what to change.');
+    // Rows the beam will beat are a different thing from the other warnings:
+    // the file still assembles and still runs, and the only sign that anything
+    // is wrong is the picture itself. So ask, and default to not writing it.
+    const wrongRows = result.over.length + result.unplaced.length +
+      result.dropped.length;
+    if (wrongRows) {
+      const ok = confirm('This picture does not fit a Pentagon frame.\n\n' +
+        notes.join('\n\n') +
+        '\n\nThe file will assemble and run, but those rows will show the wrong ' +
+        'colours, and nothing in the player says so.\n\n' +
+        'Press M to mark them on the border; File Info says what to change.\n\n' +
+        'Export it anyway?');
+      if (!ok) return null;
+    } else if (notes.length) {
+        alert('Exported with warnings.\n\n' + notes.join('\n\n') +
+          '\n\nTurn on Settings → Analysis → multicolour timing to see the rows on the ' +
+          'border, and File Info will say what to change.');
     }
     return { asm: result.asm };
   });

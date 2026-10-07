@@ -918,6 +918,12 @@ function initScreenViewerUI() {
     }
 
     switch (event.code) {
+      case 'KeyZ':
+        // Magnifier. Plain Z only: Ctrl+Z is undo.
+        if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) break;
+        if (typeof toggleMagnifier === 'function') toggleMagnifier();
+        break;
+
       case 'KeyM':
         // Multicolour timing overlay on and off. It marks the rows a Pentagon
         // cannot write in time, which is worth glancing at and then getting out

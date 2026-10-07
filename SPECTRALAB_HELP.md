@@ -125,6 +125,7 @@ Click the 📂 button next to the dropdown to load a custom palette from a text 
 - **Flash** — enable/disable flash animation (also toggle with **F** key)
 - **Attrs** — show/hide attribute overlay. When attributes are off, the bitmap is displayed as black ink on white paper (1 bits = black, 0 bits = white)
 - **Preview** — show/hide preview panel (also toggle with **~** key)
+- **Magnifier** — show/hide the magnifier (also toggle with **Z**): a floating window showing the picture around the cursor blown up, for placing single pixels at low editor zoom. The pixel under the cursor is outlined and the 8×8 attribute cells are marked, so it is clear which cell a pixel will land in. Drag the header to move it; **+**/**-** step through four zoom levels. Position, zoom and visibility are remembered.
 
 ### Grid (collapsible)
 
@@ -1405,6 +1406,7 @@ This is not arbitrary: chr$ stores one attribute byte per 8×8 cell and has no p
 | F | Toggle flash animation |
 | G | Cycle grid size (None/8/16/24px) |
 | M | Toggle the multicolour timing overlay (8x1 pictures) |
+| Z | Toggle the magnifier (zoomed view around the cursor) |
 | ~ | Toggle preview panel |
 | Space | Play/Pause (SCA animation) |
 | Left/Right | Prev/Next frame (SCA) |

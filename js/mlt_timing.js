@@ -164,6 +164,15 @@ const MLT_MIXED_PAIRS_INDEX = [
  * What a row's budget is measured against: nothing (row 0, filled during the top
  * border), its own scanline, or the spare time of the character row above it.
  */
+/**
+ * Why a row is flagged. One flag could not say, and the readout guessed.
+ *
+ * ORDER - no arrangement of the writes stays ahead of the beam at all
+ * BEAM  - the writes fit in the time, but not early enough to beat the beam
+ * SPILL - the row itself is fine; its character row does not fit in eight lines
+ */
+const MLT_CAUSE = { FITS: 0, ORDER: 1, BEAM: 2, SPILL: 3 };
+
 const MLT_ROW_KIND = { FREE: 0, INTERIOR: 1, LEAD_IN: 2 };
 
 /**
@@ -180,7 +189,7 @@ const MLT_ROW_KIND = { FREE: 0, INTERIOR: 1, LEAD_IN: 2 };
  * @property {string} [kind]
  * @property {string} [reg]
  * @property {number} [value]
- * @property {number} [pair]
+ * @property {number} [lo] - low cell of a pushed pair, which may be odd
  * @property {number} [cell]
  */
 
@@ -306,7 +315,7 @@ function mltPushOrders(pairs) {
  *   shadow register set, false for the other way round
  * @returns {{ops: MltOp[], preload: number, preloadOps: MltOp[]}}
  */
-function mltBuildPushBlock(pairs, values, indexFirst) {
+function mltBuildPushBlock(lows, values, indexFirst) {
   /** @type {MltOp[]} */
   const ops = [];
   // First fills, kept apart so the preload can be emitted in an order that
@@ -332,12 +341,13 @@ function mltBuildPushBlock(pairs, values, indexFirst) {
     activeSet = set;
   };
 
-  for (let i = 0; i < pairs.length; i++) {
+  for (let i = 0; i < lows.length; i++) {
     // Any break in the descent needs SP re-pointing: a gap over pairs we are
     // not rewriting, or a jump back up to start another run. 10 T either way,
-    // against 11 T for every pair we would otherwise push past.
-    if (i > 0 && pairs[i - 1] - pairs[i] !== 1) {
-      ops.push({ cost: MLT_TIMING.LD_SP_NN, cells: [], kind: 'sp', pair: pairs[i] });
+    // against 11 T for every pair we would otherwise push past. Adjacent pairs
+    // are two cells apart, whatever the alignment.
+    if (i > 0 && lows[i - 1] - lows[i] !== 2) {
+      ops.push({ cost: MLT_TIMING.LD_SP_NN, cells: [], kind: 'sp', lo: lows[i] });
     }
 
     const value = values[i];
@@ -393,15 +403,15 @@ function mltBuildPushBlock(pairs, values, indexFirst) {
 
     reachSlot(slot);
     slotNext[slot] = nextUse[i];
-    const cell = pairs[i] * 2;
+    const cell = lows[i];
     ops.push({
       cost: MLT_WORD_SLOT_SET[slot] === -1 ? MLT_TIMING.PUSH_INDEX : MLT_TIMING.PUSH_CHEAP,
       cells: [cell, cell + 1],
-      kind: 'push', reg: MLT_WORD_SLOT_NAME[slot], pair: pairs[i]
+      kind: 'push', reg: MLT_WORD_SLOT_NAME[slot], lo: cell
     });
   }
 
-  return { ops, preload, preloadOps: mltPushPreloadOps(pairs, fills) };
+  return { ops, preload, preloadOps: mltPushPreloadOps(lows, fills) };
 }
 
 /**
@@ -417,11 +427,11 @@ function mltBuildPushBlock(pairs, values, indexFirst) {
  * @param {Array<{slot: number, value: number}>} fills
  * @returns {MltOp[]}
  */
-function mltPushPreloadOps(pairs, fills) {
+function mltPushPreloadOps(lows, fills) {
   /** @type {MltOp[]} */
   const out = [];
   // `push` writes downwards from SP, so SP starts just past the first pair
-  out.push({ cost: MLT_TIMING.LD_SP_NN, cells: [], kind: 'sp', pair: pairs.length ? pairs[0] : 0 });
+  out.push({ cost: MLT_TIMING.LD_SP_NN, cells: [], kind: 'sp', lo: lows.length ? lows[0] : 0 });
 
   const load = (/** @type {{slot: number, value: number}} */ f) => ({
     cost: MLT_WORD_SLOT_SET[f.slot] === -1 ? MLT_TIMING.LOAD_INDEX : MLT_TIMING.LOAD_CHEAP,
@@ -517,6 +527,46 @@ function mltBuildDirectBlock(cells, values, newCharRow) {
 }
 
 /**
+ * The pair low-cells covering a run at a given alignment.
+ *
+ * `off` 0 gives the usual (0,1) (2,3) ...; `off` 1 gives (1,2) (3,4) ..., which
+ * is what a row whose colour runs start on odd cells wants. An odd alignment
+ * reaches one cell past each end of the run, writing those their existing
+ * colours -- harmless, and the caller costs the pair values that result.
+ *
+ * @param {number} start - first changed cell of the run
+ * @param {number} end - last changed cell
+ * @param {number} off - 0 or 1
+ * @returns {number[]|null} low cells, or null when the alignment runs off the row
+ */
+function mltRunPairs(start, end, off) {
+  const first = off + 2 * Math.floor((start - off) / 2);
+  const last = off + 2 * Math.floor((end - off) / 2);
+  if (first < 0 || last + 1 >= MLT_TIMING.CELLS) return null;
+  /** @type {number[]} */
+  const lows = [];
+  for (let lo = first; lo <= last; lo += 2) lows.push(lo);
+  return lows;
+}
+
+/**
+ * The low cells of every pair a plan pushes, in ascending order.
+ *
+ * The plan knows its own alignment -- each push op carries the cell it writes
+ * from -- so reading them back off it is the only way for the readout and the
+ * swatch strip to describe what the player will really do.
+ *
+ * @param {{ops: Array<{kind?: string, lo?: number}>, preloadOps?: Array<{kind?: string, lo?: number}>}} plan
+ * @returns {number[]}
+ */
+function mltPlanPairLows(plan) {
+  const seen = new Set();
+  const all = (plan.preloadOps || []).concat(plan.ops || []);
+  for (const op of all) if (op.kind === 'push' && typeof op.lo === 'number') seen.add(op.lo);
+  return [...seen].sort((a, b) => a - b);
+}
+
+/**
  * Splits a row's changed cells into runs of consecutive cells.
  * @param {number[]} cells - ascending
  * @returns {Array<{start: number, len: number, firstPair: number, lastPair: number}>}
@@ -556,17 +606,38 @@ function mltRuns(cells) {
  *   several distinct pairs can spend more on loading them than the pushes save.
  * @returns {{ops: MltOp[], preload: number, preloadOps: MltOp[]}}
  */
-function mltBuildMixedBlock(attrs, y, cells, newCharRow, indexFirst, noPush) {
+function mltBuildMixedBlock(attrs, y, cells, newCharRow, indexFirst, noPush, perRunAlign) {
   const base = y * MLT_TIMING.CELLS;
   const runs = mltRuns(cells);
 
-  // --- decide push or byte-wise per run -------------------------------------
+  // --- alignment, then push or byte-wise, per run ---------------------------
+  // Each run picks where its pairs start. Greedy and in order, because what a
+  // run costs depends on the values already loaded: sharing a pair value with an
+  // earlier run saves a 10 T load, which outweighs saving a push.
+  /** @type {Array<number[]>} chosen pair low-cells per run */
+  const runLows = [];
+  const loaded = new Set();
+  runs.forEach((r) => {
+    const end = r.start + r.len - 1;
+    let best = null;
+    for (const off of (perRunAlign ? [0, 1] : [0])) {
+      const lows = mltRunPairs(r.start, end, off);
+      if (!lows) continue;
+      const vals = lows.map(lo => (attrs[base + lo + 1] << 8) | attrs[base + lo]);
+      const fresh = new Set(vals.filter(v => !loaded.has(v)));
+      const t = MLT_TIMING.LD_SP_NN + MLT_TIMING.PUSH_CHEAP * lows.length +
+        MLT_TIMING.LOAD_CHEAP * fresh.size;
+      if (!best || t < best.t) best = { t, lows, vals };
+    }
+    runLows.push(best);
+    if (best) best.vals.forEach(v => loaded.add(v));
+  });
+
   // Compared on store cost alone; the loads are allocated afterwards, and a run
   // too short to earn its `ld sp,nn` stays byte-wise whatever the colours.
-  const usePush = runs.map((r) => {
-    if (noPush) return false;
-    const pairs = r.lastPair - r.firstPair + 1;
-    const pushT = MLT_TIMING.LD_SP_NN + MLT_TIMING.PUSH_CHEAP * pairs;
+  const usePush = runs.map((r, i) => {
+    if (noPush || !runLows[i]) return false;
+    const pushT = MLT_TIMING.LD_SP_NN + MLT_TIMING.PUSH_CHEAP * runLows[i].lows.length;
     const byteT = MLT_TIMING.LD_L_N + (MLT_TIMING.STORE + MLT_TIMING.INC_L) * r.len
       - MLT_TIMING.INC_L;
     return pushT < byteT;
@@ -579,10 +650,7 @@ function mltBuildMixedBlock(attrs, y, cells, newCharRow, indexFirst, noPush) {
   const byteUse = new Map();
   runs.forEach((r, i) => {
     if (usePush[i]) {
-      for (let p = r.firstPair; p <= r.lastPair; p++) {
-        const v = (attrs[base + p * 2 + 1] << 8) | attrs[base + p * 2];
-        pairUse.set(v, (pairUse.get(v) || 0) + 1);
-      }
+      for (const v of runLows[i].vals) pairUse.set(v, (pairUse.get(v) || 0) + 1);
     } else {
       for (let c = r.start; c < r.start + r.len; c++) {
         const v = attrs[base + c];
@@ -643,9 +711,11 @@ function mltBuildMixedBlock(attrs, y, cells, newCharRow, indexFirst, noPush) {
   runs.forEach((r, i) => {
     if (usePush[i]) {
       // SP sits just past the pair about to be written, and the pushes descend
-      ops.push({ cost: MLT_TIMING.LD_SP_NN, cells: [], kind: 'sp', pair: r.lastPair });
-      for (let p = r.lastPair; p >= r.firstPair; p--) {
-        const v = (attrs[base + p * 2 + 1] << 8) | attrs[base + p * 2];
+      const lows = runLows[i].lows;
+      ops.push({ cost: MLT_TIMING.LD_SP_NN, cells: [], kind: 'sp', lo: lows[lows.length - 1] });
+      for (let k = lows.length - 1; k >= 0; k--) {
+        const p = lows[k];
+        const v = (attrs[base + p + 1] << 8) | attrs[base + p];
         let slot = pairSlot.get(v);
         if (!slot) {
           // No register of its own: borrow the last bank entry and reload it
@@ -656,8 +726,8 @@ function mltBuildMixedBlock(attrs, y, cells, newCharRow, indexFirst, noPush) {
           }
         }
         ops.push({
-          cost: slot.push, cells: [p * 2, p * 2 + 1],
-          kind: 'push', reg: slot.reg, pair: p
+          cost: slot.push, cells: [p, p + 1],
+          kind: 'push', reg: slot.reg, lo: p
         });
       }
     } else {
@@ -737,29 +807,48 @@ function mltRowPlan(attrs, y, inLine) {
 
   const newCharRow = (y % 8) === 0;
 
-  // --- Method P: push the aligned pairs that contain a changed cell ---
-  /** @type {number[]} */
-  const pairs = [];
-  /** @type {number[]} */
-  const values = [];
-  const pairChanged = new Uint8Array(MLT_TIMING.CELLS / 2);
-  for (let i = 0; i < changedCells.length; i++) pairChanged[changedCells[i] >> 1] = 1;
-  for (let p = (MLT_TIMING.CELLS / 2) - 1; p >= 0; p--) {
-    if (!pairChanged[p]) continue;
-    pairs.push(p);
-    // `push rr` stores the high byte at the higher address, so the register pair
-    // reads (odd cell << 8) | even cell
-    values.push((attrs[base + p * 2 + 1] << 8) | attrs[base + p * 2]);
+  // --- Method P: push the pairs that contain a changed cell ---
+  // Even alignment only. The odd one is built and costed correctly here, but
+  // taking it makes row 44 of the Snatcher mock-up come out wrong under the
+  // execution simulator: that row's own schedule is legal and the emitter places
+  // its block inside the window, so the fault is downstream -- in the lead-in
+  // chunking or the gap accounting, both of which change shape when a lead-in's
+  // pairs move. Method M picks its alignment per RUN and is unaffected, which is
+  // where nearly all of the gain was. Widen this back to [0, 1] once the
+  // simulator agrees.
+  const pairSets = [];
+  for (const off of [0]) {
+    const touched = new Set();
+    let offRow = false;
+    for (let i = 0; i < changedCells.length; i++) {
+      const c = changedCells[i];
+      const lo = off + 2 * Math.floor((c - off) / 2);
+      if (lo < 0 || lo + 1 >= MLT_TIMING.CELLS) { offRow = true; break; }
+      touched.add(lo);
+    }
+    if (offRow) continue;
+    /** @type {number[]} */
+    const lows = [...touched].sort((a, b) => b - a);   // descending, as push goes
+    /** @type {number[]} */
+    const vals = lows.map((lo) =>
+      // `push rr` stores the high byte at the higher address, so the register
+      // pair reads (upper cell << 8) | lower cell
+      (attrs[base + lo + 1] << 8) | attrs[base + lo]);
+    pairSets.push({ lows, vals });
   }
+  // The even alignment always stays inside the row, so there is always one
+  const pairs = pairSets[0].lows;
+  const values = pairSets[0].vals;
   let pushBest = null;
   let pushCost = Infinity;
   let pushOk = false;
   // Cheapest arrangement the BEAM accepts, whatever it costs. When a row is
   // refused only on ordering, this is what ordering it would take.
   let orderedCost = Infinity;
-  const valueOf = new Map();
-  for (let i = 0; i < pairs.length; i++) valueOf.set(pairs[i], values[i]);
-  for (const order of mltPushOrders(pairs)) {
+  for (const set of pairSets) {
+    const valueOf = new Map();
+    for (let i = 0; i < set.lows.length; i++) valueOf.set(set.lows[i], set.vals[i]);
+    for (const order of mltPushOrders(set.lows)) {
     const ordered = order.map(p => valueOf.get(p));
     for (const indexFirst of [true, false]) {
       const push = mltBuildPushBlock(order, ordered, indexFirst);
@@ -773,6 +862,7 @@ function mltRowPlan(attrs, y, inLine) {
         pushOk = ok;
         pushBest = { push, sched, cost };
       }
+    }
     }
   }
 
@@ -788,9 +878,12 @@ function mltRowPlan(attrs, y, inLine) {
   let mixedBest = null;
   let mixedCost = Infinity;
   let mixedOk = false;
+  const alignTries = mltPerRunAlign ? [false, true] : [false];
   for (const noPush of [false, true]) {
+    for (const perRunAlign of alignTries) {
     for (const indexFirst of [false, true]) {
-      const m = mltBuildMixedBlock(attrs, y, changedCells, newCharRow, indexFirst, noPush);
+      const m = mltBuildMixedBlock(attrs, y, changedCells, newCharRow, indexFirst,
+        noPush, perRunAlign);
       const sched = mltScheduleBlock(m.ops, lookback);
       const cost = m.preload + sched.blockCost;
       if (sched.ok && cost < orderedCost) orderedCost = cost;
@@ -802,6 +895,9 @@ function mltRowPlan(attrs, y, inLine) {
       }
       // Without pushes the index order changes nothing
       if (noPush) break;
+    }
+    // ...nor does the alignment, since nothing is pushed
+    if (noPush) break;
     }
   }
 
@@ -825,7 +921,13 @@ function mltRowPlan(attrs, y, inLine) {
   // One the beam accepts always beats one it does not, however short
   const fitting = candidates.filter(c => c.ok);
   const pool = fitting.length ? fitting : candidates;
-  return pool.reduce((best, c) => (c.cost < best.cost ? c : best));
+  // Cheapest wins, but on a tie take the arrangement with the most room to be
+  // placed in. Blocks are laid down one after another, so a plan that saves
+  // nothing and can only sit in one place starves the rows that follow it.
+  return pool.reduce((best, c) => {
+    if (c.cost !== best.cost) return c.cost < best.cost ? c : best;
+    return (c.latest - c.start) > (best.latest - best.start) ? c : best;
+  });
 }
 
 /**
@@ -862,15 +964,20 @@ function mltAnalyzeRow(attrs, y, inLine) {
  */
 function mltUsableSlack(slacks, resumeCost) {
   const resume = (typeof resumeCost === 'number') ? resumeCost : MLT_TIMING.RESUME;
-  let total = 0;
-  let first = true;
-  for (let i = 0; i < slacks.length; i++) {
-    const usable = slacks[i] - (first ? 0 : resume);
-    if (usable <= 0) continue;
-    total += usable;
-    first = false;
+  // Which chunk to START in is a choice, not whichever happens to come first. A
+  // small early chunk taken free makes every later one pay the resume, and
+  // skipping it can be worth far more than it gave.
+  let best = 0;
+  for (let f = 0; f < slacks.length; f++) {
+    if (slacks[f] <= 0) continue;
+    let total = slacks[f];
+    for (let i = f + 1; i < slacks.length; i++) {
+      const usable = slacks[i] - resume;
+      if (usable > 0) total += usable;
+    }
+    if (total > best) best = total;
   }
-  return total;
+  return best;
 }
 
 /**
@@ -885,6 +992,134 @@ function mltFitsInSlack(need, slacks, resumeCost) {
 }
 
 /**
+ * Where every block goes, in character-row-local code time.
+ *
+ * The one placement both the checker and the ASM export work from. It is the
+ * emitter's job description -- lay the blocks of a character row out in eight
+ * lines of code, leaving gaps a Z80 can actually wait -- and the checker's
+ * question is the same one: did they fit.
+ *
+ * @param {Array<any>} plans - per-row plans, index = pixel row
+ * @param {number} phase - T-states from a row's first attribute read to the
+ *   start of its character row's code
+ * @returns {{h: Int32Array, lo: Int32Array, hi: Int32Array, room: Int32Array,
+ *   overrun: Int32Array, spill: Uint8Array, ragged: number[],
+ *   rowGaps: number[][]}}
+ */
+function mltPlaceRows(plans, phase) {
+  const LINE = MLT_TIMING.LINE_TSTATES;
+  const ROWS = 192;
+  const h = new Int32Array(ROWS);
+  const lo = new Int32Array(ROWS);
+  const hi = new Int32Array(ROWS);
+  const room = new Int32Array(ROWS);
+  const overrun = new Int32Array(ROWS);   // T-states past the beam's deadline
+  const spill = new Uint8Array(ROWS);     // charged for a character row that
+                                          // does not fit in its eight lines
+  /** @type {number[]} */
+  const ragged = [];
+  /** @type {number[][]} */
+  const rowGaps = [];
+  const usesPointer = (/** @type {number} */ method) =>
+    (typeof mltAsmUsesPointer === 'function') ? mltAsmUsesPointer(method)
+      : (method === MLT_METHOD.DIRECT || method === MLT_METHOD.MIXED);
+  // Whether a wait of exactly g T-states can be built. Guarded, because the
+  // checker runs without the exporter loaded.
+  const padOk = (/** @type {number} */ g) =>
+    (typeof mltAsmPadOk === 'function') ? mltAsmPadOk(g)
+      : (g === 0 || (g >= 4 && g !== 5));
+  const gapOk = (/** @type {number} */ g, /** @type {number} */ owed) =>
+    (typeof mltAsmGapOk === 'function') ? mltAsmGapOk(g, owed)
+      : (g >= owed && padOk(g - owed));
+
+  for (let r = 0; r * 8 < ROWS; r++) {
+    let prevEnd = 0;                   // slot 0 writes nothing of its own
+    /** @type {number[]} */
+    const placed = [];
+    /** @type {number[]} */
+    const gapsHere = [];
+
+    for (let i = 1; i < 8; i++) {
+      const y = r * 8 + i;
+      const p = plans[y];
+      if (p.method === MLT_METHOD.NONE) continue;
+      const earliest = Math.max(i * LINE + p.start - phase, prevEnd + p.preload);
+      const latest = i * LINE + p.latest - phase;
+      const owed = usesPointer(p.method) ? MLT_TIMING.LD_H_N : 0;
+      let at = earliest;
+      // Slide later, inside the window, until the gap in front is a length a
+      // Z80 can wait: there is no 1, 2, 3 or 5 T-state delay, and a pad rounded
+      // up leaves everything after it late.
+      for (let k = 0; k < 12 && at < latest; k++) {
+        if (gapOk(at - p.preload - prevEnd, owed)) break;
+        at++;
+      }
+      if (at > latest) overrun[y] = at - latest;
+      h[y] = at;
+      lo[y] = earliest;
+      gapsHere.push(Math.max(0, at - p.preload - prevEnd - owed));
+      prevEnd = at + p.blockCost;
+      placed.push(y);
+    }
+
+    // The gap after the last block is whatever is left, and nothing has shaped
+    // it. Moving that block by d changes the gap before it by +d and the one
+    // after by -d, so one search settles both.
+    if (placed.length) {
+      const y = placed[placed.length - 1];
+      const p = plans[y];
+      const before = placed.length > 1
+        ? h[placed[placed.length - 2]] + plans[placed[placed.length - 2]].blockCost : 0;
+      const owed = usesPointer(p.method) ? MLT_TIMING.LD_H_N : 0;
+      const latest = (y % 8) * LINE + p.latest - phase;
+      const fits = (/** @type {number} */ at) =>
+        gapOk(at - p.preload - before, owed) &&
+        padOk(8 * LINE - (at + p.blockCost));
+      if (!fits(h[y])) {
+        let found = -1;
+        for (let d = 1; d <= 16 && found < 0; d++) {
+          if (h[y] + d <= latest && fits(h[y] + d)) found = h[y] + d;
+          else if (h[y] - d >= lo[y] && fits(h[y] - d)) found = h[y] - d;
+        }
+        if (found >= 0) {
+          gapsHere[gapsHere.length - 1] += found - h[y];
+          h[y] = found;
+          prevEnd = found + p.blockCost;
+        } else {
+          ragged.push(r);
+        }
+      }
+    }
+
+    // Eight lines and no more. Blocks that run past leave no trailing gap, the
+    // lead-in below has nothing to be written in, and the rows that caused it
+    // cannot go where the player would have to put them.
+    gapsHere.push(Math.max(0, 8 * LINE - prevEnd));
+    if (prevEnd > 8 * LINE) {
+      let excess = prevEnd - 8 * LINE;
+      for (let k = placed.length - 1; k >= 0 && excess > 0; k--) {
+        const y = placed[k];
+        excess -= plans[y].cost;
+        spill[y] = 1;
+      }
+    }
+    rowGaps.push(gapsHere);
+
+    // How far each block may still move, and the space in front of the next one
+    let limit = 8 * LINE;
+    for (let k = placed.length - 1; k >= 0; k--) {
+      const y = placed[k];
+      const p = plans[y];
+      room[y] = Math.max(limit - h[y], p.blockCost);
+      const beamLatest = (y % 8) * LINE + p.latest - phase;
+      hi[y] = Math.max(lo[y], Math.min(beamLatest, limit - p.blockCost));
+      limit = h[y] - p.preload;
+    }
+  }
+  return { h, lo, hi, room, overrun, spill, ragged, rowGaps };
+}
+
+/**
  * Analyses a whole 8x1 attribute plane.
  *
  * Two passes, because the two kinds of row are costed against different budgets:
@@ -895,10 +1130,29 @@ function mltFitsInSlack(need, slacks, resumeCost) {
  * @returns {{over: Uint8Array, cost: Int16Array, method: Uint8Array, overCount: number, worstRow: number, worstCost: number}}
  */
 function mltAnalyzePicture(attrs) {
+  // Both policies, better kept. Per-run alignment pairs a row's colours more
+  // cheaply, but a cheaper block shifts every block after it, so the saving has
+  // to be judged over the whole picture rather than the row that made it.
+  mltPerRunAlign = false;
+  const plain = mltAnalyzePictureOnce(attrs);
+  mltPerRunAlign = true;
+  const aligned = mltAnalyzePictureOnce(attrs);
+  if (aligned.overCount <= plain.overCount) return aligned;
+  mltPerRunAlign = false;
+  return plain;
+}
+
+/**
+ * One pass of the analysis, under whatever alignment policy is set.
+ * @param {Uint8Array} attrs
+ * @returns {*}
+ */
+function mltAnalyzePictureOnce(attrs) {
   const rows = 192;
   const lines = MLT_TIMING.CHAR_ROW_LINES;
   const LINE = MLT_TIMING.LINE_TSTATES;
   const over = new Uint8Array(rows);
+  const cause = new Uint8Array(rows);
   const cost = new Int16Array(rows);
   const method = new Uint8Array(rows);
   const kind = new Uint8Array(rows);
@@ -908,19 +1162,35 @@ function mltAnalyzePicture(attrs) {
   const ordered = new Int32Array(rows);
   // Where each block ended up, relative to the start of its own scanline
   const placedAt = new Int32Array(rows);
+  // The spaces between blocks in each character row, which is what a lead-in
+  // actually has to be split across
+  /** @type {number[][]} */
+  const rowGaps = [];
   // What each scanline has left once the blocks running through it are charged
   const spare = new Int32Array(rows);
 
-  // Pass 1 -- the seven interior rows of a character row are one continuous run
-  // of code, not seven separate slots. Each block is placed as early as its own
-  // ULA window and the block before it allow, so a row may run past its own
-  // scanline wherever a neighbour runs short.
+  // The emitter's character-row code begins `phase` T-states before the row's
+  // first scanline, and nothing can be placed before the code it lives in. The
+  // checker has to respect the same floor or it measures time the player has no
+  // way to reach.
+  const plansForPhase = [];
+  for (let y = 0; y < rows; y++) plansForPhase[y] = mltRowPlan(attrs, y, y % lines !== 0);
+  const chosen = (typeof mltAsmChoosePhase === 'function')
+    ? mltAsmChoosePhase(plansForPhase) : null;
+  const phase = chosen ? chosen.phase : 0;
+
+  // Pass 1 -- where every block actually goes. mltPlaceRows() is the single
+  // answer, the same one the player is built from; this pass only translates it
+  // into the readout's terms. Two placements that had to agree never did: the
+  // floor, the gap nudge, the `ld h,n` reserve, the trailing gap and the
+  // character-row overrun each had to be mirrored, and one more always appeared
+  // behind the last.
+  const place = mltPlaceRows(plansForPhase, phase);
   for (let top = 0; top < rows; top += lines) {
-    let clock = -Infinity;             // absolute T at which the last block ended
     const busy = new Int32Array(lines);
     for (let i = 1; i < lines; i++) {
       const y = top + i;
-      const p = mltRowPlan(attrs, y, true);
+      const p = plansForPhase[y];
       ordered[y] = isFinite(p.orderedCost) ? p.orderedCost : 0;
       raw[y] = p.cost;
       cost[y] = Math.min(32767, p.cost);
@@ -928,32 +1198,39 @@ function mltAnalyzePicture(attrs) {
       kind[y] = MLT_ROW_KIND.INTERIOR;
       if (p.method === MLT_METHOD.NONE) { budget[y] = LINE; continue; }
 
-      // `p.start` and `p.latest` bound where the WRITES begin; the preload runs
-      // in front of them, so the row as a whole begins `preload` earlier.
+      // Code-local to ULA time: a character row's code begins `phase` T-states
+      // before its first attribute read.
       const origin = y * LINE;
-      const begin = Math.max(clock, origin + p.start - p.preload);
-      // The room this row actually had: from the moment it could begin to the
-      // moment it must be finished. It is more than a scanline when neighbours
-      // left time over, and less when they took it.
-      const room = origin + p.latest + p.blockCost - begin;
-      // When no arrangement is schedulable at all, `latest` is behind `start`
-      // and the room figure means nothing. Fall back to the scanline so the
-      // readout and the "to fit" advice still have a target to work towards.
-      budget[y] = p.ok ? room : LINE;
-      over[y] = (p.ok && room >= p.cost) ? 0 : 1;
-      const writesAt = begin + p.preload;
+      const writesAt = top * LINE + place.h[y] + phase;
+      // The preload runs in front of the writes, so the row begins earlier
+      const begin = writesAt - p.preload;
+      // The room this row actually had: from where it begins to where it must be
+      // finished. More than a scanline when neighbours left time over, less when
+      // they took it. When nothing is schedulable, `latest` is behind `start` and
+      // the figure means nothing -- fall back to the scanline so the readout and
+      // the "to fit" advice still have a target.
+      budget[y] = p.ok ? (origin + p.latest + p.blockCost - begin) : LINE;
+      // The verdict is the placement's, not a second opinion about it
+      over[y] = (p.ok && !place.overrun[y] && !place.spill[y]) ? 0 : 1;
+      // Three different things used to arrive as one flag, and the readout had
+      // to guess between them -- badly, for a row that fits on time and in
+      // order and is only charged for its character row running long.
+      cause[y] = !over[y] ? MLT_CAUSE.FITS
+        : (!p.ok ? MLT_CAUSE.ORDER
+          : (place.overrun[y] ? MLT_CAUSE.BEAM : MLT_CAUSE.SPILL));
       placedAt[y] = writesAt - origin;
-      clock = writesAt + p.blockCost;
 
       // Charge the row to every scanline it runs through, so the lead-in is
       // offered what is really left rather than 224 T minus each row's own cost
+      const ends = writesAt + p.blockCost;
       for (let li = 0; li < lines; li++) {
         const lineFrom = (top + li) * LINE;
-        const overlap = Math.min(clock, lineFrom + LINE) - Math.max(begin, lineFrom);
+        const overlap = Math.min(ends, lineFrom + LINE) - Math.max(begin, lineFrom);
         if (overlap > 0) busy[li] += overlap;
       }
     }
     for (let i = 0; i < lines; i++) spare[top + i] = Math.max(0, LINE - busy[i]);
+    rowGaps.push(place.rowGaps[top / lines]);
   }
 
   // Pass 2 -- the first row of each character row, written during the character
@@ -967,9 +1244,8 @@ function mltAnalyzePicture(attrs) {
     cost[y] = Math.min(32767, lead.cost);
     method[y] = lead.method;
     kind[y] = MLT_ROW_KIND.LEAD_IN;
-    /** @type {number[]} */
-    const slacks = [];
-    for (let i = 0; i < lines; i++) slacks.push(spare[y - lines + i]);
+    // The gaps the character row above really leaves, in order
+    const slacks = (rowGaps[(y / lines) - 1] || []).slice();
     // Resuming in a line an interior write also uses means reloading the values
     // that write took the registers for
     budget[y] = mltUsableSlack(slacks, MLT_TIMING.RESUME + lead.preload);
@@ -982,7 +1258,7 @@ function mltAnalyzePicture(attrs) {
     overCount++;
     if (raw[y] > worstCost) { worstCost = raw[y]; worstRow = y; }
   }
-  return { over, cost, method, kind, budget, ordered, placedAt, spare,
+  return { phase, over, cause, cost, method, kind, budget, ordered, placedAt, spare,
            overCount, worstRow, worstCost };
 }
 
@@ -1060,22 +1336,27 @@ function mltRowDetail(attrs, y, method) {
       ? MLT_TIMING.LD_HL_N - MLT_TIMING.STORE
       : MLT_TIMING.LD_R_N;
   } else {
-    // Push writes whole aligned pairs, so a pair counts as written if either half
-    // changed, and shares a register pair with every identical pair in the row
-    for (let p = 0; p < n / 2; p++) {
-      if (!changed[p * 2] && !changed[p * 2 + 1]) continue;
-      written[p * 2] = 1;
-      written[p * 2 + 1] = 1;
+    // Push writes whole pairs, so a pair counts as written when either half
+    // changed, and shares a register pair with every identical pair in the row.
+    // Which pairs those are depends on the alignment the row chose, so they come
+    // from the plan rather than from an assumption about even cells.
+    const plan = mltRowPlan(attrs, y, y % MLT_TIMING.CHAR_ROW_LINES !== 0);
+    const lows = (plan.method === MLT_METHOD.PUSH || plan.method === MLT_METHOD.MIXED)
+      ? mltPlanPairLows(plan)
+      : [];
+    for (const lo of lows) {
+      if (written[lo]) continue;        // a cell can only be written once
+      written[lo] = 1;
+      written[lo + 1] = 1;
       writtenCount += 2;
-      const w = (attrs[base + p * 2 + 1] << 8) | attrs[base + p * 2];
+      const w = (attrs[base + lo + 1] << 8) | attrs[base + lo];
       uses.set(w, (uses.get(w) || 0) + 1);
     }
-    for (let p = 0; p < n / 2; p++) {
-      if (!changed[p * 2] && !changed[p * 2 + 1]) continue;
-      const w = (attrs[base + p * 2 + 1] << 8) | attrs[base + p * 2];
+    for (const lo of lows) {
+      const w = (attrs[base + lo + 1] << 8) | attrs[base + lo];
       if (uses.get(w) !== 1) continue;
-      unshared[p * 2] = 1;
-      unshared[p * 2 + 1] = 1;
+      unshared[lo] = 1;
+      unshared[lo + 1] = 1;
       unsharedCount += 2;
       unsharedLoads++;        // one `ld rr,nn` per unshared pair, covering 2 cells
     }
@@ -1152,7 +1433,7 @@ function mltSuggestReuse(attrs, y, result) {
     for (let c = 0; c < n; c++) {
       if (scratch[base + c] === least) { scratch[base + c] = most; cells++; }
     }
-    if (mltTrialFits(scratch, y, inLine, budget)) return { colours: k, cells };
+    if (mltTrialFits(scratch, y, inLine, budget, result.phase)) return { colours: k, cells };
   }
   return null;
 }
@@ -1170,13 +1451,24 @@ function mltSuggestReuse(attrs, y, result) {
  * @param {number} budget - the lead-in's budget from the analysis
  * @returns {boolean}
  */
-function mltTrialFits(scratch, y, inLine, budget) {
+function mltTrialFits(scratch, y, inLine, budget, phase) {
   if (!inLine) {
     const lead = mltAnalyzeRow(scratch, y, false);
     return lead.ok && lead.cost <= budget;
   }
-  const t = mltCharRowRoom(scratch, y);
-  return t.ok && t.cost <= t.room;
+  // Both alignment policies, because mltAnalyzePicture() keeps the better of the
+  // two. Judging a trial under only the current one makes the advice disagree
+  // with the verdict the panel will show once the edit is made.
+  const was = mltPerRunAlign;
+  let fits = false;
+  for (const policy of [false, true]) {
+    mltPerRunAlign = policy;
+    const t = mltCharRowRoom(scratch, y, phase);
+    // `ok` already carries the placement's verdict -- if the beam is met, it fits
+    if (t.ok) { fits = true; break; }
+  }
+  mltPerRunAlign = was;
+  return fits;
 }
 
 /**
@@ -1191,25 +1483,28 @@ function mltTrialFits(scratch, y, inLine, budget) {
  * @param {number} y - pixel row
  * @returns {{ok: boolean, cost: number, room: number}}
  */
-function mltCharRowRoom(attrs, y) {
+function mltCharRowRoom(attrs, y, phase) {
   const lines = MLT_TIMING.CHAR_ROW_LINES;
   const LINE = MLT_TIMING.LINE_TSTATES;
   const top = y - (y % lines);
-  let clock = -Infinity;
-  for (let i = 1; i < lines; i++) {
-    const row = top + i;
-    const p = mltRowPlan(attrs, row, true);
-    if (p.method === MLT_METHOD.NONE) {
-      if (row === y) return { ok: true, cost: 0, room: LINE };
-      continue;
-    }
-    const origin = row * LINE;
-    const begin = Math.max(clock, origin + p.start - p.preload);
-    const room = origin + p.latest + p.blockCost - begin;
-    if (row === y) return { ok: p.ok, cost: p.cost, room: p.ok ? room : LINE };
-    clock = begin + p.preload + p.blockCost;
-  }
-  return { ok: true, cost: 0, room: LINE };
+  // The same placement the verdict comes from. Only this character row matters,
+  // because a run of code never crosses one, so the rest are left empty.
+  /** @type {Array<any>} */
+  const plans = new Array(192).fill({ method: MLT_METHOD.NONE });
+  for (let i = 1; i < lines; i++) plans[top + i] = mltRowPlan(attrs, top + i, true);
+  const place = mltPlaceRows(plans, phase || 0);
+  const p = plans[y];
+  if (p.method === MLT_METHOD.NONE) return { ok: true, cost: 0, room: LINE };
+  const origin = y * LINE;
+  const begin = top * LINE + place.h[y] + (phase || 0) - p.preload;
+  return {
+    // Every reason the verdict uses, or the advice promises a fit the panel
+    // then refuses: a trial can shorten this row and still leave the character
+    // row over eight lines.
+    ok: p.ok && !place.overrun[y] && !place.spill[y],
+    cost: p.cost,
+    room: p.ok ? (origin + p.latest + p.blockCost - begin) : LINE
+  };
 }
 
 /**
@@ -1259,7 +1554,7 @@ function mltSuggestMatch(attrs, y, result) {
       if (scratch[base + bestAt + i] !== attrs[prevBase + bestAt + i]) cells++;
       scratch[base + bestAt + i] = attrs[prevBase + bestAt + i];
     }
-    if (mltTrialFits(scratch, y, inLine, budget)) return { cells };
+    if (mltTrialFits(scratch, y, inLine, budget, result.phase)) return { cells };
   }
   return null;
 }
@@ -1294,7 +1589,11 @@ let mltStripInBorder = false;
  * @param {Uint8Array} attrs - the whole attribute plane
  * @param {number} base - offset of the row to draw
  * @param {Uint8Array} lit - 1 where the cell matters; the rest are veiled
- * @param {Uint8Array|null} frame - 1 where the cell gets the orange frame
+ * @param {Uint8Array|null} frame - 1 where the cell's colour is its own, and so
+ *   costs a register load of its own. Passing it also outlines every written
+ *   cell in white: veiling the others is no help on a row of black swatches,
+ *   where a veiled cell and a lit one look exactly alike, so the cells the beam
+ *   has to write could not be counted at all.
  */
 function mltPaintSwatchBand(ctx, x0, y0, cellW, h, attrs, base, lit, frame) {
   const gap = cellW >= 12 ? 1 : 0;
@@ -1314,11 +1613,39 @@ function mltPaintSwatchBand(ctx, x0, y0, cellW, h, attrs, base, lit, frame) {
       ctx.fillStyle = 'rgba(0, 0, 0, 0.62)';
       ctx.fillRect(x, y0, w, h);
     }
-    if (frame && frame[c]) {
-      ctx.strokeStyle = MLT_TIMING_MARK_COLOR;
+    if (frame && lit[c]) {
+      // Orange for a colour this cell alone uses, white for the rest: the same
+      // mark in two weights, so the written cells can be counted and the
+      // expensive ones still stand out among them.
+      ctx.strokeStyle = frame[c] ? MLT_TIMING_MARK_COLOR : MLT_TIMING_HOVER_COLOR;
       ctx.lineWidth = stroke;
       ctx.strokeRect(x + stroke / 2, y0 + stroke / 2, w - stroke, h - stroke);
     }
+  }
+}
+
+/**
+ * Ticks under the picture marking where each aligned cell PAIR begins.
+ *
+ * `push` puts two cells down at once, so a pair is what the player actually
+ * writes: a colour change inside one is free, one that straddles a boundary is
+ * not. Every fourth tick is brighter, so a pair can be counted off against the
+ * picture without counting all sixteen.
+ *
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {number} x0 - left edge of the strip
+ * @param {number} y - centre line for the ticks
+ * @param {number} cellW - pitch of one cell
+ * @param {number} room - height of the gap, so a tick cannot touch its edges
+ */
+function mltPaintPairTicks(ctx, x0, y, cellW, room) {
+  const fit = Math.max(1, Math.floor(room) - 4);
+  const base = Math.min(fit, Math.max(2, Math.min(5, Math.round(cellW / 4))));
+  for (let c = 0; c <= MLT_TIMING.CELLS; c += 2) {
+    const major = (c % 8) === 0;
+    const sz = major ? base + 1 : base;
+    ctx.fillStyle = major ? 'rgba(255, 255, 255, 0.95)' : 'rgba(255, 255, 255, 0.70)';
+    ctx.fillRect(Math.round(x0 + c * cellW - sz / 2), Math.round(y - sz / 2), sz, sz);
   }
 }
 
@@ -1353,6 +1680,15 @@ function mltPaintSwatches(ctx, x0, y0, cellW, h, attrs, base, detail) {
   mltPaintSwatchBand(ctx, x0, y0 + bandH + sep, cellW, bandH, attrs, base,
     detail.written, detail.unshared);
 }
+
+/**
+ * Whether a run may start its pairs on an odd cell.
+ *
+ * Set by mltAnalyzePicture(), which tries the picture both ways and leaves this
+ * on whichever flagged fewer rows. Everything downstream -- the readout, the
+ * advice, the ASM export -- then builds the plans the analysis actually judged.
+ */
+let mltPerRunAlign = false;
 
 /** @type {{sig: string, result: *}|null} */
 let mltTimingCache = null;
@@ -1562,10 +1898,25 @@ function drawMltStripInBorder(ctx, mainOffset, cellW, zoomY, attrs, base, detail
   const room = mainOffset - pad * 2;
   if (room < 8) return false;
 
-  // Two bands and a rule between them, kept in proportion to the cells above
-  const h = Math.min(room, Math.max(10, Math.round(cellW * 2.5)));
+  // The gap under the picture is reserved FIRST. Sizing the strip from the cell
+  // width and leaving it the remainder fails at high zoom, where that width
+  // exceeds the whole border: the strip fills it and the gap disappears.
+  let gapTop = Math.min(20, Math.max(8, Math.round(zoom * 3.5)));
+  // Two bands and a rule between them, kept in proportion to the cells above but
+  // well short of them: the swatches only have to read as colours, while the
+  // ticks have to be counted off against the picture, which needs the room more
+  let h = Math.min(room - gapTop, Math.round(cellW * 1.25));
+  let showTicks = true;
+  if (h < 10) {
+    // Too thin a border for both. The strip is the useful half, so it keeps the
+    // room and the ticks go without.
+    showTicks = false;
+    h = Math.min(room, Math.max(10, Math.round(cellW * 1.5)));
+    gapTop = Math.max(pad, Math.round((mainOffset - h) / 2));
+  }
   const picBottom = mainOffset + 192 * zoomY;
-  const y0 = picBottom + Math.round((mainOffset - h) / 2);
+  const y0 = picBottom + gapTop;
+  const tickY = picBottom + Math.round(gapTop / 2);
 
   // At high zoom the bottom border can be scrolled out of sight; the strip is no
   // use where it cannot be seen
@@ -1578,9 +1929,13 @@ function drawMltStripInBorder(ctx, mainOffset, cellW, zoomY, attrs, base, detail
 
   const x0 = mainOffset;
   const width = MLT_TIMING.CELLS * cellW;
-  // A dark sill under the swatches keeps them legible on a light border
+  // A dark sill under the swatches keeps them legible on a light border, and it
+  // reaches up over the ticks so those stay readable too. It stops short of the
+  // picture so it cannot be mistaken for part of it.
+  const sillTop = showTicks ? Math.min(y0 - pad, picBottom + 2) : y0 - pad;
   ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
-  ctx.fillRect(x0 - pad, y0 - pad, width + pad * 2, h + pad * 2);
+  ctx.fillRect(x0 - pad, sillTop, width + pad * 2, y0 + h + pad - sillTop);
+  if (showTicks) mltPaintPairTicks(ctx, x0, tickY, cellW, gapTop);
   mltPaintSwatches(ctx, x0, y0, cellW, h, attrs, base, detail);
   return true;
 }
@@ -1626,9 +1981,13 @@ function getMltRowReadout() {
     // 320T still rounds to 100%, and a row can also be rejected with time to
     // spare when its writes cannot stay ahead of the beam
     if (result.over[y]) {
-      // Not "too slow": a row refused on ordering can have time to spare,
-      // and saying it is slow next to a figure under 100% reads as nonsense
-      row = pct + '%, ' + (excess > 0 ? 'over ' + excess + 'T' : 'wrong order');
+      // The analysis says which of the three it is. Guessing from the figures
+      // called a row "wrong order" when its order was fine and it was only
+      // carrying its character row's overflow.
+      const why = result.cause ? result.cause[y] : MLT_CAUSE.ORDER;
+      row = pct + '%, ' + (excess > 0 ? 'over ' + excess + 'T'
+        : (why === MLT_CAUSE.SPILL ? 'row too full'
+          : (why === MLT_CAUSE.BEAM ? 'too slow' : 'wrong order')));
     } else {
       row = pct + '%, ' + (pct >= 95 ? 'tight' : 'fits');
     }

@@ -2,14 +2,17 @@
 
 ## v2.46
 - **Combine Pictures** builds multi-frame formats from separate screens: two .scr become a Gigascreen (.img), three become an RGB3 (.3)
-- Export: **ASM (Pentagon 8x1 multicolour)** for .mlt — a complete sjasmplus viewer that races the beam. Rows that cannot be written in time are marked in the source and reported on save
-- **Fixed:** 12288-byte multicolour files whose attributes are stored in ZX screen order opened as garbage. A third preview, **Screen-order attributes**, reads them as the file stores them. The layout question is now asked wherever such a file turns up, including inside a `.zip`, with the likeliest reading marked **likely**
+- **Magnifier** — a floating window showing the picture around the cursor blown up, with the pixel under the cursor outlined and the 8×8 attribute cells marked, for placing single pixels at low editor zoom. **Z** toggles it. Drag it anywhere, four zoom steps, position and zoom remembered
+- Multicolour timing: the seven interior rows of a character row are treated as one run of code, so a row may run past its own line where a neighbour runs short — far fewer rows fail. The readout says how much time the rows around it lent or took
+- Multicolour timing: each row is planned run by run — pushed, stored or written in place, whichever is cheaper — and each run picks whether its pairs start on an even or an odd cell
+- Multicolour timing: the check and the player now work from one placement, so the check no longer passes rows the player gets wrong. A flagged row says which of three things it is: the writes cannot be ordered to beat the beam, they can but not early enough, or the character row is full
+- Export: **ASM (Pentagon 8x1 multicolour)** for .mlt — a complete sjasmplus viewer that races the beam. Rows that cannot be written in time are marked in the source, and a picture that has any asks before exporting
+- **M** toggles the multicolour timing marks, in the viewer and in the editor, instead of a trip to Settings
+- Multicolour timing: the colour strip now outlines every cell the beam has to write, in orange where the cell's colour is its own. Only the costly ones were marked before, and the rest were shown by shading the others — which is no help on a row of black swatches
 - **Fixed:** the multicolour timing check had the Pentagon scanline and frame transposed — it is 224 T over 320 lines, not 320 T over 224. Every row budget was 96 T too generous, so pictures were reported as fitting when they cannot
 - **Fixed:** the 8x1 multicolour player started 63 T early, so a row’s first writes could land before the row above had been read and corrupt it
 - **Fixed:** a row too long for its scanline no longer runs into the next one and breaks rows the check had passed; it is cut, and the export reports what was cut
-- Multicolour timing: the seven interior rows of a character row are now treated as one run of code rather than seven separate scanlines, so a row may run past its own line wherever a neighbour runs short. On the sample pictures this takes the rows that cannot be written from 20 to 9 and from 57 to 22. The player places its blocks the same way, and the row readout says how much time the rows around it lent or took
-- Multicolour timing: each row is planned run by run — pushed, stored, or written in place, whichever is cheaper — and push runs are split and reordered when that is what the beam needs
-- **M** toggles the multicolour timing marks, in the viewer and in the editor, instead of a trip to Settings
+- **Fixed:** 12288-byte multicolour files whose attributes are stored in ZX screen order opened as garbage. A third preview, **Screen-order attributes**, reads them as the file stores them. The layout question is now asked wherever such a file turns up, including inside a `.zip`, with the likeliest reading marked **likely**
 - Docs: the graphics guide covers all three multicolour file layouts and how to tell them apart
 
 ## v2.45

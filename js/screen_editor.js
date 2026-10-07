@@ -10984,6 +10984,7 @@ function handleEditorMouseMove(event) {
  */
 function _handleEditorMouseMoveCoords(event, coords) {
   if (coords) editorKeyCursor = { x: coords.x, y: coords.y };
+  if (typeof setMagnifierTarget === 'function') setMagnifierTarget(coords);
   if (coords) {
     updateEditorInfo(coords.x, coords.y);
     pasteCursorPos = { x: coords.x, y: coords.y };
@@ -13529,6 +13530,8 @@ function editorRender(skipPreview = false) {
     if (!skipPreview) {
       renderPreview();
     }
+    // The magnifier samples this canvas, so it has to repaint after it
+    if (typeof renderMagnifier === 'function') renderMagnifier();
     updateFlashTimer();
 
     // Draw selection overlay (finalized selection rectangle)
@@ -21254,6 +21257,9 @@ function setEditorEnabled(active, force) {
     screenCanvas.addEventListener('mousemove', handleEditorMouseMove);
     screenCanvas.addEventListener('mouseup', handleEditorMouseUp);
     screenCanvas.addEventListener('mouseleave', handleEditorMouseUp);
+    screenCanvas.addEventListener('mouseleave', () => {
+      if (typeof setMagnifierTarget === 'function') setMagnifierTarget(null);
+    });
     screenCanvas.addEventListener('contextmenu', handleContextMenu);
 
     // Update palette swatches with current palette colors
