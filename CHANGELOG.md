@@ -4,7 +4,7 @@
 - **Combine Pictures** builds multi-frame formats from separate screens: two .scr become a Gigascreen (.img), three become an RGB3 (.3)
 - **Magnifier** — a floating window showing the picture around the cursor blown up, with the pixel under the cursor outlined and the 8×8 attribute cells marked, for placing single pixels at low editor zoom. **Z** toggles it. Drag it anywhere, four zoom steps, position and zoom remembered
 - Multicolour timing: the seven interior rows of a character row are treated as one run of code, so a row may run past its own line where a neighbour runs short — far fewer rows fail. The readout says how much time the rows around it lent or took
-- Multicolour timing: each row is planned run by run — pushed, stored or written in place, whichever is cheaper — and each run picks whether its pairs start on an even or an odd cell
+- Multicolour timing: each row is planned run by run — pushed, stored or written in place, whichever is cheaper — and each run picks whether its pairs start on an even or an odd cell, and a run may be cut in two so the half the beam reaches first is written first
 - Multicolour timing: the check and the player now work from one placement, so the check no longer passes rows the player gets wrong. A flagged row says which of three things it is: the writes cannot be ordered to beat the beam, they can but not early enough, or the character row is full
 - Export: **ASM (Pentagon 8x1 multicolour)** for .mlt — a complete sjasmplus viewer that races the beam. Rows that cannot be written in time are marked in the source, and a picture that has any asks before exporting
 - **M** toggles the multicolour timing marks, in the viewer and in the editor, instead of a trip to Settings
@@ -12,6 +12,8 @@
 - **Fixed:** the multicolour timing check had the Pentagon scanline and frame transposed — it is 224 T over 320 lines, not 320 T over 224. Every row budget was 96 T too generous, so pictures were reported as fitting when they cannot
 - **Fixed:** the 8x1 multicolour player started 63 T early, so a row’s first writes could land before the row above had been read and corrupt it
 - **Fixed:** a row too long for its scanline no longer runs into the next one and breaks rows the check had passed; it is cut, and the export reports what was cut
+- **Fixed:** a character row needing more code than its eight scanlines left the player late for the rest of the frame — 193T behind by the bottom of one test picture — so rows the check had passed were written after the beam had read them. The player now gives that time back out of later gaps, and the check accounts for it. On that picture 738 wrong cells became 1
+- **Fixed:** a flagged first row of a character row gave no reason for it, and the readout described it as fitting
 - **Fixed:** 12288-byte multicolour files whose attributes are stored in ZX screen order opened as garbage. A third preview, **Screen-order attributes**, reads them as the file stores them. The layout question is now asked wherever such a file turns up, including inside a `.zip`, with the likeliest reading marked **likely**
 - Docs: the graphics guide covers all three multicolour file layouts and how to tell them apart
 

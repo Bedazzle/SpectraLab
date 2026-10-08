@@ -46,6 +46,12 @@
 const MLT_ASM = {
   /** Symbol the generated source uses for the attribute area base. */
   ATTR: 'MLT_ATTR',
+  SHADOW: 'MLT_SHADOW',
+  /** Port 0x7FFD, reached as #0FFD / #07FD via `out (n),a`. */
+  PAGE_PORT: '#fd',
+  /** bank 7 at 0xC000, display from bank 5 / from bank 7. */
+  PAGE_A: 0x07,
+  PAGE_B: 0x0f,
   ROWS: 192,
   /** Padding instructions, longest first. None of them has to preserve anything. */
   /** Shortest wait worth spending two instructions and a loop on. */
@@ -94,6 +100,60 @@ const MLT_ASM = {
  */
 function mltAsmPadOk(t) {
   return t === 0 || t === 4 || t >= 6;
+}
+
+/**
+ * The two instructions that put one screen or the other on the display.
+ *
+ * `out (n),a` drives A onto the high half of the address bus, so A = #0F gives
+ * #0FFD: A15 is 0 and A1 is 0, which is what decodes 0x7FFD, and the same byte
+ * is the paging value. 18T the pair.
+ *
+ * @param {boolean} toShadow - true to show bank 7, false to show bank 5
+ * @returns {{lines: string[], cost: number}}
+ */
+function mltAsmFlip(toShadow) {
+  const v = toShadow ? MLT_ASM.PAGE_B : MLT_ASM.PAGE_A;
+  // Body style, lower case with an upper-case hex pair, the same as every other
+  // instruction in the frame loop
+  return {
+    lines: ['ld a,' + mltAsmHex2(v), 'out (' + MLT_ASM.PAGE_PORT + '),a'],
+    cost: MLT_TIMING.LD_R_N + 11
+  };
+}
+
+/**
+ * When each flip has to happen, in character-row-local CODE time.
+ *
+ * A row's attributes are read over the first 128T of its scanline, so between
+ * one row's last read and the next row's first there are 96T in which the
+ * display may change without anything seeing it half-done. The flip to the
+ * shadow screen goes in the window before the served row, the flip back in the
+ * window before the row after it.
+ *
+ * @param {number} r - character row
+ * @param {Uint8Array|null} served - 1 where a row is shown from the shadow screen
+ * @param {number} phase - code clock against the ULA clock
+ * @returns {Array<{at: number, until: number, toShadow: boolean, row: number}>}
+ */
+function mltAsmFlipTimes(r, served, phase) {
+  const LINE = MLT_TIMING.LINE_TSTATES;
+  const READ = MLT_TIMING.CELLS * 4;        // 32 cells latched 4T apart
+  /** @type {Array<{at: number, until: number, toShadow: boolean, row: number}>} */
+  const events = [];
+  if (!served) return events;
+  for (let i = 0; i < 8; i++) {
+    const y = r * 8 + i;
+    if (!served[y]) continue;
+    // show B: after row y-1's reads, before row y's
+    events.push({ at: (i - 1) * LINE + READ - phase, until: i * LINE - phase,
+                  toShadow: true, row: y });
+    // and back to A before the row below is read
+    events.push({ at: i * LINE + READ - phase, until: (i + 1) * LINE - phase,
+                  toShadow: false, row: y });
+  }
+  events.sort((a, b) => a.at - b.at);
+  return events;
 }
 
 /**
@@ -326,7 +386,7 @@ function mltAsmChoosePhase(plans) {
  * @param {number} phase
  * @returns {{h: Int32Array, lo: Int32Array, hi: Int32Array, room: Int32Array, overrun: Int32Array, ragged: number[]}}
  */
-function mltAsmPlaceRows(plans, analysis, phase) {
+function mltAsmPlaceRows(plans, judged, phase) {
   return mltPlaceRows(plans, phase);
 }
 
@@ -504,7 +564,8 @@ function mltAsmSplitLeadIn(attrs, y, plan, gaps) {
  * @param {string} [fileBase] - name for SAVESNA / INCBIN; defaults to baseName
  * @returns {{asm: string, over: number[], unplaced: number[], ragged: number[], drifted: number[], clock: number, residual: number, tailT: number, dropped: Array<{row: number, cells: number}>}|null}
  */
-function generateMltAsm(attrs, baseName, bitmap, embedData, borderColour, fileBase) {
+function generateMltAsm(attrs, baseName, bitmap, embedData, borderColour, fileBase,
+                        dropServed) {
   if (typeof embedData === 'undefined') embedData = true;
   if (typeof borderColour !== 'number') borderColour = 0;
   // baseName has to be a legal label; the file on disk keeps its real name
@@ -513,19 +574,39 @@ function generateMltAsm(attrs, baseName, bitmap, embedData, borderColour, fileBa
   const LINE = MLT_TIMING.LINE_TSTATES;
 
   const analysis = mltAnalyzePicture(attrs);
+  // Rows the player shows from bank 7 instead of writing. Absent unless the
+  // shadow screen is switched on and it actually cost fewer rows.
+  // Rows a previous attempt could not flip in time are given up: a row shown
+  // from bank 7 for only part of its line is worse than one written to A.
+  let served = analysis.served ? analysis.served.slice() : null;
+  if (served && dropServed) {
+    for (const y of dropServed) served[y] = 0;
+    let any = 0;
+    for (let y = 1; y < MLT_ASM.ROWS; y++) any += served[y];
+    if (!any) served = null;
+  }
+  // What screen A has to write. Where a row is shown from bank 7, A writes
+  // nothing for it, and the row below diffs against the row above -- which is
+  // what A goes on holding. The real colours stay in `attrs`, and that is what
+  // the shadow lines are built from.
+  const plane = served ? mltShadowPlane(attrs, served) : attrs;
+  // The verdict has to describe the plane the player is really built from. After
+  // a retry has given up a row, the shadow analysis is about a program that is no
+  // longer being emitted -- it reported 25 rows for code that failed on 30.
+  const judged = (plane === attrs) ? mltAnalyzeAlignments(attrs) : mltAnalyzeAlignments(plane);
   const plans = new Array(MLT_ASM.ROWS);
   for (let y = 0; y < MLT_ASM.ROWS; y++) {
-    plans[y] = mltRowPlan(attrs, y, y % 8 !== 0);
+    plans[y] = mltRowPlan(plane, y, y % 8 !== 0);
   }
 
   const chosen = mltAsmChoosePhase(plans);
   if (!chosen) return null;
   const phase = chosen.phase;
-  const place = mltAsmPlaceRows(plans, analysis, phase);
+  const place = mltAsmPlaceRows(plans, judged, phase);
 
   /** Rows the checker says cannot be written in time. */
   const over = [];
-  for (let y = 0; y < MLT_ASM.ROWS; y++) if (analysis.over[y]) over.push(y);
+  for (let y = 0; y < MLT_ASM.ROWS; y++) if (judged.over[y]) over.push(y);
   /** Lead-in rows whose chunks did not all fit the gaps above them. */
   const unplaced = [];
   /** Character rows whose gaps could not all be turned into exact delays. */
@@ -611,6 +692,9 @@ function generateMltAsm(attrs, baseName, bitmap, embedData, borderColour, fileBa
   push('    ORG #8000');
   push('');
   push(MLT_ASM.ATTR + '          equ #5800   ; attribute area of the displayed screen');
+  if (served) {
+    push(MLT_ASM.SHADOW + '        equ #d800   ; the same, in bank 7 paged at #c000');
+  }
   push('MLT_LINE          equ ' + LINE + '     ; Pentagon scanline');
   push('MLT_FRAME         equ ' + frameT + '   ; ' + MLT_ASM.FRAME_LINES + ' scanlines');
   push('MLT_INT_TO_SCREEN equ ' + intToScreen + '   ; INT -> attribute latch of pixel row 0');
@@ -701,6 +785,25 @@ function generateMltAsm(attrs, baseName, bitmap, embedData, borderColour, fileBa
   const drifted = [];
   /** Rows whose tail had to be cut off at the slot boundary. */
   const dropped = [];
+  /** Display changes no gap could hold, which would show the wrong screen. */
+  const flipsMissed = [];
+  /** Where the body stood against the clock at the end of each character row. */
+  const driftTrace = [];
+  // Every display change the frame needs, in absolute code time and earliest
+  // first. One list for the whole frame rather than one per character row: a
+  // served row at the top of a character row has to be flipped TO during the
+  // character row above, and a per-row list never offered that window to anyone.
+  /** @type {Array<{at:number, until:number, toShadow:boolean, row:number}>} */
+  const flipEvents = [];
+  for (let fr = 0; fr < 24; fr++) {
+    const top = fr * 8 * MLT_TIMING.LINE_TSTATES;
+    for (const ev of mltAsmFlipTimes(fr, served, phase)) {
+      flipEvents.push({ at: top + ev.at, until: top + ev.until,
+                        toShadow: ev.toShadow, row: ev.row });
+    }
+  }
+  flipEvents.sort((a, b) => a.at - b.at);
+  let flipNext = 0;
 
   for (let r = 0; r < 24; r++) {
     const leadRow = (r + 1) * 8;
@@ -710,7 +813,7 @@ function generateMltAsm(attrs, baseName, bitmap, embedData, borderColour, fileBa
     const gaps = mltAsmGaps(r, plans, place.h);
 
     const split = (leadPlan && leadPlan.method !== MLT_METHOD.NONE)
-      ? mltAsmSplitLeadIn(attrs, leadRow, leadPlan,
+      ? mltAsmSplitLeadIn(plane, leadRow, leadPlan,
           gaps.map((room, g) => Math.max(0, room - (reserve[g] || 0))))
       : { chunks: [], placed: 0, total: 0 };
     if (split.placed < split.total) unplaced.push(leadRow);
@@ -744,7 +847,7 @@ function generateMltAsm(attrs, baseName, bitmap, embedData, borderColour, fileBa
         push('    ; row ' + leadRow + ' lead-in, chunk ' + (chunk.index + 1) + ' of ' +
              split.chunks.length + ' (' + chunk.cost + 'T) -- written while the beam is');
         push('    ; still in character row ' + r + ', which never reads this attribute line');
-        if (analysis.over[leadRow] && chunk.index === 0) {
+        if (judged.over[leadRow] && chunk.index === 0) {
           push('    ; !! OVER BUDGET: the check rejects row ' + leadRow + '. It budgets a full');
           push('    ; !! reload for every resumed chunk, while the split below reloads only');
           push('    ; !! what each chunk uses -- so this code does fit the gaps it is given.');
@@ -777,6 +880,39 @@ function generateMltAsm(attrs, baseName, bitmap, embedData, borderColour, fileBa
       // back, while emitting too few would put writes ahead of the beam.
       if (!isFinite(padT) || padT < 0) padT = 0;
       for (let guard = 0; !mltAsmPadOk(padT) && guard < 8; guard++) { padT++; drift++; }
+
+      // Flips due inside this delay replace part of it. The gap keeps its total
+      // length, so every block after it stays where the placement put it.
+      while (flipNext < flipEvents.length) {
+        const ev = flipEvents[flipNext];
+        const from = ev.at;
+        const until = ev.until;
+        if (until < clock) {                    // the window has gone by
+          flipsMissed.push(ev);
+          flipNext++;
+          continue;
+        }
+        if (from > clock + padT) break;         // later than this gap reaches
+        const f = mltAsmFlip(ev.toShadow);
+        let pre = Math.max(0, from - clock);
+        let placed = false;
+        // As early in the window as the gap allows, then later a few T at a
+        // time until both halves are delays that can actually be built
+        for (let k = 0; k <= 32 && pre + f.cost <= padT; k++, pre++) {
+          if (clock + pre + f.cost > until) break;
+          if (mltAsmPadOk(pre) && mltAsmPadOk(padT - pre - f.cost)) { placed = true; break; }
+        }
+        if (!placed) break;
+        if (pre > 0) {
+          mltAsmPad(pre).forEach((l, i) => emit(l, i === 0 ? 'delay ' + pre + 'T' : ''));
+        }
+        f.lines.forEach((l, i) => emit(l, i === 0
+          ? 'show ' + (ev.toShadow ? 'bank 7' : 'bank 5') + ' for pixel row ' + ev.row
+          : ''));
+        clock += pre + f.cost;
+        padT -= pre + f.cost;
+        flipNext++;
+      }
 
       if (padT > 0) {
         const lines = mltAsmPad(padT);
@@ -811,7 +947,7 @@ function generateMltAsm(attrs, baseName, bitmap, embedData, borderColour, fileBa
            '  preload ' + p.preload + 'T + block ' + p.blockCost + 'T = ' + p.cost +
            'T   at +' + place.h[y] + 'T of the character row' +
            '  (' + p.changed + ' cell' + (p.changed === 1 ? '' : 's') + ' changed vs row ' + p.prevRow + ')');
-      if (analysis.over[y]) {
+      if (judged.over[y]) {
         if (place.overrun[y] > 0) {
           push('    ; !! OVER BUDGET by ' + place.overrun[y] + 'T -- this row is longer than a');
           push('    ; !! scanline, so it runs into the next one. The following gaps give the');
@@ -866,7 +1002,14 @@ function generateMltAsm(attrs, baseName, bitmap, embedData, borderColour, fileBa
     // Everything after the last block of the character row
     emitGap(gapIndex, gaps[gapIndex], -1);
 
+    // How far behind the clock this character row left us. `drift` is what the
+    // gaps give back, a few T at a time, and nothing was ever feeding the real
+    // overrun into it -- so a character row that ran long left the body late for
+    // the rest of the frame. Enot stayed 193T behind from row 19 to the end,
+    // writing rows the check had passed after the beam had read them.
+    drift = Math.max(0, clock - (r + 1) * 8 * LINE);
     if (drift > 0) drifted.push(r);
+    driftTrace.push({ r, clock, nominal: (r + 1) * 8 * MLT_TIMING.LINE_TSTATES, drift });
   }
   /** What the body overran a screen by, after every gap had its chance. */
   const residual = clock - bodyT;
@@ -878,10 +1021,32 @@ function generateMltAsm(attrs, baseName, bitmap, embedData, borderColour, fileBa
   // Row 0's attribute line currently holds row 7, the last thing written to it.
   // Put row 0 back while the beam is in the border, where nothing reads it.
   const restoreT = 10 + 10 + 10 + (21 * 31 + 16);   // ld hl / ld de / ld bc / ldir
+  // The shadow screen's lines, rebuilt every frame while the beam is outside the
+  // picture. Long-hand rather than copied: the border has 28672T and this costs
+  // about 450T a line, which the picture never sees.
+  /** @type {string[]} */
+  const shadowLines = [];
+  let shadowT = 0;
+  if (served) {
+    for (let y = 1; y < MLT_ASM.ROWS; y++) {
+      if (!served[y]) continue;
+      const cr = y >> 3;
+      shadowLines.push('    ; pixel row ' + y + ' is shown from bank 7, so its colours');
+      shadowLines.push('    ; are built here, in the border, where nothing reads them');
+      shadowLines.push('    ld h,high (' + MLT_ASM.SHADOW + '+' + (cr * 32) + ')');
+      shadowLines.push('    ld l,low (' + MLT_ASM.SHADOW + '+' + (cr * 32) + ')');
+      shadowT += MLT_TIMING.LD_H_N + MLT_TIMING.LD_L_N;
+      for (let c = 0; c < MLT_TIMING.CELLS; c++) {
+        if (c) { shadowLines.push('    inc l'); shadowT += MLT_TIMING.INC_L; }
+        shadowLines.push('    ld (hl),' + mltAsmHex2(attrs[y * MLT_TIMING.CELLS + c]));
+        shadowT += MLT_TIMING.LD_HL_N;
+      }
+    }
+  }
   // `clock` is what the body really came to, which is `bodyT` plus any overrun
   // the gaps could not give back. Closing on that keeps the loop a frame long
   // even when the picture itself does not fit.
-  const tailT = frameT - clock - restoreT - 10;      // 10 for the JP back
+  const tailT = frameT - clock - restoreT - shadowT - 10;  // 10 for the JP back
   const tailLines = tailT >= 0 ? mltAsmLongDelay(tailT, 'tail') : null;
 
   push('; ----------------------------------------------------------------------------');
@@ -899,6 +1064,11 @@ function generateMltAsm(attrs, baseName, bitmap, embedData, borderColour, fileBa
   emit('LD BC,' + MLT_TIMING.CELLS, '');
   emit('LDIR', '');
   push('');
+  if (shadowLines.length) {
+    push('    ; --- shadow screen, rebuilt every frame (' + shadowT + 'T) ---');
+    shadowLines.forEach(l => push(l));
+    push('');
+  }
   if (tailLines) {
     tailLines.forEach((l, i) => {
       if (l.startsWith('.')) push(l);
@@ -935,7 +1105,18 @@ function generateMltAsm(attrs, baseName, bitmap, embedData, borderColour, fileBa
   push('');
   push('    SAVESNA "' + fileBase + '.sna",Start');
 
-  return { asm: out.join('\n'), over, unplaced, ragged, drifted, clock, residual, tailT, dropped };
+  // A flip with nowhere to go means that row would show the wrong screen for
+  // part of its line. Give the row up and lay the frame out again without it.
+  if (flipsMissed.length) {
+    const give = new Set(dropServed || []);
+    for (const f of flipsMissed) give.add(f.row);
+    if (give.size > (dropServed ? dropServed.length : 0) && give.size <= 24) {
+      return generateMltAsm(attrs, baseName, bitmap, embedData, borderColour, fileBase,
+        Array.from(give));
+    }
+  }
+  return { asm: out.join('\n'), over, unplaced, ragged, drifted, clock, residual,
+    tailT, dropped, flipsMissed, served, driftTrace };
 }
 
 /**
