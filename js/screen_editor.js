@@ -5119,7 +5119,8 @@ function duplicateLayer() {
   editorRender();
 
   const infoEl = document.getElementById('editorPositionInfo');
-  if (infoEl) infoEl.innerHTML = 'Duplicated layer as "' + copy.name + '"';
+  // textContent: the name can come from a loaded project file
+  if (infoEl) infoEl.textContent = 'Duplicated layer as "' + copy.name + '"';
 }
 
 /**
@@ -6080,21 +6081,34 @@ function updateLayerPanel() {
     return;
   }
 
-  let html = '';
-  // Render from top to bottom (highest index first)
+  // Render from top to bottom (highest index first).
+  //
+  // Built as DOM nodes rather than an HTML string: a layer name arrives from a
+  // .slp / .slw file (or a rename) and must never be parsed as markup.
+  panel.innerHTML = '';
   for (let i = layers.length - 1; i >= 0; i--) {
     const layer = layers[i];
     const isActive = i === activeLayerIndex;
     const isBackground = i === 0;
 
-    html += `<div class="layer-item${isActive ? ' active' : ''}" data-index="${i}">
-      <span class="layer-visibility${layer.visible ? ' visible' : ''}" data-index="${i}" title="Toggle visibility">
-        ${layer.visible ? '👁' : '○'}
-      </span>
-      <span class="layer-name">${layer.name}${isBackground ? ' (BG)' : ''}</span>
-    </div>`;
+    const item = document.createElement('div');
+    item.className = 'layer-item' + (isActive ? ' active' : '');
+    item.dataset.index = String(i);
+
+    const visSpan = document.createElement('span');
+    visSpan.className = 'layer-visibility' + (layer.visible ? ' visible' : '');
+    visSpan.dataset.index = String(i);
+    visSpan.title = 'Toggle visibility';
+    visSpan.textContent = layer.visible ? '👁' : '○';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'layer-name';
+    nameSpan.textContent = (layer.name || '') + (isBackground ? ' (BG)' : '');
+
+    item.appendChild(visSpan);
+    item.appendChild(nameSpan);
+    panel.appendChild(item);
   }
-  panel.innerHTML = html;
 }
 
 /**

@@ -1,5 +1,8 @@
 # SpectraLab Version History
 
+## v2.49
+- **Fixed:** a layer name from a project or workspace file could run as HTML in the layer panel
+
 ## v2.48
 - Copy/paste reworked: **Copy** button, the selection survives a copy, **Ctrl+A** selects all, **Delete** clears it
 - A paste **floats** until dropped — click or **Enter** drops, drag or arrows move, **R**/**H**/**V** turn
