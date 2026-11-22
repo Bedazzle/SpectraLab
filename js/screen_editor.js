@@ -2980,14 +2980,15 @@ function snapPastePosition(x, y) {
   }
 
   if (effectiveMode === 'zero' && clipboardData) {
-    const w = clipboardData.format === 'scr' ? clipboardData.width : clipboardData.cellCols * 8;
-    const h = clipboardData.format === 'scr' ? clipboardData.height : clipboardData.cellRows * 8;
+    // cellRows is absent on a .mlt/.ifl clipboard, which made this NaN
+    const w = getClipboardPixelWidth();
+    const h = getClipboardPixelHeight();
     return { x: Math.floor(x / w) * w, y: Math.floor(y / h) * h };
   }
 
   if (effectiveMode === 'brush' && clipboardData) {
-    const w = clipboardData.format === 'scr' ? clipboardData.width : clipboardData.cellCols * 8;
-    const h = clipboardData.format === 'scr' ? clipboardData.height : clipboardData.cellRows * 8;
+    const w = getClipboardPixelWidth();
+    const h = getClipboardPixelHeight();
     if (brushSnapOrigin) {
       const ox = brushSnapOrigin.x % w;
       const oy = brushSnapOrigin.y % h;
@@ -3075,6 +3076,16 @@ let isPasting = false;
 
 /** @type {{x:number, y:number}} - Current cursor position during paste */
 let pasteCursorPos = { x: 0, y: 0 };
+/** Top-left of the floating, not yet committed paste, in picture pixels. */
+let pasteFloatPos = null;
+/** Grab offset inside the floating paste while it is being dragged. */
+let pasteFloatDrag = null;
+/**
+ * Snap state captured when a selection drag began, so the rectangle cannot
+ * change under the user between drawing it and acting on it (the Xform tab and
+ * the Edit tab have separate snap settings). null = resolve it live.
+ */
+let selectionDragSnap = null;
 
 /** @type {boolean} - Brush preview cursor mode active */
 let brushPreviewMode = false;
@@ -3633,11 +3644,13 @@ function switchToPicture(index, skipSave) {
     updateEditorState();
   }
 
-  // Reset selection and paste states (without triggering another render)
+  // Reset selection state (without triggering another render). A floating
+  // paste deliberately survives: switching picture while holding one is how a
+  // region moves from one picture to another, so isPasting/pasteFloatPos stay.
   selectionStartPoint = null;
   selectionEndPoint = null;
   isSelecting = false;
-  isPasting = false;
+  selectionDragSnap = null;
   brushSnapOrigin = null;
 }
 
@@ -3768,6 +3781,73 @@ function getIflAttributeAddress(x, y) {
   const attrRow = Math.floor(y / 2);  // 96 attribute rows (vs 24 for SCR)
   const charCol = Math.floor(x / 8);
   return IFL.BITMAP_SIZE + attrRow * 32 + charCol;
+}
+
+/**
+ * How many pixel rows one attribute cell covers in the current format.
+ * @returns {number} 1 for 8×1 multicolour and GMX, 2 for .ifl, 4 for BMC4, else 8
+ */
+function getFormatAttrCellHeight() {
+  if (currentFormat === FORMAT.MLT) return 1;
+  if (currentFormat === FORMAT.IFL) return 2;
+  if (currentFormat === FORMAT.BMC4) return 4;
+  if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) return 1;
+  if ((currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) && currentPicture) {
+    return currentPicture.attrCellHeight || 8;
+  }
+  return 8;
+}
+
+/**
+ * The screenData address of a pixel's attribute byte, whatever the format's
+ * cell height. Gigascreen frame 2 lives one frame size further on.
+ * @param {number} x
+ * @param {number} y
+ * @returns {number} Byte offset into screenData
+ */
+function getFormatAttributeAddress(x, y) {
+  if (currentFormat === FORMAT.MLT) return getMltAttributeAddress(x, y);
+  if (currentFormat === FORMAT.IFL) return getIflAttributeAddress(x, y);
+  if (currentFormat === FORMAT.BMC4) return getBmc4AttributeAddress(x, y);
+  return getAttributeAddress(x, y);
+}
+
+/**
+ * Writes one attribute byte into a layer's own attribute array, at whatever
+ * index that format uses. Mirrors the layouts getLayerAttributeSize() allots.
+ * @param {Layer} layer
+ * @param {number} x
+ * @param {number} y
+ * @param {number} attr
+ */
+function setLayerAttrAt(layer, x, y, attr) {
+  if (!layer || !layer.attributes) return;
+  const charCol = Math.floor(x / 8);
+  if (currentFormat === FORMAT.BMC4) {
+    const attrIdx = Math.floor(y / 8) * 32 + charCol;
+    if (y % 8 < 4) layer.attributes[attrIdx] = attr;
+    else if (layer.attributes2) layer.attributes2[attrIdx] = attr;
+    return;
+  }
+  if (currentFormat === FORMAT.MLT) {
+    layer.attributes[getMltLayerAttrIndex(x, y)] = attr;
+    return;
+  }
+  if (currentFormat === FORMAT.IFL) {
+    layer.attributes[Math.floor(y / 2) * 32 + charCol] = attr;
+    return;
+  }
+  if (currentFormat === FORMAT.GMX || currentFormat === FORMAT.GMX160) {
+    layer.attributes[y * 80 + charCol] = attr;
+    return;
+  }
+  if ((currentFormat === FORMAT.ZXP || currentFormat === FORMAT.CHR) && currentPicture) {
+    const cols = currentPicture.width >> 3;
+    const attrCellH = currentPicture.attrCellHeight || 8;
+    layer.attributes[Math.floor(y / attrCellH) * cols + charCol] = attr;
+    return;
+  }
+  layer.attributes[Math.floor(y / 8) * 32 + charCol] = attr;
 }
 
 /**
@@ -4064,12 +4144,19 @@ function setPixel(data, x, y, isInk) {
   // Set the attribute for this cell to current ink/paper/bright
   let attr = getCurrentDrawingAttribute();
 
+  // MLT uses 8×1 blocks (192 rows), IFL uses 8×2 blocks (96 rows), BMC4 uses 8×4 blocks (48 rows), SCR uses 8×8 cells (24 rows)
+  const attrAddr = currentFormat === FORMAT.MLT ? getMltAttributeAddress(x, y) :
+                   currentFormat === FORMAT.IFL ? getIflAttributeAddress(x, y) :
+                   currentFormat === FORMAT.BMC4 ? getBmc4AttributeAddress(x, y) :
+                   getAttributeAddress(x, y);
+
   // MLT (8×1 cells): in Timex Hi-Colour images bitmap is typically 0xFF (all ink).
-  // Clear the fully-set byte before drawing so only the drawn pixel is ink.
-  // Partially-set bytes (from prior drawing) are left alone to accumulate pixels.
+  // Clear the fully-set byte so only the drawn pixel carries the new colour.
+  // A byte the stroke itself filled already wears that colour, so leave it alone:
+  // otherwise the eighth pixel of a run would wipe the seven before it.
   if (currentFormat === FORMAT.MLT && isInk &&
       !(layersEnabled && layers.length > 0 && activeLayerIndex > 0)) {
-    if (data[bitmapAddr] === 0xFF) {
+    if (data[bitmapAddr] === 0xFF && data[attrAddr] !== attr) {
       const drawnMask = (1 << bit);
       data[bitmapAddr] = drawnMask;
       if (layersEnabled && layers.length > 0 && activeLayerIndex === 0) {
@@ -4078,12 +4165,6 @@ function setPixel(data, x, y, isInk) {
       }
     }
   }
-
-  // MLT uses 8×1 blocks (192 rows), IFL uses 8×2 blocks (96 rows), BMC4 uses 8×4 blocks (48 rows), SCR uses 8×8 cells (24 rows)
-  const attrAddr = currentFormat === FORMAT.MLT ? getMltAttributeAddress(x, y) :
-                   currentFormat === FORMAT.IFL ? getIflAttributeAddress(x, y) :
-                   currentFormat === FORMAT.BMC4 ? getBmc4AttributeAddress(x, y) :
-                   getAttributeAddress(x, y);
 
   // When layers are enabled and on non-background layer, only update layer attributes
   // screenData attributes will be updated via flattenAttributesToScreen()
@@ -4898,6 +4979,32 @@ function initLayers() {
 }
 
 /**
+ * Seeds a layer's attribute table from the picture as it currently stands.
+ *
+ * A layer can come to own pixels whose colour it was never told — a retouch
+ * paste claims every pixel and touches no colour — and it then supplies the
+ * attribute for the whole cell. Starting from ink7/paper0 turned those cells
+ * black; starting from what is already on screen makes them invisible instead.
+ * Gigascreen has always done this, for the same reason.
+ *
+ * Goes through setLayerAttrAt/getFormatAttributeAddress rather than copying the
+ * range, so the per-format cell height and BMC4's two banks are handled by the
+ * same code the flatten reads back with.
+ * @param {Layer} layer
+ */
+function seedLayerAttrsFromScreen(layer) {
+  if (!layer || !layer.attributes || !screenData) return;
+  const cellH = getFormatAttrCellHeight() || 8;
+  const w = getFormatWidth();
+  const h = getFormatHeight();
+  for (let y = 0; y < h; y += cellH) {
+    for (let x = 0; x < w; x += 8) {
+      setLayerAttrAt(layer, x, y, screenData[getFormatAttributeAddress(x, y)]);
+    }
+  }
+}
+
+/**
  * Adds a new empty layer above the current layer
  * @param {string} [name] - Optional layer name
  */
@@ -4927,15 +5034,13 @@ function addLayer(name) {
     newLayer.bitmap.fill(0x20);
   }
 
-  // Add default attributes (ink=7, paper=0) for formats that support them
+  // Attributes start as the colours already on screen, not a hardcoded default
   if (attrSize > 0) {
-    const defaultAttr = buildAttribute(7, 0, false, false); // ink=7 (white), paper=0 (black)
     if (currentFormat === FORMAT.BMC4) {
-      // BMC4: two attribute banks
+      // BMC4: two attribute banks; setLayerAttrAt routes each by y % 8
       newLayer.attributes = new Uint8Array(BMC4.ATTR1_SIZE);
       newLayer.attributes2 = new Uint8Array(BMC4.ATTR2_SIZE);
-      newLayer.attributes.fill(defaultAttr);
-      newLayer.attributes2.fill(defaultAttr);
+      seedLayerAttrsFromScreen(newLayer);
     } else if (isGigascreenEditable()) {
       // Gigascreen: two separate attribute arrays for each frame.
       // Initialize from current screenData so that the shared mask doesn't
@@ -4953,7 +5058,7 @@ function addLayer(name) {
     } else {
       // SCR/BSC/IFL/MLT: single attribute bank
       newLayer.attributes = new Uint8Array(attrSize);
-      newLayer.attributes.fill(defaultAttr);
+      seedLayerAttrsFromScreen(newLayer);
     }
   }
 
@@ -4970,6 +5075,51 @@ function addLayer(name) {
   updateLayerPanel();
   flattenLayersToScreen();
   editorRender();
+}
+
+/**
+ * A free name for a copy of `baseName`, so duplicates do not collide.
+ * @param {string} baseName
+ * @returns {string}
+ */
+function nextLayerCopyName(baseName) {
+  const base = (baseName || 'Layer') + ' copy';
+  if (!layers.some(l => l.name === base)) return base;
+  for (let n = 2; n < 1000; n++) {
+    const candidate = base + ' ' + n;
+    if (!layers.some(l => l.name === candidate)) return candidate;
+  }
+  return base;
+}
+
+/**
+ * Duplicates the active layer, putting the copy directly above it.
+ *
+ * Goes through deepCloneLayers() so every per-format field travels with it —
+ * BMC4's second attribute bank, Gigascreen's frame 2, SPECSCII's inverse grid,
+ * the border data — rather than listing them here and missing one later.
+ */
+function duplicateLayer() {
+  if (!layersEnabled || layers.length === 0) return;
+  const source = layers[activeLayerIndex];
+  if (!source) return;
+
+  saveUndoState();
+
+  const copy = deepCloneLayers([source])[0];
+  copy.name = nextLayerCopyName(source.name);
+  copy.visible = true;
+
+  layers.splice(activeLayerIndex + 1, 0, copy);
+  activeLayerIndex = activeLayerIndex + 1;
+
+  updateLayerPanel();
+  flattenLayersToScreen();
+  syncCurrentPicture();
+  editorRender();
+
+  const infoEl = document.getElementById('editorPositionInfo');
+  if (infoEl) infoEl.innerHTML = 'Duplicated layer as "' + copy.name + '"';
 }
 
 /**
@@ -5070,6 +5220,18 @@ function setActiveLayer(index) {
  */
 function toggleLayerVisibility(index) {
   if (!layersEnabled || index < 0 || index >= layers.length) return;
+
+  // Refuse to hide the last visible layer: that leaves nothing on screen but
+  // the transparency checkerboard, which is never what the click meant.
+  if (layers[index].visible && layers.filter(l => l.visible).length <= 1) {
+    const infoEl = document.getElementById('editorPositionInfo');
+    if (infoEl) {
+      infoEl.innerHTML = 'At least one layer has to stay visible — ' +
+        'show another one first';
+    }
+    return;
+  }
+
   layers[index].visible = !layers[index].visible;
   updateLayerPanel();
   flattenLayersToScreen();
@@ -5094,6 +5256,10 @@ function syncCurrentPicture() {
 function syncBackgroundLayerFromScreen() {
   if (!layersEnabled || layers.length === 0 || !layers[0] || activeLayerIndex !== 0) return;
   if (!screenData) return;
+  // While the background is hidden, screenData holds the composite *without* it,
+  // so copying that back would wipe the very layer this mirrors. A paste or an
+  // invert with the background selected but hidden used to erase its bitmap.
+  if (!layers[0].visible) return;
   const layer = layers[0];
   const bitmapSize = getLayerBitmapSize();
 
@@ -5636,16 +5802,36 @@ function flattenAttributesToScreen() {
       // Find topmost visible layer with content AND attributes in this cell
       const ownerLayer = findLayerOwnerForRegionWithAttributes(cellStartX, cellStartY, cellWidth, cellHeight);
 
-      if (ownerLayer && ownerLayer.attributes && attrIdx < ownerLayer.attributes.length) {
-        screenData[scrOff] = ownerLayer.attributes[attrIdx];
-      } else if (layers[0].visible && layers[0].attributes && attrIdx < layers[0].attributes.length) {
-        // Fallback to background layer
-        screenData[scrOff] = layers[0].attributes[attrIdx];
-      } else {
-        // No owner found - use default (ink=7, paper=0)
-        screenData[scrOff] = buildAttribute(7, 0, false, false);
-      }
+      writeFlattenedAttr(scrOff, ownerLayer ? ownerLayer.attributes : null,
+                         layers[0].attributes, attrIdx);
     }
+  }
+}
+
+/**
+ * Writes one flattened attribute byte.
+ *
+ * The owning layer wins. Failing that the background layer's stored attribute
+ * is used **whether or not the background is visible** — hiding a layer is a
+ * display choice, and screenTransparencyMask already draws those pixels as the
+ * checkerboard, so it must not cost the picture its colour. If no layer can
+ * supply a byte at all, screenData keeps the one it has.
+ *
+ * This used to stamp a hardcoded ink7/paper0/no-bright byte in that last case,
+ * which is every cell the moment the background layer is hidden: one click on
+ * its eye flattened the whole picture to dull white-on-black, and the next
+ * syncBackgroundLayerFromScreen() copied that into layer 0 for good.
+ *
+ * @param {number} addr - byte offset in screenData
+ * @param {Uint8Array|null|undefined} ownerAttrs - the owning layer's attribute table
+ * @param {Uint8Array|null|undefined} bgAttrs - the background layer's attribute table
+ * @param {number} idx - index into either table
+ */
+function writeFlattenedAttr(addr, ownerAttrs, bgAttrs, idx) {
+  if (ownerAttrs && idx < ownerAttrs.length) {
+    screenData[addr] = ownerAttrs[idx];
+  } else if (bgAttrs && idx < bgAttrs.length) {
+    screenData[addr] = bgAttrs[idx];
   }
 }
 
@@ -5666,24 +5852,16 @@ function flattenBmc4Attributes() {
       // Top half (lines 0-3 of the 8-pixel cell)
       const topStartY = charRow * 8;
       const topOwner = findLayerOwnerForRegionWithAttributes(cellStartX, topStartY, cellWidth, 4);
-      if (topOwner && topOwner.attributes && attrIdx < topOwner.attributes.length) {
-        screenData[BMC4.ATTR1_OFFSET + attrIdx] = topOwner.attributes[attrIdx];
-      } else if (layers[0].visible && layers[0].attributes && attrIdx < layers[0].attributes.length) {
-        screenData[BMC4.ATTR1_OFFSET + attrIdx] = layers[0].attributes[attrIdx];
-      } else {
-        screenData[BMC4.ATTR1_OFFSET + attrIdx] = buildAttribute(7, 0, false, false);
-      }
+      writeFlattenedAttr(BMC4.ATTR1_OFFSET + attrIdx,
+                         topOwner ? topOwner.attributes : null,
+                         layers[0].attributes, attrIdx);
 
       // Bottom half (lines 4-7 of the 8-pixel cell)
       const bottomStartY = charRow * 8 + 4;
       const bottomOwner = findLayerOwnerForRegionWithAttributes(cellStartX, bottomStartY, cellWidth, 4);
-      if (bottomOwner && bottomOwner.attributes2 && attrIdx < bottomOwner.attributes2.length) {
-        screenData[BMC4.ATTR2_OFFSET + attrIdx] = bottomOwner.attributes2[attrIdx];
-      } else if (layers[0].visible && layers[0].attributes2 && attrIdx < layers[0].attributes2.length) {
-        screenData[BMC4.ATTR2_OFFSET + attrIdx] = layers[0].attributes2[attrIdx];
-      } else {
-        screenData[BMC4.ATTR2_OFFSET + attrIdx] = buildAttribute(7, 0, false, false);
-      }
+      writeFlattenedAttr(BMC4.ATTR2_OFFSET + attrIdx,
+                         bottomOwner ? bottomOwner.attributes2 : null,
+                         layers[0].attributes2, attrIdx);
     }
   }
 }
@@ -5709,22 +5887,14 @@ function flattenGigascreenAttributes() {
       const ownerLayer = findLayerOwnerForRegionWithAttributes(cellStartX, cellStartY, cellWidth, cellHeight);
 
       // Frame 1 attributes
-      if (ownerLayer && ownerLayer.attributes && attrIdx < ownerLayer.attributes.length) {
-        screenData[SCREEN.BITMAP_SIZE + attrIdx] = ownerLayer.attributes[attrIdx];
-      } else if (layers[0].visible && layers[0].attributes && attrIdx < layers[0].attributes.length) {
-        screenData[SCREEN.BITMAP_SIZE + attrIdx] = layers[0].attributes[attrIdx];
-      } else {
-        screenData[SCREEN.BITMAP_SIZE + attrIdx] = buildAttribute(7, 0, false, false);
-      }
+      writeFlattenedAttr(SCREEN.BITMAP_SIZE + attrIdx,
+                         ownerLayer ? ownerLayer.attributes : null,
+                         layers[0].attributes, attrIdx);
 
       // Frame 2 attributes
-      if (ownerLayer && ownerLayer.attributesFrame2 && attrIdx < ownerLayer.attributesFrame2.length) {
-        screenData[gigaFS + 6144 + attrIdx] = ownerLayer.attributesFrame2[attrIdx];
-      } else if (layers[0].visible && layers[0].attributesFrame2 && attrIdx < layers[0].attributesFrame2.length) {
-        screenData[gigaFS + 6144 + attrIdx] = layers[0].attributesFrame2[attrIdx];
-      } else {
-        screenData[gigaFS + 6144 + attrIdx] = buildAttribute(7, 0, false, false);
-      }
+      writeFlattenedAttr(gigaFS + 6144 + attrIdx,
+                         ownerLayer ? ownerLayer.attributesFrame2 : null,
+                         layers[0].attributesFrame2, attrIdx);
     }
   }
 }
@@ -5887,6 +6057,7 @@ function updateLayerPanel() {
 
   // Update button states
   const removeBtn = document.getElementById('removeLayerBtn');
+  const duplicateBtn = document.getElementById('duplicateLayerBtn');
   const moveUpBtn = document.getElementById('moveLayerUpBtn');
   const moveDownBtn = document.getElementById('moveLayerDownBtn');
   const saveProjectBtn = document.getElementById('saveProjectBtn');
@@ -5895,6 +6066,8 @@ function updateLayerPanel() {
   const hasMultipleLayers = layersEnabled && layers.length > 1;
 
   if (removeBtn) removeBtn.disabled = !hasMultipleLayers || activeLayerIndex === 0;
+  // any layer can be duplicated, the background included
+  if (duplicateBtn) duplicateBtn.disabled = !hasLayers;
   if (moveUpBtn) moveUpBtn.disabled = !hasMultipleLayers || activeLayerIndex >= layers.length - 1;
   if (moveDownBtn) moveDownBtn.disabled = !hasMultipleLayers || activeLayerIndex <= 1;
   if (flattenBtn) flattenBtn.disabled = !hasMultipleLayers;
@@ -5929,12 +6102,14 @@ function updateLayerPanel() {
  */
 function updateLayerButtonStates() {
   const removeBtn = document.getElementById('removeLayerBtn');
+  const duplicateBtn = document.getElementById('duplicateLayerBtn');
   const moveUpBtn = document.getElementById('moveLayerUpBtn');
   const moveDownBtn = document.getElementById('moveLayerDownBtn');
   const flattenBtn = document.getElementById('flattenLayersBtn');
 
   const hasMultipleLayers = layersEnabled && layers.length > 1;
 
+  if (duplicateBtn) duplicateBtn.disabled = !(layersEnabled && layers.length > 0);
   if (removeBtn) removeBtn.disabled = !hasMultipleLayers || activeLayerIndex === 0;
   if (moveUpBtn) moveUpBtn.disabled = !hasMultipleLayers || activeLayerIndex >= layers.length - 1;
   if (moveDownBtn) moveDownBtn.disabled = !hasMultipleLayers || activeLayerIndex <= 1;
@@ -8672,7 +8847,7 @@ function setPixelDirect(x, y, isInk) {
   // MLT (8×1 cells): same bitmap clearing as in setPixel
   if (currentFormat === FORMAT.MLT && isInk &&
       !(layersEnabled && layers.length > 0 && activeLayerIndex > 0)) {
-    if (screenData[bitmapAddrSD] === 0xFF) {
+    if (screenData[bitmapAddrSD] === 0xFF && screenData[attrAddr] !== attr) {
       screenData[bitmapAddrSD] = bitMask;
       if (layersEnabled && layers.length > 0 && activeLayerIndex === 0) {
         const layer = layers[0];
@@ -9258,8 +9433,11 @@ function getSelectionRect() {
   let right = Math.max(selectionStartPoint.x, selectionEndPoint.x);
   let bottom = Math.max(selectionStartPoint.y, selectionEndPoint.y);
 
-  // Use transform snap setting when in transform mode, otherwise use Edit tab snap
-  const useSnap = transformSelectActive ? transformSnapToGrid : isSnapActive();
+  // The snap in force when the drag began, so the rectangle the user saw is the
+  // one that gets copied. Falls back to resolving it live for a selection set
+  // programmatically (a transform op, a test) rather than dragged.
+  const useSnap = selectionDragSnap !== null ? selectionDragSnap
+    : (transformSelectActive ? transformSnapToGrid : isSnapActive());
   if (useSnap) {
     left = Math.floor(left / 8) * 8;
     top = Math.floor(top / 8) * 8;
@@ -9281,15 +9459,172 @@ function getSelectionRect() {
 }
 
 /**
- * Copies pixel bitmap and attributes from the current selection into clipboardData
+ * Makes screenData hold only the active layer's content, for the length of a copy.
+ *
+ * A copy on a layer above the background has to lift that layer's own pixels,
+ * not the composite the user sees. Teaching every format's copy path to read
+ * layer.bitmap / layer.attributes would mean re-deriving each format's address
+ * convention, so instead the other layers are hidden and the existing, tested
+ * flatten runs into screenData. That same flatten fills screenTransparencyMask,
+ * which is then exactly "the active layer owns this pixel" — the clipboard's
+ * transparency mask.
+ *
+ * @param {boolean} [merged] - true to copy the flattened picture instead
+ * @returns {{active:boolean, savedVisible:boolean[]|null, savedScreen:Uint8Array|null, mask:Uint8Array|null}}
  */
-function copySelection() {
+function beginActiveLayerIsolation(merged) {
+  const off = { active: false, savedVisible: null, savedScreen: null, mask: null };
+  if (merged) return off;
+  // The background counts as a layer here: isolating it forces it visible, so
+  // a copy takes its own content rather than the composite drawn over it.
+  if (!layersEnabled || layers.length === 0 || activeLayerIndex < 0) return off;
+  if (!layers[activeLayerIndex]) return off;
+  // A deferred batch would make flattenLayersToScreen() a no-op, leaving a stale
+  // mask and the composite in screenData — silently the wrong copy.
+  if (batchFlattenDeferred) return off;
+  // SPECSCII already edits the active layer through its grids and carries its own
+  // per-cell mask; .53c owns whole cells and its flatten sets no pixel mask.
+  if (currentFormat === FORMAT.SPECSCII || currentFormat === FORMAT.ATTR_53C) return off;
+
+  const savedVisible = layers.map(l => l.visible);
+  const savedScreen = screenData.slice();
+  // Everything from here is undone by endActiveLayerIsolation(), but the
+  // caller's try/finally only starts once this has returned -- so a throw in
+  // between would strand the picture with every layer but the active one
+  // hidden, and the layer panel would go on showing that.
+  try {
+    for (let i = 0; i < layers.length; i++) layers[i].visible = (i === activeLayerIndex);
+    flattenLayersToScreen();
+    const mask = screenTransparencyMask ? screenTransparencyMask.slice() : null;
+    return { active: true, savedVisible, savedScreen, mask };
+  } catch (err) {
+    endActiveLayerIsolation({ active: true, savedVisible, savedScreen, mask: null });
+    return off;
+  }
+}
+
+/**
+ * Puts back everything beginActiveLayerIsolation() moved aside.
+ * @param {{active:boolean, savedVisible:boolean[]|null, savedScreen:Uint8Array|null}} iso
+ */
+function endActiveLayerIsolation(iso) {
+  if (!iso || !iso.active) return;
+  for (let i = 0; i < iso.savedVisible.length && i < layers.length; i++) {
+    layers[i].visible = iso.savedVisible[i];
+  }
+  screenData.set(iso.savedScreen);
+  flattenLayersToScreen();
+  // the eyes in the panel must never be left showing the isolated state
+  updateLayerPanel();
+}
+
+/**
+ * Crops the isolation mask down to the copied rectangle.
+ * @param {{mask:Uint8Array|null}} iso
+ * @param {{left:number, top:number, width:number, height:number}} rect
+ * @returns {Uint8Array|null} null when the copy is a solid rectangle
+ */
+function cropIsolationMask(iso, rect) {
+  return cropTransparencyMask(iso && iso.mask, rect);
+}
+
+/**
+ * Crops a per-pixel ownership mask down to a rectangle.
+ * @param {Uint8Array|null|undefined} mask - full-picture mask, or null
+ * @param {{left:number, top:number, width:number, height:number}} rect
+ * @returns {Uint8Array|null} null when the region is opaque throughout
+ */
+function cropTransparencyMask(mask, rect) {
+  if (!mask) return null;
+  const fw = getFormatWidth();
+  const out = new Uint8Array(rect.width * rect.height);
+  let opaque = 0;
+  for (let py = 0; py < rect.height; py++) {
+    const srcRow = (rect.top + py) * fw;
+    for (let px = 0; px < rect.width; px++) {
+      const v = mask[srcRow + rect.left + px] ? 1 : 0;
+      out[py * rect.width + px] = v;
+      opaque += v;
+    }
+  }
+  // opaque everywhere is the same as no mask at all, and cheaper to paste
+  return opaque === out.length ? null : out;
+}
+
+/**
+ * Copies pixel bitmap and attributes from the current selection into clipboardData.
+ *
+ * With layers on, a copy takes the active layer alone: where that layer owns
+ * nothing the clipboard is transparent, so pasting it elsewhere does not stamp a
+ * rectangle of background with it. opts.merged copies the flattened picture.
+ *
+ * @param {{merged?:boolean}} [opts]
+ */
+function copySelection(opts) {
+  const o = opts || {};
   const infoEl = document.getElementById('editorPositionInfo');
   const rect = getSelectionRect();
   if (!rect) {
     if (infoEl) infoEl.innerHTML = 'No selection — use Select tool first';
     return;
   }
+
+  const iso = beginActiveLayerIsolation(o.merged);
+  try {
+    copySelectionFrom(rect);
+  } finally {
+    endActiveLayerIsolation(iso);
+  }
+
+  if (clipboardData) {
+    // Where it came from, so a paste can be offered back in the same place
+    clipboardData.srcLeft = rect.left;
+    clipboardData.srcTop = rect.top;
+    if (!clipboardData.mask) {
+      // A merged copy is the picture as composited, holes and all: where no
+      // visible layer has content the clipboard has to be transparent too.
+      clipboardData.mask = o.merged
+        ? (layersEnabled ? cropTransparencyMask(screenTransparencyMask, rect) : null)
+        : cropIsolationMask(iso, rect);
+    }
+    clipboardData.fromLayer = iso.active ? (layers[activeLayerIndex].name || '') : '';
+  }
+
+  // A copy that lifted nothing is never what was wanted: the active layer simply
+  // owns no pixels in the selection (an empty layer, or a region it never
+  // touched). Copying the picture instead beats handing back a clipboard that
+  // silently pastes nothing and leaves holes once the layers below are hidden.
+  if (clipboardData && iso.active && clipboardData.mask && !o.merged) {
+    let opaque = 0;
+    for (let i = 0; i < clipboardData.mask.length; i++) opaque += clipboardData.mask[i];
+    if (opaque === 0) {
+      copySelection({ merged: true });
+      if (infoEl) {
+        infoEl.innerHTML = 'The active layer is empty here — copied the ' +
+          'flattened picture instead';
+      }
+      return;
+    }
+  }
+
+  if (infoEl && clipboardData) {
+    const fmt = clipboardData.format;
+    const cols = clipboardData.cellCols;
+    const rows = getClipboardAttrRows();
+    const cellH = getClipboardCellHeight();
+    const src = o.merged ? ' (merged)' : iso.active ? ` (${clipboardData.fromLayer})` : '';
+    infoEl.innerHTML = `Copied ${fmt} region: ${cols}\u00d7${rows} cells` +
+      (cellH === 8 ? '' : ` (8\u00d7${cellH})`) + src;
+  }
+}
+
+/**
+ * Reads one rectangle of the picture into clipboardData, at whatever colour
+ * resolution the format uses. Reads screenData, so the caller decides whether
+ * that is the composite or an isolated layer.
+ * @param {{left:number, top:number, right:number, bottom:number, width:number, height:number}} rect
+ */
+function copySelectionFrom(rect) {
 
   if (currentFormat === FORMAT.SPECSCII) {
     // SPECSCII: copy character codes + attributes + mask
@@ -9368,6 +9703,7 @@ function copySelection() {
       width: rect.width,
       height: rect.height,
       cellCols,
+      cellH: 2,
       attrRows,
       bitmap,
       attrs
@@ -9408,9 +9744,52 @@ function copySelection() {
       width: rect.width,
       height: rect.height,
       cellCols,
+      cellH: 1,
       attrRows,
       bitmap,
       attrs
+    };
+  } else if (currentFormat === FORMAT.BMC4) {
+    // BMC4: two attribute banks make 8x4 colour cells. Copying them as 8x8 would
+    // throw half the colour away and leave a paste with nothing to put in bank 2,
+    // so the clipboard keeps the format's own resolution.
+    const cellLeft = Math.floor(rect.left / 8);
+    const attrTop = Math.floor(rect.top / 4);
+    const cellCols = Math.ceil(rect.width / 8);
+    const attrRows = Math.ceil(rect.height / 4);
+
+    // Pack bitmap: one bit per pixel, row by row, MSB-first, linear (not ZX-interleaved)
+    const bitmapBytesPerRow = Math.ceil(rect.width / 8);
+    const bitmap = new Uint8Array(bitmapBytesPerRow * rect.height);
+    for (let py = 0; py < rect.height; py++) {
+      for (let px = 0; px < rect.width; px++) {
+        if (getPixel(screenData, rect.left + px, rect.top + py)) {
+          bitmap[py * bitmapBytesPerRow + (px >> 3)] |= (1 << (7 - (px & 7)));
+        }
+      }
+    }
+
+    // Copy both attribute banks as one 8x4 table
+    const attrs = new Uint8Array(cellCols * attrRows);
+    for (let ar = 0; ar < attrRows; ar++) {
+      for (let cc = 0; cc < cellCols; cc++) {
+        const srcAddr = getBmc4AttributeAddress((cellLeft + cc) * 8, (attrTop + ar) * 4);
+        attrs[ar * cellCols + cc] = screenData[srcAddr];
+      }
+    }
+
+    clipboardData = {
+      format: 'scr',
+      width: rect.width,
+      height: rect.height,
+      cellCols,
+      cellRows: Math.ceil(rect.height / 8),
+      cellH: 4,
+      attrRows,
+      bitmap,
+      attrs,
+      bitmap2: null,
+      attrs2: null
     };
   } else {
     // .scr: copy bitmap (linear packed) + attributes
@@ -9474,6 +9853,8 @@ function copySelection() {
       height: rect.height,
       cellCols,
       cellRows,
+      cellH: 8,
+      attrRows: cellRows,
       bitmap,
       attrs,
       bitmap2,
@@ -9481,20 +9862,6 @@ function copySelection() {
     };
   }
 
-  if (infoEl) {
-    const fmt = clipboardData.format;
-    const cols = clipboardData.cellCols;
-    if (fmt === 'mlt') {
-      const rows = clipboardData.attrRows;
-      infoEl.innerHTML = `Copied ${fmt} region: ${cols}\u00d7${rows} blocks (8\u00d71)`;
-    } else if (fmt === 'ifl') {
-      const rows = clipboardData.attrRows;
-      infoEl.innerHTML = `Copied ${fmt} region: ${cols}\u00d7${rows} blocks (8\u00d72)`;
-    } else {
-      const rows = clipboardData.cellRows;
-      infoEl.innerHTML = `Copied ${fmt} region: ${cols}\u00d7${rows} cells`;
-    }
-  }
 }
 
 /**
@@ -9540,6 +9907,25 @@ function cutSelection() {
       }
     }
     specsciiSyncToStream();
+  } else if (layersEnabled && layers.length > 0 && activeLayerIndex > 0 &&
+             layers[activeLayerIndex] && layers[activeLayerIndex].mask) {
+    // On a layer above the background, cut means the layer stops owning those
+    // pixels -- painting paper there would hide the layers below instead.
+    const cutLayer = layers[activeLayerIndex];
+    const cutW = getFormatWidth();
+    for (let py = 0; py < rect.height; py++) {
+      for (let px = 0; px < rect.width; px++) {
+        const x = rect.left + px;
+        const y = rect.top + py;
+        if (x < 0 || x >= cutW || y < 0 || y >= getFormatHeight()) continue;
+        cutLayer.mask[y * cutW + x] = 0;
+        const addr = getBitmapAddress(x, y);
+        const bit = 1 << getBitPosition(x);
+        if (cutLayer.bitmap) cutLayer.bitmap[addr] &= ~bit & 0xFF;
+        if (cutLayer.bitmap2) cutLayer.bitmap2[addr] &= ~bit & 0xFF;
+      }
+    }
+    flattenLayersToScreen();
   } else {
     // Bitmap formats: fill with paper
     for (let py = 0; py < rect.height; py++) {
@@ -9563,8 +9949,10 @@ function cutSelection() {
       const rows = clipboardData.attrRows;
       infoEl.innerHTML = `Cut ${fmt} region: ${cols}\u00d7${rows} blocks (8\u00d72)`;
     } else {
-      const rows = clipboardData.cellRows;
-      infoEl.innerHTML = `Cut ${fmt} region: ${cols}\u00d7${rows} cells`;
+      const rows = getClipboardAttrRows();
+      const cellH = getClipboardCellHeight();
+      infoEl.innerHTML = `Cut ${fmt} region: ${cols}\u00d7${rows} cells` +
+        (cellH === 8 ? '' : ` (8\u00d7${cellH})`);
     }
   }
 
@@ -9850,38 +10238,477 @@ function removeHiddenPixels() {
 }
 
 /**
+ * The attribute cell height the clipboard's colours were captured at: 8 for a
+ * plain screen, 4 for BMC4's two banks, 2 for .ifl, 1 for multicolour. Older
+ * clipboards carry no cellH, so fall back to the format tag.
+ * @returns {number}
+ */
+function getClipboardCellHeight() {
+  if (!clipboardData) return 8;
+  if (clipboardData.cellH) return clipboardData.cellH;
+  if (clipboardData.format === 'mlt') return 1;
+  if (clipboardData.format === 'ifl') return 2;
+  return 8;
+}
+
+/**
+ * How many rows the clipboard's attribute table holds. Formats with sub-8 cells
+ * count them in `attrRows`; the 8x8 ones in `cellRows`.
+ * @returns {number}
+ */
+function getClipboardAttrRows() {
+  if (!clipboardData) return 0;
+  return clipboardData.attrRows || clipboardData.cellRows || 0;
+}
+
+/**
+ * The clipboard's width in pixels, whichever shape it is.
+ * @returns {number}
+ */
+function getClipboardPixelWidth() {
+  if (!clipboardData) return 0;
+  return clipboardData.width || (clipboardData.cellCols || 0) * 8;
+}
+
+/**
+ * The clipboard's height in pixels, whichever shape it is.
+ * @returns {number}
+ */
+function getClipboardPixelHeight() {
+  if (!clipboardData) return 0;
+  if (clipboardData.height) return clipboardData.height;
+  return getClipboardAttrRows() * getClipboardCellHeight();
+}
+
+/**
  * Enters paste preview mode if clipboard has compatible data
+ */
+/**
+ * The clipboard format tag the current picture reads and writes.
+ * @returns {string}
+ */
+function getEditorClipboardFormat() {
+  return currentFormat === FORMAT.SPECSCII ? 'specscii' :
+         currentFormat === FORMAT.ATTR_53C ? '53c' :
+         currentFormat === FORMAT.IFL ? 'ifl' :
+         currentFormat === FORMAT.MLT ? 'mlt' : 'scr';
+}
+
+/**
+ * Why the clipboard cannot be dropped into the current picture, or '' when it
+ * can. The formats carry different payloads — pixels, character codes, bare
+ * attributes — so a clipboard only lands in a picture of its own kind.
+ * @returns {string}
+ */
+function getClipboardDropRefusal() {
+  if (!clipboardData) return 'Clipboard empty — copy a selection first';
+  const editorFormat = getEditorClipboardFormat();
+  if (clipboardData.format === editorFormat) return '';
+  const names = {
+    scr: 'a standard screen', ifl: '.ifl (8×2 colour)', mlt: '8×1 multicolour',
+    '53c': '.53c (colour only)', specscii: 'SPECSCII (characters)'
+  };
+  const from = names[clipboardData.format] || clipboardData.format;
+  const to = names[editorFormat] || editorFormat;
+  return `Copied from ${from}, this picture is ${to} — convert it first ` +
+         '(Xform ' + String.fromCharCode(0x2192) + ' Convert to...)';
+}
+
+/**
+ * Puts the current state of the floating paste on the info line.
+ */
+function showPasteFloatHint() {
+  const infoEl = document.getElementById('editorPositionInfo');
+  if (!infoEl || !pasteFloatPos) return;
+  infoEl.innerHTML = `Floating paste at ${pasteFloatPos.x},${pasteFloatPos.y} — ` +
+    'click or Enter to drop it, drag or arrows to move, R/H/V to turn, Esc to cancel';
+}
+
+/**
+ * Lifts the clipboard into a floating paste: it sits on the picture, movable and
+ * transformable, and writes nothing until it is dropped.
+ *
+ * It lands where it was copied from, so copying on one layer and pasting on
+ * another puts it back in the same place. The float is session state rather than
+ * picture state, so switching layer or picture while holding one is how a region
+ * travels between them.
  */
 function startPasteMode() {
   const infoEl = document.getElementById('editorPositionInfo');
-  if (!clipboardData) {
-    if (infoEl) infoEl.innerHTML = 'Clipboard empty — copy a selection first';
-    return;
-  }
-
-  // Validate format match
-  const editorFormat = currentFormat === FORMAT.SPECSCII ? 'specscii' :
-                       currentFormat === FORMAT.ATTR_53C ? '53c' :
-                       currentFormat === FORMAT.IFL ? 'ifl' :
-                       currentFormat === FORMAT.MLT ? 'mlt' : 'scr';
-  if (clipboardData.format !== editorFormat) {
-    if (infoEl) {
-      infoEl.innerHTML = 'Clipboard format mismatch (' + clipboardData.format + ' vs ' + editorFormat + ')';
-    }
+  const refusal = getClipboardDropRefusal();
+  if (refusal) {
+    if (infoEl) infoEl.innerHTML = refusal;
     return;
   }
 
   isPasting = true;
-  // Fully exit select mode — clear selection state and deselect tool
+  pasteFloatDrag = null;
+
+  const fw = getFormatWidth();
+  const fh = getFormatHeight();
+  const cw = getClipboardPixelWidth();
+  const ch = getClipboardPixelHeight();
+  const sx = typeof clipboardData.srcLeft === 'number' ? clipboardData.srcLeft : 0;
+  const sy = typeof clipboardData.srcTop === 'number' ? clipboardData.srcTop : 0;
+  // Clamped so it cannot open entirely off the picture (a smaller destination
+  // format, or a region copied from the far edge of a taller one)
+  pasteFloatPos = {
+    x: Math.max(0, Math.min(sx, fw - Math.min(cw, fw))),
+    y: Math.max(0, Math.min(sy, fh - Math.min(ch, fh)))
+  };
+
+  // The marquee goes: the floating paste is the selection now
   isSelecting = false;
   selectionStartPoint = null;
   selectionEndPoint = null;
-  currentTool = '';
-  (editorToolButtons || document.querySelectorAll('.editor-tool-btn[data-tool]')).forEach(btn => {
-    btn.classList.remove('selected');
-  });
-  if (infoEl) infoEl.innerHTML = 'Click to place — Escape to cancel';
+  selectionDragSnap = null;
+  transformSelectionRect = null;
+  updateTransformSectionsVisibility();
+
+  showPasteFloatHint();
   editorRender();
+}
+
+/**
+ * Drops the floating paste where it sits, as one undo step.
+ * @returns {boolean} true when it landed
+ */
+function commitFloatingPaste() {
+  if (!isPasting || !clipboardData || !pasteFloatPos) return false;
+  // The float survives a switch to another picture, which may not accept it
+  const refusal = getClipboardDropRefusal();
+  if (refusal) {
+    const infoEl = document.getElementById('editorPositionInfo');
+    if (infoEl) infoEl.innerHTML = 'Cannot drop here. ' + refusal;
+    return false;
+  }
+  const px = pasteFloatPos.x;
+  const py = pasteFloatPos.y;
+  pasteFloatDrag = null;
+  pasteFloatPos = null;
+  executePaste(px, py);  // clears isPasting, saves undo and renders
+  return true;
+}
+
+/**
+ * Throws the floating paste away without writing anything.
+ */
+function cancelFloatingPaste() {
+  isPasting = false;
+  pasteFloatPos = null;
+  pasteFloatDrag = null;
+  const infoEl = document.getElementById('editorPositionInfo');
+  if (infoEl) infoEl.innerHTML = '';
+  editorRender();
+}
+
+/**
+ * Moves the floating paste, keeping at least one pixel of it on the picture.
+ * @param {number} dx
+ * @param {number} dy
+ */
+function nudgeFloatingPaste(dx, dy) {
+  if (!isPasting || !pasteFloatPos) return;
+  const cw = getClipboardPixelWidth();
+  const ch = getClipboardPixelHeight();
+  pasteFloatPos.x = Math.max(1 - cw, Math.min(getFormatWidth() - 1, pasteFloatPos.x + dx));
+  pasteFloatPos.y = Math.max(1 - ch, Math.min(getFormatHeight() - 1, pasteFloatPos.y + dy));
+  showPasteFloatHint();
+  editorRender();
+}
+
+/**
+ * Keys that belong to the floating paste while one is in flight.
+ * @param {KeyboardEvent} event
+ * @returns {boolean} true when the key was consumed
+ */
+function handleFloatingPasteKey(event) {
+  if (!editorActive || !isPasting || !pasteFloatPos) return false;
+  if (event.ctrlKey || event.altKey || event.metaKey) return false;
+  const step = event.shiftKey ? 8 : 1;
+  switch (event.key) {
+    case 'ArrowLeft':  nudgeFloatingPaste(-step, 0); return true;
+    case 'ArrowRight': nudgeFloatingPaste(step, 0);  return true;
+    case 'ArrowUp':    nudgeFloatingPaste(0, -step); return true;
+    case 'ArrowDown':  nudgeFloatingPaste(0, step);  return true;
+    case 'Enter':      commitFloatingPaste(); return true;
+    default:           return false;
+  }
+}
+
+/**
+ * Dashed outline around the floating paste, so it reads as something still being
+ * placed rather than as part of the picture.
+ * @param {number} x
+ * @param {number} y
+ */
+function drawPasteFloatOutline(x, y) {
+  const ctx = screenCtx || (screenCanvas && screenCanvas.getContext('2d'));
+  if (!ctx) return;
+  const borderPixels = getMainScreenOffset();
+  const zoomX = zoom * getPixelScaleX();
+  const zoomY = zoom * getPixelScaleY();
+  // Drawn just inside the float's own bounds, so a float the size of the whole
+  // picture still shows its outline instead of having it clipped off-canvas
+  const px = borderPixels + x * zoomX + 0.5;
+  const py = borderPixels + y * zoomY + 0.5;
+  const w = Math.max(1, getClipboardPixelWidth() * zoomX - 1);
+  const h = Math.max(1, getClipboardPixelHeight() * zoomY - 1);
+  ctx.save();
+  ctx.lineWidth = 1;
+  ctx.setLineDash([]);
+  ctx.strokeStyle = '#000';
+  ctx.strokeRect(px, py, w, h);
+  ctx.setLineDash([4, 4]);
+  ctx.strokeStyle = '#fff';
+  ctx.strokeRect(px, py, w, h);
+  ctx.restore();
+}
+
+/**
+ * True while a dialog is on screen, so a global shortcut can stand aside for
+ * the dialog's own binding (the archive picker uses Ctrl+A for its file list).
+ * @returns {boolean}
+ */
+function isModalDialogOpen() {
+  const dialogs = document.querySelectorAll('[id$="Modal"], [id$="Dialog"]');
+  for (let i = 0; i < dialogs.length; i++) {
+    const el = /** @type {HTMLElement} */ (dialogs[i]);
+    if (window.getComputedStyle(el).display !== 'none') return true;
+  }
+  return false;
+}
+
+/**
+ * Selects the whole picture (Ctrl+A).
+ *
+ * An ordinary marquee, so the Transform and Export sections pick it up and
+ * Copy / Cut / Delete act on it. Takes the Select tool with it, which keeps the
+ * "switching tool clears the selection" rule coherent.
+ */
+function selectAllPicture() {
+  if (!editorActive || !screenData) return;
+  setEditorTool(EDITOR.TOOL_SELECT);
+  const w = getFormatWidth();
+  const h = getFormatHeight();
+  selectionStartPoint = { x: 0, y: 0 };
+  selectionEndPoint = { x: w - 1, y: h - 1 };
+  isSelecting = false;
+  // the whole picture already sits on the cell grid, so there is nothing to snap
+  selectionDragSnap = false;
+  completeTransformSelection();
+  const infoEl = document.getElementById('editorPositionInfo');
+  if (infoEl) infoEl.innerHTML = `Selected the whole picture: ${w}\u00d7${h} px`;
+  editorRender();
+}
+
+/**
+ * Empties the selected region, leaving the clipboard alone (Delete).
+ * Goes through the cut path so every format erases the way it already does.
+ */
+function clearSelectionRegion() {
+  if (!selectionStartPoint || !selectionEndPoint) return;
+  const kept = clipboardData;
+  cutSelection();
+  clipboardData = kept;
+  const infoEl = document.getElementById('editorPositionInfo');
+  if (infoEl) infoEl.innerHTML = 'Selection cleared';
+  editorRender();
+}
+
+/**
+ * Writes the clipboard's colours into the destination's attribute cells.
+ *
+ * The clipboard keeps the colour resolution of the picture it was copied from
+ * — 8×1 for multicolour, 8×2 for .ifl, 8×8 for a plain screen — and the
+ * picture it lands in may use another, so every destination cell takes the
+ * colour of the clipboard pixel at its own top-left corner. In 'set' mode a
+ * cell the clipboard puts no ink in keeps the colour it had.
+ *
+ * @param {number} x - left edge of the paste, in pixels
+ * @param {number} y - top edge
+ * @param {{attrs?:Uint8Array, frameOffset?:number, giga?:boolean, gigaFS?:number, attrs2?:Uint8Array|null, replace?:boolean}} [opts]
+ */
+function pasteAttributes(x, y, opts) {
+  const o = opts || {};
+  const attrs = o.attrs || clipboardData.attrs;
+  if (!attrs) return;
+  const frameOffset = o.frameOffset || 0;
+  const cellH = getFormatAttrCellHeight();
+  const fw = getFormatWidth();
+  const fh = getFormatHeight();
+  const w = clipboardData.width;
+  const h = clipboardData.height;
+  const cols = clipboardData.cellCols;
+  const bytesPerRow = Math.ceil(w / 8);
+  const bitmap = clipboardData.bitmap;
+  // A transform pastes its own region straight back and must replace every cell
+  const setMode = o.replace ? false : brushPaintMode === 'set';
+
+  // Which row of the clipboard's attribute table a clipboard pixel row sits in
+  const clipCellH = getClipboardCellHeight();
+  const srcAttrRow = (py) => Math.floor(py / clipCellH);
+
+  // Transparent where the layer it was lifted from owned nothing
+  const clipMask = clipboardData.mask || null;
+
+  // Does the clipboard own any pixel of the destination cell starting here?
+  const cellOwned = (sx, sy) => {
+    for (let py = sy; py < sy + cellH && py < h; py++) {
+      for (let px = sx; px < sx + 8 && px < w; px++) {
+        if (clipMask[py * w + px]) return true;
+      }
+    }
+    return false;
+  };
+
+  // Does the clipboard put any ink in the destination cell starting here?
+  const hasInk = (sx, sy) => {
+    if (!bitmap) return false;
+    for (let py = sy; py < sy + cellH && py < h; py++) {
+      for (let px = sx; px < sx + 8 && px < w; px++) {
+        if (bitmap[py * bytesPerRow + (px >> 3)] & (1 << (7 - (px & 7)))) return true;
+      }
+    }
+    return false;
+  };
+
+  for (let dy = Math.floor(y / cellH) * cellH; dy < y + h; dy += cellH) {
+    if (dy < 0 || dy >= fh) continue;
+    for (let dx = Math.floor(x / 8) * 8; dx < x + w; dx += 8) {
+      if (dx < 0 || dx >= fw) continue;
+      // The clipboard pixel at this cell's top-left, clamped into the region
+      const sx = Math.min(Math.max(dx - x, 0), w - 1);
+      const sy = Math.min(Math.max(dy - y, 0), h - 1);
+      if (clipMask && !cellOwned(sx - (sx % 8), sy)) continue;
+      if (setMode && !hasInk(sx - (sx % 8), sy)) continue;
+      const srcIdx = srcAttrRow(sy) * cols + (sx >> 3);
+      const destAddr = getFormatAttributeAddress(dx, dy);
+      screenData[frameOffset + destAddr] = attrs[srcIdx];
+      if (o.giga && o.attrs2) {
+        screenData[o.gigaFS + destAddr] = o.attrs2[srcIdx];
+      }
+    }
+  }
+}
+
+/**
+ * Hands a freshly pasted region to the active layer.
+ * executePaste writes through to screenData, which is only the flattened
+ * composite: on a layer above the background the next flatten rebuilds it from
+ * the layers, so unless the layer takes over the pasted pixels they are lost.
+ * @param {number} x - left edge of the pasted region
+ * @param {number} y - top edge
+ */
+function capturePasteIntoActiveLayer(x, y) {
+  const layer = layers[activeLayerIndex];
+  if (!layer || !layer.bitmap || !layer.mask) return;
+
+  const fw = getFormatWidth();
+  const fh = getFormatHeight();
+  const giga = isGigascreenEditable();
+  const gigaFS = giga ? getGigaFrameSize() : 0;
+  const bytesPerRow = Math.ceil(clipboardData.width / 8);
+  const bitmapSrc = clipboardData.bitmap;
+  // 'replace' already wrote the clipboard to the screen; 'set' did not write
+  // its paper pixels, so the layer has to take them from the clipboard itself
+  const carriesClipboardPixels = brushPaintMode === 'set' || brushPaintMode === 'replace';
+
+  // Which pixels of the pasted rectangle are the layer's now. 'Set' and
+  // 'invert' only put down the clipboard's ink, so only those pixels change
+  // hands; 'recolor' moves no pixel at all and just re-colours what the layer
+  // already owns.
+  // The clipboard's colour for the destination cell that (dx, dy) falls in,
+  // picked by the same top-left rule pasteAttributes uses so the layer and the
+  // screen cannot end up disagreeing. null when there is no colour to take.
+  const clipAttrForDestCell = (dx, dy) => {
+    if (!clipboardData.attrs || brushPaintMode === 'retouch') return null;
+    const destCellH = getFormatAttrCellHeight() || 8;
+    const cellTopY = Math.floor(dy / destCellH) * destCellH;
+    const cellLeftX = Math.floor(dx / 8) * 8;
+    const sx = Math.min(Math.max(cellLeftX - x, 0), clipboardData.width - 1);
+    const sy = Math.min(Math.max(cellTopY - y, 0), clipboardData.height - 1);
+    const cols = clipboardData.cellCols || 1;
+    const idx = Math.floor(sy / getClipboardCellHeight()) * cols + (sx >> 3);
+    return (idx >= 0 && idx < clipboardData.attrs.length) ? clipboardData.attrs[idx] : null;
+  };
+
+  const owns = (px, py) => {
+    // Ownership follows what the clipboard puts down, not how it blends.
+    //
+    // It used to follow the paint mode, so a paste in 'set' or 'invert' claimed
+    // only the ink pixels and left the paper belonging to the layers below:
+    // pasting a whole picture onto an empty layer and then hiding the
+    // background punched the paper out of it (19610 holes out of 49152 on a
+    // real picture). What is written to the screen still depends on the paint
+    // mode -- this only decides which pixels the layer records as its own, and
+    // it records whatever ends up on screen, so the composite is unchanged.
+    //
+    // Transparent where the layer it was lifted from owned nothing
+    if (clipboardData.mask &&
+        !clipboardData.mask[py * clipboardData.width + px]) return false;
+    // 'recolor' places no pixel at all, so nothing changes hands
+    if (brushPaintMode === 'recolor') return layer.mask[(y + py) * fw + (x + px)] === 1;
+    return true;
+  };
+
+  for (let py = 0; py < clipboardData.height; py++) {
+    const dy = y + py;
+    if (dy < 0 || dy >= fh) continue;
+    for (let px = 0; px < clipboardData.width; px++) {
+      const dx = x + px;
+      if (dx < 0 || dx >= fw) continue;
+      if (!owns(px, py)) continue;
+
+      const addr = getBitmapAddress(dx, dy);
+      const mask = 1 << getBitPosition(dx);
+
+      // A pasted region must read back as the region that was copied. 'set'
+      // writes only the clipboard's ink to the screen, so its paper pixels
+      // still held whatever was underneath -- and the layer, which now claims
+      // them, recorded that instead of the copy. Carry the clipboard's own
+      // pixel for every claimed pixel, and put it on screen too so the
+      // composite matches. 'invert' and 'recolor' are left alone: XOR and
+      // re-colouring are about combining with what is there, not replacing it.
+      if (carriesClipboardPixels && bitmapSrc) {
+        const srcOn = (bitmapSrc[py * bytesPerRow + (px >> 3)] &
+                       (1 << (7 - (px & 7)))) !== 0;
+        if (srcOn) screenData[addr] |= mask;
+        else screenData[addr] &= ~mask & 0xFF;
+        if (giga) {
+          const src2 = clipboardData.bitmap2 || bitmapSrc;
+          const src2On = (src2[py * bytesPerRow + (px >> 3)] &
+                          (1 << (7 - (px & 7)))) !== 0;
+          if (src2On) screenData[gigaFS + addr] |= mask;
+          else screenData[gigaFS + addr] &= ~mask & 0xFF;
+        }
+      }
+
+      if (screenData[addr] & mask) layer.bitmap[addr] |= mask;
+      else layer.bitmap[addr] &= ~mask & 0xFF;
+      if (giga && layer.bitmap2) {
+        if (screenData[gigaFS + addr] & mask) layer.bitmap2[addr] |= mask;
+        else layer.bitmap2[addr] &= ~mask & 0xFF;
+      }
+      layer.mask[dy * fw + dx] = 1;
+
+      // Record the colour for every pixel the layer now owns, in every paint
+      // mode. It used to be skipped for 'retouch', which claims the pixels and
+      // changes no colour -- so the layer owned them while still holding its
+      // initial attributes, and supplied those for the whole cell.
+      const attrAddr = getFormatAttributeAddress(dx, dy);
+      const clipAttr = clipAttrForDestCell(dx, dy);
+      const attrVal = clipAttr === null ? screenData[attrAddr] : clipAttr;
+      setLayerAttrAt(layer, dx, dy, attrVal);
+      // 'set' mode leaves inkless cells alone on screen, so without this the
+      // layer would claim them while they still held the destination's colour
+      if (clipAttr !== null) screenData[attrAddr] = attrVal;
+      if (giga && layer.attributesFrame2) {
+        const attrIdx = Math.floor(dy / 8) * 32 + Math.floor(dx / 8);
+        layer.attributesFrame2[attrIdx] = screenData[gigaFS + attrAddr];
+      }
+    }
+  }
 }
 
 /**
@@ -9923,6 +10750,8 @@ function executePaste(x, y) {
     const clipAttrs2 = clipboardData.attrs2 || clipboardData.attrs;
     const setMode = brushPaintMode === 'set';
     const bitmapBytesPerRow = Math.ceil(clipboardData.width / 8);
+    // Transparent where the layer it was lifted from owned nothing
+    const clipMask = clipboardData.mask || null;
 
     // In 'set' mode, precompute which source cells contain any ink pixel.
     // Used by both the bitmap loop (to mirror plane[0]->plane[1] inside touched
@@ -9944,6 +10773,7 @@ function executePaste(x, y) {
             for (let cx = 0; cx < 8; cx++) {
               const px = cellLeftPx + cx;
               if (px >= clipboardData.width) break;
+              if (clipMask && !clipMask[py * clipboardData.width + px]) continue;
               const byteIdx = py * bitmapBytesPerRow + (px >> 3);
               const bitIdx = 7 - (px & 7);
               if ((clipBitmapSrc[byteIdx] & (1 << bitIdx)) !== 0) {
@@ -9966,6 +10796,7 @@ function executePaste(x, y) {
           const dx = x + px;
           const dy = y + py;
           if (dx < 0 || dx >= pasteW || dy < 0 || dy >= pasteH) continue;
+          if (clipMask && !clipMask[py * clipboardData.width + px]) continue;
 
           const byteIdx = py * bitmapBytesPerRow + (px >> 3);
           const bitIdx = 7 - (px & 7);
@@ -10042,24 +10873,13 @@ function executePaste(x, y) {
 
     // Write attributes from clipboard (skip for retouch mode)
     if (brushPaintMode !== 'retouch') {
-      const cellLeft = Math.floor(x / 8);
-      const cellTop = Math.floor(y / 8);
-      const fmtCols = getFormatWidth() >> 3;
-      const fmtRows = Math.ceil(getFormatHeight() / 8);
-      for (let cr = 0; cr < clipboardData.cellRows; cr++) {
-        for (let cc = 0; cc < clipboardData.cellCols; cc++) {
-          const destCol = cellLeft + cc;
-          const destRow = cellTop + cr;
-          if (destCol < 0 || destCol >= fmtCols || destRow < 0 || destRow >= fmtRows) continue;
-          const srcIdx = cr * clipboardData.cellCols + cc;
-          if (setMode && !cellHasInk[srcIdx]) continue;
-          const destAddr = pasteFrameOffset + getAttributeAddress(destCol * 8, destRow * 8);
-          screenData[destAddr] = clipAttrsSrc[srcIdx];
-          if (targetGiga) {
-            screenData[gigaFS + destAddr] = clipAttrs2[srcIdx];
-          }
-        }
-      }
+      pasteAttributes(x, y, {
+        attrs: clipAttrsSrc,
+        frameOffset: pasteFrameOffset,
+        giga: targetGiga,
+        gigaFS,
+        attrs2: clipAttrs2
+      });
     }
   } else if (clipboardData.format === 'ifl' && clipboardData.bitmap) {
     // IFL: write bitmap pixels (skip for recolor mode)
@@ -10073,6 +10893,8 @@ function executePaste(x, y) {
 
           const byteIdx = py * bitmapBytesPerRow + Math.floor(px / 8);
           const bitIdx = 7 - (px % 8);
+          if (clipboardData.mask &&
+              !clipboardData.mask[py * clipboardData.width + px]) continue;
           const clipBit = (clipboardData.bitmap[byteIdx] & (1 << bitIdx)) !== 0;
 
           const bitmapAddr = getBitmapAddress(dx, dy);
@@ -10097,19 +10919,9 @@ function executePaste(x, y) {
       }
     }
 
-    // Write IFL attributes (8×2 blocks) - skip for retouch mode
+    // Write the clipboard's colours into whatever cells this picture uses
     if (brushPaintMode !== 'retouch') {
-      const cellLeft = Math.floor(x / 8);
-      const attrTop = Math.floor(y / 2);  // IFL: 2-pixel attr rows
-      for (let ar = 0; ar < clipboardData.attrRows; ar++) {
-        for (let cc = 0; cc < clipboardData.cellCols; cc++) {
-          const destCol = cellLeft + cc;
-          const destRow = attrTop + ar;
-          if (destCol < 0 || destCol >= IFL.ATTR_COLS || destRow < 0 || destRow >= IFL.ATTR_ROWS) continue;
-          const destAddr = IFL.BITMAP_SIZE + destCol + destRow * 32;
-          screenData[destAddr] = clipboardData.attrs[ar * clipboardData.cellCols + cc];
-        }
-      }
+      pasteAttributes(x, y);
     }
   } else if (clipboardData.format === 'mlt' && clipboardData.bitmap) {
     // MLT: write bitmap pixels (skip for recolor mode)
@@ -10123,6 +10935,8 @@ function executePaste(x, y) {
 
           const byteIdx = py * bitmapBytesPerRow + Math.floor(px / 8);
           const bitIdx = 7 - (px % 8);
+          if (clipboardData.mask &&
+              !clipboardData.mask[py * clipboardData.width + px]) continue;
           const clipBit = (clipboardData.bitmap[byteIdx] & (1 << bitIdx)) !== 0;
 
           const bitmapAddr = getBitmapAddress(dx, dy);
@@ -10147,18 +10961,9 @@ function executePaste(x, y) {
       }
     }
 
-    // Write MLT attributes (8×1 blocks - one per pixel line) - skip for retouch mode
+    // Write the clipboard's colours into whatever cells this picture uses
     if (brushPaintMode !== 'retouch') {
-      const cellLeft = Math.floor(x / 8);
-      for (let ar = 0; ar < clipboardData.attrRows; ar++) {
-        for (let cc = 0; cc < clipboardData.cellCols; cc++) {
-          const destCol = cellLeft + cc;
-          const destRow = y + ar;  // MLT: one attr row per pixel line
-          if (destCol < 0 || destCol >= MLT.ATTR_COLS || destRow < 0 || destRow >= MLT.ATTR_ROWS) continue;
-          const destAddr = getMltAttributeAddress(destCol * 8, destRow);
-          screenData[destAddr] = clipboardData.attrs[ar * clipboardData.cellCols + cc];
-        }
-      }
+      pasteAttributes(x, y);
     }
   } else if (clipboardData.format === '53c') {
     // .53c: write attributes only (skip for retouch mode since 53c has no bitmap)
@@ -10219,6 +11024,14 @@ function executePaste(x, y) {
       }
     }
     specsciiSyncToStream();
+  }
+
+  // On a layer above the background the paste so far lives only in the
+  // composite, which the next flatten overwrites — hand it to the layer.
+  if (layersEnabled && layers.length > 0 && activeLayerIndex > 0 &&
+      clipboardData.format !== '53c' && clipboardData.format !== 'specscii') {
+    capturePasteIntoActiveLayer(x, y);
+    flattenLayersToScreen();
   }
 
   syncBackgroundLayerFromScreen();
@@ -10317,9 +11130,13 @@ function drawPastePreview(x, y) {
   const ctx = screenCtx || (screenCanvas && screenCanvas.getContext('2d'));
   if (!ctx) return;
 
-  const snapped = snapPastePosition(x, y);
-  x = snapped.x;
-  y = snapped.y;
+  // A floating paste already holds a snapped position; snapping again would
+  // drag the preview off the spot the user put it on
+  if (!pasteFloatPos) {
+    const snapped = snapPastePosition(x, y);
+    x = snapped.x;
+    y = snapped.y;
+  }
 
   const borderPixels = getMainScreenOffset();
   const scaleX = getPixelScaleX();
@@ -10330,8 +11147,9 @@ function drawPastePreview(x, y) {
   ctx.save();
   ctx.globalAlpha = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.PASTE_PREVIEW_OPACITY) || 0.5;
 
-  if (clipboardData.format === 'scr' && clipboardData.bitmap) {
+  if (clipboardData.bitmap && clipboardData.width && clipboardData.height) {
     // Draw bitmap pixels
+    const previewCellH = getClipboardCellHeight();
     const bitmapBytesPerRow = Math.ceil(clipboardData.width / 8);
     for (let py = 0; py < clipboardData.height; py++) {
       for (let px = 0; px < clipboardData.width; px++) {
@@ -10345,7 +11163,7 @@ function drawPastePreview(x, y) {
 
         // Determine color from clipboard attributes
         const cellCol = Math.floor(px / 8);
-        const cellRow = Math.floor(py / 8);
+        const cellRow = Math.floor(py / previewCellH);
         const attrIdx = cellRow * clipboardData.cellCols + cellCol;
         const attr = clipboardData.attrs[attrIdx];
         const { inkRgb, paperRgb } = getColorsRgb(attr);
@@ -10440,8 +11258,8 @@ function drawPastePreview(x, y) {
   ctx.restore();
 
   // Draw outline around paste region
-  const pw = clipboardData.format === 'scr' ? clipboardData.width : clipboardData.cellCols * 8;
-  const ph = clipboardData.format === 'scr' ? clipboardData.height : clipboardData.cellRows * 8;
+  const pw = clipboardData.width || clipboardData.cellCols * 8;
+  const ph = clipboardData.height || clipboardData.cellRows * 8;
 
   ctx.strokeStyle = (typeof APP_CONFIG !== 'undefined' && APP_CONFIG.SELECTION_COLOR) || 'rgba(0, 255, 255, 0.9)';
   ctx.lineWidth = Math.max(1, zoom / 2);
@@ -10462,7 +11280,10 @@ function cancelSelection() {
   selectionStartPoint = null;
   selectionEndPoint = null;
   isSelecting = false;
+  selectionDragSnap = null;
   isPasting = false;
+  pasteFloatPos = null;
+  pasteFloatDrag = null;
   brushSnapOrigin = null;
   editorRender();
 }
@@ -10649,7 +11470,24 @@ function _handleEditorMouseDownCoords(event, coords) {
     return;
   }
 
-  // Paste mode: click to execute paste
+  // Floating paste: grab it to move, click off it to drop it
+  if (isPasting && pasteFloatPos) {
+    const floatW = getClipboardPixelWidth();
+    const floatH = getClipboardPixelHeight();
+    const insideFloat = coords.x >= pasteFloatPos.x && coords.x < pasteFloatPos.x + floatW &&
+                        coords.y >= pasteFloatPos.y && coords.y < pasteFloatPos.y + floatH;
+    if (insideFloat) {
+      // `moved` decides what the release means: a click drops it, a drag moves it
+      pasteFloatDrag = {
+        dx: coords.x - pasteFloatPos.x,
+        dy: coords.y - pasteFloatPos.y,
+        moved: false
+      };
+    } else {
+      commitFloatingPaste();
+    }
+    return;
+  }
   if (isPasting) {
     executePaste(coords.x, coords.y);
     return;
@@ -10720,7 +11558,8 @@ function _handleEditorMouseDownCoords(event, coords) {
 
   // Transform tab selection mode: start selection drag
   if (transformSelectActive) {
-    const snapped = transformSnapToGrid ? { x: Math.floor(coords.x / 8) * 8, y: Math.floor(coords.y / 8) * 8 } : coords;
+    selectionDragSnap = transformSnapToGrid;
+    const snapped = selectionDragSnap ? { x: Math.floor(coords.x / 8) * 8, y: Math.floor(coords.y / 8) * 8 } : coords;
     selectionStartPoint = { x: snapped.x, y: snapped.y };
     selectionEndPoint = null;
     isSelecting = true;
@@ -10730,8 +11569,11 @@ function _handleEditorMouseDownCoords(event, coords) {
 
   // Select tool: start selection drag (works in both .scr and .53c)
   if (currentTool === EDITOR.TOOL_SELECT) {
+    // Freeze the snap in force now, so the rectangle cannot change between
+    // being drawn and being acted on (the two tabs have separate settings)
+    selectionDragSnap = transformSelectActive ? transformSnapToGrid : isSnapActive();
     // Snap selection to grid when snap is active
-    const snapped = isSnapActive() ? { x: Math.floor(coords.x / 8) * 8, y: Math.floor(coords.y / 8) * 8 } : coords;
+    const snapped = selectionDragSnap ? { x: Math.floor(coords.x / 8) * 8, y: Math.floor(coords.y / 8) * 8 } : coords;
     selectionStartPoint = { x: snapped.x, y: snapped.y };
     selectionEndPoint = null;
     isSelecting = true;
@@ -11006,6 +11848,20 @@ function _handleEditorMouseMoveCoords(event, coords) {
     return;
   }
 
+  // Floating paste: it stays where it was put; a drag is what moves it
+  if (isPasting && pasteFloatPos && coords) {
+    if (pasteFloatDrag) {
+      const dropped = snapPastePosition(coords.x - pasteFloatDrag.dx,
+                                        coords.y - pasteFloatDrag.dy);
+      if (dropped.x !== pasteFloatPos.x || dropped.y !== pasteFloatPos.y) {
+        pasteFloatDrag.moved = true;
+        pasteFloatPos = { x: dropped.x, y: dropped.y };
+        showPasteFloatHint();
+      }
+    }
+    editorRender();  // the render hook draws the float at its position
+    return;
+  }
   // Paste preview: redraw with paste overlay at cursor
   if (isPasting && coords) {
     editorRender();
@@ -11042,8 +11898,8 @@ function _handleEditorMouseMoveCoords(event, coords) {
   // Selection drag: update preview (for both Edit tab select tool and Transform tab selection)
   if (isSelecting && selectionStartPoint && coords) {
     editorRender();
-    // Use transform snap setting when in transform mode, otherwise use Edit tab snap
-    const useSnap = transformSelectActive ? transformSnapToGrid : isSnapActive();
+    const useSnap = selectionDragSnap !== null ? selectionDragSnap
+      : (transformSelectActive ? transformSnapToGrid : isSnapActive());
     if (useSnap) {
       const endX = Math.ceil((coords.x + 1) / 8) * 8 - 1;
       const endY = Math.ceil((coords.y + 1) / 8) * 8 - 1;
@@ -11284,14 +12140,24 @@ function handleEditorMouseUp(event) {
  * @param {{x:number, y:number}|null} coords
  */
 function _handleEditorMouseUpCoords(event, coords) {
+  // Releasing on a floating paste: a click drops it, a drag only ends the move.
+  // Click-to-drop matters because a float as large as the picture (Ctrl+A then
+  // Ctrl+V) leaves no canvas outside itself to click on.
+  if (pasteFloatDrag) {
+    const wasMoved = pasteFloatDrag.moved;
+    pasteFloatDrag = null;
+    if (!wasMoved) commitFloatingPaste();
+    return;
+  }
+
   // Clear active tool preview — drawing is done, final render below won't need it
   activeToolPreview = null;
 
   // Finalize selection rectangle on mouse release
   if (isSelecting && selectionStartPoint) {
     if (coords) {
-      // Use transform snap setting when in transform mode, otherwise use Edit tab snap
-      const useSnap = transformSelectActive ? transformSnapToGrid : isSnapActive();
+      const useSnap = selectionDragSnap !== null ? selectionDragSnap
+        : (transformSelectActive ? transformSnapToGrid : isSnapActive());
       if (useSnap) {
         const endX = Math.ceil((coords.x + 1) / 8) * 8 - 1;
         const endY = Math.ceil((coords.y + 1) / 8) * 8 - 1;
@@ -11302,12 +12168,10 @@ function _handleEditorMouseUpCoords(event, coords) {
     }
     isSelecting = false;
 
-    // Handle transform tab selection vs regular edit tab selection
-    if (transformSelectActive) {
-      completeTransformSelection();
-    } else {
-      copySelection();
-    }
+    // One selection, whichever tab drew it: it is recorded for the transform
+    // and export sections either way. Drawing a marquee no longer touches the
+    // clipboard — Ctrl+C and the Copy button do that, as everywhere else.
+    completeTransformSelection();
     editorRender();
     return;
   }
@@ -13539,9 +14403,12 @@ function editorRender(skipPreview = false) {
       drawFinalizedSelectionOverlay();
     }
 
-    // Draw paste preview at last cursor position
+    // Draw the floating paste where it sits, or follow the cursor if there is
+    // no float (a custom-brush stamp still works the old way)
     if (isPasting && clipboardData) {
-      drawPastePreview(pasteCursorPos.x, pasteCursorPos.y);
+      const floatAt = pasteFloatPos || pasteCursorPos;
+      drawPastePreview(floatAt.x, floatAt.y);
+      if (pasteFloatPos) drawPasteFloatOutline(floatAt.x, floatAt.y);
     }
 
     // Draw brush preview at cursor position
@@ -15495,7 +16362,8 @@ function setEditorTool(tool) {
     selectionStartPoint = null;
     selectionEndPoint = null;
     isSelecting = false;
-    isPasting = false;
+    selectionDragSnap = null;
+    // a floating paste is independent of the tool and stays in flight
   }
   // Hide text tool section when switching away
   if (currentTool === EDITOR.TOOL_TEXT && tool !== EDITOR.TOOL_TEXT) {
@@ -21440,11 +22308,19 @@ function setEditorEnabled(active, force) {
     updateLayerPanel();
     showPreviewPanel();
   } else {
-    // Cancel selection/paste on editor exit
+    // Cancel the selection on editor exit. A floating paste is kept while there
+    // is still something to drop: opening or switching to another picture takes
+    // the editor down and back up, and carrying the float across that is how a
+    // region moves from one picture to another. Escape throws it away.
     selectionStartPoint = null;
     selectionEndPoint = null;
     isSelecting = false;
-    isPasting = false;
+    selectionDragSnap = null;
+    pasteFloatDrag = null;
+    if (!clipboardData) {
+      isPasting = false;
+      pasteFloatPos = null;
+    }
 
     // Clear transform selection state
     transformSelectActive = false;
@@ -21914,68 +22790,187 @@ function mirrorCustomBrushV() {
 }
 
 /**
- * Rotates clipboard data 90 degrees clockwise
+ * Rotates a packed clipboard bitmap 90 degrees clockwise.
+ * @param {Uint8Array} src - one bit per pixel, MSB-first, ceil(ow/8) bytes per row
+ * @param {number} ow - source width in pixels
+ * @param {number} oh - source height in pixels
+ * @returns {Uint8Array} oh x ow bitmap, ceil(oh/8) bytes per row
+ */
+function rotatePackedBitmap(src, ow, oh) {
+  const oldBpr = Math.ceil(ow / 8);
+  const newBpr = Math.ceil(oh / 8);
+  const out = new Uint8Array(newBpr * ow);
+  for (let r = 0; r < oh; r++) {
+    for (let c = 0; c < ow; c++) {
+      if (!(src[r * oldBpr + (c >> 3)] & (1 << (7 - (c & 7))))) continue;
+      const nr = c;
+      const nc = oh - 1 - r;
+      out[nr * newBpr + (nc >> 3)] |= (1 << (7 - (nc & 7)));
+    }
+  }
+  return out;
+}
+
+/**
+ * Mirrors a packed clipboard bitmap along one axis.
+ * @param {Uint8Array} src
+ * @param {number} w
+ * @param {number} h
+ * @param {boolean} horizontal - true mirrors left-right, false top-bottom
+ * @returns {Uint8Array}
+ */
+function mirrorPackedBitmap(src, w, h, horizontal) {
+  const bpr = Math.ceil(w / 8);
+  const out = new Uint8Array(bpr * h);
+  for (let r = 0; r < h; r++) {
+    for (let c = 0; c < w; c++) {
+      if (!(src[r * bpr + (c >> 3)] & (1 << (7 - (c & 7))))) continue;
+      const nr = horizontal ? r : h - 1 - r;
+      const nc = horizontal ? w - 1 - c : c;
+      out[nr * bpr + (nc >> 3)] |= (1 << (7 - (nc & 7)));
+    }
+  }
+  return out;
+}
+
+/**
+ * Rotates a clipboard attribute table 90 degrees clockwise.
+ *
+ * Attribute cells are 8 pixels wide but `cellH` pixels tall, so rotation turns
+ * a cell's long axis across its short one: every destination cell takes the
+ * colour of the source cell its own top-left pixel came from. With 8x8 cells
+ * that is exact; with 8x4 (BMC4) two source rows collapse into one.
+ *
+ * @param {Uint8Array} attrs
+ * @param {number} oCols - source columns
+ * @param {number} oRows - source attribute rows
+ * @param {number} nCols - destination columns
+ * @param {number} nRows - destination attribute rows
+ * @param {number} oh - source height in pixels
+ * @param {number} cellH - attribute cell height in pixels
+ * @returns {Uint8Array}
+ */
+function rotateClipboardAttrs(attrs, oCols, oRows, nCols, nRows, oh, cellH) {
+  const out = new Uint8Array(nCols * nRows);
+  for (let nr = 0; nr < nRows; nr++) {
+    for (let nc = 0; nc < nCols; nc++) {
+      // This cell's top-left pixel, mapped back through the rotation
+      const sx = nr * cellH;
+      const sy = oh - 1 - nc * 8;
+      const sr = Math.min(oRows - 1, Math.max(0, Math.floor(sy / cellH)));
+      const sc = Math.min(oCols - 1, Math.max(0, Math.floor(sx / 8)));
+      out[nr * nCols + nc] = attrs[sr * oCols + sc];
+    }
+  }
+  return out;
+}
+
+/**
+ * Mirrors a clipboard attribute table along one axis. Cells are 8 pixels wide
+ * and `cellH` tall, so a mirror keeps their shape and loses no colour; it is
+ * exact as long as the region starts on a cell boundary.
+ * @param {Uint8Array} attrs
+ * @param {number} cols
+ * @param {number} rows
+ * @param {boolean} horizontal
+ * @returns {Uint8Array}
+ */
+function mirrorClipboardAttrs(attrs, cols, rows, horizontal) {
+  const out = new Uint8Array(cols * rows);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const nr = horizontal ? r : rows - 1 - r;
+      const nc = horizontal ? cols - 1 - c : c;
+      out[nr * cols + nc] = attrs[r * cols + c];
+    }
+  }
+  return out;
+}
+
+/**
+ * Rotates clipboard data 90 degrees clockwise.
+ *
+ * Refused for 8x1 (.mlt, GMX) and 8x2 (.ifl) colour cells: there the rotation
+ * would fold 8 or 4 attribute rows into a single one, which is a silent loss of
+ * most of the picture's colour rather than a transform.
  */
 function rotateClipboard() {
   if (!clipboardData) return;
 
-  if (clipboardData.format === 'scr' && clipboardData.bitmap && clipboardData.width && clipboardData.height) {
+  const cellH = getClipboardCellHeight();
+  if (cellH < 4) {
+    const infoEl = document.getElementById('editorPositionInfo');
+    if (infoEl) {
+      infoEl.innerHTML = 'Rotate would fold ' + (8 / cellH) +
+        ' colour rows into one — not available for 8×' + cellH + ' cells';
+    }
+    return;
+  }
+
+  if (clipboardData.bitmap && clipboardData.width && clipboardData.height) {
     const ow = clipboardData.width;
     const oh = clipboardData.height;
+    const oCols = clipboardData.cellCols;
+    const oRows = getClipboardAttrRows();
     const nw = oh;
     const nh = ow;
-    const oldBpr = Math.ceil(ow / 8);
-    const newBpr = Math.ceil(nw / 8);
-    const newBitmap = new Uint8Array(newBpr * nh);
+    const nCols = Math.ceil(nw / 8);
+    const nRows = Math.ceil(nh / cellH);
 
-    for (let r = 0; r < oh; r++) {
-      for (let c = 0; c < ow; c++) {
-        const oldIdx = r * oldBpr + Math.floor(c / 8);
-        const oldBit = 7 - (c % 8);
-        if (clipboardData.bitmap[oldIdx] & (1 << oldBit)) {
-          const nr = c;
-          const nc = oh - 1 - r;
-          const newIdx = nr * newBpr + Math.floor(nc / 8);
-          const newBit = 7 - (nc % 8);
-          newBitmap[newIdx] |= (1 << newBit);
-        }
-      }
+    clipboardData.bitmap = rotatePackedBitmap(clipboardData.bitmap, ow, oh);
+    if (clipboardData.bitmap2) {
+      clipboardData.bitmap2 = rotatePackedBitmap(clipboardData.bitmap2, ow, oh);
+    }
+    if (clipboardData.attrs) {
+      clipboardData.attrs = rotateClipboardAttrs(clipboardData.attrs, oCols, oRows, nCols, nRows, oh, cellH);
+    }
+    if (clipboardData.attrs2) {
+      clipboardData.attrs2 = rotateClipboardAttrs(clipboardData.attrs2, oCols, oRows, nCols, nRows, oh, cellH);
     }
 
-    // Rotate attributes
-    const oCols = clipboardData.cellCols;
-    const oRows = clipboardData.cellRows;
-    const nCols = oRows;
-    const nRows = oCols;
-    const newAttrs = new Uint8Array(nCols * nRows);
-    for (let r = 0; r < oRows; r++) {
-      for (let c = 0; c < oCols; c++) {
-        newAttrs[c * nCols + (oRows - 1 - r)] = clipboardData.attrs[r * oCols + c];
-      }
-    }
-
-    clipboardData.bitmap = newBitmap;
     clipboardData.width = nw;
     clipboardData.height = nh;
     clipboardData.cellCols = nCols;
-    clipboardData.cellRows = nRows;
-    clipboardData.attrs = newAttrs;
-  } else if (clipboardData.format === '53c') {
+    clipboardData.cellRows = Math.ceil(nh / 8);
+    if (clipboardData.attrRows !== undefined) clipboardData.attrRows = nRows;
+  } else if (clipboardData.format === '53c' && clipboardData.attrs) {
     const oCols = clipboardData.cellCols;
     const oRows = clipboardData.cellRows;
-    const nCols = oRows;
-    const nRows = oCols;
-    const newAttrs = new Uint8Array(nCols * nRows);
-    for (let r = 0; r < oRows; r++) {
-      for (let c = 0; c < oCols; c++) {
-        newAttrs[c * nCols + (oRows - 1 - r)] = clipboardData.attrs[r * oCols + c];
-      }
-    }
-    clipboardData.cellCols = nCols;
-    clipboardData.cellRows = nRows;
-    clipboardData.attrs = newAttrs;
+    clipboardData.attrs = rotateClipboardAttrs(clipboardData.attrs, oCols, oRows, oRows, oCols, oRows * 8, 8);
+    clipboardData.cellCols = oRows;
+    clipboardData.cellRows = oCols;
   }
   editorRender();
+}
+
+/**
+ * Mirrors the clipboard along one axis. Handles every bitmap-carrying shape --
+ * .scr, BMC4, .ifl and .mlt, including a gigascreen clipboard's second frame --
+ * plus attribute-only .53c. SPECSCII is left alone: mirroring character codes
+ * would need the glyphs mirrored too.
+ * @param {boolean} horizontal - true mirrors left-right, false top-bottom
+ */
+function mirrorClipboardAxis(horizontal) {
+  const cols = clipboardData.cellCols;
+  const rows = getClipboardAttrRows();
+
+  if (clipboardData.bitmap && clipboardData.width && clipboardData.height) {
+    const w = clipboardData.width;
+    const h = clipboardData.height;
+    clipboardData.bitmap = mirrorPackedBitmap(clipboardData.bitmap, w, h, horizontal);
+    if (clipboardData.bitmap2) {
+      clipboardData.bitmap2 = mirrorPackedBitmap(clipboardData.bitmap2, w, h, horizontal);
+    }
+  } else if (clipboardData.format !== '53c') {
+    return;
+  }
+
+  if (clipboardData.attrs) {
+    clipboardData.attrs = mirrorClipboardAttrs(clipboardData.attrs, cols, rows, horizontal);
+  }
+  if (clipboardData.attrs2) {
+    clipboardData.attrs2 = mirrorClipboardAttrs(clipboardData.attrs2, cols, rows, horizontal);
+  }
 }
 
 /**
@@ -21983,48 +22978,7 @@ function rotateClipboard() {
  */
 function mirrorClipboardH() {
   if (!clipboardData) return;
-
-  if (clipboardData.format === 'scr' && clipboardData.bitmap && clipboardData.width && clipboardData.height) {
-    const w = clipboardData.width;
-    const h = clipboardData.height;
-    const bpr = Math.ceil(w / 8);
-    const newBitmap = new Uint8Array(bpr * h);
-
-    for (let r = 0; r < h; r++) {
-      for (let c = 0; c < w; c++) {
-        const oldIdx = r * bpr + Math.floor(c / 8);
-        const oldBit = 7 - (c % 8);
-        if (clipboardData.bitmap[oldIdx] & (1 << oldBit)) {
-          const nc = w - 1 - c;
-          const newIdx = r * bpr + Math.floor(nc / 8);
-          const newBit = 7 - (nc % 8);
-          newBitmap[newIdx] |= (1 << newBit);
-        }
-      }
-    }
-    clipboardData.bitmap = newBitmap;
-
-    // Mirror attributes horizontally
-    const cols = clipboardData.cellCols;
-    const rows = clipboardData.cellRows;
-    const newAttrs = new Uint8Array(cols * rows);
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        newAttrs[r * cols + (cols - 1 - c)] = clipboardData.attrs[r * cols + c];
-      }
-    }
-    clipboardData.attrs = newAttrs;
-  } else if (clipboardData.format === '53c') {
-    const cols = clipboardData.cellCols;
-    const rows = clipboardData.cellRows;
-    const newAttrs = new Uint8Array(cols * rows);
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        newAttrs[r * cols + (cols - 1 - c)] = clipboardData.attrs[r * cols + c];
-      }
-    }
-    clipboardData.attrs = newAttrs;
-  }
+  mirrorClipboardAxis(true);
   editorRender();
 }
 
@@ -22033,48 +22987,7 @@ function mirrorClipboardH() {
  */
 function mirrorClipboardV() {
   if (!clipboardData) return;
-
-  if (clipboardData.format === 'scr' && clipboardData.bitmap && clipboardData.width && clipboardData.height) {
-    const w = clipboardData.width;
-    const h = clipboardData.height;
-    const bpr = Math.ceil(w / 8);
-    const newBitmap = new Uint8Array(bpr * h);
-
-    for (let r = 0; r < h; r++) {
-      for (let c = 0; c < w; c++) {
-        const oldIdx = r * bpr + Math.floor(c / 8);
-        const oldBit = 7 - (c % 8);
-        if (clipboardData.bitmap[oldIdx] & (1 << oldBit)) {
-          const nr = h - 1 - r;
-          const newIdx = nr * bpr + Math.floor(c / 8);
-          const newBit = 7 - (c % 8);
-          newBitmap[newIdx] |= (1 << newBit);
-        }
-      }
-    }
-    clipboardData.bitmap = newBitmap;
-
-    // Mirror attributes vertically
-    const cols = clipboardData.cellCols;
-    const rows = clipboardData.cellRows;
-    const newAttrs = new Uint8Array(cols * rows);
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        newAttrs[(rows - 1 - r) * cols + c] = clipboardData.attrs[r * cols + c];
-      }
-    }
-    clipboardData.attrs = newAttrs;
-  } else if (clipboardData.format === '53c') {
-    const cols = clipboardData.cellCols;
-    const rows = clipboardData.cellRows;
-    const newAttrs = new Uint8Array(cols * rows);
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        newAttrs[(rows - 1 - r) * cols + c] = clipboardData.attrs[r * cols + c];
-      }
-    }
-    clipboardData.attrs = newAttrs;
-  }
+  mirrorClipboardAxis(false);
   editorRender();
 }
 
@@ -22089,8 +23002,10 @@ function enterTransformSelectMode() {
   transformSelectActive = true;
   selectionStartPoint = null;
   selectionEndPoint = null;
+  selectionDragSnap = null;
   transformSelectionRect = null;
-  clipboardData = null;
+  // The clipboard is deliberately left alone: selecting where something should
+  // go must not destroy the thing being put there.
 
   // Update UI
   const btn = document.getElementById('transformSelectBtn');
@@ -22119,54 +23034,37 @@ function exitTransformSelectMode() {
  * Updates visibility of transform and export sections based on selection state
  */
 function updateTransformSectionsVisibility() {
-  const hasClipboard = clipboardData && transformSelectionRect;
+  // Both sections follow the selection. They used to require a full clipboard,
+  // which only an Xform-tab selection produced, so a selection made with the
+  // Edit tab's Select tool showed nothing here.
   const hasRect = !!transformSelectionRect;
   const opsSection = document.getElementById('transformOpsSection');
   const exportSection = document.getElementById('transformExportSection');
 
-  if (opsSection) opsSection.style.display = hasClipboard ? '' : 'none';
+  if (opsSection) opsSection.style.display = hasRect ? '' : 'none';
   if (exportSection) exportSection.style.display = hasRect ? '' : 'none';
-}
 
-/**
- * Gets selection rect for transform mode (respects transform-specific snap setting)
- * @returns {{left:number, top:number, right:number, bottom:number, width:number, height:number}|null}
- */
-function getTransformSelectionRect() {
-  if (!selectionStartPoint || !selectionEndPoint) return null;
-
-  let left = Math.min(selectionStartPoint.x, selectionEndPoint.x);
-  let top = Math.min(selectionStartPoint.y, selectionEndPoint.y);
-  let right = Math.max(selectionStartPoint.x, selectionEndPoint.x);
-  let bottom = Math.max(selectionStartPoint.y, selectionEndPoint.y);
-
-  if (transformSnapToGrid) {
-    left = Math.floor(left / 8) * 8;
-    top = Math.floor(top / 8) * 8;
-    right = Math.floor(right / 8) * 8 + 7;
-    bottom = Math.floor(bottom / 8) * 8 + 7;
+  // Mirroring keeps a colour cell's shape, rotating swaps its axes -- with 8x1
+  // or 8x2 cells that folds most of the colour away, so the button goes off
+  const cellH = getFormatAttrCellHeight();
+  const rotateBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById('transformRotateBtn'));
+  if (rotateBtn) {
+    rotateBtn.disabled = cellH < 4;
+    rotateBtn.title = cellH < 4
+      ? `Rotate 90° CW — unavailable: 8×${cellH} colour cells would lose ${8 / cellH} rows out of every ${8 / cellH}`
+      : 'Rotate 90° CW';
   }
-
-  // Clamp to screen bounds
-  const maxHeight = getFormatHeight();
-  left = Math.max(0, left);
-  top = Math.max(0, top);
-  right = Math.min(getFormatWidth() - 1, right);
-  bottom = Math.min(maxHeight - 1, bottom);
-
-  const width = right - left + 1;
-  const height = bottom - top + 1;
-  if (width <= 0 || height <= 0) return null;
-
-  return { left, top, right, bottom, width, height };
 }
 
 /**
- * Completes transform selection - copies data to clipboard and shows options
+ * Records the finished selection and offers the transform and export sections.
+ *
+ * Runs for every selection now, whichever tab drew it. It used to have its own
+ * rect function with its own snap rule, which re-snapped a marquee dragged in
+ * the Edit tab to 8×8 whenever the Xform tab's checkbox happened to be on.
  */
 function completeTransformSelection() {
-  // Use transform-specific rect calculation
-  const rect = getTransformSelectionRect();
+  const rect = getSelectionRect();
   if (!rect) {
     const infoEl = document.getElementById('transformSelectionInfo');
     if (infoEl) infoEl.textContent = 'Selection too small';
@@ -22176,15 +23074,14 @@ function completeTransformSelection() {
   // Store the rect for later operations
   transformSelectionRect = { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
 
-  // Copy to clipboard using existing function
-  copySelection();
-
-  // Update info display
+  // Update info display. The selection is described from the picture's own cell
+  // size; it no longer has to copy anything to know its shape.
   const infoEl = document.getElementById('transformSelectionInfo');
   if (infoEl) {
+    const cellH = getFormatAttrCellHeight();
     const cellCols = Math.ceil(rect.width / 8);
-    const cellRows = Math.ceil(rect.height / 8);
-    infoEl.textContent = `${rect.width}×${rect.height} px (${cellCols}×${cellRows} cells)`;
+    const cellRows = Math.ceil(rect.height / cellH);
+    infoEl.textContent = `${rect.width}×${rect.height} px (${cellCols}×${cellRows} cells of 8×${cellH})`;
   }
 
   // Show transform/export sections
@@ -22195,10 +23092,51 @@ function completeTransformSelection() {
 }
 
 /**
+ * Reads the selected region into the clipboard so a transform or an export has
+ * something to work on, and hands back what was in the clipboard before.
+ *
+ * Drawing a selection no longer copies, so each of these takes its own snapshot
+ * and puts the user's clipboard back afterwards. It snapshots the flattened
+ * picture, because these operations rewrite the region of the picture itself.
+ * @returns {{kept:any}|null} null when there is no selection to snapshot
+ */
+function snapshotSelectionForTransform() {
+  if (!transformSelectionRect) return null;
+  const kept = clipboardData;
+  selectionStartPoint = { x: transformSelectionRect.left, y: transformSelectionRect.top };
+  selectionEndPoint = { x: transformSelectionRect.right, y: transformSelectionRect.bottom };
+  // the rect is already resolved; snapping it again could grow it
+  selectionDragSnap = false;
+  copySelection({ merged: true });
+  if (!clipboardData) {
+    clipboardData = kept;
+    return null;
+  }
+  return { kept };
+}
+
+/**
+ * Puts the user's clipboard back after a transform or export borrowed it.
+ * @param {{kept:any}|null} snap
+ */
+function restoreClipboardAfterTransform(snap) {
+  if (!snap) return;
+  clipboardData = snap.kept;
+}
+
+/**
  * Transforms selection in place: rotate 90° CW
  */
 function transformRotateSelection() {
-  if (!clipboardData || !transformSelectionRect) return;
+  if (!transformSelectionRect) return;
+  const snap = snapshotSelectionForTransform();
+  if (!snap) return;
+  // Refused for 8x1 / 8x2 colour cells; rotateClipboard() says why
+  if (getClipboardCellHeight() < 4) {
+    rotateClipboard();
+    restoreClipboardAfterTransform(snap);
+    return;
+  }
 
   saveUndoState();
 
@@ -22218,7 +23156,7 @@ function transformRotateSelection() {
       left: origLeft,
       top: origTop,
       right: origLeft + (clipboardData.width || clipboardData.cellCols * 8) - 1,
-      bottom: origTop + (clipboardData.height || clipboardData.cellRows * 8) - 1
+      bottom: origTop + (clipboardData.height || getClipboardAttrRows() * 8) - 1
     };
 
     // Update selection points to match
@@ -22230,10 +23168,30 @@ function transformRotateSelection() {
   const infoEl = document.getElementById('transformSelectionInfo');
   if (infoEl && clipboardData) {
     const w = clipboardData.width || clipboardData.cellCols * 8;
-    const h = clipboardData.height || clipboardData.cellRows * 8;
-    infoEl.textContent = `${w}×${h} px (${clipboardData.cellCols}×${clipboardData.cellRows} cells)`;
+    const h = clipboardData.height || getClipboardAttrRows() * 8;
+    infoEl.textContent = `${w}×${h} px (${clipboardData.cellCols}×${getClipboardAttrRows()} cells of 8×${getClipboardCellHeight()})`;
   }
 
+  restoreClipboardAfterTransform(snap);
+  editorRender();
+}
+
+/**
+ * Transforms selection in place: mirror on one axis
+ * @param {boolean} horizontal
+ */
+function transformMirrorSelection(horizontal) {
+  if (!transformSelectionRect) return;
+  const snap = snapshotSelectionForTransform();
+  if (!snap) return;
+
+  saveUndoState();
+  if (horizontal) mirrorClipboardH();
+  else mirrorClipboardV();
+  // Paste back at original position
+  executePasteAt(transformSelectionRect.left, transformSelectionRect.top);
+
+  restoreClipboardAfterTransform(snap);
   editorRender();
 }
 
@@ -22241,34 +23199,14 @@ function transformRotateSelection() {
  * Transforms selection in place: mirror horizontal
  */
 function transformMirrorSelectionH() {
-  if (!clipboardData || !transformSelectionRect) return;
-
-  saveUndoState();
-
-  // Mirror the clipboard data
-  mirrorClipboardH();
-
-  // Paste back at original position
-  executePasteAt(transformSelectionRect.left, transformSelectionRect.top);
-
-  editorRender();
+  transformMirrorSelection(true);
 }
 
 /**
  * Transforms selection in place: mirror vertical
  */
 function transformMirrorSelectionV() {
-  if (!clipboardData || !transformSelectionRect) return;
-
-  saveUndoState();
-
-  // Mirror the clipboard data
-  mirrorClipboardV();
-
-  // Paste back at original position
-  executePasteAt(transformSelectionRect.left, transformSelectionRect.top);
-
-  editorRender();
+  transformMirrorSelection(false);
 }
 
 /**
@@ -22338,21 +23276,37 @@ function executePasteAt(x, y) {
       }
     }
 
-    // Write attributes
-    const cellLeft = Math.floor(x / 8);
-    const cellTop = Math.floor(y / 8);
-    for (let cr = 0; cr < clipboardData.cellRows; cr++) {
-      for (let cc = 0; cc < clipboardData.cellCols; cc++) {
-        const destCol = cellLeft + cc;
-        const destRow = cellTop + cr;
-        if (destCol < 0 || destCol >= (getFormatWidth() >> 3) || destRow < 0 || destRow >= Math.ceil(getFormatHeight() / 8)) continue;
-        const destAddr = SCREEN.BITMAP_SIZE + destCol + destRow * (getFormatWidth() >> 3);
-        screenData[frameOffset + destAddr] = clipAtt[cr * clipboardData.cellCols + cc];
-        if (dualFrame) {
-          screenData[gigaFS + destAddr] = clipAtt2[cr * clipboardData.cellCols + cc];
-        }
+    // Write attributes at whatever cell height this picture uses. A hardcoded
+    // 8x8 write reached only BMC4's first bank and left the second one holding
+    // the pre-transform colours.
+    pasteAttributes(x, y, {
+      attrs: clipAtt,
+      frameOffset,
+      giga: dualFrame,
+      gigaFS,
+      attrs2: dualFrame ? clipAtt2 : null,
+      replace: true
+    });
+  } else if ((clipboardData.format === 'ifl' || clipboardData.format === 'mlt') && clipboardData.bitmap) {
+    // Linear bitmap plus a colour row per 2 (.ifl) or 1 (.mlt) pixel lines
+    const bitmapBytesPerRow = Math.ceil(clipboardData.width / 8);
+    for (let py = 0; py < clipboardData.height; py++) {
+      for (let px = 0; px < clipboardData.width; px++) {
+        const dx = x + px;
+        const dy = y + py;
+        if (dx < 0 || dx >= getFormatWidth() || dy < 0 || dy >= getFormatHeight()) continue;
+
+        const byteIdx = py * bitmapBytesPerRow + (px >> 3);
+        const clipBit = (clipboardData.bitmap[byteIdx] & (1 << (7 - (px & 7)))) !== 0;
+        const bitmapAddr = getBitmapAddress(dx, dy);
+        const bit = getBitPosition(dx);
+
+        if (clipBit) screenData[bitmapAddr] |= (1 << bit);
+        else screenData[bitmapAddr] &= ~(1 << bit);
       }
     }
+
+    pasteAttributes(x, y, { replace: true });
   } else if (clipboardData.format === '53c') {
     // Attribute-only paste
     const cellLeft = Math.floor(x / 8);
@@ -22425,6 +23379,20 @@ function chunkArray(arr, size) {
  * @returns {string|null}
  */
 function generateSelectionAsmText() {
+  // Selecting no longer copies, so the export takes the snapshot it needs
+  const snap = snapshotSelectionForTransform();
+  try {
+    return generateSelectionAsmFromClipboard();
+  } finally {
+    restoreClipboardAfterTransform(snap);
+  }
+}
+
+/**
+ * Builds the selection ASM text from whatever is in the clipboard.
+ * @returns {string|null}
+ */
+function generateSelectionAsmFromClipboard() {
   if (!clipboardData) {
     return null;
   }
@@ -22444,8 +23412,11 @@ function generateSelectionAsmText() {
 
   const w = clipboardData.width || clipboardData.cellCols * 8;
   const h = clipboardData.height || clipboardData.cellRows * 8;
+  const attrRowCount = getClipboardAttrRows();
+  const asmCellH = getClipboardCellHeight();
   asmLines.push(`; Size: ${w}x${h} pixels`);
-  asmLines.push(`; ${clipboardData.cellCols}x${clipboardData.cellRows} cells`);
+  asmLines.push(`; ${clipboardData.cellCols}x${attrRowCount} cells` +
+    (asmCellH === 8 ? '' : ` of 8x${asmCellH}`));
   asmLines.push('');
 
   /**
@@ -22495,7 +23466,7 @@ function generateSelectionAsmText() {
   // For attribute-only formats, just export attrs
   if (clipboardData.format === '53c' || !clipboardData.bitmap) {
     asmLines.push('attrs:');
-    for (let row = 0; row < clipboardData.cellRows; row++) {
+    for (let row = 0; row < attrRowCount; row++) {
       const attrBytes = [];
       for (let col = 0; col < clipboardData.cellCols; col++) {
         attrBytes.push(clipboardData.attrs[row * clipboardData.cellCols + col]);
@@ -22506,10 +23477,10 @@ function generateSelectionAsmText() {
   } else if (paletteMode === 'interleaved' && includePalette) {
     // Output: 8 bitmap rows per cell row, then attrs for that row
     let globalRowIndex = 0;
-    for (let cellRow = 0; cellRow < clipboardData.cellRows; cellRow++) {
-      // 8 pixel rows per cell row
-      for (let pixelRow = 0; pixelRow < 8; pixelRow++) {
-        const y = cellRow * 8 + pixelRow;
+    for (let cellRow = 0; cellRow < attrRowCount; cellRow++) {
+      // One pixel row per line of the cell -- 8 for .scr, 4 for BMC4, 1 for .mlt
+      for (let pixelRow = 0; pixelRow < asmCellH; pixelRow++) {
+        const y = cellRow * asmCellH + pixelRow;
         if (y >= (clipboardData.height || 0)) break;
 
         const rowBytes = [];
@@ -22545,7 +23516,7 @@ function generateSelectionAsmText() {
     if (includePalette) {
       asmLines.push('');
       asmLines.push('attrs:');
-      for (let row = 0; row < clipboardData.cellRows; row++) {
+      for (let row = 0; row < attrRowCount; row++) {
         const attrBytes = [];
         for (let col = 0; col < clipboardData.cellCols; col++) {
           attrBytes.push(clipboardData.attrs[row * clipboardData.cellCols + col]);
@@ -30600,6 +31571,17 @@ function initEditor() {
     });
   }
 
+  // Copy button. Shift takes the flattened picture instead of the active layer.
+  document.getElementById('editorCopyBtn')?.addEventListener('click', (ev) => {
+    if (selectionStartPoint && selectionEndPoint) {
+      copySelection({ merged: /** @type {MouseEvent} */ (ev).shiftKey });
+      editorRender();
+    } else {
+      const infoEl = document.getElementById('editorPositionInfo');
+      if (infoEl) infoEl.innerHTML = 'Select an area first (Select tool, or S)';
+    }
+  });
+
   // Cut button
   document.getElementById('editorCutBtn')?.addEventListener('click', () => {
     if (selectionStartPoint && selectionEndPoint) {
@@ -30894,8 +31876,8 @@ function initEditor() {
       exitTransformSelectMode();
       selectionStartPoint = null;
       selectionEndPoint = null;
+      selectionDragSnap = null;
       transformSelectionRect = null;
-      clipboardData = null;
       updateTransformSectionsVisibility();
       editorRender();
     } else {
@@ -30980,6 +31962,7 @@ function initEditor() {
     }
   });
   document.getElementById('removeLayerBtn')?.addEventListener('click', removeLayer);
+  document.getElementById('duplicateLayerBtn')?.addEventListener('click', duplicateLayer);
   document.getElementById('moveLayerUpBtn')?.addEventListener('click', moveLayerUp);
   document.getElementById('moveLayerDownBtn')?.addEventListener('click', moveLayerDown);
   document.getElementById('flattenLayersBtn')?.addEventListener('click', () => {
@@ -31248,28 +32231,38 @@ function initEditorKeyboardShortcuts() {
       e.preventDefault();
       saveScrFile();
     }
+    // Ctrl+A: select the whole picture
+    if (e.ctrlKey && e.code === 'KeyA') {
+      // a dialog's own select-all wins while it is open
+      if (isModalDialogOpen()) return;
+      e.preventDefault();
+      // while a paste is in flight the float *is* the selection; leave it alone
+      if (!isPasting) selectAllPicture();
+      return;
+    }
     if (e.ctrlKey && e.code === 'KeyC') {
       e.preventDefault();
-      copySelection();
-      // Clear selection visuals after manual copy
-      selectionStartPoint = null;
-      selectionEndPoint = null;
-      isSelecting = false;
+      // Shift takes the flattened picture instead of the active layer alone.
+      // The marquee stays: every editor leaves the selection after a copy.
+      copySelection({ merged: e.shiftKey });
       editorRender();
     }
     if (e.ctrlKey && e.code === 'KeyX') {
       e.preventDefault();
       if (selectionStartPoint && selectionEndPoint) {
         cutSelection();
-        // Clear selection visuals after cut
-        selectionStartPoint = null;
-        selectionEndPoint = null;
-        isSelecting = false;
       }
     }
     if (e.ctrlKey && e.code === 'KeyV') {
       e.preventDefault();
       startPasteMode();
+    }
+    // Delete empties the selected region and leaves the clipboard alone
+    if (!e.ctrlKey && !e.altKey && (e.key === 'Delete' || e.key === 'Backspace') &&
+        !isPasting && !isSelecting && selectionStartPoint && selectionEndPoint) {
+      e.preventDefault();
+      clearSelectionRegion();
+      return;
     }
 
     // ~: Toggle preview panel (Shift+Backquote for layout independence)
@@ -31386,7 +32379,12 @@ function initEditorKeyboardShortcuts() {
         e.preventDefault();
         return;
       }
-      if (isPasting || selectionStartPoint || selectionEndPoint || isSelecting) {
+      if (isPasting) {
+        e.preventDefault();
+        cancelFloatingPaste();
+        return;
+      }
+      if (selectionStartPoint || selectionEndPoint || isSelecting) {
         e.preventDefault();
         cancelSelection();
         return;
@@ -31804,4 +32802,65 @@ function handleEditorKeyCursorKey(event) {
     default:
       return false;
   }
+}
+
+/**
+ * Digit key -> colour, when the number keys are set to pick colours.
+ * 0-7 are the ZX colours, 8 is transparent; Shift picks paper instead of ink.
+ * Formats whose palette is not the eight ZX colours (ZX Next, LoRes, .53c and
+ * Gigascreen's combined palette) keep the number keys for zoom.
+ * Returns true when the key was consumed.
+ * @param {KeyboardEvent} event
+ * @returns {boolean}
+ */
+function handleEditorColorDigitKey(event) {
+  if (event.ctrlKey || event.altKey || event.metaKey) return false;
+  const m = /^(?:Digit|Numpad)([0-8])$/.exec(event.code);
+  if (!m) return false;
+  if (typeof resolveDigitKeyAction !== 'function' || resolveDigitKeyAction() !== 'colors') return false;
+
+  const digit = parseInt(m[1], 10);
+  const isPaper = event.shiftKey;
+
+  // Palettes the eight ZX colours do not address
+  if (currentFormat === FORMAT.NXI || currentFormat === FORMAT.SL2 ||
+      currentFormat === FORMAT.LORES || currentFormat === FORMAT.LORES_RAD ||
+      currentFormat === FORMAT.ATTR_53C ||
+      currentFormat === FORMAT.MONO_FULL || currentFormat === FORMAT.MONO_2_3 ||
+      currentFormat === FORMAT.MONO_1_3) return false;
+  // Gigascreen's combined mode draws from a 136-colour virtual palette
+  if (isGigascreenEditable() && gigascreenEditMode === 'combined') return false;
+
+  if (isUlaPlusMode) {
+    if (digit === 8) {
+      if (isPaper) ulaPlusPaperIndex = ULAPLUS_TRANSPARENT;
+      else ulaPlusInkIndex = ULAPLUS_TRANSPARENT;
+    } else {
+      // Stay in the CLUT the current ink uses, as clicking the grid does
+      const clut = ulaPlusInkIndex === ULAPLUS_TRANSPARENT
+        ? (typeof ulaPlusSelectedClut === 'number' ? ulaPlusSelectedClut : 0)
+        : Math.floor(ulaPlusInkIndex / 16);
+      if (isPaper) ulaPlusPaperIndex = clut * 16 + 8 + digit;
+      else ulaPlusInkIndex = clut * 16 + digit;
+    }
+    updateUlaPlusPalette();
+    return true;
+  }
+
+  if (digit === 8) {
+    // RGB3 mixes its colour from three planes, so it has no transparent swatch
+    if (currentFormat === FORMAT.RGB3) return false;
+    if (isPaper) editorPaperColor = COLOR_TRANSPARENT;
+    else editorInkColor = COLOR_TRANSPARENT;
+  } else if (isPaper) {
+    editorPaperColor = digit;
+    localStorage.setItem('spectraLabPaperColor', String(digit));
+  } else {
+    editorInkColor = digit;
+    localStorage.setItem('spectraLabInkColor', String(digit));
+  }
+
+  if (currentFormat === FORMAT.RGB3) updateRgb3PaletteSelection();
+  else updateColorSelectors();
+  return true;
 }

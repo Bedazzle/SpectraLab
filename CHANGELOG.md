@@ -1,19 +1,37 @@
 # SpectraLab Version History
 
+## v2.48
+- Copy/paste reworked: **Copy** button, the selection survives a copy, **Ctrl+A** selects all, **Delete** clears it
+- A paste **floats** until dropped — click or **Enter** drops, drag or arrows move, **R**/**H**/**V** turn
+- A float survives switching layer and picture
+- **Ctrl+C** copies the active layer, **Ctrl+Shift+C** the flat picture; transparency travels with both
+- **Rotate**, **Mirror** and ASM export accept an Edit tab selection
+- **Duplicate layer** button beside Add and Remove
+- **Fixed:** layers — hiding one turned the picture white-on-black; a paste onto one lost the copied region or left holes; a paste with the background hidden erased it; **Cut** painted paper over the layers below
+- **Fixed:** selecting emptied the clipboard; snap-off selections grew to whole cells
+
+## v2.47
+- **Magnifier** — a zoomed view around the cursor; **Z** toggles it
+- **M** toggles the multicolour timing marks
+- Sprites up to 32×24 cells, with a **Zoom** box; a spriteset's W and H can change after drawing
+- **0**–**7** can pick ink and **Shift**+digit paper instead of zooming (Settings → Number keys)
+- **Mirror H**/**V** work on multicolour, .ifl and BMC4 selections, and the paste preview draws those clipboards
+- The import **Paper** setting also sets the bit polarity in bitmap-only formats
+- Multicolour timing: rows share time across a character row; one placement drives the check and the player; the colour strip outlines every cell the beam must write
+- Font editor: **Codepage** says what the glyph codes mean, with CP866 and KOI-8R recognised on load
+- **Fixed:** multicolour timing — a character row's overrun left the player late for the rest of the frame; a flagged first row gave no reason
+- **Fixed:** selections — BMC4 reached only the first attribute bank; **Rotate** did nothing on multicolour or .ifl, and is now off there with the reason in its tooltip; mirroring Gigascreen left frame 2; the ASM export carried no attribute bytes
+- **Fixed:** pastes — one onto a layer was lost at the next redraw, and one between pictures of different colour resolution put the colours in the wrong place
+- **Fixed:** import — monochrome .scr came out inverted, and the **Paper** setting did nothing with Mono output
+- **Fixed:** freehand in 8×1 multicolour broke into dots; the sprite editor's grid was invisible over a sprite; the font editor named glyphs by Unicode code point
+
 ## v2.46
 - **Combine Pictures** builds multi-frame formats from separate screens: two .scr become a Gigascreen (.img), three become an RGB3 (.3)
-- **Magnifier** — a floating window showing the picture around the cursor blown up, with the pixel under the cursor outlined and the 8×8 attribute cells marked, for placing single pixels at low editor zoom. **Z** toggles it. Drag it anywhere, four zoom steps, position and zoom remembered
-- Multicolour timing: the seven interior rows of a character row are treated as one run of code, so a row may run past its own line where a neighbour runs short — far fewer rows fail. The readout says how much time the rows around it lent or took
 - Multicolour timing: each row is planned run by run — pushed, stored or written in place, whichever is cheaper — and each run picks whether its pairs start on an even or an odd cell, and a run may be cut in two so the half the beam reaches first is written first
-- Multicolour timing: the check and the player now work from one placement, so the check no longer passes rows the player gets wrong. A flagged row says which of three things it is: the writes cannot be ordered to beat the beam, they can but not early enough, or the character row is full
 - Export: **ASM (Pentagon 8x1 multicolour)** for .mlt — a complete sjasmplus viewer that races the beam. Rows that cannot be written in time are marked in the source, and a picture that has any asks before exporting
-- **M** toggles the multicolour timing marks, in the viewer and in the editor, instead of a trip to Settings
-- Multicolour timing: the colour strip now outlines every cell the beam has to write, in orange where the cell's colour is its own. Only the costly ones were marked before, and the rest were shown by shading the others — which is no help on a row of black swatches
 - **Fixed:** the multicolour timing check had the Pentagon scanline and frame transposed — it is 224 T over 320 lines, not 320 T over 224. Every row budget was 96 T too generous, so pictures were reported as fitting when they cannot
 - **Fixed:** the 8x1 multicolour player started 63 T early, so a row’s first writes could land before the row above had been read and corrupt it
 - **Fixed:** a row too long for its scanline no longer runs into the next one and breaks rows the check had passed; it is cut, and the export reports what was cut
-- **Fixed:** a character row needing more code than its eight scanlines left the player late for the rest of the frame — 193T behind by the bottom of one test picture — so rows the check had passed were written after the beam had read them. The player now gives that time back out of later gaps, and the check accounts for it. On that picture 738 wrong cells became 1
-- **Fixed:** a flagged first row of a character row gave no reason for it, and the readout described it as fitting
 - **Fixed:** 12288-byte multicolour files whose attributes are stored in ZX screen order opened as garbage. A third preview, **Screen-order attributes**, reads them as the file stores them. The layout question is now asked wherever such a file turns up, including inside a `.zip`, with the likeliest reading marked **likely**
 - Docs: the graphics guide covers all three multicolour file layouts and how to tell them apart
 

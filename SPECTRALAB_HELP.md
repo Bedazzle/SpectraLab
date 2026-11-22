@@ -722,16 +722,61 @@ This preserves visual continuity with surrounding cells. The info label shows ho
 | Button | Key | Description |
 |--------|-----|-------------|
 | Select | S | Select rectangular area on canvas |
+| Select all | Ctrl+A | Select the whole picture |
+| Copy | Ctrl+C | Copy the selection (the selection stays) |
 | Cut | Ctrl+X | Cut selection (copy + erase) |
-| Paste | Ctrl+V | Paste clipboard content |
+| Paste | Ctrl+V | Lift the clipboard into a floating paste |
 | Invert | N | Invert selection (swap ink ↔ paper) |
 | Re-dither | Shift+W | Re-dither selection with current dither brush method |
 | Rotate | R | Rotate clipboard/brush 90° CW |
 | Flip H | H | Flip clipboard/brush horizontally |
 | Flip V | V | Flip clipboard/brush vertically |
 
-- **Snap to grid** checkbox — snap paste position to grid
-- While pasting, click to place the content; use R/H/V keys to transform
+**Select, copy, paste.** Drag with the Select tool to mark an area; the marquee
+stays until you clear it, and drawing it does not touch the clipboard. **Copy**
+or Ctrl+C takes it, and the selection stays where it is so you can copy the same
+area twice or cut it afterwards. **Delete** empties the selected area without
+touching the clipboard.
+
+**The floating paste.** Ctrl+V does not write anything yet. The clipboard appears
+on the picture, at the position it was copied from, with a dashed outline around
+it, and nothing is committed until you drop it:
+
+| Action | Effect |
+|--------|--------|
+| Click it, or press Enter | Drop it — one undo step |
+| Drag it | Move it |
+| Arrow keys | Move it 1 pixel, or 8 with Shift |
+| R / H / V | Rotate or flip it in place |
+| Esc | Throw it away, writing nothing |
+
+A click drops it where it is and a drag moves it, so a paste as large as the
+picture (Ctrl+A then Ctrl+V) is dropped the same way as any other. Until it is
+dropped it is drawn semi-transparent, which on a picture-sized paste makes the
+whole screen look washed out — that is the paste still waiting, not the picture.
+
+Because it lands where it was copied from, copying on one layer and pasting on
+another puts the content back in the same place. A floating paste also survives
+switching layer and switching picture, so you can start the paste and then choose
+where it goes. The clipboard itself is shared between all open pictures.
+
+A clipboard only drops into a picture of its own kind, because the formats carry
+different things — pixels, character codes, bare attributes. Trying to drop an
+.scr region into an 8×1 multicolour picture says so and leaves the paste in
+flight, so you can switch back rather than lose it. Convert the picture first
+(Xform → Convert to...) if that is what you meant.
+
+**Layers.** With layers on, a copy takes the **active layer alone**: where that
+layer owns no pixels the clipboard is transparent, so pasting it elsewhere leaves
+the destination showing through instead of stamping a rectangle of background
+over it. **Ctrl+Shift+C** (or Shift+click on Copy) takes the flattened picture
+instead, as a solid rectangle. A paste always lands in the active layer, and
+**Cut** on a layer above the background hands those pixels back to the layers
+below rather than painting paper over them.
+
+- **Snap to grid** checkbox — snap paste position to grid. It also snaps the
+  selection marquee to whole cells; the setting in force when you start the drag
+  is the one that applies to it.
 
 ### Transform Selection
 
@@ -739,6 +784,19 @@ When a selection is active, additional transform buttons appear:
 - **↻ Rotate** — rotate selection 90° clockwise
 - **↔ Mirror H** — mirror selection horizontally
 - **↕ Mirror V** — mirror selection vertically
+
+**Colour cells and transforms.** An attribute cell is 8 pixels wide but only as
+tall as the format allows: 8 rows in .scr, 4 in BMC4 (its two attribute banks),
+2 in .ifl, 1 in 8×1 multicolour and GMX. A mirror keeps that shape, so it moves
+whole cells and loses no colour in any format. A rotation swaps the cell's axes,
+and the colour that stood in 8 rows has to fit into one — so:
+
+- **.scr and .53c** rotate exactly.
+- **BMC4** rotates the pixels exactly and takes one of every two colour rows,
+  since two 8×4 cells have to become one.
+- **8×1 multicolour, .ifl and GMX** would lose 8 or 4 colour rows out of every
+  8 or 4, which is most of the picture, so **Rotate** is disabled for them. The
+  tooltip says so. Mirroring works normally.
 
 ### ASM Export
 
@@ -789,8 +847,8 @@ Shows all defined spritesets. Click to select.
 When a spriteset is selected:
 
 - **Name** — spriteset name (max 16 characters)
-- **W / H** — dimensions in cells (1-8 × 1-8, each cell = 8×8 pixels); locked after drawing (clear all sprites to unlock)
-- **Mode** — Mono, Attributed, or Multicolour (8×1 / 8×2 / 8×4 attribute cell height); locked after drawing
+- **W / H** — dimensions in cells (1-32 × 1-24, each cell = 8×8 pixels, so up to a full 256×192 screen). Changing them resizes the spriteset in place: what overlaps is kept, new cells come up empty, and shrinking asks first if it would cut away drawn pixels
+- **Mode** — Mono, Attributed, or Multicolour (8×1 / 8×2 / 8×4 attribute cell height); locked once anything is drawn (clear all sprites to unlock)
 - **+ Add** — add a new empty spriteset
 - **Edit** — open the floating sprite editor
 - **Delete** — delete selected spriteset(s)
@@ -853,9 +911,10 @@ For Attributed and Multicolour mode sprites:
 
 ### Preview and Animation
 
-- **Preview canvas** — 1× preview of the sprite
+- **Preview canvas** — 1× preview of the sprite, shrunk to fit if the sprite is larger than the box
+- **Zoom** — *Fit* (default) sizes the sprite to about 256 pixels, or pick 1x-16x; the canvas scrolls when it outgrows its box, and the choice is remembered
 - **Onion skin** — show previous sprite as ghost overlay
-- **Grid** — show pixel grid
+- **Grid** — show the cell grid, plus the pixel grid from 4x up
 - **Attributes** — show attribute colors (checked by default); when unchecked, displays black/white bitmap only (black = ink, white = paper)
 - **Show mask** — display the sprite mask
 - **Sprite navigation:** Previous (**<**), sprite counter, Next (**>**)
@@ -986,6 +1045,8 @@ Crop the source image:
   - **Darker color** — default; the darker of the two cell colors becomes paper (per cell, using perceptual luminance). For single-color cells (both ink and paper are the same), the color is checked against a midpoint: dark colors become paper (0 bits), light colors become ink (1 bits)
   - **Lighter color** — the lighter of the two cell colors becomes paper. For single-color cells, the color is checked against a midpoint: light colors become paper (0 bits), dark colors become ink (1 bits)
   - **First pixel paper** — the color of the top-left pixel in each cell becomes paper; useful for spritesheets where a frame pixel marks the background color
+  - With **Mono output** the two colors are black and bright white, and the rule picks which of them is paper, exactly as in color mode — the picture looks the same either way, only the encoding differs
+  - In **bitmap-only formats** (Mono .scr 1/3, 2/3, full, and the Chunks formats) there is no attribute byte to hold the two colors, so the rule sets the bit polarity instead. A set bit is ink everywhere in SpectraLab, and mono pictures are shown with white ink on black paper, so **Darker color** (the default) sets bits for the light pixels and keeps an imported picture the right way round. **Lighter color** writes the negative of that, for when you intend to show it with black ink on white paper
 
 #### Output
 
@@ -1235,6 +1296,16 @@ Wheel bindings apply over the canvas only — the left sidebar and dialogs keep 
 
 Alt bindings are ignored by Rectangle, Circle and Gradient, which use Alt for "draw from center". On the BSC/BMC4 border, "recolor" paints the cell with the current ink, since a border cell holds a single color.
 
+### Number keys
+
+**Number keys** — *Zoom level (1-5)* (default), *Zoom in viewer, colors in editor*, or *Ink color (Shift = paper)*.
+
+On colors, **0**-**7** set the ink to a ZX color, **Shift**+digit sets the paper, and **8** picks transparent (the palette's **T** swatch, which erases on non-background layers). The numpad works the same. Zoom stays on the wheel and the zoom box.
+
+The middle option is the one to pick if you want both: a picture you are only looking at still zooms with **1**-**5**, and the digits turn into colors the moment the editor opens.
+
+Palettes the eight ZX colors do not address keep the number keys for zoom whatever the setting: ZX Next Layer 2, LoRes, `.53c` and Gigascreen's combined palette. In ULA+ the digits pick ink and paper inside the CLUT the current ink belongs to.
+
 ### Arrow keys and the pixel cursor
 
 **Arrow keys** — *Scroll the canvas* (default) or *Move a pixel cursor*.
@@ -1398,7 +1469,7 @@ This is not arbitrary: chr$ stores one attribute byte per 8×8 cell and has no p
 
 | Key | Action |
 |-----|--------|
-| 1-5 | Set zoom level |
+| 1-5 | Set zoom level (configurable — may pick colors instead, see section 24) |
 | Wheel | Zoom in/out (configurable — see section 24) |
 | Ctrl+Wheel | Scroll horizontally (configurable) |
 | Shift+Wheel | Scroll vertically (configurable) |
@@ -1444,6 +1515,9 @@ This is not arbitrary: chr$ stores one attribute byte per 8×8 cell and has no p
 | Arrows | Move the pixel cursor, when enabled in Settings |
 | Shift+arrow | Move the pixel cursor 8 pixels |
 | Space | Apply the current tool at the pixel cursor |
+| 0-7 | Set ink color, when enabled in Settings |
+| Shift+0-7 | Set paper color |
+| 8 | Set transparent (ink), Shift+8 for paper |
 | B | Toggle bright |
 | F | Toggle flash attribute |
 | X | Swap ink/paper colors |
@@ -1454,9 +1528,15 @@ This is not arbitrary: chr$ stores one attribute byte per 8×8 cell and has no p
 
 | Key | Action |
 |-----|--------|
-| Ctrl+C | Copy selection |
+| Ctrl+A | Select the whole picture |
+| Ctrl+C | Copy selection (the active layer alone; the selection stays) |
+| Ctrl+Shift+C | Copy selection, flattened across all layers |
 | Ctrl+X | Cut selection (copy + erase) |
-| Ctrl+V | Paste |
+| Ctrl+V | Paste — floats until dropped |
+| Arrows | Move a floating paste 1px, or 8px with Shift |
+| Enter | Drop a floating paste |
+| Esc | Cancel a floating paste or clear the selection |
+| Delete | Empty the selected area, keeping the clipboard |
 | R / H / V | Rotate/Flip clipboard (while pasting) |
 | N | Invert selection (swap ink ↔ paper) |
 | M | Toggle the multicolour timing overlay (8x1 pictures) |
@@ -1585,6 +1665,15 @@ Inactive columns are dimmed in both the grid and the pixel editor. Switching fro
 
 ### Character Mapping
 
+- **Codepage** — what the glyph codes mean, which decides the label under each cell. A font file does not record its encoding, so this is only a label: changing it never alters a glyph.
+  - **ASCII only** (default) — labels 32–126, nothing above
+  - **CP866**, **CP1251**, **KOI-8R** — Cyrillic
+  - **Latin-1 / CP1252** — Western
+  - **None** — no labels at all, for tile sets and other fonts that are not text
+
+  On loading a 256-glyph font, CP866 and KOI-8R are selected automatically when the glyphs prove it — both carry the DOS box-drawing block, in places that tell the two apart. Any other font keeps whatever you last chose by hand, which is remembered between sessions.
+
+  The codepage also decides what the Text Sample and the **Characters** box can find: with CP866 set, typing а–я reaches the right glyphs.
 - **Characters** input + **Map** button — map a character string starting at the selected glyph
 - **Clear** — remove the mapping for the current width mode
 - **From (Cyr) / To (Lat)** — character remapping (e.g., Cyrillic to Latin lookalikes)

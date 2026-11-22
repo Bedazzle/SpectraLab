@@ -38,6 +38,59 @@ const WIDTH_MODES = {
 const FONT_TOOL = { PIXEL: 'pixel', LINE: 'line', RECT: 'rect', CIRCLE: 'circle', ERASER: 'eraser' };
 
 /**
+ * What the high half of a font means, per codepage: 128 characters for codes
+ * 0x80-0xFF, with \u0000 where the codepage defines nothing. The low half is
+ * ASCII in all of them.
+ *
+ * A font file says nothing about its encoding, so none of this is assumed --
+ * see `detectFontCodepage` and the Codepage control.
+ *
+ * @type {Object<string, string>}
+ */
+const FONT_CODEPAGES = {
+  cp866:
+    '\u0410\u0411\u0412\u0413\u0414\u0415\u0416\u0417\u0418\u0419\u041a\u041b\u041c\u041d\u041e\u041f' +   // 0x80
+    '\u0420\u0421\u0422\u0423\u0424\u0425\u0426\u0427\u0428\u0429\u042a\u042b\u042c\u042d\u042e\u042f' +   // 0x90
+    '\u0430\u0431\u0432\u0433\u0434\u0435\u0436\u0437\u0438\u0439\u043a\u043b\u043c\u043d\u043e\u043f' +   // 0xA0
+    '\u2591\u2592\u2593\u2502\u2524\u2561\u2562\u2556\u2555\u2563\u2551\u2557\u255d\u255c\u255b\u2510' +   // 0xB0
+    '\u2514\u2534\u252c\u251c\u2500\u253c\u255e\u255f\u255a\u2554\u2569\u2566\u2560\u2550\u256c\u2567' +   // 0xC0
+    '\u2568\u2564\u2565\u2559\u2558\u2552\u2553\u256b\u256a\u2518\u250c\u2588\u2584\u258c\u2590\u2580' +   // 0xD0
+    '\u0440\u0441\u0442\u0443\u0444\u0445\u0446\u0447\u0448\u0449\u044a\u044b\u044c\u044d\u044e\u044f' +   // 0xE0
+    '\u0401\u0451\u0404\u0454\u0407\u0457\u040e\u045e\u00b0\u2219\u00b7\u221a\u2116\u00a4\u25a0\u00a0',
+  cp1251:
+    '\u0402\u0403\u201a\u0453\u201e\u2026\u2020\u2021\u20ac\u2030\u0409\u2039\u040a\u040c\u040b\u040f' +   // 0x80
+    '\u0452\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u0000\u2122\u0459\u203a\u045a\u045c\u045b\u045f' +   // 0x90
+    '\u00a0\u040e\u045e\u0408\u00a4\u0490\u00a6\u00a7\u0401\u00a9\u0404\u00ab\u00ac\u00ad\u00ae\u0407' +   // 0xA0
+    '\u00b0\u00b1\u0406\u0456\u0491\u00b5\u00b6\u00b7\u0451\u2116\u0454\u00bb\u0458\u0405\u0455\u0457' +   // 0xB0
+    '\u0410\u0411\u0412\u0413\u0414\u0415\u0416\u0417\u0418\u0419\u041a\u041b\u041c\u041d\u041e\u041f' +   // 0xC0
+    '\u0420\u0421\u0422\u0423\u0424\u0425\u0426\u0427\u0428\u0429\u042a\u042b\u042c\u042d\u042e\u042f' +   // 0xD0
+    '\u0430\u0431\u0432\u0433\u0434\u0435\u0436\u0437\u0438\u0439\u043a\u043b\u043c\u043d\u043e\u043f' +   // 0xE0
+    '\u0440\u0441\u0442\u0443\u0444\u0445\u0446\u0447\u0448\u0449\u044a\u044b\u044c\u044d\u044e\u044f',
+  koi8r:
+    '\u2500\u2502\u250c\u2510\u2514\u2518\u251c\u2524\u252c\u2534\u253c\u2580\u2584\u2588\u258c\u2590' +   // 0x80
+    '\u2591\u2592\u2593\u2320\u25a0\u2219\u221a\u2248\u2264\u2265\u00a0\u2321\u00b0\u00b2\u00b7\u00f7' +   // 0x90
+    '\u2550\u2551\u2552\u0451\u2553\u2554\u2555\u2556\u2557\u2558\u2559\u255a\u255b\u255c\u255d\u255e' +   // 0xA0
+    '\u255f\u2560\u2561\u0401\u2562\u2563\u2564\u2565\u2566\u2567\u2568\u2569\u256a\u256b\u256c\u00a9' +   // 0xB0
+    '\u044e\u0430\u0431\u0446\u0434\u0435\u0444\u0433\u0445\u0438\u0439\u043a\u043b\u043c\u043d\u043e' +   // 0xC0
+    '\u043f\u044f\u0440\u0441\u0442\u0443\u0436\u0432\u044c\u044b\u0437\u0448\u044d\u0449\u0447\u044a' +   // 0xD0
+    '\u042e\u0410\u0411\u0426\u0414\u0415\u0424\u0413\u0425\u0418\u0419\u041a\u041b\u041c\u041d\u041e' +   // 0xE0
+    '\u041f\u042f\u0420\u0421\u0422\u0423\u0416\u0412\u042c\u042b\u0417\u0428\u042d\u0429\u0427\u042a',
+  cp1252:
+    '\u20ac\u0000\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u2039\u0152\u0000\u017d\u0000' +   // 0x80
+    '\u0000\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u0000\u017e\u0178' +   // 0x90
+    '\u00a0\u00a1\u00a2\u00a3\u00a4\u00a5\u00a6\u00a7\u00a8\u00a9\u00aa\u00ab\u00ac\u00ad\u00ae\u00af' +   // 0xA0
+    '\u00b0\u00b1\u00b2\u00b3\u00b4\u00b5\u00b6\u00b7\u00b8\u00b9\u00ba\u00bb\u00bc\u00bd\u00be\u00bf' +   // 0xB0
+    '\u00c0\u00c1\u00c2\u00c3\u00c4\u00c5\u00c6\u00c7\u00c8\u00c9\u00ca\u00cb\u00cc\u00cd\u00ce\u00cf' +   // 0xC0
+    '\u00d0\u00d1\u00d2\u00d3\u00d4\u00d5\u00d6\u00d7\u00d8\u00d9\u00da\u00db\u00dc\u00dd\u00de\u00df' +   // 0xD0
+    '\u00e0\u00e1\u00e2\u00e3\u00e4\u00e5\u00e6\u00e7\u00e8\u00e9\u00ea\u00eb\u00ec\u00ed\u00ee\u00ef' +   // 0xE0
+    '\u00f0\u00f1\u00f2\u00f3\u00f4\u00f5\u00f6\u00f7\u00f8\u00f9\u00fa\u00fb\u00fc\u00fd\u00fe\u00ff'
+};
+
+/** Codepage used for the grid labels; 'ascii' labels only 32..126, 'none' nothing. */
+let fontCodepage = 'ascii';
+
+
+/**
  * Download binary data as a file.
  * @param {Uint8Array|ArrayBuffer|string} data
  * @param {string} name
@@ -229,6 +282,7 @@ const dom = {
   fontWidthSelect: /** @type {HTMLSelectElement} */ (document.getElementById('fontWidth')),
   glyphWidthInput: /** @type {HTMLInputElement} */ (document.getElementById('glyphWidthInput')),
   charInput: /** @type {HTMLInputElement} */ (document.getElementById('charInput')),
+  codepageSelect: /** @type {HTMLSelectElement} */ (document.getElementById('codepageSelect')),
   mapCharBtn: document.getElementById('mapCharBtn'),
   clearMapBtn: document.getElementById('clearMapBtn'),
   remapFromInput: /** @type {HTMLInputElement} */ (document.getElementById('remapFrom')),
@@ -302,7 +356,10 @@ function renderFontGrid() {
 
     // Tooltip: index, char, hex code
     const mappings = glyphMapping[glyph];
-    const ch = (mappings && mappings.length > 0) ? mappings[0].char : (glyph >= 32 && glyph < 127 ? String.fromCharCode(glyph) : '');
+    // Unmapped glyphs fall back to ASCII, except under the 'none' codepage,
+    // where the user has asked for no labels at all
+    const ch = (mappings && mappings.length > 0) ? mappings[0].char
+      : (fontCodepage !== 'none' && glyph >= 32 && glyph < 127 ? String.fromCharCode(glyph) : '');
     const hex = '0x' + glyph.toString(16).toUpperCase().padStart(2, '0');
     glyphContainer.title = ch ? `#${glyph} (${hex}) "${ch}"` : `#${glyph} (${hex})`;
 
@@ -761,16 +818,35 @@ function validateFontFileSize(size, name) {
 function createDefaultMapping(nGlyphs) {
   const ranges = [];
   if (nGlyphs === 96) {
-    // Map ASCII 32-127 to glyphs 0-95
+    // A 96-glyph ZX font is ASCII 32-127 by definition, so no codepage applies
     let chars = '';
     for (let i = 32; i < 128; i++) chars += String.fromCharCode(i);
     ranges.push({ start: 0, chars, width: '8' });
-  } else {
-    const count = Math.min(nGlyphs, 256);
-    let chars = '';
-    for (let i = 0; i < count; i++) chars += String.fromCharCode(i);
-    ranges.push({ start: 0, chars, width: '8' });
+    return ranges;
   }
+  if (fontCodepage === 'none') return ranges;
+
+  const count = Math.min(nGlyphs, 256);
+  // 0x00-0x1F and 0x7F are control codes in every codepage here: no glyph to
+  // name them with, and labelling them draws the browser's missing-glyph box
+  let low = '';
+  for (let i = 32; i < 127 && i < count; i++) low += String.fromCharCode(i);
+  if (low) ranges.push({ start: 32, chars: low, width: '8' });
+
+  const high = FONT_CODEPAGES[fontCodepage];
+  if (!high || count <= 128) return ranges;
+  // One range per run, so codes the codepage leaves undefined stay unlabelled
+  let run = '', runStart = 0;
+  for (let i = 0; i < 128 && 128 + i < count; i++) {
+    const ch = high[i];
+    if (ch === '\u0000') {
+      if (run) { ranges.push({ start: runStart, chars: run, width: '8' }); run = ''; }
+      continue;
+    }
+    if (!run) runStart = 128 + i;
+    run += ch;
+  }
+  if (run) ranges.push({ start: runStart, chars: run, width: '8' });
   return ranges;
 }
 
@@ -792,6 +868,79 @@ function applyMapping(ranges, widthMode) {
         charToGlyphIndex[char] = { glyph, width };
       }
     }
+  }
+}
+
+/**
+ * The codepage the user last picked by hand, 'ascii' if never.
+ * @returns {string}
+ */
+function loadCodepagePref() {
+  try {
+    const v = localStorage.getItem('spectraLabFontCodepage');
+    if (v && (v === 'ascii' || v === 'none' || FONT_CODEPAGES[v])) return v;
+  } catch (e) { /* private mode */ }
+  return 'ascii';
+}
+
+/**
+ * Guesses a font's codepage, and only when it is certain.
+ *
+ * CP866 and KOI-8R both carry the DOS box-drawing block, and put it in
+ * different places. Those glyphs are unmistakable as raw bytes: the full block
+ * is eight 0xFF, the horizontal rule one or two solid rows, the vertical rule
+ * the same non-blank byte eight times. A font without that block -- a Western
+ * font, a game's tile set, anything custom -- returns 'ascii' and is left alone.
+ *
+ * @param {Uint8Array|null} data - glyph bitmaps, 8 bytes each
+ * @param {number} nGlyphs
+ * @returns {string} a key of FONT_CODEPAGES, or 'ascii' when unsure
+ */
+function detectFontCodepage(data, nGlyphs) {
+  if (!data || nGlyphs < 256) return 'ascii';
+  const at = (g, r) => data[g * FONT_CONST.BYTES_PER_GLYPH + r];
+  /** Every row set: the full block. */
+  const block = (g) => {
+    for (let r = 0; r < 8; r++) if (at(g, r) !== 0xFF) return false;
+    return true;
+  };
+  /** One or two rows solid and the rest blank: a horizontal rule. */
+  const hRule = (g) => {
+    let solid = 0;
+    for (let r = 0; r < 8; r++) {
+      const b = at(g, r);
+      if (b === 0xFF) solid++;
+      else if (b !== 0x00) return false;
+    }
+    return solid === 1 || solid === 2;
+  };
+  /** The same partial byte in every row: a vertical rule. */
+  const vRule = (g) => {
+    const b = at(g, 0);
+    if (!b || b === 0xFF) return false;
+    for (let r = 1; r < 8; r++) if (at(g, r) !== b) return false;
+    return true;
+  };
+  if (block(0xDB) && hRule(0xC4) && vRule(0xB3)) return 'cp866';
+  if (block(0x8D) && hRule(0x80) && vRule(0x81)) return 'koi8r';
+  return 'ascii';
+}
+
+/**
+ * Points the grid labels at a codepage and redraws.
+ * @param {string} cp
+ * @param {boolean} [remember] - true when the user chose it, so it outlives the font
+ */
+function setFontCodepage(cp, remember) {
+  fontCodepage = cp;
+  if (dom.codepageSelect) dom.codepageSelect.value = cp;
+  if (remember) {
+    try { localStorage.setItem('spectraLabFontCodepage', cp); } catch (e) { /* private mode */ }
+  }
+  if (glyphData) {
+    applyMapping(createDefaultMapping(numGlyphs));
+    renderFontGrid();
+    if (currentGlyphIndex !== null) updatePreview(currentGlyphIndex);
   }
 }
 
@@ -1963,6 +2112,11 @@ dom.fontFile.addEventListener('change', (e) => {
       } else {
         glyphData = buffer.slice();
       }
+      // Offer a codepage only when the glyphs prove one; otherwise keep
+      // whatever the user last chose
+      const found = detectFontCodepage(glyphData, numGlyphs);
+      fontCodepage = found !== 'ascii' ? found : loadCodepagePref();
+      if (dom.codepageSelect) dom.codepageSelect.value = fontCodepage;
       const defaultMapping = createDefaultMapping(numGlyphs);
       applyMapping(defaultMapping);
   
@@ -2315,6 +2469,10 @@ dom.showGridCheckbox.addEventListener('change', () => {
     if (glyphData) renderFontGrid();
     if (currentGlyphIndex !== null) updatePreview(currentGlyphIndex);
   }
+});
+
+dom.codepageSelect.addEventListener('change', () => {
+  setFontCodepage(dom.codepageSelect.value, true);
 });
 
 dom.showLabelsCheckbox.addEventListener('change', () => {

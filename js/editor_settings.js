@@ -17,10 +17,11 @@
  * Wheel actions: 'zoom' | 'panV' | 'panH' | 'none'
  * Alt-click actions: 'pickInk' | 'pickPaper' | 'recolor' | 'none'
  * Arrow keys: 'scroll' | 'cursor'
+ * Number keys: 'zoom' | 'editorColors' | 'colors'
  * Cursor style: 'corners' | 'dots' | 'box'
  * Fullscreen preview: 'auto' | 'show' | 'hide'
  * Multicolour timing check (8x1/MLT, Pentagon 320T line): 'off' | 'on'
- * @type {{wheel:string, ctrlWheel:string, shiftWheel:string, middleDrag:string, altLeft:string, altRight:string, arrowKeys:string, cursorStyle:string, fullscreenPreview:string, mltTiming:string}}
+ * @type {{wheel:string, ctrlWheel:string, shiftWheel:string, middleDrag:string, altLeft:string, altRight:string, arrowKeys:string, digitKeys:string, cursorStyle:string, fullscreenPreview:string, mltTiming:string}}
  */
 const MOUSE_SETTINGS_DEFAULTS = {
   wheel: 'zoom',
@@ -30,6 +31,7 @@ const MOUSE_SETTINGS_DEFAULTS = {
   altLeft: 'pickInk',
   altRight: 'recolor',
   arrowKeys: 'scroll',
+  digitKeys: 'zoom',
   cursorStyle: 'corners',
   fullscreenPreview: 'auto',
   mltTiming: 'off'
@@ -37,7 +39,7 @@ const MOUSE_SETTINGS_DEFAULTS = {
 
 const MOUSE_SETTINGS_KEY = 'spectraLabMouseSettings';
 
-/** @type {{wheel:string, ctrlWheel:string, shiftWheel:string, middleDrag:string, altLeft:string, altRight:string, arrowKeys:string, cursorStyle:string, fullscreenPreview:string, mltTiming:string}} */
+/** @type {{wheel:string, ctrlWheel:string, shiftWheel:string, middleDrag:string, altLeft:string, altRight:string, arrowKeys:string, digitKeys:string, cursorStyle:string, fullscreenPreview:string, mltTiming:string}} */
 let mouseSettings = Object.assign({}, MOUSE_SETTINGS_DEFAULTS);
 
 /**
@@ -90,6 +92,20 @@ function resolveWheelAction(event) {
   if (event.ctrlKey) return getMouseSetting('ctrlWheel');
   if (event.shiftKey) return getMouseSetting('shiftWheel');
   return getMouseSetting('wheel');
+}
+
+/**
+ * Decides what a digit key should do. 'colors' only while the editor is open
+ * under the mixed setting, so a picture being viewed still zooms with 1-5.
+ * @returns {string} 'zoom' | 'colors'
+ */
+function resolveDigitKeyAction() {
+  const mode = getMouseSetting('digitKeys');
+  if (mode === 'colors') return 'colors';
+  if (mode === 'editorColors') {
+    return (typeof editorActive !== 'undefined' && editorActive) ? 'colors' : 'zoom';
+  }
+  return 'zoom';
 }
 
 /**
@@ -174,6 +190,7 @@ const SETTINGS_SELECT_MAP = {
   settingsAltLeft: 'altLeft',
   settingsAltRight: 'altRight',
   settingsArrowKeys: 'arrowKeys',
+  settingsDigitKeys: 'digitKeys',
   settingsCursorStyle: 'cursorStyle',
   settingsFullscreenPreview: 'fullscreenPreview',
   settingsMltTiming: 'mltTiming'

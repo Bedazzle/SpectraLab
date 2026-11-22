@@ -529,6 +529,18 @@ label {
         <div class="editor-section mapping-section" id="charMappingSection">
           <div class="editor-section-title">Character Mapping</div>
           <div class="control-row">
+            <label title="What the glyph codes mean. A font file does not say, so this is only a label: it never changes the glyphs.">Codepage:
+              <select id="codepageSelect" style="width:130px;">
+                <option value="ascii" selected>ASCII only</option>
+                <option value="cp866">CP866 (Cyrillic)</option>
+                <option value="cp1251">CP1251 (Cyrillic)</option>
+                <option value="koi8r">KOI-8R (Cyrillic)</option>
+                <option value="cp1252">Latin-1 / CP1252</option>
+                <option value="none">None</option>
+              </select>
+            </label>
+          </div>
+          <div class="control-row" style="margin-top: 4px;">
             <input type="text" id="charInput" placeholder="Characters..." style="width:120px;">
             <button id="mapCharBtn">Map</button>
             <button id="clearMapBtn">Clear</button>

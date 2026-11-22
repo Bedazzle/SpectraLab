@@ -52,6 +52,19 @@ let spritePaper = 0;
 /** @type {boolean} */
 let spriteBright = false;
 
+/** localStorage key for the editor's zoom choice */
+const SPRITE_ZOOM_KEY = 'spectraLabSpriteZoom';
+
+/** @type {string} - 'fit', or a zoom factor as a string */
+let spriteZoomMode = (() => {
+  try {
+    const v = localStorage.getItem(SPRITE_ZOOM_KEY);
+    return v && (v === 'fit' || /^\d+$/.test(v)) ? v : 'fit';
+  } catch (e) {
+    return 'fit';
+  }
+})();
+
 // Drag state for floating panel
 let spritePanelDragging = false;
 let spritePanelDragX = 0;
@@ -147,6 +160,7 @@ function initSpriteEditor() {
     'spriteToolDraw', 'spriteToolErase', 'spriteToolFill', 'spriteToolLine',
     'spriteToolRect', 'spriteToolSelect', 'spriteToolMask', 'spriteAttrControls',
     'spriteColorPalette',
+    'spriteZoom', 'spriteCanvasWrap',
     'spriteOnionSkin', 'spriteShowGrid', 'spriteShowAttrs', 'spriteShowMask',
     'spriteFramePrev', 'spriteFrameInfo', 'spriteFrameNext', 'spriteFrameAdd',
     'spriteFrameDup', 'spriteFrameDel', 'spriteFrameMoveL', 'spriteFrameMoveR',
@@ -275,6 +289,12 @@ function initSpriteEditor() {
   spriteDOM.spritePlayBtn?.addEventListener('click', toggleAnimation);
 
   // Checkbox changes trigger re-render
+  spriteDOM.spriteZoom?.addEventListener('change', () => {
+    spriteZoomMode = spriteDOM.spriteZoom.value;
+    try { localStorage.setItem(SPRITE_ZOOM_KEY, spriteZoomMode); } catch (e) { /* storage blocked */ }
+    resizeEditorCanvas();
+    renderSpriteEditor();
+  });
   spriteDOM.spriteOnionSkin?.addEventListener('change', () => renderSpriteEditor());
   spriteDOM.spriteShowGrid?.addEventListener('change', () => renderSpriteEditor());
   spriteDOM.spriteShowAttrs?.addEventListener('change', () => renderSpriteEditor());
@@ -952,9 +972,47 @@ function onSpriteSizeChange() {
   const newW = parseInt(spriteDOM.spriteCellsW.value) || 1;
   const newH = parseInt(spriteDOM.spriteCellsH.value) || 1;
   if (newW === sprite.cellsW && newH === sprite.cellsH) return;
+
+  if (spriteResizeLosesInk(sprite, newW, newH) &&
+      !confirm('Making this spriteset smaller cuts away pixels that are drawn outside the new size. Continue?')) {
+    spriteDOM.spriteCellsW.value = String(sprite.cellsW);
+    spriteDOM.spriteCellsH.value = String(sprite.cellsH);
+    return;
+  }
+
   resizeSprite(sprite, newW, newH);
+  // The frame buffers changed length, so the old undo states no longer fit
+  spriteUndoStack = [];
+  spriteRedoStack = [];
   updateSpriteList();
-  if (spriteEditorOpen) renderSpriteEditor();
+  updateSpriteProps();
+  if (spriteEditorOpen) {
+    resizeEditorCanvas();
+    renderSpriteEditor();
+  }
+}
+
+/**
+ * True when shrinking to newW×newH would cut away a pixel that is drawn.
+ * @param {object} sprite
+ * @param {number} newW - new width in cells
+ * @param {number} newH - new height in cells
+ * @returns {boolean}
+ */
+function spriteResizeLosesInk(sprite, newW, newH) {
+  if (newW >= sprite.cellsW && newH >= sprite.cellsH) return false;
+  const oldPixW = sprite.cellsW * 8;
+  const oldPixH = sprite.cellsH * 8;
+  const newPixW = newW * 8;
+  const newPixH = newH * 8;
+  for (const frame of sprite.frames) {
+    for (let y = 0; y < oldPixH; y++) {
+      for (let x = (y < newPixH ? newPixW : 0); x < oldPixW; x++) {
+        if (spGetPixel(frame, x, y, oldPixW)) return true;
+      }
+    }
+  }
+  return false;
 }
 
 function resizeSprite(sprite, newW, newH) {
@@ -1143,9 +1201,11 @@ function resizeEditorCanvas() {
   if (!sprite) return;
   const pixW = sprite.cellsW * 8;
   const pixH = sprite.cellsH * 8;
-  // Calculate zoom to fit in ~256px but be a power-of-2-ish integer
   const maxDim = Math.max(pixW, pixH);
-  let zoom = Math.max(1, Math.floor(256 / maxDim));
+  // 'Fit' sizes a sprite to about 256px; a chosen zoom wins, and the canvas
+  // scrolls inside its box when it no longer fits
+  let zoom = parseInt(spriteZoomMode, 10);
+  if (!zoom || zoom < 1) zoom = Math.max(1, Math.floor(256 / maxDim));
   if (zoom > 32) zoom = 32;
 
   const canvas = spriteDOM.spriteEditorCanvas;
@@ -1154,6 +1214,10 @@ function resizeEditorCanvas() {
   canvas._zoom = zoom;
   canvas._pixW = pixW;
   canvas._pixH = pixH;
+
+  if (spriteDOM.spriteZoom && spriteDOM.spriteZoom.value !== spriteZoomMode) {
+    spriteDOM.spriteZoom.value = spriteZoomMode;
+  }
 
   // Preview canvas
   const prev = spriteDOM.spritePreviewCanvas;
@@ -1224,6 +1288,19 @@ function scheduleDrawingRender() {
   });
 }
 
+/**
+ * The picture grid's colour for a role, so the sprite canvas follows whatever
+ * preset the user picked. Falls back to the viewer's own defaults if the viewer
+ * is not loaded.
+ *
+ * @param {'grid'|'subgrid'} role
+ * @returns {string}
+ */
+function spriteGridColor(role) {
+  if (typeof getGridColor === 'function') return getGridColor(role);
+  return role === 'grid' ? 'rgba(0, 160, 255, 0.4)' : 'rgba(128, 128, 128, 0.25)';
+}
+
 function renderSpriteCanvas() {
   const canvas = spriteDOM.spriteEditorCanvas;
   if (!canvas) return;
@@ -1267,23 +1344,29 @@ function renderSpriteCanvas() {
 
   // Grid
   const showGrid = spriteDOM.spriteShowGrid?.checked;
-  if (showGrid && zoom >= 4) {
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+  if (showGrid) {
+    // The pixel grid needs room to read; the cell grid is drawn at any zoom,
+    // since a screen-sized sprite is edited at 1x
+    if (zoom >= 4) {
+      // Same colours as the picture grid, so a white sprite does not swallow them
+      ctx.strokeStyle = spriteGridColor('subgrid');
+      ctx.lineWidth = 1;
+      for (let x = 0; x <= pixW; x++) {
+        ctx.beginPath();
+        ctx.moveTo(x * zoom + 0.5, 0);
+        ctx.lineTo(x * zoom + 0.5, pixH * zoom);
+        ctx.stroke();
+      }
+      for (let y = 0; y <= pixH; y++) {
+        ctx.beginPath();
+        ctx.moveTo(0, y * zoom + 0.5);
+        ctx.lineTo(pixW * zoom, y * zoom + 0.5);
+        ctx.stroke();
+      }
+    }
+    // Character cell boundaries
     ctx.lineWidth = 1;
-    for (let x = 0; x <= pixW; x++) {
-      ctx.beginPath();
-      ctx.moveTo(x * zoom + 0.5, 0);
-      ctx.lineTo(x * zoom + 0.5, pixH * zoom);
-      ctx.stroke();
-    }
-    for (let y = 0; y <= pixH; y++) {
-      ctx.beginPath();
-      ctx.moveTo(0, y * zoom + 0.5);
-      ctx.lineTo(pixW * zoom, y * zoom + 0.5);
-      ctx.stroke();
-    }
-    // Cell boundaries (thicker)
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+    ctx.strokeStyle = spriteGridColor('grid');
     for (let cx = 0; cx <= sprite.cellsW; cx++) {
       ctx.beginPath();
       ctx.moveTo(cx * 8 * zoom + 0.5, 0);
@@ -1402,11 +1485,29 @@ function renderSpriteThumbnail(canvas, sprite, frameIndex) {
   const ctx = canvas.getContext('2d');
   const pixW = sprite.cellsW * 8;
   const pixH = sprite.cellsH * 8;
-  const zoom = Math.max(1, Math.min(Math.floor(canvas.width / pixW), Math.floor(canvas.height / pixH)));
   const frame = sprite.frames[frameIndex];
   if (!frame) return;
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // A sprite larger than the thumbnail is drawn once at 1:1 and shrunk to fit,
+  // so the whole of it shows instead of its middle
+  const fit = Math.min(canvas.width / pixW, canvas.height / pixH);
+  if (fit < 1) {
+    const off = document.createElement('canvas');
+    off.width = pixW;
+    off.height = pixH;
+    const offCtx = off.getContext('2d');
+    if (!offCtx) return;
+    renderFrameToCtx(offCtx, sprite, frame, 1, pixW, pixH, Math.ceil(pixW / 8), true);
+    const w = Math.max(1, Math.round(pixW * fit));
+    const h = Math.max(1, Math.round(pixH * fit));
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(off, Math.floor((canvas.width - w) / 2), Math.floor((canvas.height - h) / 2), w, h);
+    return;
+  }
+
+  const zoom = Math.max(1, Math.floor(fit));
 
   // Center the sprite in the thumbnail
   const offX = Math.floor((canvas.width - pixW * zoom) / 2);
@@ -1736,8 +1837,11 @@ function onSpriteCanvasMouseUp(e) {
 function updateSpritePropLocks() {
   const sprite = getSelectedSprite();
   const hasContent = sprite ? sprite.frames.some(f => f.bitmap.some(b => b !== 0)) : false;
-  if (spriteDOM.spriteCellsW) spriteDOM.spriteCellsW.disabled = hasContent;
-  if (spriteDOM.spriteCellsH) spriteDOM.spriteCellsH.disabled = hasContent;
+  // W and H stay open whatever is drawn: a resize keeps what overlaps, pads the
+  // rest, and asks first if it would cut ink away. Mode stays locked once there
+  // is something to lose, since its attribute layout does not convert back.
+  if (spriteDOM.spriteCellsW) spriteDOM.spriteCellsW.disabled = false;
+  if (spriteDOM.spriteCellsH) spriteDOM.spriteCellsH.disabled = false;
   if (spriteDOM.spriteMode) spriteDOM.spriteMode.disabled = hasContent;
 }
 

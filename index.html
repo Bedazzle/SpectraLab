@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SpectraLab v2.46 -->
+<!-- SpectraLab v2.48 -->
 <html>
 <head>
 <meta charset="UTF-8">
@@ -1371,6 +1371,12 @@
     padding: 3px;
     font-size: 11px;
   }
+  .settings-hint {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    line-height: 1.35;
+    margin: -1px 0 9px;
+  }
   #combineList {
     max-height: 150px;
     overflow-y: auto;
@@ -1627,6 +1633,12 @@
     user-select: none;
   }
 
+  #spriteCanvasWrap {
+    max-width: 520px;
+    max-height: 420px;
+    overflow: auto;
+    line-height: 0;
+  }
   #spriteEditorCanvas {
     border: 1px solid var(--border-secondary);
     image-rendering: pixelated;
@@ -1639,6 +1651,9 @@
     image-rendering: pixelated;
     image-rendering: crisp-edges;
     background: #000;
+    /* A screen-sized sprite previews at its own size, so cap the box it shows in */
+    max-width: 64px;
+    max-height: 64px;
   }
 
   .sprite-tool-btn {
@@ -2522,6 +2537,7 @@
                 <div style="display: flex; gap: 1px;">
                   <button id="addLayerBtn" class="editor-tool-btn" title="Add new layer (creates Background + new layer)" style="padding: 2px 4px;">＋</button>
                   <button id="removeLayerBtn" class="editor-tool-btn" title="Remove selected layer" style="padding: 2px 4px;" disabled>－</button>
+                  <button id="duplicateLayerBtn" class="editor-tool-btn" title="Duplicate selected layer" style="padding: 2px 4px;" disabled>❐</button>
                   <button id="moveLayerUpBtn" class="editor-tool-btn" title="Move layer up" style="padding: 2px 4px;" disabled>↑</button>
                   <button id="moveLayerDownBtn" class="editor-tool-btn" title="Move layer down" style="padding: 2px 4px;" disabled>↓</button>
                   <button id="flattenLayersBtn" class="editor-tool-btn" title="Flatten all layers" style="padding: 2px 4px;" disabled>⊟</button>
@@ -2615,8 +2631,9 @@
               <div class="control-group-title">Clipboard</div>
               <div style="display: flex; gap: 2px; align-items: center;">
                 <button id="transformSelectBtn" class="editor-tool-btn" data-tool="select" title="Select (S)">⬚</button>
+                <button id="editorCopyBtn" class="editor-tool-btn" title="Copy (Ctrl+C) — Shift: copy the flattened picture (Ctrl+Shift+C)">❐</button>
                 <button id="editorCutBtn" class="editor-tool-btn" title="Cut (Ctrl+X)">✂</button>
-                <button id="editorPasteBtn" class="editor-tool-btn" title="Paste (Ctrl+V)">⧉</button>
+                <button id="editorPasteBtn" class="editor-tool-btn" title="Paste (Ctrl+V) — lands where it was copied from; click or Enter to drop it, drag or arrows to move it">⧉</button>
                 <button id="editorInvertBtn" class="editor-tool-btn" title="Invert (N)">◐</button>
                 <button id="editorReditherBtn" class="editor-tool-btn" title="Re-dither selection (Shift+W)" style="display:none">▩</button>
                 <button id="clipboardRotateBtn" class="editor-tool-btn" title="Rotate 90° - clipboard (pasting) or custom brush (R)" style="min-width: 24px; padding: 2px 4px;">↻</button>
@@ -2628,6 +2645,11 @@
                   <input type="checkbox" id="transformSnapCheckbox" checked>
                   Snap to grid
                 </label>
+              </div>
+              <div style="font-size: 10px; color: var(--text-secondary); margin-top: 4px;">
+                Select an area, then Copy. A paste floats until you drop it:
+                click or Enter drops it, drag or arrows move it, R/H/V turns it,
+                Esc cancels. It survives switching layer or picture.
               </div>
               <div id="transformSelectionInfo" style="font-size: 10px; color: var(--text-secondary); margin-top: 4px;"></div>
             </div>
@@ -2702,11 +2724,11 @@
               Name: <input id="spriteName" type="text" maxlength="16" style="flex:1; font-size:10px;">
             </label>
             <div style="display:flex; gap:4px; font-size:10px;">
-              <label>W: <select id="spriteCellsW" style="font-size:10px;">
-                <option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
+              <label title="Width in character cells, up to a full screen (32)">W: <select id="spriteCellsW" style="font-size:10px;">
+                <option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option><option value="13">13</option><option value="14">14</option><option value="15">15</option><option value="16">16</option><option value="17">17</option><option value="18">18</option><option value="19">19</option><option value="20">20</option><option value="21">21</option><option value="22">22</option><option value="23">23</option><option value="24">24</option><option value="25">25</option><option value="26">26</option><option value="27">27</option><option value="28">28</option><option value="29">29</option><option value="30">30</option><option value="31">31</option><option value="32">32</option>
               </select></label>
-              <label>H: <select id="spriteCellsH" style="font-size:10px;">
-                <option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option>
+              <label title="Height in character cells, up to a full screen (24)">H: <select id="spriteCellsH" style="font-size:10px;">
+                <option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option><option value="13">13</option><option value="14">14</option><option value="15">15</option><option value="16">16</option><option value="17">17</option><option value="18">18</option><option value="19">19</option><option value="20">20</option><option value="21">21</option><option value="22">22</option><option value="23">23</option><option value="24">24</option>
               </select></label>
               <label><select id="spriteMode" style="font-size:10px;">
                 <option value="mono">Mono</option><option value="attr">Attributed</option><option value="multicolour_1">Multicolour 8×1</option><option value="multicolour_2">Multicolour 8×2</option><option value="multicolour_4">Multicolour 8×4</option>
@@ -2974,9 +2996,9 @@
     <div style="display:flex; gap:8px;">
       <!-- Main editing canvas + preview below -->
       <div>
-        <canvas id="spriteEditorCanvas" width="256" height="256"></canvas>
+        <div id="spriteCanvasWrap"><canvas id="spriteEditorCanvas" width="256" height="256"></canvas></div>
         <div style="display:flex; gap:6px; align-items:center; margin-top:10px;">
-          <canvas id="spritePreviewCanvas" width="64" height="64" title="1x preview"></canvas>
+          <canvas id="spritePreviewCanvas" width="64" height="64" title="Preview"></canvas>
           <div style="margin-left:auto; display:flex; align-items:center; gap:4px;">
             <button id="spritePlayBtn" class="editor-btn" style="font-size:10px;">&#9654; Play</button>
             <label style="font-size:9px;">Speed: <input type="range" id="spriteAnimSpeed" min="1" max="30" value="10" style="width:50px;"></label>
@@ -2988,6 +3010,9 @@
           <button id="spriteFrameNext" class="editor-btn" title="Next frame">&gt;</button>
         </div>
         <div style="display:flex; gap:6px; flex-wrap:wrap; font-size:10px;">
+          <label>Zoom: <select id="spriteZoom" style="font-size:10px;">
+            <option value="fit">Fit</option><option value="1">1x</option><option value="2">2x</option><option value="3">3x</option><option value="4">4x</option><option value="6">6x</option><option value="8">8x</option><option value="12">12x</option><option value="16">16x</option>
+          </select></label>
           <label><input type="checkbox" id="spriteOnionSkin"> Onion</label>
           <label><input type="checkbox" id="spriteShowGrid" checked> Grid</label>
           <label><input type="checkbox" id="spriteShowAttrs" checked> Attributes</label>
@@ -3794,6 +3819,7 @@
         <option value="none">Nothing</option>
       </select>
     </label>
+    <div class="settings-hint">Rect, Circle and Gradient use Alt for &quot;draw from center&quot;, so they ignore these.</div>
 
     <label class="settings-row">
       <span>Arrow keys</span>
@@ -3802,7 +3828,6 @@
         <option value="cursor">Move a pixel cursor</option>
       </select>
     </label>
-
     <label class="settings-row">
       <span>Pixel cursor shape</span>
       <select id="settingsCursorStyle">
@@ -3811,6 +3836,17 @@
         <option value="box">Full box</option>
       </select>
     </label>
+    <div class="settings-hint">With the cursor: Shift+arrow steps 8 pixels, Space applies the tool.</div>
+
+    <label class="settings-row" title="Palettes the eight ZX colors do not address - ZX Next, LoRes, .53c, Gigascreen's combined palette - keep the number keys for zoom.">
+      <span>Number keys</span>
+      <select id="settingsDigitKeys">
+        <option value="zoom">Zoom level (1-5)</option>
+        <option value="editorColors">Zoom in viewer, colors in editor</option>
+        <option value="colors">Ink color (Shift = paper)</option>
+      </select>
+    </label>
+    <div class="settings-hint">On colors: 0-7 ink, Shift+digit paper, 8 transparent.</div>
 
     <label class="settings-row">
       <span>Preview in fullscreen</span>
@@ -3829,16 +3865,8 @@
         <option value="on">Mark over-budget rows on border</option>
       </select>
     </label>
-
-    <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 8px; line-height: 1.4;">
-      Alt bindings are ignored by Rect, Circle and Gradient, which use Alt for "draw from center".
-      With the pixel cursor, Shift+arrow steps 8 pixels and Space applies the current tool.
-      The multicolour timing check applies to 8x1 (MLT) pictures only: pixel rows whose
-      attributes cannot be rewritten in time get an orange mark on the border. A Pentagon
-      128K scanline is 224 T-states with no contention, and the seven interior rows of a
-      character row share their time, so a row may run past its own line where a neighbour
-      runs short. <b>M</b> toggles the marks without opening this dialog.
-    </div>
+    <div class="settings-hint">8x1 (MLT) only: an orange border mark against each pixel row a Pentagon
+      player cannot rewrite in time. <b>M</b> toggles it.</div>
 
     <div style="display: flex; gap: 8px; justify-content: space-between; margin-top: 12px;">
       <button id="settingsResetBtn" style="padding: 5px 12px; font-size: 12px;">Reset defaults</button>
@@ -4114,7 +4142,7 @@
       <div id="helpTab-about" class="help-tab-content" style="display: none;">
         <div style="text-align: center; padding: 20px 0;">
           <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">SpectraLab</div>
-          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 2.46</div>
+          <div style="color: var(--text-secondary); margin-bottom: 16px;">Version 2.48</div>
           <div style="margin-bottom: 16px;">ZX Spectrum graphics viewer and editor</div>
           <div style="margin-bottom: 8px;">
             <a href="https://github.com/Bedazzle/SpectraLab" target="_blank" style="color: var(--accent-color);">
@@ -4369,7 +4397,7 @@
             <input type="range" id="importPreBlur" min="0" max="50" value="0" style="flex: 1; min-width: 60px;">
             <span id="importPreBlurValue" style="width: 24px; text-align: right;">0</span>
           </label>
-          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="How to assign ink and paper colors in each cell">
+          <label style="font-size: 11px; display: flex; align-items: center; gap: 4px;" title="How to assign ink and paper colors in each cell. In bitmap-only formats (Mono .scr, Chunks) there is no attribute byte, so it sets the bit polarity instead: Darker keeps the picture the right way round against the viewer's white-on-black mono rendering.">
             <span style="width: 52px;">Paper:</span>
             <select id="importPaperRule" style="width: 100px; padding: 2px; font-size: 11px;">
               <option value="darker" selected>Darker color</option>

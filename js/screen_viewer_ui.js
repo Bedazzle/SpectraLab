@@ -819,10 +819,22 @@ function initScreenViewerUI() {
       return;
     }
 
+    // A floating paste owns the arrows and Enter while it is being placed
+    if (typeof handleFloatingPasteKey === 'function' && handleFloatingPasteKey(event)) {
+      event.preventDefault();
+      return;
+    }
+
     // Arrow keys may drive the editor's pixel cursor instead of scrolling
     if (typeof getMouseSetting === 'function' && getMouseSetting('arrowKeys') === 'cursor' &&
         typeof handleEditorKeyCursorKey === 'function' &&
         currentFormat !== FORMAT.SCA && handleEditorKeyCursorKey(event)) {
+      event.preventDefault();
+      return;
+    }
+
+    // Digit keys may pick ink/paper instead of zooming
+    if (typeof handleEditorColorDigitKey === 'function' && handleEditorColorDigitKey(event)) {
       event.preventDefault();
       return;
     }

@@ -435,6 +435,20 @@ function applyPaperRule(colors, bitmap) {
 }
 
 /**
+ * The two colours a mono conversion works with, before the Paper rule decides which of
+ * them is paper: black ink on bright white paper. The analyze*Mono() helpers return a
+ * bitmap only, so the pair has to be named here for applyPaperRule().
+ * @param {{regular: number[][], bright: number[][]}} palette
+ * @returns {{ink: number, paper: number, bright: boolean, inkRgb: number[], paperRgb: number[]}}
+ */
+function monoPairColors(palette) {
+  return {
+    ink: 0, paper: 7, bright: true,
+    inkRgb: palette.bright[0], paperRgb: palette.bright[7]
+  };
+}
+
+/**
  * Find nearest palette color index
  * @param {number[]} rgb - Target color [R, G, B]
  * @param {number[][]} palette - Array of [R, G, B] colors
@@ -3023,17 +3037,20 @@ function convertToScr(sourceCanvas, dithering, brightness, contrast, saturation 
       for (let cellY = 0; cellY < 24; cellY++) {
         for (let cellX = 0; cellX < 32; cellX++) {
           const cell = analyzeCellMono(floatPixels, cellX, cellY, 256, monoColors.inkRgb, monoColors.paperRgb);
+          // Two tones still leave a choice of which one is paper, so the Paper rule applies
+          // here exactly as it does in colour mode
+          const ruled = applyPaperRule(monoColors, cell.bitmap);
 
           // Write bitmap bytes
           for (let line = 0; line < 8; line++) {
             const y = cellY * 8 + line;
             const offset = getBitmapOffset(y) + cellX;
-            scr[offset] = cell.bitmap[line];
+            scr[offset] = ruled.bitmap[line];
           }
 
-          // Write attribute byte (mono: black ink on bright white paper)
+          // Write attribute byte
           const attrOffset = 6144 + cellY * 32 + cellX;
-          scr[attrOffset] = (7 << 3) | 0 | 0x40;
+          scr[attrOffset] = (ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0);
         }
       }
     } else {
@@ -3116,8 +3133,8 @@ function convertToScr(sourceCanvas, dithering, brightness, contrast, saturation 
           ? analyzeCellMono(floatPixels, cellX, cellY, 256, palette.bright[0], palette.bright[7])
           : analyzeCell(floatPixels, cellX, cellY, 256, preDitherPixels);
 
-        // Apply paper color rule (skip for mono)
-        const ruled = monoOutput ? { colors: cell, bitmap: cell.bitmap } : applyPaperRule(cell, cell.bitmap);
+        // Apply paper color rule
+        const ruled = applyPaperRule(monoOutput ? monoPairColors(palette) : cell, cell.bitmap);
 
         // Write bitmap bytes
         for (let line = 0; line < 8; line++) {
@@ -3128,7 +3145,7 @@ function convertToScr(sourceCanvas, dithering, brightness, contrast, saturation 
 
         // Write attribute byte
         const attrOffset = 6144 + cellY * 32 + cellX;
-        let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0));
+        let attr = (ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0);
         scr[attrOffset] = attr;
       }
     }
@@ -3337,7 +3354,7 @@ function convertToZxp(sourceCanvas, dithering, brightness, contrast, saturation 
           ? analyzeCellMono(floatPixels, cellX, cellY, w, palette.bright[0], palette.bright[7])
           : analyzeCell(floatPixels, cellX, cellY, w, preDitherPixels);
 
-        const ruled = monoOutput ? { colors: cell, bitmap: cell.bitmap } : applyPaperRule(cell, cell.bitmap);
+        const ruled = applyPaperRule(monoOutput ? monoPairColors(palette) : cell, cell.bitmap);
 
         for (let line = 0; line < 8; line++) {
           const y = cellY * 8 + line;
@@ -3347,7 +3364,7 @@ function convertToZxp(sourceCanvas, dithering, brightness, contrast, saturation 
         }
 
         const attrOffset = bitmapSize + cellY * cols + cellX;
-        let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0));
+        let attr = (ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0);
         zxp[attrOffset] = attr;
       }
     }
@@ -3479,7 +3496,7 @@ function convertToNirvanaTile(sourceCanvas, dithering, brightness, contrast, sat
           ? analyzeBlock2Mono(floatPixels, blockX, blockY, w, palette.bright[0], palette.bright[7])
           : analyzeBlock2(floatPixels, blockX, blockY, w);
 
-        const ruled = monoOutput ? { colors: block, bitmap: block.bitmap } : applyPaperRule(block, block.bitmap);
+        const ruled = applyPaperRule(monoOutput ? monoPairColors(palette) : block, block.bitmap);
 
         for (let line = 0; line < 2; line++) {
           const y = blockY * 2 + line;
@@ -3487,7 +3504,7 @@ function convertToNirvanaTile(sourceCanvas, dithering, brightness, contrast, sat
           buf[y * cols + blockX] = ruled.bitmap[line];
         }
 
-        let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0));
+        let attr = (ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0);
         buf[bitmapSize + blockY * cols + blockX] = attr;
       }
     }
@@ -4903,8 +4920,8 @@ function convertToIfl(sourceCanvas, dithering, brightness, contrast, saturation 
           ? analyzeBlock2Mono(floatPixels, blockX, blockY, 256, palette.bright[0], palette.bright[7])
           : analyzeBlock2(floatPixels, blockX, blockY, 256);
 
-        // Apply paper color rule (skip for mono)
-        const ruled = monoOutput ? { colors: block, bitmap: block.bitmap } : applyPaperRule(block, block.bitmap);
+        // Apply paper color rule
+        const ruled = applyPaperRule(monoOutput ? monoPairColors(palette) : block, block.bitmap);
 
         // Write 2 bitmap bytes
         for (let line = 0; line < 2; line++) {
@@ -4915,7 +4932,7 @@ function convertToIfl(sourceCanvas, dithering, brightness, contrast, saturation 
 
         // Write attribute byte
         const attrOffset = 6144 + blockY * 32 + blockX;
-        let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0));
+        let attr = (ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0);
         ifl[attrOffset] = attr;
       }
     }
@@ -5385,8 +5402,8 @@ function convertToMlt(sourceCanvas, dithering, brightness, contrast, saturation 
           ? analyzeBlock1Mono(floatPixels, blockX, y, 256, palette.bright[0], palette.bright[7])
           : analyzeBlock1(floatPixels, blockX, y, 256);
 
-        // Apply paper color rule (skip for mono)
-        const ruled = monoOutput ? { colors: block, bitmap: block.bitmap } : applyPaperRule(block, block.bitmap);
+        // Apply paper color rule
+        const ruled = applyPaperRule(monoOutput ? monoPairColors(palette) : block, block.bitmap);
 
         // Write bitmap byte
         const bitmapOffset = getBitmapOffset(y) + blockX;
@@ -5394,7 +5411,7 @@ function convertToMlt(sourceCanvas, dithering, brightness, contrast, saturation 
 
         // Write attribute byte
         const attrOffset = 6144 + y * 32 + blockX;
-        let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0));
+        let attr = (ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0);
         mlt[attrOffset] = attr;
       }
     }
@@ -5527,13 +5544,13 @@ function convertToGmx640(sourceCanvas, dithering, brightness, contrast, saturati
           ? analyzeBlock1Mono(floatPixels, blockX, y, 640, palette.bright[0], palette.bright[7])
           : analyzeBlock1(floatPixels, blockX, y, 640);
 
-        const ruled = monoOutput ? { colors: block, bitmap: block.bitmap } : applyPaperRule(block, block.bitmap);
+        const ruled = applyPaperRule(monoOutput ? monoPairColors(palette) : block, block.bitmap);
 
         const bitmapOffset = y * 80 + blockX;
         gmx[bitmapOffset] = ruled.bitmap;
 
         const attrOffset = GMX.ATTR_OFFSET + y * 80 + blockX;
-        let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0));
+        let attr = (ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0);
         gmx[attrOffset] = attr;
       }
     }
@@ -6300,12 +6317,12 @@ function convertToBmc4(sourceCanvas, dithering, brightness, contrast, saturation
         const block = monoOutput
           ? analyzeBlock4Mono(floatPixels, blockX, blockY, 256, palette.bright[0], palette.bright[7])
           : analyzeBlock4(floatPixels, blockX, blockY, 256);
-        colors = block;
+        colors = monoOutput ? monoPairColors(palette) : block;
         bitmap = block.bitmap;
       }
 
-      // Apply paper color rule (skip for mono)
-      const ruled = monoOutput ? { colors, bitmap } : applyPaperRule(colors, bitmap);
+      // Apply paper color rule
+      const ruled = applyPaperRule(colors, bitmap);
 
       // Write 4 bitmap bytes
       for (let line = 0; line < 4; line++) {
@@ -6319,7 +6336,7 @@ function convertToBmc4(sourceCanvas, dithering, brightness, contrast, saturation
       const charRow = Math.floor(blockY / 2);
       const isTopHalf = (blockY % 2) === 0;
       const attrOffset = isTopHalf ? (6144 + charRow * 32 + blockX) : (6912 + charRow * 32 + blockX);
-      let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0));
+      let attr = (ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0);
       bmc4[attrOffset] = attr;
     }
   }
@@ -6541,11 +6558,15 @@ function convertToMono(sourceCanvas, dithering, brightness, contrast, saturation
   const bufferSize = thirds * 2048;
   const mono = new Uint8Array(bufferSize);
 
-  // Get ink and paper colors for distance comparison
-  const inkRgb = monoPalette[0];    // black
-  const paperRgb = monoPalette[1];  // white
+  // A bitmap-only format has no attribute byte to carry the two colours, so the Paper
+  // rule decides the bit polarity instead. Everywhere else in the app a set bit is ink,
+  // and the mono viewer paints ink bright white on black paper — so 'darker' (paper =
+  // black) sets bits for the light pixels and keeps the picture the right way round.
+  const paperIsLight = importPaperRule === 'lighter';
+  const inkRgb = paperIsLight ? monoPalette[0] : monoPalette[1];
+  const paperRgb = paperIsLight ? monoPalette[1] : monoPalette[0];
 
-  // Process bitmap - determine if each pixel is ink (black) or paper (white)
+  // Process bitmap - set the bit where the pixel is closer to the ink tone
   for (let y = 0; y < height; y++) {
     const bitmapOffset = getBitmapOffset(y);
 
@@ -6563,7 +6584,7 @@ function convertToMono(sourceCanvas, dithering, brightness, contrast, saturation
         const inkDist = (r - inkRgb[0]) ** 2 + (g - inkRgb[1]) ** 2 + (b - inkRgb[2]) ** 2;
         const paperDist = (r - paperRgb[0]) ** 2 + (g - paperRgb[1]) ** 2 + (b - paperRgb[2]) ** 2;
 
-        // If closer to ink (black), set bit
+        // If closer to ink, set bit
         if (inkDist < paperDist) {
           byte |= (0x80 >> bit);
         }
@@ -6571,6 +6592,11 @@ function convertToMono(sourceCanvas, dithering, brightness, contrast, saturation
 
       mono[bitmapOffset + col] = byte;
     }
+  }
+
+  // 'First pixel paper': flip the whole bitmap if the leftmost pixel came out as ink
+  if (importPaperRule === 'first-pixel' && (mono[0] & 0x80) !== 0) {
+    for (let i = 0; i < mono.length; i++) mono[i] ^= 0xFF;
   }
 
   return mono;
@@ -9871,8 +9897,8 @@ function convertMainAreaToScr(sourceCanvas, dithering, monoOutput = false) {
           ? analyzeCellMono(floatPixels, cellX, cellY, 256, palette.bright[0], palette.bright[7])
           : analyzeCell(floatPixels, cellX, cellY, 256, preDitherPixels);
 
-        // Apply paper color rule (skip for mono)
-        const ruled = monoOutput ? { colors: cell, bitmap: cell.bitmap } : applyPaperRule(cell, cell.bitmap);
+        // Apply paper color rule
+        const ruled = applyPaperRule(monoOutput ? monoPairColors(palette) : cell, cell.bitmap);
 
         for (let line = 0; line < 8; line++) {
           const y = cellY * 8 + line;
@@ -9881,7 +9907,7 @@ function convertMainAreaToScr(sourceCanvas, dithering, monoOutput = false) {
         }
 
         const attrOffset = 6144 + cellY * 32 + cellX;
-        let attr = monoOutput ? ((7 << 3) | 0 | 0x40) : ((ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0));
+        let attr = (ruled.colors.paper << 3) | ruled.colors.ink | (ruled.colors.bright ? 0x40 : 0);
         scr[attrOffset] = attr;
       }
     }
@@ -10762,8 +10788,9 @@ function renderMonoToCanvas(monoData, canvas, zoom = 2, thirds = 3) {
   const imageData = ctx.createImageData(256, 192);
   const pixels = imageData.data;
   const palette = getCombinedPalette();
-  const ink = palette.bright[0];   // Black
-  const paper = palette.bright[7]; // White
+  // Match renderMonoScreen() in the viewer: a set bit is ink, bright white on black
+  const ink = palette.bright[7];   // White
+  const paper = palette.bright[0]; // Black
 
   // Fill with paper first
   for (let i = 0; i < 256 * 192 * 4; i += 4) {
